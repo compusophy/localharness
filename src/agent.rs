@@ -1518,6 +1518,80 @@ fn requires_safety_policy(capabilities: &CapabilitiesConfig, has_custom_tools: b
 // Tool dispatcher
 // =============================================================================
 
+/// The shared tool-dispatcher loop body (ONE copy for both targets). Subscribes
+/// to the connection's step stream and re-runs any non-`Done` tool-call step
+/// whose tool name is registered — the inline-dispatch backends emit `Done`
+/// steps (skipped here), so this fires only for backends that surface tool
+/// calls out-of-band. The cfg wrappers below differ ONLY in how they spawn it:
+/// native keeps the `JoinHandle`, wasm fire-and-forgets.
+async fn run_tool_dispatcher(
+    connection: Arc<dyn Connection>,
+    tool_runner: Arc<ToolRunner>,
+    hook_runner: Arc<HookRunner>,
+    session_ctx: SessionContext,
+    shutdown: Arc<AtomicBool>,
+) {
+    let registered: std::collections::HashSet<String> =
+        tool_runner.names().into_iter().collect();
+    let mut stream = connection.subscribe_steps();
+    while let Some(step) = stream.next().await {
+        if shutdown.load(Ordering::Acquire) {
+            return;
+        }
+        let step = match step {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "tool dispatcher stream error");
+                continue;
+            }
+        };
+        if step.tool_calls.is_empty() {
+            continue;
+        }
+        if matches!(step.status, StepStatus::Done) {
+            continue;
+        }
+
+        let custom_calls: Vec<ToolCall> = step
+            .tool_calls
+            .into_iter()
+            .filter(|tc| registered.contains(&tc.name))
+            .collect();
+        if custom_calls.is_empty() {
+            continue;
+        }
+
+        let turn_ctx = session_ctx.child();
+        let mut results = Vec::with_capacity(custom_calls.len());
+        for call in custom_calls {
+            let (decision, op_ctx) = hook_runner.dispatch_pre_tool_call(&turn_ctx, &call).await;
+            if !decision.allow {
+                let r = crate::types::ToolResult::err(
+                    call.name.clone(),
+                    call.id.clone(),
+                    decision.message.clone(),
+                );
+                hook_runner.dispatch_post_tool_call(&op_ctx, &r).await;
+                results.push(r);
+                continue;
+            }
+            let r = match tool_runner.execute(&call.name, call.args.clone()).await {
+                Ok(v) => crate::types::ToolResult::ok(call.name.clone(), call.id.clone(), v),
+                Err(e) => {
+                    crate::types::ToolResult::err(call.name.clone(), call.id.clone(), e.to_string())
+                }
+            };
+            hook_runner.dispatch_post_tool_call(&op_ctx, &r).await;
+            results.push(r);
+        }
+
+        if let Err(e) = connection.send_tool_results(results).await {
+            warn!(error = %e, "failed to send tool results");
+        }
+    }
+    debug!("tool dispatcher exiting");
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn spawn_tool_dispatcher(
     connection: Arc<dyn Connection>,
@@ -1526,70 +1600,13 @@ fn spawn_tool_dispatcher(
     session_ctx: SessionContext,
     shutdown: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
-    let registered: std::collections::HashSet<String> =
-        tool_runner.names().into_iter().collect();
-    tokio::spawn(async move {
-        let mut stream = connection.subscribe_steps();
-        while let Some(step) = stream.next().await {
-            if shutdown.load(Ordering::Acquire) {
-                return;
-            }
-            let step = match step {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!(error = %e, "tool dispatcher stream error");
-                    continue;
-                }
-            };
-            if step.tool_calls.is_empty() {
-                continue;
-            }
-            if matches!(step.status, StepStatus::Done) {
-                continue;
-            }
-
-            let custom_calls: Vec<ToolCall> = step
-                .tool_calls
-                .into_iter()
-                .filter(|tc| registered.contains(&tc.name))
-                .collect();
-            if custom_calls.is_empty() {
-                continue;
-            }
-
-            let turn_ctx = session_ctx.child();
-            let mut results = Vec::with_capacity(custom_calls.len());
-            for call in custom_calls {
-                let (decision, op_ctx) =
-                    hook_runner.dispatch_pre_tool_call(&turn_ctx, &call).await;
-                if !decision.allow {
-                    let r = crate::types::ToolResult::err(
-                        call.name.clone(),
-                        call.id.clone(),
-                        decision.message.clone(),
-                    );
-                    hook_runner.dispatch_post_tool_call(&op_ctx, &r).await;
-                    results.push(r);
-                    continue;
-                }
-                let r = match tool_runner.execute(&call.name, call.args.clone()).await {
-                    Ok(v) => crate::types::ToolResult::ok(call.name.clone(), call.id.clone(), v),
-                    Err(e) => crate::types::ToolResult::err(
-                        call.name.clone(),
-                        call.id.clone(),
-                        e.to_string(),
-                    ),
-                };
-                hook_runner.dispatch_post_tool_call(&op_ctx, &r).await;
-                results.push(r);
-            }
-
-            if let Err(e) = connection.send_tool_results(results).await {
-                warn!(error = %e, "failed to send tool results");
-            }
-        }
-        debug!("tool dispatcher exiting");
-    })
+    tokio::spawn(run_tool_dispatcher(
+        connection,
+        tool_runner,
+        hook_runner,
+        session_ctx,
+        shutdown,
+    ))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1600,67 +1617,13 @@ fn spawn_tool_dispatcher(
     session_ctx: SessionContext,
     shutdown: Arc<AtomicBool>,
 ) {
-    let registered: std::collections::HashSet<String> =
-        tool_runner.names().into_iter().collect();
-    crate::runtime::spawn(async move {
-        let mut stream = connection.subscribe_steps();
-        while let Some(step) = stream.next().await {
-            if shutdown.load(Ordering::Acquire) {
-                return;
-            }
-            let step = match step {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!(error = %e, "tool dispatcher stream error");
-                    continue;
-                }
-            };
-            if step.tool_calls.is_empty() {
-                continue;
-            }
-            if matches!(step.status, StepStatus::Done) {
-                continue;
-            }
-            let custom_calls: Vec<ToolCall> = step
-                .tool_calls
-                .into_iter()
-                .filter(|tc| registered.contains(&tc.name))
-                .collect();
-            if custom_calls.is_empty() {
-                continue;
-            }
-            let turn_ctx = session_ctx.child();
-            let mut results = Vec::with_capacity(custom_calls.len());
-            for call in custom_calls {
-                let (decision, op_ctx) =
-                    hook_runner.dispatch_pre_tool_call(&turn_ctx, &call).await;
-                if !decision.allow {
-                    let r = crate::types::ToolResult::err(
-                        call.name.clone(),
-                        call.id.clone(),
-                        decision.message.clone(),
-                    );
-                    hook_runner.dispatch_post_tool_call(&op_ctx, &r).await;
-                    results.push(r);
-                    continue;
-                }
-                let r = match tool_runner.execute(&call.name, call.args.clone()).await {
-                    Ok(v) => crate::types::ToolResult::ok(call.name.clone(), call.id.clone(), v),
-                    Err(e) => crate::types::ToolResult::err(
-                        call.name.clone(),
-                        call.id.clone(),
-                        e.to_string(),
-                    ),
-                };
-                hook_runner.dispatch_post_tool_call(&op_ctx, &r).await;
-                results.push(r);
-            }
-            if let Err(e) = connection.send_tool_results(results).await {
-                warn!(error = %e, "failed to send tool results");
-            }
-        }
-        debug!("tool dispatcher exiting");
-    });
+    crate::runtime::spawn(run_tool_dispatcher(
+        connection,
+        tool_runner,
+        hook_runner,
+        session_ctx,
+        shutdown,
+    ));
 }
 
 #[cfg(test)]

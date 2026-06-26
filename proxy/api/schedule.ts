@@ -19,13 +19,14 @@ import {
   createJob,
   findById,
   listByOwner,
-  countByOwner,
+  countJobs,
   deleteJob,
   jobStoreConfigured,
   MAX_TASK_BYTES,
   MIN_INTERVAL_SECS,
   MAX_RUNS,
   MAX_JOBS_PER_OWNER,
+  MAX_JOBS_GLOBAL,
   type JobKind,
   type OffchainJob,
 } from './_jobstore';
@@ -172,12 +173,15 @@ export default async function handler(req: Request): Promise<Response> {
     targetId = id.toString();
   }
 
-  // Per-owner active-job cap — bounds the shared store so one keypair can't flood
-  // it with free reminders and crowd the cron's due scan (finding: cross-tenant
-  // DoS on a free creation primitive).
+  // Active-job caps — bound the SHARED store so one keypair (per-owner) OR a sybil
+  // fan-out across many free identities (global) can't flood it with free reminders
+  // and crowd the cron's due scan past GitHub's 1000-entry listing cap (finding:
+  // cross-tenant DoS on a free creation primitive). ONE listing resolves both
+  // counts; owner-tagged filenames make the per-owner count body-read-free.
   let owned: number;
+  let total: number;
   try {
-    owned = await countByOwner(owner);
+    ({ owned, total } = await countJobs(owner));
   } catch (e) {
     return json({ error: 'store: ' + (e as Error).message }, 502, origin);
   }
@@ -185,6 +189,13 @@ export default async function handler(req: Request): Promise<Response> {
     return json(
       { error: `you have ${owned} scheduled jobs (max ${MAX_JOBS_PER_OWNER}) — cancel some first` },
       429,
+      origin,
+    );
+  }
+  if (total >= MAX_JOBS_GLOBAL) {
+    return json(
+      { error: `the scheduler is at capacity (${total}/${MAX_JOBS_GLOBAL} active jobs) — try again later` },
+      503,
       origin,
     );
   }

@@ -56,14 +56,7 @@ pub(crate) async fn collect_payment_if_required() -> Result<Option<String>, Stri
     // signs the sender_hash, the bundle sponsor pays gas in AlphaUSD.
     // Visitor holds zero of anything except the LH they're spending.
     let tba_bytes = parse_address(&tba)?;
-    let mut tba_padded = [0u8; 32];
-    tba_padded[12..].copy_from_slice(&tba_bytes);
-    let amount_bytes = u256_be(price_wei);
-    let selector = transfer_selector();
-    let mut calldata = Vec::with_capacity(4 + 32 + 32);
-    calldata.extend_from_slice(&selector);
-    calldata.extend_from_slice(&tba_padded);
-    calldata.extend_from_slice(&amount_bytes);
+    let calldata = lh_transfer_calldata(&tba_bytes, price_wei);
 
     let token_addr = parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS())?;
     let call = crate::tempo_tx::TempoCall {
@@ -246,9 +239,11 @@ async fn read_api_key() -> Option<String> {
 /// postBounty / fundGuild — on-chain feedback #63): how much of `needed_wei`
 /// must be auto-bridged out of the chat METER (`withdrawCredits`, prepended in
 /// the same atomic tx) because the WALLET pot is short. Returns 0 when the
-/// wallet covers it, the shortfall when the meter covers the gap, and a
-/// pot-aware error (mirrors `remote_call::ask_via_proxy`'s wording) when both
-/// pots together can't cover the escrow.
+/// wallet covers it, the shortfall when the meter's WITHDRAWABLE (unlocked)
+/// balance covers the gap, and a pot-aware error (mirrors
+/// `remote_call::ask_via_proxy`'s wording) when both pots together can't cover
+/// the escrow. The meter figure is the withdrawable slice, NOT the full balance:
+/// locked fiat-$LH can't be pulled by `withdrawCredits`.
 pub(crate) async fn escrow_bridge_wei(from_hex: &str, needed_wei: u128) -> Result<u128, String> {
     let wallet = crate::app::registry::token_balance_of(from_hex)
         .await
@@ -257,16 +252,21 @@ pub(crate) async fn escrow_bridge_wei(from_hex: &str, needed_wei: u128) -> Resul
         return Ok(0);
     }
     let shortfall = needed_wei - wallet;
-    let meter = crate::app::registry::credit_balance_of(from_hex)
+    // Only the UNLOCKED (`withdrawableOf`) slice of the meter can be bridged out:
+    // fiat-minted $LH is LOCKED from withdrawal, so `withdrawCredits` reverts
+    // (LH2024) if we count it. Match that on-chain limit here so a card-funded
+    // user with a short wallet gets the clear "fund up" error up-front instead of
+    // the whole atomic escrow tx reverting cryptically.
+    let withdrawable = crate::app::registry::withdrawable_credit_of(from_hex)
         .await
         .unwrap_or(0);
-    if meter < shortfall {
+    if withdrawable < shortfall {
         return Err(format!(
-            "needs {} $LH but the wallet holds {} and the chat meter {} — \
+            "needs {} $LH but the wallet holds {} and the withdrawable chat meter {} — \
              fund up with a redeem code, an invite, or a $LH transfer first",
             crate::app::format_wei_as_test_eth(needed_wei),
             crate::app::format_wei_as_test_eth(wallet),
-            crate::app::format_wei_as_test_eth(meter),
+            crate::app::format_wei_as_test_eth(withdrawable),
         ));
     }
     Ok(shortfall)
@@ -296,10 +296,11 @@ fn selector4(sig: &[u8]) -> [u8; 4] {
     out
 }
 
-/// ERC-20 `transfer(to, amount_wei)` calldata against the `$LH` token — the
-/// exact shape `send_lh` builds. `to` is a 20-byte address; `amount_wei` is
-/// 18-decimal token wei.
-fn lh_transfer_calldata(to: &[u8; 20], amount_wei: u128) -> Vec<u8> {
+/// ERC-20 `transfer(to, amount_wei)` calldata against the `$LH` token — the ONE
+/// transfer-calldata builder (the visitor pay path, `send_lh`'s `lh_transfer_call`,
+/// and the actor prefund all route through this, so the encoding can't diverge).
+/// `to` is a 20-byte address; `amount_wei` is 18-decimal token wei.
+pub(crate) fn lh_transfer_calldata(to: &[u8; 20], amount_wei: u128) -> Vec<u8> {
     let mut to_padded = [0u8; 32];
     to_padded[12..].copy_from_slice(to);
     let mut calldata = Vec::with_capacity(4 + 32 + 32);

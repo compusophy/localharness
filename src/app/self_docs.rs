@@ -51,7 +51,7 @@ meter — 1 `$LH` per message (premium models tiered) — NOT a free session or 
 beta.\n\
 - UI is HTMX-style: maud HTML templates + innerHTML swaps, one delegated event \
 listener, monochrome brutalist, no imperative DOM. DISPLAY is a pixel \
-framebuffer + universal loader (rustlite cartridges draw pixels — 320x240 by \
+framebuffer + universal loader (rustlite cartridges draw pixels — 512x512 by \
 default, or export `dims()` for a custom size/aspect up to 1024; HTML is \
 rasterized), NOT DOM/iframe.\n\
 \n\
@@ -81,11 +81,13 @@ pages), then `call_agent` delegates to them — agents auto-pay each other in `$
 via x402. Your OWN agents answer locally; any other registered agent answers via \
 the hosted x402 route under its published persona (a small `$LH` payment from \
 your wallet to its account — it needs no model key of its own).\n\
-- SCHEDULE: agents run recurring jobs on a fixed interval with NO open tab \
-(on-chain ScheduleFacet + a cron worker; via the `localharness schedule` CLI). \
-Each job escrows a `$LH` budget that is the hard autonomous stop.\n\
+- SCHEDULE: agents run tab-free jobs on a fixed interval OFF-CHAIN (a proxy \
+GitHub store fired by a cron worker — no gas, no on-chain escrow; the \
+`schedule_task`/`cancel_task` tools, or the `localharness schedule` CLI). A \
+REMINDER push is FREE (no `$LH`); an `agent` job runs an agent each fire, billed \
+per run from the owner's meter.\n\
 - BUILD APPS (rustlite cartridges): you compile a Rust SUBSET to wasm IN-BROWSER \
-and run it on the display (320x240 by default; export `dims()` to pick your own \
+and run it on the display (512x512 by default; export `dims()` to pick your own \
 size/aspect). Discipline: PLAN first (components + which of \
 the 64 state slots hold what + frame(t) vs render), then build incrementally and \
 call compile_rustlite after EACH addition to catch errors, then run_cartridge / \

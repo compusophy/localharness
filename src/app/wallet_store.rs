@@ -23,7 +23,10 @@ const WALLET_FILE: &str = ".lh_wallet";
 
 /// Derive the at-rest OPFS key from this wallet's BIP-39 entropy (tag
 /// `localharness/v0/opfs-at-rest`, pinned in `crate::wallet`) and install
-/// the [`crate::filesystem::EncryptedFilesystem`] wrapper. Idempotent.
+/// the [`crate::filesystem::EncryptedFilesystem`] wrapper. A no-op when the
+/// SAME seed is re-derived; a DIFFERENT seed (in-tab [`import`]) REWRAPS the
+/// layer so later writes seal under the new key (see
+/// [`super::install_at_rest_encryption`]).
 fn install_at_rest(mnemonic: &bip39::Mnemonic) {
     use zeroize::Zeroize as _;
     let mut entropy = mnemonic.to_entropy();

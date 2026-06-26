@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
-use crate::filesystem::SharedFilesystem;
+use crate::filesystem::{EntryKind, SharedFilesystem};
 use crate::tools::{Tool, ToolContext};
 
 pub struct DeleteFile {
@@ -58,6 +58,21 @@ impl Tool for DeleteFile {
         if crate::builtins::is_protected_path(&args.path) {
             return Err(crate::builtins::protected_path_error(&args.path));
         }
+        // A directory delete is RECURSIVE (native: remove_dir_all), so deleting
+        // `.` or any ancestor of the seed would wipe `.lh_wallet` even though a
+        // direct `delete_file(".lh_wallet")` is refused above. Walk the target
+        // and refuse if it CONTAINS a protected file. (Best-effort: a metadata/
+        // walk error falls through to the delete, as the bare delete did before.)
+        if matches!(self.fs.metadata(&args.path).await, Ok(Some(m)) if m.kind == EntryKind::Directory) {
+            if let Ok(entries) = self.fs.walk(&args.path, None).await {
+                if let Some(hit) = entries
+                    .iter()
+                    .find(|e| crate::builtins::is_protected_path(&e.path))
+                {
+                    return Err(crate::builtins::protected_path_error(&hit.path));
+                }
+            }
+        }
         self.fs.delete(&args.path).await?;
         Ok(json!({ "ok": true, "path": args.path }))
     }
@@ -91,5 +106,24 @@ mod tests {
             .execute(json!({"path": p.display().to_string()}), None)
             .await;
         assert!(res.is_err());
+    }
+
+    /// A RECURSIVE directory delete must refuse if the tree contains a
+    /// protected identity file — `delete_file(dir)` would otherwise wipe a
+    /// nested `.lh_wallet` and brick the identity, sidestepping the per-path
+    /// guard. (I8)
+    #[tokio::test]
+    async fn refuses_to_recursively_delete_a_dir_containing_the_seed() {
+        let dir = std::env::temp_dir().join(format!("delete_dir_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        let seed = dir.join("nested").join(".lh_wallet");
+        std::fs::write(&seed, b"SECRET SEED PHRASE").unwrap();
+        let tool = DeleteFile::new(Arc::new(NativeFilesystem::new()));
+        let res = tool
+            .execute(json!({"path": dir.display().to_string()}), None)
+            .await;
+        assert!(res.is_err(), "recursive delete over a nested seed must refuse");
+        assert!(seed.exists(), "seed must survive the refused recursive delete");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

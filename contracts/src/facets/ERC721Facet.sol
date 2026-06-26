@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {LibRegistryStorage} from "../libraries/LibRegistryStorage.sol";
+import {LibMainIdentityStorage} from "../libraries/LibMainIdentityStorage.sol";
 
 /// @title ERC721Facet
 /// @notice ERC-721 conformance over the registry's existing
@@ -137,6 +138,15 @@ contract ERC721Facet {
         // (the field's just a convenience hint — read `ownerOfId` for
         // authoritative answers).
         s.idOf[to] = tokenId;
+
+        // Clear the sender's MAIN pointer if this id was their MAIN, so a
+        // transfer doesn't leave a dangling primary-identity reference for the
+        // former owner (mirrors ReleaseFacet._burn). The recipient declares
+        // their own MAIN via MainIdentityFacet.registerMain.
+        LibMainIdentityStorage.Storage storage ms = LibMainIdentityStorage.load();
+        if (ms.mainOf[from] == tokenId) {
+            ms.mainOf[from] = 0;
+        }
 
         emit Transfer(from, to, tokenId);
     }

@@ -59,6 +59,12 @@ impl std::fmt::Debug for AuthTokenProvider {
 /// post-hook) every backend funnels its inline tool calls through.
 pub(crate) mod dispatch;
 
+/// Small helpers shared by the streaming-backend turn loops (canonical-path
+/// resolution, the malformed-args convention). Gated on `feature = "openai"`
+/// for now — the only converted consumer; widen as gemini/anthropic migrate.
+#[cfg(feature = "openai")]
+pub(crate) mod loop_util;
+
 /// The generic context-compaction fold engine (rolling summary + recent
 /// keep-window) shared by the Gemini and Anthropic backends. Each backend's
 /// `compaction.rs` is a thin adapter supplying the wire-message seam

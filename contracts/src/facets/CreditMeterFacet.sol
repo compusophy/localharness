@@ -27,7 +27,6 @@ contract CreditMeterFacet {
     event CreditsDeposited(address indexed user, uint256 amount, uint256 newBalance);
     event CreditsWithdrawn(address indexed user, uint256 amount, uint256 newBalance);
     event Metered(address indexed user, uint256 amount, uint256 newBalance);
-    event Charged(address indexed user, uint256 amount);
     event MeterUpdated(address indexed meter);
 
     error NotConfigured();
@@ -112,27 +111,12 @@ contract CreditMeterFacet {
         emit Metered(user, amount, s.creditOf[user]);
     }
 
-    /// Charge `amount` `$LH` DIRECTLY from `user`'s WALLET into the diamond
-    /// (platform revenue) — the wallet-primary default-billing path (no meter
-    /// envelope). The proxy uses this when a user has NOT set a session budget,
-    /// so credits never have to live in a separate `creditOf` pot first: one
-    /// approve, then per-request pulls. Callable ONLY by the owner-set meter
-    /// address. The destination is HARD-WIRED to the diamond — like `meter()`,
-    /// a compromised meter key can only move funds INTO the diamond (revenue,
-    /// owner-refundable), never to an arbitrary address. Requires `user` to have
-    /// approved the diamond for `$LH`; reverts (short balance / no approval) so
-    /// the proxy treats a revert as "out of funds".
-    function chargeFromWallet(address user, uint256 amount) external {
-        LibCreditMeterStorage.Storage storage s = LibCreditMeterStorage.load();
-        if (msg.sender != s.meter) revert NotMeter();
-        address token = LibCreditsStorage.load().creditsToken;
-        if (token == address(0)) revert NotConfigured();
-        require(
-            IERC20Min(token).transferFrom(user, address(this), amount),
-            "charge: transfer failed"
-        );
-        emit Charged(user, amount);
-    }
+    // (chargeFromWallet REMOVED — the wallet-primary default-billing path it
+    // supported was rejected, so the function was inert. It let the hot meter
+    // key pull a user's ENTIRE standing `$LH` allowance into the diamond
+    // (funds never committed to the platform), expanding the meter key's blast
+    // radius well beyond `meter()`'s envelope for no live caller. Its selector
+    // `chargeFromWallet(address,uint256)` must be removed from the diamond cut.)
 
     // --- Owner ----------------------------------------------------------
 

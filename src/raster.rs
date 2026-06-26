@@ -405,7 +405,7 @@ pub fn fill_triangle_z(
             };
             if inside {
                 // Barycentric z interpolation. f64 keeps it readable + exact
-                // enough at 256x144; the whole ABI stays integer (z is i32).
+                // enough at 512x512; the whole ABI stays integer (z is i32).
                 let l0 = w0 as f64 / area_f;
                 let l1 = w1 as f64 / area_f;
                 let l2 = w2 as f64 / area_f;

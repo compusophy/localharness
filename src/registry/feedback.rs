@@ -65,13 +65,20 @@ pub async fn list_feedback() -> Result<Vec<FeedbackEntry>, String> {
 
     let mut out = Vec::new();
     for log in &logs {
-        let sender = log
+        // `sender` is the indexed topic[1]; the address is the low 20 bytes
+        // (chars 24..64 of the stripped word). A checked `get(24..)` skips a
+        // short/malformed topic instead of panicking on the slice (the rest of
+        // this module is already hardened against hostile RPC hex).
+        let Some(sender) = log
             .get("topics")
             .and_then(|t| t.as_array())
             .and_then(|t| t.get(1))
             .and_then(|t| t.as_str())
-            .map(|t| format!("0x{}", &t.trim_start_matches("0x")[24..]).to_lowercase())
-            .unwrap_or_default();
+            .and_then(|t| t.trim_start_matches("0x").get(24..))
+            .map(|hex| format!("0x{hex}").to_lowercase())
+        else {
+            continue;
+        };
         let Some(data_hex) = log.get("data").and_then(|d| d.as_str()) else {
             continue;
         };

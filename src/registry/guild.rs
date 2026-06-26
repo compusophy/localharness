@@ -17,7 +17,7 @@ use super::*;
 //   setRole(uint256 guildId, address member, uint8 role)  (0 None/1 Member/2 Officer/3 Admin)
 //   fundGuild(uint256 guildId, uint256 amount)  (transferFrom caller->diamond; APPROVE first)
 //   spendTreasury(uint256 guildId, address to, uint256 amount, bytes memo)
-//   reads: membersOf(uint256)->address[] | roleOf(uint256,address)->uint8
+//   reads: guildMembersOf(uint256)->address[] | roleOf(uint256,address)->uint8
 //          isGuildMember(uint256,address)->bool | treasuryBalanceOf(uint256)->uint256
 //          guildAddress(uint256)->address | guildName(uint256)->string
 //          guildsOf(address)->uint256[] | guildCount()->uint256
@@ -346,7 +346,7 @@ pub async fn spend_treasury_sponsored(
     .await
 }
 
-/// Read `membersOf(guildId)` → the guild's member roster as lowercase `0x…`
+/// Read `guildMembersOf(guildId)` → the guild's member roster as lowercase `0x…`
 /// addresses. Bare dynamic `address[]` ABI return (`[offset][len][addr0]…`), the
 /// SAME decode as `devices_of`. Hostile-length-safe (no pre-alloc; checked
 /// index math stops the decode on a bogus length).

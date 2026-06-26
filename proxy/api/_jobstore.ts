@@ -10,10 +10,12 @@
 // gas, no sponsor drain). The chain keeps only ownership of the NAME; jobs are
 // just data.
 //
-// A job is one small JSON file. The DUE TIME is encoded in the FILENAME
-// (`<nextRun_pad>__<id>.json`) so the once-a-minute cron can find due jobs from
-// a single directory LISTING (no per-job content read) — it only fetches the
-// bodies it will actually fire.
+// A job is one small JSON file. The DUE TIME and OWNER are encoded in the
+// FILENAME (`<nextRun_pad>__<owner>__<id>.json`) so the once-a-minute cron can
+// find due jobs — and the create path can count an owner's jobs — from a single
+// directory LISTING (no per-job content read); only the bodies it will actually
+// fire (or return) are fetched. Legacy `<nextRun_pad>__<id>.json` files (owner
+// only in the body) are still tolerated and body-read on owner ops.
 //
 // CONCURRENCY (the on-chain CAS, re-derived off-chain): firing a job is gated by
 // `claimJob(path, sha)` — a GitHub Contents-API DELETE conditioned on the file's
@@ -29,7 +31,8 @@
 // module for a KV adapter (cron/endpoint unchanged). (2) lose-not-duplicate: a
 // crash between the claim-delete and the next-slot write drops ONE fire rather
 // than risking a double-charge. (3) the directory listing caps at 1000 entries —
-// bounded by the per-owner job cap; a Git-Trees-API scan is the >1000 upgrade.
+// bounded by the per-owner AND global job caps; a Git-Trees-API scan is the
+// >1000 upgrade.
 
 const JOBS_REPO = process.env.GH_JOBS_REPO ?? 'compusophy/localharness-jobs';
 // Reuse the telemetry PAT if a dedicated jobs token isn't provisioned, so the
@@ -49,6 +52,15 @@ export const MAX_JOBS_PER_OWNER = ((): number => {
   const n = Number(process.env.SCHEDULER_MAX_JOBS_PER_OWNER ?? '50');
   return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 1000) : 50;
 })();
+// GLOBAL active-job cap across ALL owners. The per-owner cap is sybil-evadable
+// (register is free + $LH transfers sponsored → an attacker fans creates out
+// across many wallets), so a global ceiling bounds the SHARED store regardless of
+// spread — keeping the cron's due scan under GitHub's 1000-entry listing cap.
+// Env-overridable; hard-clamped under the listing cap.
+export const MAX_JOBS_GLOBAL = ((): number => {
+  const n = Number(process.env.SCHEDULER_MAX_JOBS_GLOBAL ?? '900');
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 1000) : 900;
+})();
 // How many due jobs one cron tick fires off-chain (on top of the on-chain
 // batch). Reminders are cheap (a push); agent jobs are heavier — keep it small
 // so the tick fits Edge's wall-clock. Env-overridable.
@@ -60,7 +72,8 @@ export const MAX_OFFCHAIN_JOBS_PER_TICK = ((): number => {
 export type JobKind = 'reminder' | 'agent';
 
 /** One off-chain scheduled job. The authoritative record lives in the file
- * body; the filename mirrors `nextRun`+`id` so the due scan needs no body read. */
+ * body; the filename mirrors `nextRun`+`owner`+`id` so the due scan AND the
+ * per-owner count need no body read. */
 export interface OffchainJob {
   /** Stable opaque id (uuid). Distinguishes off-chain jobs from on-chain numeric
    * ids in the shared `?poke` path. */
@@ -129,15 +142,34 @@ function pad(nextRun: number): string {
   return String(Math.max(0, Math.floor(nextRun))).padStart(12, '0');
 }
 
-function fileName(job: OffchainJob): string {
-  return `${pad(job.nextRun)}__${job.id}.json`;
+/** Lowercase 0x owner address — the filename owner segment. The FULL address (no
+ * collisions) lets countJobs/listByOwner filter on the NAME alone, the same
+ * zero-body-read trick the due scan uses for nextRun. */
+function ownerTag(owner: string): string {
+  return owner.toLowerCase();
 }
 
-/** Parse `<nextRun>__<id>.json` → { nextRun, id }, or null if it doesn't match. */
-function parseName(name: string): { nextRun: number; id: string } | null {
-  const m = /^(\d{1,12})__([^/]+)\.json$/.exec(name);
-  if (!m) return null;
-  return { nextRun: Number(m[1]), id: m[2] };
+function fileName(job: OffchainJob): string {
+  return `${pad(job.nextRun)}__${ownerTag(job.owner)}__${job.id}.json`;
+}
+
+/** Parse a job filename → { nextRun, id, owner }, or null if it doesn't match.
+ * Two shapes are tolerated (backward-compat):
+ *   NEW: `<nextRun>__<owner>__<id>.json` — owner filterable from the name alone.
+ *   OLD: `<nextRun>__<id>.json`          — owner only in the body (owner=null).
+ * (ids are uuids and owners are 0x-hex, so neither contains the `__` separator.) */
+function parseName(name: string): { nextRun: number; id: string; owner: string | null } | null {
+  if (!name.endsWith('.json')) return null;
+  const parts = name.slice(0, -'.json'.length).split('__');
+  if (!/^\d{1,12}$/.test(parts[0] ?? '')) return null;
+  const nextRun = Number(parts[0]);
+  if (parts.length === 3 && parts[1] && parts[2]) {
+    return { nextRun, id: parts[2], owner: parts[1].toLowerCase() };
+  }
+  if (parts.length === 2 && parts[1]) {
+    return { nextRun, id: parts[1], owner: null };
+  }
+  return null;
 }
 
 interface GhEntry {
@@ -238,7 +270,7 @@ export async function claimJob(path: string, sha: string): Promise<boolean> {
 
 // --- public store API --------------------------------------------------------
 
-/** Persist a NEW job (filename keyed on its nextRun). */
+/** Persist a NEW job (filename keyed on its nextRun + owner). */
 export async function createJob(job: OffchainJob): Promise<void> {
   await ghPut(
     `${JOBS_DIR}/${fileName(job)}`,
@@ -258,7 +290,10 @@ export async function listDue(
   const entries = await ghList();
   const due = entries
     .map((e) => ({ e, p: parseName(e.name) }))
-    .filter((x): x is { e: GhEntry; p: { nextRun: number; id: string } } => x.p !== null)
+    .filter(
+      (x): x is { e: GhEntry; p: { nextRun: number; id: string; owner: string | null } } =>
+        x.p !== null,
+    )
     .filter((x) => x.p.nextRun <= now)
     .sort((a, b) => a.p.nextRun - b.p.nextRun)
     .slice(0, limit);
@@ -283,20 +318,50 @@ export async function findById(id: string): Promise<{ job: OffchainJob; path: st
   return read ? { job: read.job, path: hit.path } : null;
 }
 
-/** Count of a single owner's active jobs (the per-owner create quota). */
-export async function countByOwner(owner: string): Promise<number> {
-  return (await listByOwner(owner)).length;
+/** A single owner's active-job count AND the global active total, from ONE
+ * directory listing. Owner-tagged filenames are attributed on the NAME alone
+ * (ZERO body reads); only legacy (untagged) files still cost a body read. Backs
+ * the per-owner + global create caps (the per-create gate the M3/L46 fix made
+ * O(owner's jobs) instead of O(store)). */
+export async function countJobs(owner: string): Promise<{ owned: number; total: number }> {
+  const lc = owner.toLowerCase();
+  const entries = await ghList();
+  let owned = 0;
+  let total = 0;
+  for (const e of entries) {
+    const p = parseName(e.name);
+    if (!p) continue;
+    total++;
+    if (p.owner !== null) {
+      if (p.owner === lc) owned++;
+      continue;
+    }
+    // Legacy file (owner only in the body) — fall back to a body read.
+    try {
+      const read = await ghReadBody(e.path);
+      if (read && read.job.owner.toLowerCase() === lc) owned++;
+    } catch {
+      /* skip an unreadable legacy file */
+    }
+  }
+  return { owned, total };
 }
 
-/** All jobs owned by `owner` (0x-lowercase) — the `list` endpoint backing. */
+/** All jobs owned by `owner` (0x-lowercase) — the `list` endpoint backing. Reads
+ * bodies ONLY for files whose owner tag matches (plus legacy untagged files), so
+ * cost is O(owner's jobs), not O(store) — the filename-filter optimization. */
 export async function listByOwner(owner: string): Promise<OffchainJob[]> {
+  const lc = owner.toLowerCase();
   const entries = await ghList();
   const out: OffchainJob[] = [];
   for (const e of entries) {
-    if (!parseName(e.name)) continue;
+    const p = parseName(e.name);
+    if (!p) continue;
+    // Owner encoded in the name and it isn't ours → skip without a body read.
+    if (p.owner !== null && p.owner !== lc) continue;
     try {
       const read = await ghReadBody(e.path);
-      if (read && read.job.owner.toLowerCase() === owner.toLowerCase()) out.push(read.job);
+      if (read && read.job.owner.toLowerCase() === lc) out.push(read.job);
     } catch {
       /* skip */
     }

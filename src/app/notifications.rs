@@ -363,21 +363,28 @@ pub(crate) async fn import_onchain_messages() {
     // now records cross-agent notes on-chain AND pushes them with the identical
     // {title,body} payload, so without this the note would appear twice.
     let existing = bell_items();
+    // Advance the cursor only up to the highest index we actually FETCHED. A note
+    // that was fetched-but-empty/garbage is safe to skip past, but a transient RPC
+    // fetch error (`message_at` Err) must NOT advance the cursor — break there and
+    // retry that index on the next load, or the message is lost forever (L33).
+    let mut next_cursor = cursor;
     for i in cursor..count {
-        if let Ok((from, _ts, raw)) = crate::registry::message_at(token_id, i).await {
-            let (title, body) = parse_note(raw.trim(), &from);
-            if title.is_empty() && body.is_empty() {
-                continue;
-            }
-            if existing.iter().any(|(t, b)| *t == title && *b == body) {
-                continue; // already shown via the live/stashed push of this note
-            }
-            push_to_bell(&title, &body);
+        let Ok((from, _ts, raw)) = crate::registry::message_at(token_id, i).await else {
+            break; // transient fetch error — stop; resume from `i` next load
+        };
+        next_cursor = i + 1;
+        let (title, body) = parse_note(raw.trim(), &from);
+        if title.is_empty() && body.is_empty() {
+            continue;
         }
+        if existing.iter().any(|(t, b)| *t == title && *b == body) {
+            continue; // already shown via the live/stashed push of this note
+        }
+        push_to_bell(&title, &body);
     }
-    // Advance the cursor even if some decodes failed — a permanently-undecodable
-    // message must not wedge the poll on every load.
-    let _ = fs.write_atomic(MSG_CURSOR_FILE, count.to_string().as_bytes()).await;
+    if next_cursor > cursor {
+        let _ = fs.write_atomic(MSG_CURSOR_FILE, next_cursor.to_string().as_bytes()).await;
+    }
 }
 
 /// T13: auto-notify the bell when this identity RECEIVES $LH. Today only the
@@ -410,18 +417,21 @@ pub(crate) async fn notify_received_lh() {
     let total = wallet.saturating_add(tba);
 
     let fs = crate::app::shared_opfs();
-    let mark: u128 = fs
+    // Read the mark ONCE: a missing OR present-but-unparseable file both count as
+    // a first run (re-seed the baseline) rather than mark=0, which would announce
+    // a non-zero balance as fully "received" (L36).
+    let parsed: Option<u128> = fs
         .read(LH_BALANCE_MARK_FILE)
         .await
         .ok()
         .and_then(|b| String::from_utf8(b).ok())
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0);
+        .and_then(|s| s.trim().parse().ok());
 
-    // FIRST run (no mark yet): seed the baseline SILENTLY so we don't announce a
-    // pre-existing balance as "just received" — mirrors the version/resolution
-    // baselines. Only an increase AFTER this point fires a note.
-    let first_run = fs.read(LH_BALANCE_MARK_FILE).await.is_err();
+    // FIRST run (no parseable mark yet): seed the baseline SILENTLY so we don't
+    // announce a pre-existing balance as "just received" — mirrors the version/
+    // resolution baselines. Only an increase AFTER this point fires a note.
+    let first_run = parsed.is_none();
+    let mark: u128 = parsed.unwrap_or(0);
     if total != mark || first_run {
         let _ = fs
             .write_atomic(LH_BALANCE_MARK_FILE, total.to_string().as_bytes())
@@ -625,20 +635,6 @@ pub(crate) async fn subscribe_push() -> Result<String, String> {
         .ok_or_else(|| "subscription stringify: empty".to_string())
 }
 
-/// The admin [enable notifications] flow: permission → push subscription →
-/// publish the subscription JSON on-chain under
-/// `keccak256("localharness.push_sub")` for the owner's MAIN tokenId
-/// (fallback: this name's own id — mirrors the Gemini-key-sync slot rule, so
-/// ONE subscription serves every subdomain of the identity). Sponsored write,
-/// zero-click. Returns the tx hash.
-///
-/// KNOWN TRADEOFF (v1): the subscription is stored PLAINTEXT on-chain. The
-/// endpoint is a bearer capability URL — anyone reading chain state can send
-/// this device (unauthenticated-origin) pushes until the user unsubscribes.
-/// Payloads are still E2E-encrypted to this browser (p256dh/auth), so no
-/// third party can read OUR pushes; the exposure is spam/identification.
-/// Follow-up: ECIES-seal the JSON to a proxy-held key so only the scheduler
-/// can read it.
 /// Enable Web Push for THIS DEVICE keyed by its OWN ADDRESS (PushFacet), not a
 /// MAIN tokenId — so ANY visitor (a bare device key, `mainOf == 0`) can receive
 /// cross-device pushes. MUST be called from a DIRECT user gesture (the header
@@ -670,6 +666,20 @@ pub(crate) async fn enable_device_push() -> Result<String, String> {
     crate::registry::set_push_sub_sponsored(&signer, &sponsor, merged.as_bytes(), token).await
 }
 
+/// The admin [enable notifications] flow: permission → push subscription →
+/// publish the subscription JSON on-chain under
+/// `keccak256("localharness.push_sub")` for the owner's MAIN tokenId
+/// (fallback: this name's own id — mirrors the Gemini-key-sync slot rule, so
+/// ONE subscription serves every subdomain of the identity). Sponsored write,
+/// zero-click. Returns the tx hash.
+///
+/// KNOWN TRADEOFF (v1): the subscription is stored PLAINTEXT on-chain. The
+/// endpoint is a bearer capability URL — anyone reading chain state can send
+/// this device (unauthenticated-origin) pushes until the user unsubscribes.
+/// Payloads are still E2E-encrypted to this browser (p256dh/auth), so no
+/// third party can read OUR pushes; the exposure is spam/identification.
+/// Follow-up: ECIES-seal the JSON to a proxy-held key so only the scheduler
+/// can read it.
 pub(crate) async fn enable_and_publish() -> Result<String, String> {
     if !ensure_permission().await? {
         return Err("notification permission denied — allow notifications for this site in the browser settings".to_string());

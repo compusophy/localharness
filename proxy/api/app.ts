@@ -51,13 +51,22 @@ export default async function handler(req: Request): Promise<Response> {
   if (!res.ok) return new Response('upstream ' + res.status, { status: 502, headers: CORS });
 
   const buf = await res.arrayBuffer();
-  return new Response(buf, {
-    status: 200,
-    headers: {
-      ...CORS,
-      'content-type': contentType,
-      // Edge + browser cache 5 min — repeat views never re-hit GitHub.
-      'cache-control': 'public, max-age=300, s-maxage=300',
-    },
-  });
+  const headers: Record<string, string> = {
+    ...CORS,
+    'content-type': contentType,
+    // Edge + browser cache 5 min — repeat views never re-hit GitHub.
+    'cache-control': 'public, max-age=300, s-maxage=300',
+  };
+  if (isHtml) {
+    // A published HTML face is owner-authored but UNTRUSTED active content. The
+    // platform rasterizes it (a fetch() read, unaffected by these headers); a
+    // DIRECT browser visit to this api origin, however, would otherwise run the
+    // author's JS on the trusted proxy domain (phishing / latent same-origin
+    // risk). Neuter it: a full `sandbox` (no allow-scripts → no JS, no forms, no
+    // same-origin) + `default-src 'none'` (no resource loads), plus nosniff so
+    // the type can't be re-interpreted. Renders inert markup, executes nothing.
+    headers['content-security-policy'] = "sandbox; default-src 'none'";
+    headers['x-content-type-options'] = 'nosniff';
+  }
+  return new Response(buf, { status: 200, headers });
 }

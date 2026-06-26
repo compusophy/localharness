@@ -69,8 +69,7 @@ pub async fn is_subscribed(target_id: u64, who_hex: &str) -> Result<bool, String
         &[u256_be(target_id as u128), addr_word(&who)],
     )
     .await?;
-    let trimmed = result.trim().trim_start_matches("0x");
-    Ok(trimmed.chars().last().map(|c| c == '1').unwrap_or(false))
+    decode_u256_as_u64(&result).map(|v| v != 0)
 }
 
 /// Read `subscriberCount(targetId)` — how many identities subscribe to the

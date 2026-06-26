@@ -47,7 +47,7 @@ export const config = { runtime: 'edge' };
 // ---- constants -------------------------------------------------------------
 
 import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
-import { priceOf, type Provider } from './_prices';
+import { COST_PER_REQUEST_WEI, priceOf, type Provider } from './_prices';
 // Auth + metering primitives (CORS allow-check, personal-sign recovery +
 // freshness, the creditOf/sessionExpiryOf reads, the InsufficientCreditError
 // thrown by the meter debit) are SHARED in `_auth.ts` (§5 dedup) — byte-for-byte
@@ -646,14 +646,20 @@ export default async function handler(req: Request): Promise<Response> {
     // Subtract this address's still-in-flight charges from the (lock-free) snapshot
     // so a burst within this isolate can't all pass a stale `creditOf` read.
     const availCredit = credit - reservedFor(address);
-    // A POSITIVE meter balance is ALWAYS spendable down to zero. A balance below
-    // one message's list price (`cost`) is NOT stranded — the credit path debits
-    // what's actually there (`min(cost, avail)`) for that final call, so e.g. a
-    // leftover 0.62 $LH still buys a message rather than being locked out. (x402
-    // below still requires the full exact `cost` — a fresh trustless payment has
-    // no partial.)
+    // A positive meter balance spends down to zero ONLY for the flat BASE tier
+    // (`cost <= COST_PER_REQUEST_WEI` — Gemini's 1 $LH and the 1-$LH entry tiers):
+    // a balance below one base message's list price is NOT stranded, the credit
+    // path debits what's actually there (`min(cost, avail)`) for that final call,
+    // so e.g. a leftover 0.62 $LH still buys a message rather than being locked
+    // out. PREMIUM tiers (5/20 $LH Anthropic/OpenAI) require the FULL `cost` up
+    // front: partial spend-down there would let a 0.01 $LH dust balance pull a
+    // 20 $LH Opus call with the platform eating the ~19.99 $LH difference, and
+    // free identities + sponsored $LH transfers make that sybil-amplifiable (M4).
+    // (x402 below still requires the full exact `cost` — a fresh trustless payment
+    // has no partial.)
+    const isBaseTier = cost <= COST_PER_REQUEST_WEI;
     const meterCharge = availCredit < cost ? availCredit : cost; // min(cost, avail)
-    const hasCredit = availCredit > 0n;
+    const hasCredit = isBaseTier ? availCredit > 0n : availCredit >= cost;
 
     // x402 per-call payment — the mainnet-safe meter (spec §134): the caller
     // signs an x402 authorization paying the platform meter payee EXACTLY `cost`

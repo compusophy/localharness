@@ -31,12 +31,32 @@ impl RootedFilesystem {
     }
 
     /// Sandbox path `"/x"` → inner path `"<base>/x"`. `"/"` → the base itself.
+    ///
+    /// Self-defending — RootedFilesystem IS the sandbox boundary, so it does not
+    /// trust the caller to hand it a normalized path (M6): `\` is treated as a
+    /// separator (else a `..\` component slips past bashlite's `/`-only collapse
+    /// and climbs above `base` once `std::path` interprets the `\` on Windows),
+    /// and every `..` is collapsed RELATIVE TO THE SANDBOX ROOT — an empty stack
+    /// never pops below itself, so the result is structurally confined to `base`
+    /// regardless of what the caller passes (default-deny escape).
     fn real(&self, p: &str) -> String {
-        if p == "/" || p.is_empty() {
+        let p = p.replace('\\', "/");
+        let mut stack: Vec<&str> = Vec::new();
+        for comp in p.split('/') {
+            match comp {
+                "" | "." => {}
+                // A `..` at the sandbox root is a no-op — it can never climb
+                // above `base`.
+                ".." => {
+                    stack.pop();
+                }
+                c => stack.push(c),
+            }
+        }
+        if stack.is_empty() {
             return self.base.clone();
         }
-        let p = if p.starts_with('/') { p.to_string() } else { format!("/{p}") };
-        format!("{}{}", self.base, p)
+        format!("{}/{}", self.base, stack.join("/"))
     }
 
     /// Inner path → sandbox path: strip the base prefix (separator-insensitive),
@@ -119,5 +139,23 @@ mod tests {
         assert_eq!(fs.virt("/tmp/base"), "/");
         // Windows-style backslash results from the inner backend still strip.
         assert_eq!(fs.virt(r"\tmp\base\x"), "/x");
+    }
+
+    /// M6: a path component carrying backslashes (or `..`) must never escape
+    /// `base` — `\` is normalized to a separator and `..` collapses relative to
+    /// the sandbox root, so std::path can't climb above the sandbox on Windows.
+    #[test]
+    fn dotdot_and_backslash_cannot_escape_base() {
+        let fs = RootedFilesystem::new(Arc::new(NativeFilesystem::new()), "/tmp/base/");
+        // The exact M6 escape vector: backslash `..` segments stay confined.
+        assert_eq!(fs.real(r"..\..\..\..\secret.key"), "/tmp/base/secret.key");
+        // Forward-slash `..` is likewise collapsed to the root, never above it.
+        assert_eq!(fs.real("/../../etc/passwd"), "/tmp/base/etc/passwd");
+        // Mixed separators normalize uniformly under base.
+        assert_eq!(fs.real(r"/sub\nested/file"), "/tmp/base/sub/nested/file");
+        // Every result stays prefixed by base.
+        for p in [r"..\..\x", "/../../y", r"a\..\..\b", "////"] {
+            assert!(fs.real(p).starts_with("/tmp/base"), "escaped: {p} -> {}", fs.real(p));
+        }
     }
 }

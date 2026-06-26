@@ -2071,12 +2071,24 @@ mod worker {
             Ok(v) => v,
             Err(_) => return,
         };
-        // Relayed frames carry "p":origin; direct frames use the connection index.
-        let origin = v
-            .get("p")
-            .and_then(|x| x.as_i64())
-            .map(|x| x as i32)
-            .unwrap_or(peer_index);
+        // Origin peer index. Only a JOINER may trust an attacker-supplied "p"
+        // tag: a joiner's single connection is to the TRUSTED host, which relays
+        // other joiners' frames stamped with their origin index. A HOST or MESH
+        // receiver ALWAYS attributes a frame to the connection it arrived on
+        // (`peer_index`) and ignores "p" — otherwise any peer could spoof another
+        // peer's (or the host's) slot by sending {"d":[…],"p":<victim>}. Checking
+        // `peer_index == 0` is insufficient: a mesh peer can legitimately occupy
+        // slot 0, so the role itself is the gate.
+        let trust_p_tag = MP_SESSION
+            .with(|s| matches!(s.borrow().as_ref().map(|x| &x.role), Some(MpRole::Joiner { .. })));
+        let origin = if trust_p_tag {
+            v.get("p")
+                .and_then(|x| x.as_i64())
+                .map(|x| x as i32)
+                .unwrap_or(peer_index)
+        } else {
+            peer_index
+        };
         let m = Object::new();
         let _ = Reflect::set(&m, &JsValue::from_str("type"), &JsValue::from_str("mp:peer"));
         let _ = Reflect::set(&m, &JsValue::from_str("peer"), &JsValue::from_f64(origin as f64));

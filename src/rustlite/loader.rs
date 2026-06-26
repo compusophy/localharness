@@ -389,6 +389,73 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     Ok((imports, net))
 }
 
+/// Reject any WebSocket URL a cartridge must NOT open. A cartridge is
+/// UNTRUSTED wasm (published by any agent / fetched on-chain) run in the
+/// visitor's tab, so `open(url)` is an SSRF surface: without this gate it
+/// could reach loopback / LAN / internal hosts from inside the victim's
+/// network, or beacon to an arbitrary host. Policy: `wss://` only (no
+/// cleartext `ws://`, which is also the loopback vector browsers don't
+/// mixed-content-block), and the host must not be empty, an IP literal (in
+/// ANY notation the WHATWG URL parser accepts — dotted-decimal, hex, octal,
+/// or a bare 32-bit integer), `localhost`/`localhost.`/`*.localhost`, or a
+/// `.local` mDNS name.
+///
+/// ⚠ This is HAND-PORTED to `web/cartridge-worker.js::urlIsAllowed` (the
+/// browser cartridge host). Any change here MUST be mirrored there in
+/// lockstep or the two hosts disagree on what a cartridge may reach.
+//
+// Lives at module level (not inside the wasm-only `net` module) so it is a
+// pure, native-unit-testable core; `#[allow(dead_code)]` because the only
+// caller (`net::build_host_net`) is wasm32-only, while the regression test
+// and the JS-parity reasoning need it on native too.
+#[allow(dead_code)]
+fn url_is_allowed(url: &str) -> bool {
+    let rest = match url
+        .split_once("://")
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("wss"))
+    {
+        Some((_, rest)) => rest,
+        None => return false,
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    if hostport.starts_with('[') {
+        return false; // IPv6 literal
+    }
+    let host = hostport.split(':').next().unwrap_or("");
+    if host.is_empty() {
+        return false;
+    }
+    let lower = host.to_ascii_lowercase();
+    // WHATWG drops a single trailing dot before classifying the host, so
+    // `localhost.` and `127.0.0.1.` are the loopback names the resolver sees.
+    let normalized = lower.strip_suffix('.').unwrap_or(&lower);
+    if normalized.is_empty() {
+        return false;
+    }
+    if normalized == "localhost"
+        || normalized.ends_with(".localhost")
+        || normalized.ends_with(".local")
+    {
+        return false;
+    }
+    // Reject anything the WHATWG host parser would treat as an IPv4 address:
+    // it parses the host as IPv4 iff its LAST label "is a number" — all
+    // decimal digits (covers decimal & octal forms) OR a `0x`/`0X` hex
+    // literal. This catches a bare single-number host (e.g. `2130706433` ==
+    // 127.0.0.1) and hex-dotted forms (`0x7f.0.0.1`) the old per-octet
+    // all-decimal-digits check missed.
+    let last_label = normalized.rsplit('.').next().unwrap_or("");
+    let looks_numeric = !last_label.is_empty()
+        && (last_label.starts_with("0x")
+            || last_label.bytes().all(|b| b.is_ascii_digit()));
+    if looks_numeric {
+        return false;
+    }
+    // Require a dotted name — a bare single-label host is an internal name.
+    normalized.contains('.')
+}
+
 /// WebSocket-backed networking imports for cartridges (`host_net`).
 ///
 /// A cartridge is a sandbox: it has linear memory + the host imports we
@@ -410,7 +477,7 @@ mod net {
 
     use crate::rustlite::CompileError;
 
-    use super::SharedMemory;
+    use super::{url_is_allowed, SharedMemory};
 
     /// One open socket: the live `WebSocket` plus a bounded inbox of
     /// received text messages the cartridge has not yet polled.
@@ -445,44 +512,6 @@ mod net {
     /// tick would otherwise flood connections (fd exhaustion / connection-
     /// flood amplifier). Once at the cap, `open` refuses until one is closed.
     const MAX_SOCKETS: usize = 8;
-
-    /// Reject any WebSocket URL a cartridge must NOT open. A cartridge is
-    /// UNTRUSTED wasm (published by any agent / fetched on-chain) run in the
-    /// visitor's tab, so `open(url)` is an SSRF surface: without this gate it
-    /// could reach loopback / LAN / internal hosts from inside the victim's
-    /// network, or beacon to an arbitrary host. Policy: `wss://` only (no
-    /// cleartext `ws://`, which is also the loopback vector browsers don't
-    /// mixed-content-block), and the host must not be empty, an IP literal,
-    /// `localhost`/`*.localhost`, or a `.local` mDNS name. Mirrors the gate
-    /// in `web/cartridge-worker.js::urlIsAllowed` (the browser cartridge host).
-    fn url_is_allowed(url: &str) -> bool {
-        let rest = match url
-            .split_once("://")
-            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("wss"))
-        {
-            Some((_, rest)) => rest,
-            None => return false,
-        };
-        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-        let hostport = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
-        if hostport.starts_with('[') {
-            return false; // IPv6 literal
-        }
-        let host = hostport.split(':').next().unwrap_or("");
-        if host.is_empty() {
-            return false;
-        }
-        let lower = host.to_ascii_lowercase();
-        if lower == "localhost" || lower.ends_with(".localhost") || lower.ends_with(".local") {
-            return false;
-        }
-        if lower.split('.').count() == 4
-            && lower.split('.').all(|o| !o.is_empty() && o.bytes().all(|b| b.is_ascii_digit()))
-        {
-            return false; // bare IPv4 literal
-        }
-        lower.contains('.')
-    }
 
     /// Build the `host_net` import object and return the runtime that owns
     /// the closures + socket table (must outlive the wasm instance).
@@ -797,5 +826,26 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(Cartridge::load(&[]));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn ssrf_gate_blocks_loopback_and_ip_notations() {
+        // Loopback in every notation the WHATWG host parser accepts.
+        assert!(!url_is_allowed("wss://127.0.0.1/"));
+        assert!(!url_is_allowed("wss://0x7f.0.0.1/")); // hex-dotted (L19 bypass)
+        assert!(!url_is_allowed("wss://0x7f000001/")); // bare hex
+        assert!(!url_is_allowed("wss://2130706433/")); // bare decimal
+        assert!(!url_is_allowed("wss://localhost/"));
+        assert!(!url_is_allowed("wss://localhost./")); // trailing dot (L19 bypass)
+        assert!(!url_is_allowed("wss://api.localhost/"));
+        assert!(!url_is_allowed("wss://printer.local/"));
+        // Non-wss / cleartext / IPv6 / empty / bare host are all rejected.
+        assert!(!url_is_allowed("ws://example.com/"));
+        assert!(!url_is_allowed("wss://[::1]/"));
+        assert!(!url_is_allowed("wss:///path"));
+        assert!(!url_is_allowed("wss://intranet/"));
+        // A normal public host is still allowed.
+        assert!(url_is_allowed("wss://relay.example.com/"));
+        assert!(url_is_allowed("wss://relay.example.com:443/path"));
     }
 }

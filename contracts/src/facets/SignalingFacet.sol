@@ -97,8 +97,11 @@ contract SignalingFacet {
     // can join the roster. `announce` requires:
     //   (a) topic == keccak256(abi.encodePacked("localharness.devices", owner))
     //       — recomputed on-chain to match `registry::devices_topic`; and
-    //   (b) recover(keccak256(abi.encodePacked(topic, ephemeral, pubkey)), sig)
-    //       == owner  (the owner's key signed THIS announcement).
+    //   (b) recover(keccak256(abi.encodePacked(block.chainid, address(this),
+    //       topic, ephemeral, pubkey)), sig) == owner  (the owner's key signed
+    //       THIS announcement). The chainId + diamond address bind the
+    //       signature to THIS deployment (no cross-chain / cross-diamond
+    //       replay), mirroring the x402 EIP-712 domain separator.
     // Reject high-s (EIP-2), mirroring X402Facet._isValidSignature.
     //
     // TEAM topics: the analogous gate (sig by a team MEMBER, verified against
@@ -125,9 +128,12 @@ contract SignalingFacet {
     ///   - DEVICES topic: `topic` MUST equal
     ///     `keccak256(abi.encodePacked("localharness.devices", owner))` and `sig`
     ///     MUST recover to `owner` over
-    ///     `keccak256(abi.encodePacked(topic, ephemeral, pubkey))`.
+    ///     `keccak256(abi.encodePacked(block.chainid, address(this), topic, ephemeral, pubkey))`.
     ///   - any OTHER topic (team / future): `sig` must recover to `ephemeral`
     ///     (self-consistency floor; full member-gating is a follow-up).
+    ///
+    /// The digest binds `block.chainid` + the diamond address so a captured
+    /// signature can't be replayed against another chain or deployment.
     function announce(
         bytes32 topic,
         address owner,
@@ -135,7 +141,8 @@ contract SignalingFacet {
         bytes calldata pubkey,
         bytes calldata sig
     ) external {
-        bytes32 digest = keccak256(abi.encodePacked(topic, ephemeral, pubkey));
+        bytes32 digest =
+            keccak256(abi.encodePacked(block.chainid, address(this), topic, ephemeral, pubkey));
         bytes32 devicesTopic =
             keccak256(abi.encodePacked("localharness.devices", owner));
         if (topic == devicesTopic) {
@@ -205,9 +212,10 @@ contract SignalingFacet {
     /// owner-gated integrity property `announce` establishes — e.g. kick the
     /// victim's real device out so only an attacker's lingering entry remains).
     /// `sig` is taken over a DOMAIN-SEPARATED digest
-    /// `keccak256(abi.encodePacked("localharness.leave", topic, ephemeral))` —
-    /// the `localharness.leave` prefix prevents replaying an `announce`
-    /// signature, which signs `keccak256(topic || ephemeral || pubkey)`:
+    /// `keccak256(abi.encodePacked("localharness.leave", block.chainid,
+    /// address(this), topic, ephemeral))` — the `localharness.leave` prefix
+    /// prevents replaying an `announce` signature, and the chainId + diamond
+    /// address bind it to THIS deployment (no cross-chain replay):
     ///   - DEVICES topic: `topic` MUST equal
     ///     `keccak256(abi.encodePacked("localharness.devices", owner))` and `sig`
     ///     MUST recover to `owner` (only the seed holder edits the roster).
@@ -216,7 +224,9 @@ contract SignalingFacet {
     ///     `announce`'s non-devices branch.
     /// Reject high-s (EIP-2) via `_recover`, like `announce`.
     function leave(bytes32 topic, address owner, address ephemeral, bytes calldata sig) external {
-        bytes32 digest = keccak256(abi.encodePacked("localharness.leave", topic, ephemeral));
+        bytes32 digest = keccak256(
+            abi.encodePacked("localharness.leave", block.chainid, address(this), topic, ephemeral)
+        );
         bytes32 devicesTopic =
             keccak256(abi.encodePacked("localharness.devices", owner));
         if (topic == devicesTopic) {

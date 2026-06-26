@@ -28,21 +28,6 @@ pub fn team_topic(team_id: u64) -> [u8; 32] {
     keccak_key(&pre)
 }
 
-/// 32-byte ABI word for an address (left-padded).
-pub(crate) fn address_word(addr: &[u8; 20]) -> [u8; 32] {
-    let mut w = [0u8; 32];
-    w[12..32].copy_from_slice(addr);
-    w
-}
-
-/// ABI-encode a trailing dynamic `bytes` (length word + padded data) onto `d`.
-pub(crate) fn push_abi_bytes(d: &mut Vec<u8>, bytes: &[u8]) {
-    d.extend_from_slice(&u256_be(bytes.len() as u128));
-    d.extend_from_slice(bytes);
-    let pad = (32 - (bytes.len() % 32)) % 32;
-    d.extend(std::iter::repeat_n(0u8, pad));
-}
-
 /// The 32-byte digest the OWNER signs to authorize an `announce`:
 /// `keccak256(topic || ephemeral || pubkey)` — `abi.encodePacked(bytes32,
 /// address, bytes)` on-chain. MUST match `SignalingFacet.announce`'s digest
@@ -79,10 +64,10 @@ pub(crate) fn encode_leave(
     // Head: topic, owner, ephemeral, off(sig) = 4 words; one trailing `bytes`.
     let mut d = selector("leave(bytes32,address,address,bytes)").to_vec();
     d.extend_from_slice(topic);
-    d.extend_from_slice(&address_word(owner));
-    d.extend_from_slice(&address_word(ephemeral));
+    d.extend_from_slice(&addr_word(owner));
+    d.extend_from_slice(&addr_word(ephemeral));
     d.extend_from_slice(&u256_be(0x80)); // offset to `sig` (4 head words in)
-    push_abi_bytes(&mut d, sig);
+    push_dynamic_bytes(&mut d, sig);
     d
 }
 
@@ -124,15 +109,15 @@ pub(crate) fn encode_announce(
     // = 5 words. Two trailing dynamic `bytes` (pubkey then sig).
     let mut d = selector("announce(bytes32,address,address,bytes,bytes)").to_vec();
     d.extend_from_slice(topic);
-    d.extend_from_slice(&address_word(owner));
-    d.extend_from_slice(&address_word(ephemeral));
+    d.extend_from_slice(&addr_word(owner));
+    d.extend_from_slice(&addr_word(ephemeral));
     // 5 head words = 0xa0 bytes before the first dynamic payload.
     d.extend_from_slice(&u256_be(0xa0)); // offset to `pubkey`
     // pubkey tail = len word + padded data; sig follows it.
     let pubkey_tail = 32 + pubkey.len().div_ceil(32) * 32;
     d.extend_from_slice(&u256_be((0xa0 + pubkey_tail) as u128)); // offset to `sig`
-    push_abi_bytes(&mut d, pubkey);
-    push_abi_bytes(&mut d, sig);
+    push_dynamic_bytes(&mut d, pubkey);
+    push_dynamic_bytes(&mut d, sig);
     d
 }
 
@@ -169,9 +154,9 @@ pub async fn announce_sponsored(
 
 pub(crate) fn encode_post_signal(to: &[u8; 20], blob: &[u8]) -> Vec<u8> {
     let mut d = selector("postSignal(address,bytes)").to_vec();
-    d.extend_from_slice(&address_word(to));
+    d.extend_from_slice(&addr_word(to));
     d.extend_from_slice(&u256_be(0x40)); // offset to `blob` (2 head words in)
-    push_abi_bytes(&mut d, blob);
+    push_dynamic_bytes(&mut d, blob);
     d
 }
 
@@ -287,7 +272,7 @@ pub async fn peers_of(topic: &[u8; 32]) -> Result<Vec<AddrTsBytes>, String> {
 pub async fn inbox_of(peer: &[u8; 20], from_index: u64) -> Result<Vec<AddrTsBytes>, String> {
     let res = read_view(
         selector("inboxOf(address,uint256)"),
-        &[address_word(peer), u256_be(from_index as u128)],
+        &[addr_word(peer), u256_be(from_index as u128)],
     )
     .await?;
     Ok(decode_addr_ts_bytes_array(&res))
@@ -295,7 +280,7 @@ pub async fn inbox_of(peer: &[u8; 20], from_index: u64) -> Result<Vec<AddrTsByte
 
 /// `peer`'s inbox length (a cheap cursor poll).
 pub async fn inbox_length(peer: &[u8; 20]) -> Result<u64, String> {
-    let res = read_view(selector("inboxLength(address)"), &[address_word(peer)]).await?;
+    let res = read_view(selector("inboxLength(address)"), &[addr_word(peer)]).await?;
     let raw = hex_to_bytes(&res)?;
     if raw.len() < 32 {
         return Ok(0);
@@ -604,8 +589,8 @@ mod tests {
         assert_eq!(&cd[..4], &selector("leave(bytes32,address,address,bytes)"));
         // Head: topic, owner, ephemeral, off(sig)=0x80 (4 head words).
         assert_eq!(&cd[4..36], &topic[..]);
-        assert_eq!(&cd[36..68], &address_word(&owner)[..]);
-        assert_eq!(&cd[68..100], &address_word(&eph)[..]);
+        assert_eq!(&cd[36..68], &addr_word(&owner)[..]);
+        assert_eq!(&cd[68..100], &addr_word(&eph)[..]);
         assert_eq!(&cd[100..132], &u256_be(0x80)[..]); // sig offset
         // sig tail at 4 + 0x80 = 0x84: len word (65) then 96 padded bytes.
         let sig_off = 4 + 0x80;
@@ -666,8 +651,8 @@ mod tests {
         );
         // Head: topic, owner, ephemeral, off(pubkey)=0xa0, off(sig)=0xa0+96=0x100.
         assert_eq!(&cd[4..36], &topic[..]);
-        assert_eq!(&cd[36..68], &address_word(&owner)[..]);
-        assert_eq!(&cd[68..100], &address_word(&eph)[..]);
+        assert_eq!(&cd[36..68], &addr_word(&owner)[..]);
+        assert_eq!(&cd[68..100], &addr_word(&eph)[..]);
         assert_eq!(&cd[100..132], &u256_be(0xa0)[..]); // pubkey offset
         assert_eq!(&cd[132..164], &u256_be(0x100)[..]); // sig offset (0xa0 + 0x60)
         // pubkey tail at 4 + 0xa0 = 0xa4: len word (33) then 64 padded bytes.

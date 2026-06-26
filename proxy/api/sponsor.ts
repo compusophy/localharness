@@ -40,7 +40,7 @@ import {
   type TempoIntent,
   type TempoCallIntent,
 } from './_tempo';
-import { TEMPO_RPC, REGISTRY, CHAIN_ID, LH_TOKEN } from './_chain';
+import { TEMPO_RPC, REGISTRY, CHAIN_ID, LH_TOKEN, FEE_TOKEN } from './_chain';
 import { SlidingWindow } from './_ratelimit';
 import { welcomeNewAgent } from './_welcome';
 import { waitUntil } from '@vercel/functions';
@@ -83,6 +83,7 @@ const SPONSOR_ADDRESS = addressFromPrivKey(SPONSOR_KEY); // lowercase 0x
 
 const DIAMOND = REGISTRY.toLowerCase();
 const TOKEN = LH_TOKEN.toLowerCase();
+const SPONSOR_FEE_TOKEN = FEE_TOKEN.toLowerCase();
 
 // --- selector allowlist (default-deny) -------------------------------------
 // Sponsorable onboarding + economy WRITES on the diamond. Signatures are the
@@ -518,8 +519,14 @@ export default async function handler(req: Request): Promise<Response> {
   if (recoveredSender.toLowerCase() !== senderHex) {
     return json({ error: 'sender signature does not authorize this intent', code: 'LH_RELAY_SIG' }, 403, origin);
   }
-  // 4. fee_token must be this chain's fee token (no sponsoring a foreign token).
-  //    (The chain only accepts a USD-currency TIP-20 as fee_token anyway.)
+  // 4. fee_token must be this chain's canonical sponsor fee token. fee_token is the
+  //    ONE intent field the sender's signature does NOT commit to on a sponsored tx
+  //    (sponsoredSenderHash blanks it to 0x80), so the relay's fee_payer signature
+  //    is the SOLE authorization of which token pays gas — pin it to FEE_TOKEN or a
+  //    hostile/MITM'd client could name a different token for the sponsor to pay in.
+  if ('0x' + bytesToHex(intent.feeToken).toLowerCase() !== SPONSOR_FEE_TOKEN) {
+    return json({ error: "fee_token is not this chain's sponsor fee token", code: 'LH_RELAY_FEETOKEN' }, 400, origin);
+  }
   // 5. Gas re-clamp (mirror clamp_gas_price + a limit ceiling).
   if (intent.maxFeePerGas > MAX_GAS_PRICE_WEI || intent.maxPriorityFeePerGas > MAX_GAS_PRICE_WEI) {
     return json({ error: 'gas price exceeds the relay ceiling', code: 'LH_RELAY_GAS' }, 400, origin);

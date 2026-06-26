@@ -404,7 +404,18 @@ impl TypeContext {
             let ty = typed.ty.clone();
             (Some(Box::new(typed)), ty)
         } else {
-            (None, ResolvedType::Void)
+            // A tail-less block is normally Void, but if its LAST statement
+            // diverges (a `return`, or a `break`/`continue`/other Never-typed
+            // expr statement) the block never yields a value — type it `Never`
+            // so an `if`/`match` arm like `else { return x; }` unifies with the
+            // value-producing arm (M9; mirrors Rust's `!` coercion). Without this
+            // a diverging arm is Void and falsely conflicts with the other arm.
+            let diverges = match stmts.last() {
+                Some(TypedStmt::Return { .. }) => true,
+                Some(TypedStmt::Expr { expr }) => expr.ty == ResolvedType::Never,
+                _ => false,
+            };
+            (None, if diverges { ResolvedType::Never } else { ResolvedType::Void })
         };
 
         self.pop_scope();
@@ -787,6 +798,18 @@ impl TypeContext {
                         l.ty.clone()
                     }
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+                        // Operands must be the SAME type: codegen picks the
+                        // compare opcode from the lhs type (codegen.rs), so an
+                        // `f64 == i32` would emit an `f64.eq` over a mismatched
+                        // stack — a module that fails wasm instantiation. Reject
+                        // the mismatch here instead of emitting invalid wasm.
+                        if l.ty != r.ty {
+                            return Err(CompileError::at_code(
+                                codes::TYPE_MISMATCH,
+                                format!("comparison type mismatch: {:?} vs {:?}", l.ty, r.ty),
+                                span,
+                            ));
+                        }
                         ResolvedType::Bool
                     }
                     BinOp::And | BinOp::Or => ResolvedType::Bool,
@@ -850,8 +873,25 @@ impl TypeContext {
                 // would have to emit an `(if (result T))` frame with no else,
                 // which is stack-imbalanced (invalid) wasm. Reject it here so the
                 // emitter always stays on the void path (BLOCK_VOID).
-                let ty = if else_typed.is_some() {
-                    then_typed.ty.clone()
+                let ty = if let Some(else_branch) = &else_typed {
+                    // Both branches must yield the same type: codegen emits a
+                    // single `(if (result T))` frame, so divergent branch types
+                    // would leave the wasm stack imbalanced (invalid module). A
+                    // `Never` branch (`return`/`break`) unifies with the other.
+                    let else_ty = match else_branch {
+                        TypedElse::Block(b) => b.ty.clone(),
+                        TypedElse::If(e) => e.ty.clone(),
+                    };
+                    match unify_branch(&then_typed.ty, &else_ty) {
+                        Some(t) => t,
+                        None => {
+                            return Err(CompileError::at_code(
+                                codes::TYPE_MISMATCH,
+                                format!("`if` and `else` have incompatible types: {:?} vs {:?}", then_typed.ty, else_ty),
+                                span,
+                            ));
+                        }
+                    }
                 } else {
                     if then_typed.ty != ResolvedType::Void && then_typed.ty != ResolvedType::Never {
                         return Err(CompileError::at_code(
@@ -897,8 +937,23 @@ impl TypeContext {
                     let body = self.check_expr(&arm.body)?;
                     self.pop_scope();
 
+                    // Every arm must yield the same type — codegen lowers the
+                    // match to a chain of `(if (result T))` frames keyed on the
+                    // first arm's type, so a divergent arm would emit invalid
+                    // (stack-imbalanced) wasm. `Never` arms unify with the rest.
                     if i == 0 {
                         result_ty = body.ty.clone();
+                    } else {
+                        match unify_branch(&result_ty, &body.ty) {
+                            Some(t) => result_ty = t,
+                            None => {
+                                return Err(CompileError::at_code(
+                                    codes::TYPE_MISMATCH,
+                                    format!("match arms have incompatible types: {:?} vs {:?}", result_ty, body.ty),
+                                    arm.span,
+                                ));
+                            }
+                        }
                     }
 
                     typed_arms.push(TypedMatchArm { pattern: arm.pattern.clone(), body });
@@ -1000,6 +1055,18 @@ impl TypeContext {
 /// rejected in the typechecker (it would otherwise emit invalid wasm).
 fn is_irrefutable_pattern(pattern: &Pattern) -> bool {
     matches!(pattern.kind, PatternKind::Wildcard | PatternKind::Binding(_))
+}
+
+/// Unify two branch/arm result types for an `if`/`else` or `match`. A `Never`
+/// branch (a `return`/`break`/`continue` tail) unifies with anything (it never
+/// produces a value), so the result is the OTHER branch's type; otherwise the
+/// two must be equal. Returns `None` on a genuine mismatch.
+fn unify_branch(a: &ResolvedType, b: &ResolvedType) -> Option<ResolvedType> {
+    match (a, b) {
+        (ResolvedType::Never, t) | (t, ResolvedType::Never) => Some(t.clone()),
+        (x, y) if x == y => Some(x.clone()),
+        _ => None,
+    }
 }
 
 /// Resolve a `module::func` path against the host-function table.
@@ -1460,5 +1527,38 @@ mod tests {
         let tokens = lexer::lex("fn f() { let x: i32 = 0; x = 1; }").unwrap();
         let module = parser::parse(&tokens).unwrap();
         assert!(check(&module).is_err());
+    }
+
+    fn check_err(s: &str) -> bool {
+        let tokens = lexer::lex(s).unwrap();
+        let module = parser::parse(&tokens).unwrap();
+        check(&module).is_err()
+    }
+
+    #[test]
+    fn comparison_requires_equal_operand_types() {
+        // M9: mismatched operands made codegen pick the opcode from the lhs and
+        // emit invalid wasm (e.g. `f64.lt` over an `[f64, i32]` stack).
+        assert!(check_err("fn f() -> bool { 1.0 < 2 }"));
+        assert!(check_err("fn f() -> bool { 1 == 2.0 }"));
+        // Matching operands still typecheck.
+        let _ = check_str("fn f() -> bool { 1 < 2 }");
+        let _ = check_str("fn f() -> bool { 1.0 == 2.0 }");
+    }
+
+    #[test]
+    fn if_else_branches_must_agree() {
+        // M9: the two arms feed one `(if (result T))` frame.
+        assert!(check_err("fn f() -> f64 { if true { 1 } else { 2.0 } }"));
+        let _ = check_str("fn f() -> i32 { if true { 1 } else { 2 } }");
+        // A `Never` branch (`return`) unifies with the other arm.
+        let _ = check_str("fn f() -> i32 { if true { 1 } else { return 2; } }");
+    }
+
+    #[test]
+    fn match_arms_must_agree() {
+        // M9: every arm feeds the same chained `(if (result T))` frame.
+        assert!(check_err("fn f(x: i32) -> i32 { match x { 0 => 1, _ => 2.0 } }"));
+        let _ = check_str("fn f(x: i32) -> i32 { match x { 0 => 1, _ => 2 } }");
     }
 }

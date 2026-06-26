@@ -6,9 +6,11 @@
 // the private telemetry repo via the compusophy-bot collaborator token. This is
 // the rich, off-chain counterpart to the short, public on-chain FeedbackFacet
 // (design/telemetry-and-global-lessons.md). Auth = the same personal-sign token
-// as gemini.ts (no new auth surface); rate-limited per address so it can't be
-// turned into a spam cannon. Dedup is the CLIENT's job (per-session signature
-// set) — the proxy just files what it's given.
+// as gemini.ts (no new auth surface). Identities are free to mint (auth only
+// proves SOME keypair signed), so the per-ADDRESS window is backed by a GLOBAL
+// per-isolate cap — keypair rotation can't turn this into a spam cannon against
+// the shared GitHub PAT. Dedup is the CLIENT's job (per-session signature set)
+// — the proxy just files what it's given.
 
 import { verifyAuthToken } from './_stripe';
 import { SlidingWindow } from './_ratelimit';
@@ -22,6 +24,17 @@ const GH_TOKEN = process.env.GH_TELEMETRY_TOKEN ?? '';
 const MAX_BODY_BYTES = 24_576;
 const PER_ADDR_PER_HOUR = Number(process.env.LH_TELEMETRY_RATE ?? '20');
 const senderWindow = new SlidingWindow(PER_ADDR_PER_HOUR, 3_600_000);
+// Global per-isolate backstop. verifyAuthToken only proves SOME secp256k1
+// keypair signed a fresh message — it does NO on-chain presence check, and
+// minting a fresh keypair per request is free + offline, so the per-ADDRESS
+// window above is defeated by rotation. This caps TOTAL reports filed from one
+// warm isolate across ALL addresses, so a rotation flood can't exhaust the
+// shared GitHub PAT that publish.ts / _jobstore.ts fall back to
+// (GH_TELEMETRY_TOKEN). PER-ISOLATE only (see api/_ratelimit.ts) — a determined
+// attacker spread across isolates dilutes it, but it kills the single-isolate
+// spam cannon the header used to (falsely) claim per-address alone prevented.
+const GLOBAL_PER_HOUR = Number(process.env.LH_TELEMETRY_GLOBAL_RATE ?? '200');
+const globalWindow = new SlidingWindow(GLOBAL_PER_HOUR, 3_600_000);
 
 // --- CORS (same policy as gemini.ts / notify.ts) -----------------------------
 const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
@@ -75,6 +88,14 @@ export default async function handler(req: Request): Promise<Response> {
   const wait = senderWindow.hit(addr);
   if (wait > 0) {
     return json({ error: `rate limited: ${PER_ADDR_PER_HOUR} reports/hour`, retryAfterSeconds: wait }, 429, origin);
+  }
+  // Global per-isolate cap — the real backstop against free keypair rotation
+  // (the per-address window above is bypassed by minting a fresh address per
+  // request). Bounds total GitHub filings/hour so a flood can't trip the shared
+  // PAT's secondary rate limit and break app publishing / off-chain scheduling.
+  const gwait = globalWindow.hit('telemetry');
+  if (gwait > 0) {
+    return json({ error: 'telemetry rate limited (global backstop)', retryAfterSeconds: gwait }, 429, origin);
   }
 
   let payload: Record<string, unknown>;

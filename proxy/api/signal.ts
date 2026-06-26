@@ -21,6 +21,7 @@
 // room once connected, and reads ignore blobs past SIGNAL_TTL_SECS.
 
 import { verifyAuthToken, isAllowedOrigin } from './_auth';
+import { SlidingWindow, claimedAddress } from './_ratelimit';
 
 export const config = { runtime: 'edge' };
 
@@ -45,6 +46,18 @@ const SLOT_RE = /^(offer|answer|join|slots|(?:offer|answer)-[a-z0-9]{1,32}|(?:of
 const JOINER_RE = /^[a-z0-9]{1,32}$/;
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 const MESH_SLOTS = 8; // fixed mesh capacity (mirrors host::mp MP_PEERS)
+// A mesh slot not refreshed in this long is reclaimable by another peer — MUST
+// mirror the client's MESH_FRESH_SECS (display.rs) so the server agrees with the
+// claim loop on staleness (both timestamps are server-stamped, so no skew). A
+// LOWER value here than the client's would wrongly 403 a legitimate reclaim.
+const MESH_FRESH_SECS = 40;
+// Per-sender flood cap (best-effort, per-isolate — see api/_ratelimit.ts). GET
+// polling is open + uncapped; this caps only the GitHub-store WRITE rate so a
+// signal flood from throwaway wallets can't exhaust the shared token + starve
+// the scheduler cron. The limit covers the mesh heartbeat (~15/min) + handshake
+// bursts with ample headroom.
+const SIGNAL_PER_MIN = 60;
+const postWindow = new SlidingWindow(SIGNAL_PER_MIN, 60_000);
 
 function corsHeaders(origin: string | null): Record<string, string> {
   const h: Record<string, string> = {
@@ -182,6 +195,21 @@ export default async function handler(req: Request): Promise<Response> {
 
   // POST is personal-sign authed (anti-spam: only identities can fill rooms).
   const token = req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? '';
+  // Rate limit per CLAIMED address BEFORE the signature check — a flood must not
+  // cost a curve recovery per request, and this caps the GitHub-store write rate
+  // so signal spam can't exhaust the shared token (see api/_ratelimit.ts; the
+  // window gates nothing of value, auth happens downstream).
+  const claimed = claimedAddress(token);
+  if (claimed) {
+    const wait = postWindow.hit(claimed);
+    if (wait > 0) {
+      return json(
+        { error: `rate limited: at most ${SIGNAL_PER_MIN} signal writes per 60s`, retryAfterSeconds: wait },
+        429,
+        origin,
+      );
+    }
+  }
   const now = Math.floor(Date.now() / 1000);
   const auth = verifyAuthToken(token, now);
   if (!auth.ok) return json({ error: 'auth: ' + auth.error }, auth.status, origin);
@@ -203,12 +231,21 @@ export default async function handler(req: Request): Promise<Response> {
   if (action === 'join') {
     const joiner = String(payload.joiner ?? '').trim();
     if (!JOINER_RE.test(joiner)) return json({ error: 'bad joiner id' }, 400, origin);
+    // Tie the joiner id to the authenticated address: the client derives it from
+    // its OWN address (first 4 bytes → 8 hex; see joiner_id_from), so it's always
+    // a prefix of that address. Requiring the prefix relation stops a caller from
+    // poisoning a room with bogus joiners keyed off another peer's address.
+    if (!auth.address.slice(2).toLowerCase().startsWith(joiner.toLowerCase())) {
+      return json({ error: 'joiner id must derive from your address' }, 403, origin);
+    }
     const path = pathFor(room, 'join');
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const existing = await ghGet(path).catch(() => null);
         const roster = Array.isArray(existing?.blob?.joiners) ? (existing!.blob.joiners as string[]) : [];
         if (roster.includes(joiner)) return json({ joined: true, room, already: true }, 200, origin);
+        // Cap the roster at the mesh capacity so a flood can't inflate the blob.
+        if (roster.length >= MESH_SLOTS) return json({ error: 'room full' }, 409, origin);
         roster.push(joiner);
         await ghPut(path, JSON.stringify({ joiners: roster, ts: now }), `signal ${room}/join (${roster.length})`, existing?.sha);
         return json({ joined: true, room, count: roster.length }, 200, origin);
@@ -220,10 +257,12 @@ export default async function handler(req: Request): Promise<Response> {
     return json({ error: 'join busy' }, 409, origin);
   }
 
-  // put-slots: write the MESH membership blob under a CAS sha guard. The caller
-  // may only claim/refresh the slot bearing ITS OWN address; the server STAMPS
-  // that slot's ts (skew-free freshness). Other slots carry through as-read. A
-  // 409 (someone wrote first) returns the live blob so the caller re-applies.
+  // put-slots: write the MESH membership blob under a CAS sha guard. FORGE-PROOF:
+  // the written blob is built from the SERVER-STORED slots and only the caller's
+  // OWN index is mutated, with its id + address taken from the AUTH token (never
+  // the client payload). The other seven entries carry through exactly as stored,
+  // so a caller can neither write nor evict another peer's slot. A 409 (someone
+  // wrote first) returns the live blob so the caller re-applies.
   if (action === 'put-slots') {
     const myIdx = Number(payload.my);
     if (!Number.isInteger(myIdx) || myIdx < 0 || myIdx >= MESH_SLOTS) {
@@ -231,21 +270,6 @@ export default async function handler(req: Request): Promise<Response> {
     }
     const slotsIn = Array.isArray(payload.slots) ? (payload.slots as unknown[]) : null;
     if (!slotsIn || slotsIn.length !== MESH_SLOTS) return json({ error: 'bad slots (need 8)' }, 400, origin);
-    const clean: (SlotEntry | null)[] = [];
-    for (let i = 0; i < MESH_SLOTS; i++) {
-      const e = slotsIn[i] as Record<string, unknown> | null;
-      if (e && typeof e === 'object' && ADDR_RE.test(String(e.addr)) && JOINER_RE.test(String(e.id))) {
-        clean.push({ id: String(e.id), addr: String(e.addr).toLowerCase(), ts: Number(e.ts) || 0 });
-      } else {
-        clean.push(null);
-      }
-    }
-    // Anti-spoof: my slot MUST carry my authenticated address; the server stamps ts.
-    const mine = clean[myIdx];
-    if (!mine || mine.addr !== auth.address.toLowerCase()) {
-      return json({ error: 'your slot must carry your own address' }, 403, origin);
-    }
-    clean[myIdx] = { id: mine.id, addr: auth.address.toLowerCase(), ts: now };
     const path = pathFor(room, 'slots');
     const expectSha = typeof payload.sha === 'string' && payload.sha ? (payload.sha as string) : undefined;
     let existing: { blob: Blob; sha: string } | null;
@@ -257,6 +281,29 @@ export default async function handler(req: Request): Promise<Response> {
     if ((existing?.sha ?? '') !== (expectSha ?? '')) {
       return json({ conflict: true, slots: existing?.blob?.slots ?? null, sha: existing?.sha ?? '', now }, 409, origin);
     }
+    // Build the next blob from the STORED slots — never the client payload — so a
+    // caller can only ever touch its own index. Drop malformed entries.
+    const stored = Array.isArray(existing?.blob?.slots) ? (existing!.blob.slots as (SlotEntry | null)[]) : [];
+    const clean: (SlotEntry | null)[] = [];
+    for (let i = 0; i < MESH_SLOTS; i++) {
+      const e = stored[i];
+      if (e && typeof e === 'object' && ADDR_RE.test(String(e.addr)) && JOINER_RE.test(String(e.id))) {
+        clean.push({ id: String(e.id), addr: String(e.addr).toLowerCase(), ts: Number(e.ts) || 0 });
+      } else {
+        clean.push(null);
+      }
+    }
+    // The caller's slot is DERIVED from its authenticated address (id = the 8-hex
+    // joiner id, mirroring joiner_id_from), and the server stamps ts. It may only
+    // (re)claim its OWN index: free, already its own, or held by a peer gone stale
+    // past MESH_FRESH_SECS — never overwrite a still-fresh slot of another signer.
+    const myAddr = auth.address.toLowerCase();
+    const myId = myAddr.slice(2, 10);
+    const occupant = clean[myIdx];
+    if (occupant && occupant.addr !== myAddr && now - occupant.ts <= MESH_FRESH_SECS) {
+      return json({ error: 'slot held by another peer' }, 403, origin);
+    }
+    clean[myIdx] = { id: myId, addr: myAddr, ts: now };
     try {
       await ghPut(path, JSON.stringify({ slots: clean, ts: now }), `mesh ${room}/slots`, existing?.sha);
     } catch (e) {

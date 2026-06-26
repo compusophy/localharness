@@ -426,9 +426,11 @@ pub async fn get_bounty(bounty_id: u64) -> Result<Bounty, String> {
     })
 }
 
-/// Read `taskOf(uint256)` — the bounty's task prompt, decoded UTF-8. Stored as
-/// on-chain `bytes` (offset + length + body, same shape as a `string` return);
-/// we interpret it as UTF-8 since the MVP task is an inline prompt.
+/// Read `bountyTaskOf(uint256)` — the bounty's task prompt, decoded UTF-8.
+/// (`taskOf` is RESERVED by ScheduleFacet — the documented diamond selector
+/// collision — hence the `bounty`-prefixed selector.) Stored as on-chain `bytes`
+/// (offset + length + body, same shape as a `string` return); we interpret it as
+/// UTF-8 since the MVP task is an inline prompt.
 pub async fn task_of_bounty(bounty_id: u64) -> Result<String, String> {
     decode_bytes_string_call("bountyTaskOf(uint256)", bounty_id, "bountyTaskOf").await
 }

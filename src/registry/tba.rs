@@ -73,8 +73,7 @@ pub async fn is_authorized_signer(tba_address: &str, signer_hex: &str) -> Result
     padded[12..].copy_from_slice(&signer_bytes);
     let calldata = encode_call_hex(selector("isAuthorizedSigner(address)"), &[padded]);
     let result_hex = eth_call(tba_address, &calldata).await?;
-    let trimmed = result_hex.trim().trim_start_matches("0x");
-    Ok(trimmed.chars().last().map(|c| c == '1').unwrap_or(false))
+    decode_u256_as_u64(&result_hex).map(|v| v != 0)
 }
 
 /// Read `token()` on an ERC-6551 account → its owning tokenId (the 3rd

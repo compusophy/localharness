@@ -15,12 +15,12 @@
 
 use crate::soliditylite::asm::{op, Asm, Label};
 use crate::soliditylite::CompiledArtifact;
-// `Expr`/`Facet`/`Stmt` + the `CompileError` diagnostics are only used by the
-// source-compile path, which is wallet-gated (selector + slot keccak live there).
+// `Expr`/`Facet`/`Stmt` are only used by the source-compile path, which is
+// wallet-gated (selector + slot keccak live there). `CompileError`/`Span` are also
+// used by the (non-gated) `assemble_with` oversize guard, so they stay un-gated.
+use crate::rustlite::{CompileError, Span};
 #[cfg(feature = "wallet")]
 use crate::soliditylite::ast::{CmpOp, Expr, Facet, StateVarKind, Stmt};
-#[cfg(feature = "wallet")]
-use crate::rustlite::CompileError;
 
 /// What a function body returns — the value-producing prefix that precedes the
 /// shared `MSTORE(0,·) RETURN(0,0x20)` tail.
@@ -516,15 +516,6 @@ fn log_op(n: usize) -> u8 {
     }
 }
 
-/// One dispatchable function lowered to its selector + body value. The body
-/// `Label` is allocated by the caller (so the dispatch arm can reference it before
-/// the body is placed — a forward jump).
-struct LoweredFn {
-    selector: [u8; 4],
-    value: BodyValue,
-    body_label: Label,
-}
-
 /// Emit the SHARED dispatcher prelude into `a`: the calldatasize guard + the
 /// selector extract. Byte-for-byte the head of [`super::emit_constant_getter`]
 /// (design §5). `fb` is the fallback label (referenced here, placed later).
@@ -868,74 +859,94 @@ fn emit_stmts(a: &mut Asm, stmts: &[LoweredStmt], revert: Option<Label>) {
     }
 }
 
-/// One dispatchable function lowered to its selector + full [`Body`]. The body
-/// `Label` is allocated by the caller so dispatch arms can forward-reference it.
-#[cfg(feature = "wallet")]
-struct LoweredFnFull {
-    selector: [u8; 4],
-    body: Body,
-    body_label: Label,
-}
+/// EIP-170's deployed-bytecode size limit (bytes). A facet whose runtime exceeds
+/// this can never be deployed on-chain anyway, and a length / jump target past
+/// `u16::MAX` would `expect`-panic in the assembler ([`Asm::finish`] /
+/// [`asm::init_wrapper`]) — an uncatchable, tab-killing abort in the browser. We
+/// reject an oversized facet with a clean [`CompileError`] BEFORE finishing.
+const MAX_RUNTIME_BYTES: usize = 24576;
 
-/// Assemble a full runtime from a list of `(selector, full body)` pairs — the
-/// source-compiled path. Shares the dispatch prelude/arms/fallback with
-/// [`assemble`] (so a single const getter stays byte-identical), but emits each
-/// body via [`emit_full_body`] to support storage writes and `+` expressions.
-#[cfg(feature = "wallet")]
-fn assemble_full(functions: Vec<([u8; 4], Body)>) -> CompiledArtifact {
-    let mut a = Asm::new();
-    let fb = a.new_label();
-    let lowered: Vec<LoweredFnFull> = functions
-        .into_iter()
-        .map(|(selector, body)| LoweredFnFull { selector, body, body_label: a.new_label() })
-        .collect();
-
-    emit_dispatch_prelude(&mut a, fb);
-    for lf in &lowered {
-        emit_dispatch_arm(&mut a, lf.selector, lf.body_label);
-    }
-    emit_fallback(&mut a, fb);
-    for lf in &lowered {
-        emit_full_body(&mut a, lf.body_label, &lf.body);
-    }
-
-    let selectors = lowered.iter().map(|lf| lf.selector).collect();
-    let runtime = a.finish();
-    let init_code = crate::soliditylite::asm::init_wrapper(&runtime);
-    CompiledArtifact { init_code, runtime, selectors }
-}
-
-/// Assemble a full runtime from a list of `(selector, body value)` pairs and wrap
-/// it as a [`CompiledArtifact`]. This is the ONE place dispatch + bodies are laid
-/// out, used by BOTH the compiler ([`compile`]) and the worked
-/// [`super::emit_constant_getter`] — so a single function yields identical bytes
-/// on either path.
+/// The ONE place dispatch + bodies are laid out — used by BOTH the source-compile
+/// path ([`assemble_full`] / [`compile`], `Body`) and the worked
+/// [`super::emit_constant_getter`] ([`assemble`], `BodyValue`), so the two layout
+/// routines can't drift. `emit_one_body(a, i, body_label)` emits function `i`'s
+/// body at its allocated label (the caller owns the per-fn body data).
 ///
 /// Layout: prelude → one dispatch arm per fn (in order) → fallback REVERT → one
-/// body per fn (in order).
-pub fn assemble(functions: &[([u8; 4], BodyValue)]) -> CompiledArtifact {
+/// body per fn (in order) → finish + init-wrap.
+///
+/// Returns a clean `CompileError` (NEVER panics) when the assembled runtime would
+/// exceed [`MAX_RUNTIME_BYTES`] — the size at which the assembler's u16 jump/length
+/// operands would otherwise `expect`-abort. `span` pins that error to the source.
+fn assemble_with(
+    selectors: &[[u8; 4]],
+    span: Span,
+    emit_one_body: impl Fn(&mut Asm, usize, Label),
+) -> Result<CompiledArtifact, CompileError> {
     let mut a = Asm::new();
     let fb = a.new_label();
     // Allocate every body label up front so the dispatch arms (emitted first) can
     // forward-reference them.
-    let lowered: Vec<LoweredFn> = functions
-        .iter()
-        .map(|(selector, value)| LoweredFn { selector: *selector, value: *value, body_label: a.new_label() })
-        .collect();
+    let body_labels: Vec<Label> = selectors.iter().map(|_| a.new_label()).collect();
 
     emit_dispatch_prelude(&mut a, fb);
-    for lf in &lowered {
-        emit_dispatch_arm(&mut a, lf.selector, lf.body_label);
+    for (sel, &body) in selectors.iter().zip(&body_labels) {
+        emit_dispatch_arm(&mut a, *sel, body);
     }
     emit_fallback(&mut a, fb);
-    for lf in &lowered {
-        emit_body(&mut a, lf.body_label, lf.value);
+    for (i, &body) in body_labels.iter().enumerate() {
+        emit_one_body(&mut a, i, body);
     }
 
-    let selectors = lowered.iter().map(|lf| lf.selector).collect();
+    // Reject an oversized facet BEFORE `finish()`/`init_wrapper` would u16-overflow
+    // and panic. `a.here()` IS the runtime length here (finish only back-patches
+    // placeholder bytes, never grows the code).
+    let rt_len = a.here();
+    if rt_len > MAX_RUNTIME_BYTES {
+        return Err(CompileError::at_code(
+            crate::error_codes::UNSUPPORTED_FEATURE,
+            format!(
+                "facet too large: runtime {rt_len} bytes exceeds the {MAX_RUNTIME_BYTES}-byte EIP-170 contract-size limit"
+            ),
+            span,
+        ));
+    }
+
     let runtime = a.finish();
     let init_code = crate::soliditylite::asm::init_wrapper(&runtime);
-    CompiledArtifact { init_code, runtime, selectors }
+    Ok(CompiledArtifact { init_code, runtime, selectors: selectors.to_vec() })
+}
+
+/// Assemble a full runtime from a list of `(selector, full body)` pairs — the
+/// source-compiled path. Shares the dispatch prelude/arms/fallback with
+/// [`assemble`] via [`assemble_with`] (so a single const getter stays
+/// byte-identical), emitting each body via [`emit_full_body`] to support storage
+/// writes and `+` expressions. `facet_span` pins an oversize error to the source.
+#[cfg(feature = "wallet")]
+fn assemble_full(
+    functions: Vec<([u8; 4], Body)>,
+    facet_span: Span,
+) -> Result<CompiledArtifact, CompileError> {
+    let selectors: Vec<[u8; 4]> = functions.iter().map(|(s, _)| *s).collect();
+    assemble_with(&selectors, facet_span, |a, i, body| {
+        emit_full_body(a, body, &functions[i].1)
+    })
+}
+
+/// Assemble a full runtime from a list of `(selector, body value)` pairs and wrap
+/// it as a [`CompiledArtifact`], via the shared [`assemble_with`]. Drives the
+/// worked [`super::emit_constant_getter`] — so a single function yields bytes
+/// identical to [`compile`]'ing the same `return <intlit>;` facet.
+///
+/// The const-getter family this serves is always far under [`MAX_RUNTIME_BYTES`],
+/// so the size guard cannot fire here (asserted via `expect`); the source-compile
+/// path ([`assemble_full`]) is where an oversized facet is caught and surfaced.
+pub fn assemble(functions: &[([u8; 4], BodyValue)]) -> CompiledArtifact {
+    let selectors: Vec<[u8; 4]> = functions.iter().map(|(s, _)| *s).collect();
+    assemble_with(&selectors, Span { start: 0, end: 0 }, |a, i, body| {
+        emit_body(a, body, functions[i].1)
+    })
+    .expect("constant-getter runtime is always far below the EIP-170 size cap")
 }
 
 /// The storage `BASE` slot for a facet: `keccak256("localharness.<name>.storage.v1")`
@@ -1494,7 +1505,7 @@ pub fn compile(facet: &Facet) -> Result<CompiledArtifact, CompileError> {
         lowered.push((selector, body));
     }
 
-    Ok(assemble_full(lowered))
+    assemble_full(lowered, facet.span)
 }
 
 #[cfg(test)]
@@ -1528,6 +1539,32 @@ mod tests {
         let mut want = [0u8; 32];
         want[30] = 0x01;
         assert_eq!(got, want);
+    }
+
+    /// L40 regression: a facet whose runtime would blow past the EIP-170 size limit
+    /// (and overflow the assembler's u16 jump/length operands) returns a clean
+    /// `CompileError`, NOT an `expect`-panic — which in the browser is an
+    /// uncatchable, tab-killing abort. ~1400 trivial getters push the runtime well
+    /// past 64KB; pre-fix this aborted in `Asm::finish`. The test reaching its
+    /// assertion at all proves the panic is gone. (The breadth guard at 300 fns —
+    /// `mod.rs`'s `breadth_does_not_trip_the_depth_guard` — still compiles fine.)
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn oversized_facet_errors_cleanly_instead_of_panicking() {
+        let mut src = String::from("facet Huge {");
+        for i in 0..1400 {
+            src.push_str(&format!(
+                " function f{i}() external view returns (uint256) {{ return {i}; }}"
+            ));
+        }
+        src.push('}');
+        let err = super::super::compile(&src)
+            .expect_err("a facet past the EIP-170 size limit must error, not compile or panic");
+        assert_eq!(
+            err.code,
+            Some(crate::error_codes::UNSUPPORTED_FEATURE),
+            "oversize must surface as a clean UNSUPPORTED_FEATURE: {err}"
+        );
     }
 
     /// THE TARGET: `facet Tally { uint256 n; function bump() external { n = n + 1; }

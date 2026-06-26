@@ -270,6 +270,10 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
                 image_client: Some(client.clone()),
                 image_model: self.config.image_model.clone(),
                 fs,
+                // Thread the session's hooks so a spawned subagent inherits the
+                // parent's PreToolCall deny/containment policies (audit M8). Gemini
+                // is the backend that registers start_subagent (it has a chat_client).
+                hooks: self.runners.hook_runner.clone(),
             };
             let registered = register_builtins(runner, &self.config.capabilities, &deps);
             if !registered.is_empty() {

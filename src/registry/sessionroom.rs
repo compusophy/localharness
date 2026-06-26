@@ -18,7 +18,7 @@ pub(crate) fn encode_create_room() -> Vec<u8> {
 pub(crate) fn encode_room_add_member(room_id: u64, member: &[u8; 20]) -> Vec<u8> {
     let mut d = selector("roomAddMember(uint256,address)").to_vec();
     d.extend_from_slice(&u256_be(room_id as u128));
-    d.extend_from_slice(&address_word(member));
+    d.extend_from_slice(&addr_word(member));
     d
 }
 
@@ -26,7 +26,7 @@ pub(crate) fn encode_append_op(room_id: u64, blob: &[u8]) -> Vec<u8> {
     let mut d = selector("appendOp(uint256,bytes)").to_vec();
     d.extend_from_slice(&u256_be(room_id as u128));
     d.extend_from_slice(&u256_be(0x40)); // offset to `blob` (2 head words in)
-    push_abi_bytes(&mut d, blob);
+    push_dynamic_bytes(&mut d, blob);
     d
 }
 
@@ -128,7 +128,7 @@ pub async fn room_creator(room_id: u64) -> Result<String, String> {
 pub async fn room_is_member(room_id: u64, who: &[u8; 20]) -> Result<bool, String> {
     let res = read_view(
         selector("roomIsMember(uint256,address)"),
-        &[u256_be(room_id as u128), address_word(who)],
+        &[u256_be(room_id as u128), addr_word(who)],
     )
     .await?;
     Ok(read_word_u64(&res) != 0)
@@ -137,7 +137,10 @@ pub async fn room_is_member(room_id: u64, who: &[u8; 20]) -> Result<bool, String
 /// The room's member addresses (lowercase `0x…` hex).
 pub async fn room_members_of(room_id: u64) -> Result<Vec<String>, String> {
     let res = read_view(selector("roomMembersOf(uint256)"), &[u256_be(room_id as u128)]).await?;
-    Ok(decode_address_array(&res))
+    let bytes = hex_to_bytes(&res)?;
+    // Bare dynamic `address[]` ABI return — the canonical `abi::decode_address_array`
+    // (same decode as `devices_of` / `members_of_guild`).
+    Ok(decode_address_array(&bytes))
 }
 
 /// The id of the most recent room created by `creator_hex`, read from
@@ -203,40 +206,6 @@ fn read_word_address(hex: &str) -> String {
     }
 }
 
-/// Decode an ABI `address[]` return into lowercase `0x…` strings. Bounds-checked:
-/// a malformed length/offset yields what parsed so far rather than panicking.
-fn decode_address_array(hex: &str) -> Vec<String> {
-    let raw = match hex_to_bytes(hex) {
-        Ok(b) => b,
-        Err(_) => return Vec::new(),
-    };
-    let read_usize = |off: usize| -> Option<usize> {
-        let end = off.checked_add(32)?;
-        let w = raw.get(off..end)?;
-        Some(u64::from_be_bytes(w[24..32].try_into().ok()?) as usize)
-    };
-    let mut out = Vec::new();
-    let Some(arr_off) = read_usize(0) else {
-        return out;
-    };
-    let Some(len) = read_usize(arr_off) else {
-        return out;
-    };
-    let Some(base) = arr_off.checked_add(32) else {
-        return out;
-    };
-    for i in 0..len {
-        let Some(slot) = i.checked_mul(32).and_then(|o| base.checked_add(o)) else {
-            break;
-        };
-        match slot.checked_add(12).zip(slot.checked_add(32)).and_then(|(a, b)| raw.get(a..b)) {
-            Some(a) => out.push(format!("0x{}", bytes_to_hex(a))),
-            None => break,
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,21 +226,7 @@ mod tests {
     fn read_word_helpers() {
         let hex = format!("0x{:0>64}", "2a"); // 42
         assert_eq!(read_word_u64(&hex), 42);
-        let addr_word = format!("0x{:0>24}{}", "", "a".repeat(40));
-        assert_eq!(read_word_address(&addr_word), format!("0x{}", "a".repeat(40)));
-    }
-
-    #[test]
-    fn decode_address_array_round_trip() {
-        // [0xaa.., 0xbb..]: offset=0x20, len=2, two padded addresses.
-        let a = "a".repeat(40);
-        let b = "b".repeat(40);
-        let off = format!("{:0>64x}", 0x20);
-        let len = format!("{:0>64x}", 2);
-        let a_word = format!("{:0>24}{a}", "");
-        let b_word = format!("{:0>24}{b}", "");
-        let hex = format!("0x{off}{len}{a_word}{b_word}");
-        let got = decode_address_array(&hex);
-        assert_eq!(got, vec![format!("0x{a}"), format!("0x{b}")]);
+        let addr_hex = format!("0x{:0>24}{}", "", "a".repeat(40));
+        assert_eq!(read_word_address(&addr_hex), format!("0x{}", "a".repeat(40)));
     }
 }

@@ -30,9 +30,11 @@
 //
 // ORDER OF OPERATIONS (the fetch.ts invariant: nothing proxy-side may fail
 // AFTER the caller is charged except the actual upstream send): payload
-// validation → VAPID config check → RATE LIMIT (429 before auth — cheap
-// rejection on the CLAIMED address) → auth → subscription lookup (before any
-// debit) → credit gate + meter debit → the push itself (502 on failure).
+// validation → VAPID config check → SENDER rate limit (429 before auth — cheap
+// rejection on the CLAIMED address) → auth → RECIPIENT rate limit (a victim's
+// window must only be burnable by an AUTHENTICATED sender) → subscription
+// lookup (before any debit) → credit gate + meter debit → the push itself
+// (502 on failure).
 //
 // CROSS-AGENT ENROLLMENT CHECK: when a `to:` target has NO device enrolled for
 // Web Push, the note cannot be delivered anywhere (the in-app inbox is fed by
@@ -43,12 +45,15 @@
 // RATE LIMITS (best-effort, PER-ISOLATE — see api/_ratelimit.ts for why
 // that's accepted; the meter debit stays the global hard backstop):
 //   * per SENDER: ≤ NOTIFY_SENDER_PER_MIN pushes/min — a funded loop can't
-//     buzz a phone continuously even though each push is paid;
+//     buzz a phone continuously even though each push is paid. SELF-keyed on
+//     the claimed address, so checked PRE-AUTH: worst case a spoofer burns
+//     THAT address's window (a nuisance), never its funds — debits only happen
+//     after real auth.
 //   * per RECIPIENT (`to` only): ≤ NOTIFY_RECIPIENT_PER_MIN deliveries/min to
 //     one target name ACROSS ALL SENDERS in this isolate — many funded
-//     senders can't gang up on one phone.
-// Checked pre-auth on the claimed address: worst case a spoofer burns a
-// window (nuisance), never funds — debits only happen after real auth.
+//     senders can't gang up on one phone. Keyed on the TARGET, not the caller,
+//     so checked POST-AUTH: an unauthenticated request must not be able to burn
+//     a victim's recipient window and block legit cross-agent notifies.
 
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex } from '@noble/hashes/utils';
@@ -308,12 +313,12 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: 'proxy misconfigured: web push is not set up' }, 500, origin);
     }
 
-    // ---- RATE LIMIT (BEFORE auth — rejecting a flood must not cost a curve
-    // recovery per request). Keyed on the CLAIMED, unverified address; safe
-    // because nothing of value is gated here — a spoofer burns the address's
-    // per-isolate rate window (a one-minute nuisance), never its funds: the
-    // meter debit below only ever runs after real signature verification.
-    // Best-effort + PER-ISOLATE — see api/_ratelimit.ts. ------------------------
+    // ---- SENDER RATE LIMIT (BEFORE auth — rejecting a flood must not cost a
+    // curve recovery per request). Keyed on the CLAIMED, unverified address;
+    // safe because nothing of value is gated here and the window is SELF-keyed
+    // — a spoofer burns only THAT address's per-isolate window (a one-minute
+    // nuisance), never its funds: the meter debit below only ever runs after
+    // real signature verification. Best-effort + PER-ISOLATE — _ratelimit.ts. --
     const token =
       req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? '';
     const claimed = claimedAddress(token);
@@ -330,6 +335,20 @@ export default async function handler(req: Request): Promise<Response> {
         );
       }
     }
+
+    // ---- AUTH — same token scheme + headers as api/gemini.ts (verifyAuthToken
+    // in _auth.ts is byte-for-byte the prior inlined parse/freshness/recovery) --
+    const now = Math.floor(Date.now() / 1000);
+    const auth = verifyAuthToken(token, now);
+    if (!auth.ok) {
+      return json({ error: auth.error }, auth.status, origin);
+    }
+    const address = auth.address;
+
+    // ---- RECIPIENT RATE LIMIT (AFTER auth — the window is keyed on the TARGET
+    // name, not the caller, so it must only be consumable by an AUTHENTICATED
+    // sender; checked pre-auth, an anonymous request could burn a victim's
+    // window with a garbage token and block legit cross-agent notifies to them).
     // Per-RECIPIENT cap (cross-agent only): one phone can't be buzzed
     // continuously even by MANY funded senders — deliveries to a target name
     // share one window across all senders in this isolate.
@@ -346,15 +365,6 @@ export default async function handler(req: Request): Promise<Response> {
         );
       }
     }
-
-    // ---- AUTH — same token scheme + headers as api/gemini.ts (verifyAuthToken
-    // in _auth.ts is byte-for-byte the prior inlined parse/freshness/recovery) --
-    const now = Math.floor(Date.now() / 1000);
-    const auth = verifyAuthToken(token, now);
-    if (!auth.ok) {
-      return json({ error: auth.error }, auth.status, origin);
-    }
-    const address = auth.address;
 
     // ---- subscription lookup (BEFORE the debit — an undeliverable note must
     // not be charged). Cross-agent (`to`) also stamps WHO it's from, and keeps

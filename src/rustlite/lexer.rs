@@ -272,6 +272,18 @@ impl<'a> Lexer<'a> {
                         }
                     }
                 }
+                Some(c) if c >= 0x80 => {
+                    // A raw byte >= 0x80 is part of a multi-byte UTF-8 sequence;
+                    // pushing it as `c as char` would split it into a Latin-1
+                    // codepoint and silently garble the literal (intern_string
+                    // re-encodes it wrong). rustlite string literals are ASCII
+                    // only — reject the byte cleanly rather than corrupt it.
+                    return Err(CompileError::at_code(
+                        codes::UNEXPECTED_BYTE,
+                        format!("non-ASCII byte 0x{c:02x} in string literal (ASCII only)"),
+                        Span { start: self.pos, end: self.pos + 1 },
+                    ));
+                }
                 Some(c) => {
                     self.advance();
                     s.push(c as char);
@@ -462,6 +474,14 @@ mod tests {
     fn lex_string_escapes() {
         let tokens = lex(r#""hello\nworld""#).unwrap();
         assert_eq!(tokens[0].kind, TokenKind::StringLit("hello\nworld".into()));
+    }
+
+    #[test]
+    fn lex_string_rejects_non_ascii() {
+        // L39: a raw byte >= 0x80 (here the UTF-8 for `é`) was pushed as a
+        // Latin-1 char, silently garbling the literal. It is now a clean error.
+        let err = lex("\"caf\u{00e9}\"").unwrap_err();
+        assert_eq!(err.code, Some(codes::UNEXPECTED_BYTE));
     }
 
     #[test]

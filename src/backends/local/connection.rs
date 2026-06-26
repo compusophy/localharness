@@ -297,13 +297,17 @@ impl LoopState {
         buf
     }
 
-    /// Emit a `ToolCall` step (model → environment, Active) so a UI can render
-    /// the in-flight tool block. Mirrors the Gemini loop's `emit_chunk_step`.
+    /// Emit a `ToolCall` observability step so a UI can render the tool block.
+    /// Sourced `Done` (NOT `Active`) — exactly like `state::LoopState`'s
+    /// `emit_chunk_step`: the call is dispatched INLINE below, and the Agent's
+    /// `spawn_tool_dispatcher` RE-EXECUTES any non-`Done` registered tool-call
+    /// step it sees on the broadcast, so an `Active` step here would double-fire
+    /// every tool (side effects applied twice, hooks evaluated twice).
     fn emit_tool_call_step(&self, tc: &ToolCall) {
         self.emit(Step::tool_call(
             self.alloc_step_index(),
             tc.clone(),
-            StepStatus::Active,
+            StepStatus::Done,
         ));
     }
 
@@ -402,6 +406,7 @@ impl ConnectionStrategy for LocalConnectionStrategy {
                 image_client: None,
                 image_model: String::new(),
                 fs: self.config.filesystem.clone(),
+                hooks: self.runners.hook_runner.clone(), // for subagent policy inheritance (M8); inert here (no chat_client)
             };
             let registered = register_builtins(runner, &self.config.capabilities, &deps);
             if !registered.is_empty() {

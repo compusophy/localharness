@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use crate::backends::gemini::api::SharedClient;
 use crate::filesystem::SharedFilesystem;
+use crate::hooks::HookRunner;
 use crate::tools::{Tool, ToolRunner};
 use crate::types::{BuiltinTool, CapabilitiesConfig};
 
@@ -80,7 +81,22 @@ pub(crate) const PROTECTED_FILES: &[&str] =
 /// `\` so a Windows-style path can't slip a protected basename past the check.
 pub(crate) fn is_protected_path(path: &str) -> bool {
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    PROTECTED_FILES.contains(&base)
+    is_protected_basename(base)
+}
+
+/// True iff `base` (an already-split final path component) names a protected
+/// identity file. On case-INSENSITIVE filesystems (Windows/macOS) `.LH_WALLET`,
+/// `.lh_wallet.`, and `.lh_wallet ` all resolve to the same on-disk seed, so the
+/// match folds case and trims trailing dots/spaces (which Windows strips) —
+/// mirroring `policy.rs::component_eq`. Case-sensitive everywhere else (a literal
+/// `.lh_wallet.` IS a distinct file on Linux/OPFS, so it must not be conflated).
+pub(crate) fn is_protected_basename(base: &str) -> bool {
+    if cfg!(any(windows, target_os = "macos")) {
+        let base = base.trim_end_matches(['.', ' ']);
+        PROTECTED_FILES.iter().any(|p| p.eq_ignore_ascii_case(base))
+    } else {
+        PROTECTED_FILES.contains(&base)
+    }
 }
 
 /// The error a filesystem builtin returns when asked to touch a protected
@@ -104,12 +120,18 @@ pub(crate) fn protected_path_error(path: &str) -> crate::error::Error {
 ///   rename_file). If `None`, those builtins are skipped. ALSO handed to
 ///   `start_subagent` so the spawned subagent's reduced fs builtins operate
 ///   over the SAME store the parent uses.
+/// * `hooks` — the parent's [`HookRunner`], threaded into `start_subagent` so a
+///   spawned subagent's tool calls inherit the parent's PreToolCall
+///   deny/containment policies (e.g. `policy::workspace_only`). Without it a
+///   subagent escapes the parent's confinement — its only remaining bound is
+///   the PROTECTED_FILES basename guard. `None` = no policy inheritance.
 pub struct BuiltinDeps {
     pub chat_client: Option<SharedClient>,
     pub chat_model: String,
     pub image_client: Option<SharedClient>,
     pub image_model: String,
     pub fs: Option<SharedFilesystem>,
+    pub hooks: Option<Arc<HookRunner>>,
 }
 
 /// Construct an `Arc<dyn Tool>` of `$ty` if a filesystem is present in
@@ -149,10 +171,14 @@ pub fn register_builtins(
                 // parent's fs builtins write to, so it can do real work over the
                 // shared OPFS (it gets a REDUCED allowlist — fs builtins + finish,
                 // never nested subagents / value-moving tools; see start_subagent.rs).
+                // Thread the parent's hooks too, so the subagent's tool calls
+                // inherit the parent's PreToolCall deny/containment policies
+                // (workspace_only would otherwise be escaped — see M8).
                 Arc::new(StartSubagent::with_filesystem(
                     c.clone(),
                     deps.chat_model.clone(),
                     deps.fs.clone(),
+                    deps.hooks.clone(),
                 )) as Arc<dyn Tool>
             }),
             BuiltinTool::ListDirectory => fs_tool!(deps, ListDirectory),
@@ -289,6 +315,31 @@ mod protected_path_tests {
         }
     }
 
+    /// On case-INSENSITIVE filesystems (Windows/macOS) a case-varied or
+    /// trailing-dot/space spelling resolves to the SAME on-disk seed, so the
+    /// guard must still fire (L25 — else `view_file(".LH_WALLET")` exfiltrates
+    /// the seed / `delete_file(".lh_wallet ")` bricks the identity). On
+    /// case-sensitive filesystems those are genuinely distinct files and must
+    /// NOT be conflated.
+    #[test]
+    fn case_and_trailing_dot_handling_matches_the_platform() {
+        let variants = [
+            ".LH_WALLET",
+            ".Lh_Wallet",
+            ".lh_wallet.",
+            ".lh_wallet ",
+            "/data/agent/.LH_DEVICE_KEY",
+        ];
+        let case_insensitive = cfg!(any(windows, target_os = "macos"));
+        for p in variants {
+            assert_eq!(
+                is_protected_path(p),
+                case_insensitive,
+                "{p} protection must follow the platform's case sensitivity"
+            );
+        }
+    }
+
     #[cfg(feature = "native")]
     #[tokio::test]
     async fn view_and_delete_refuse_the_seed_file() {
@@ -403,6 +454,7 @@ mod schema_lint_tests {
             image_client: None,
             image_model: String::new(),
             fs: Some(Arc::new(NativeFilesystem::new()) as SharedFilesystem),
+            hooks: None,
         };
         let runner = ToolRunner::new();
         let registered = register_builtins(&runner, &caps, &with_fs);
@@ -419,6 +471,7 @@ mod schema_lint_tests {
             image_client: None,
             image_model: String::new(),
             fs: None,
+            hooks: None,
         };
         let runner2 = ToolRunner::new();
         let registered2 = register_builtins(&runner2, &caps, &no_fs);

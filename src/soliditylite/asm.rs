@@ -31,6 +31,10 @@ pub mod op {
     pub const RETURN: u8 = 0xF3;
     /// Copy `len` bytes of THIS contract's code into memory (`CODECOPY`).
     pub const CODECOPY: u8 = 0x39;
+    /// Load a 32-byte word from memory (`MLOAD(off)`). Not emitted by codegen, but
+    /// the diff-harness interpreter supports it, so it lives here (asm.rs is the
+    /// opcode SSOT — no stray literals in the interpreter).
+    pub const MLOAD: u8 = 0x51;
     /// Store a 32-byte word into memory (`MSTORE(off, word)`).
     pub const MSTORE: u8 = 0x52;
     /// Load a 32-byte word from storage (`SLOAD(slot)`).

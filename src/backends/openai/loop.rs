@@ -29,6 +29,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::backends::dispatch::{dispatch_post_turn, dispatch_tool_call, gate_pre_turn};
+use crate::backends::loop_util::{extract_canonical_path, resolve_tool_args};
 use crate::backends::openai::api::SharedClient;
 use crate::backends::openai::wire::{
     ChatRequest, FinishReason, FunctionCall, FunctionDef, Message, Role, StreamOptions, ToolCall,
@@ -157,7 +158,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
     // Pre-turn gate — BEFORE the prompt enters history, so a denied prompt
     // never pollutes context.
     if let Some(denied) = gate_pre_turn(deps.hook_runner.as_ref(), &turn_ctx, &prompt).await {
-        emit_error(&deps.state, denied.clone());
+        deps.state.emit_error(denied.clone());
         deps.state.idle.store(true, Ordering::Release);
         deps.state.idle_notify.notify_waiters();
         return Err(Error::other(denied));
@@ -175,6 +176,10 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
     let mut last_finish: Option<FinishReason> = None;
     // The model called `finish` this turn — flags the terminal step as Finish.
     let mut finished_turn = false;
+    // The closing `summary` arg from a `finish` call (Gemini/Anthropic capture
+    // it too) — painted on the terminal step so a tool-only turn still ends
+    // with a reply instead of an empty bubble.
+    let mut finish_summary: Option<String> = None;
     let trajectory_id = Uuid::new_v4().to_string();
 
     loop {
@@ -202,7 +207,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
         let mut stream = match deps.client.stream_chat(&request).await {
             Ok(s) => s,
             Err(e) => {
-                emit_error(&deps.state, e.to_string());
+                deps.state.emit_error(e.to_string());
                 deps.state.idle.store(true, Ordering::Release);
                 deps.state.idle_notify.notify_waiters();
                 return Err(e);
@@ -225,7 +230,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
                         "model stream stalled — no data for {}s",
                         idle_ms / 1000
                     ));
-                    emit_error(&deps.state, e.to_string());
+                    deps.state.emit_error(e.to_string());
                     deps.state.idle.store(true, Ordering::Release);
                     deps.state.idle_notify.notify_waiters();
                     return Err(e);
@@ -237,7 +242,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
             let chunk = match chunk_res {
                 Ok(c) => c,
                 Err(e) => {
-                    emit_error(&deps.state, e.to_string());
+                    deps.state.emit_error(e.to_string());
                     deps.state.idle.store(true, Ordering::Release);
                     deps.state.idle_notify.notify_waiters();
                     return Err(e);
@@ -351,6 +356,20 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
 
         if deps.state.cancel.load(Ordering::Acquire) {
             debug!("turn cancelled before tool dispatch");
+            // The assistant message carrying these tool_calls is already in
+            // history (pushed above; `pending_calls` is non-empty here — the
+            // empty case broke at the check above). OpenAI 400s the NEXT
+            // request if an assistant `tool_calls` message isn't answered by a
+            // `tool` message per tool_call_id, so balance every pending call
+            // with a cancelled tool_result before bailing — otherwise the
+            // dangling tool_calls turn bricks the conversation.
+            let cancelled: Vec<Message> = pending_calls
+                .into_iter()
+                .map(|(id, _name, _args, _err)| {
+                    Message::tool_result(id, json!({ "error": "cancelled" }).to_string())
+                })
+                .collect();
+            deps.state.history.lock().extend(cancelled);
             break;
         }
 
@@ -379,6 +398,13 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
             if name == FINISH_TOOL_NAME {
                 if let Some(out) = args.get("output").cloned() {
                     *deps.state.last_structured_output.lock() = Some(out);
+                }
+                // Capture the closing `summary` (the finish args were otherwise
+                // discarded), so a tool-only turn can still end with a reply.
+                if let Some(sm) = args.get("summary").and_then(|v| v.as_str()) {
+                    if !sm.is_empty() {
+                        finish_summary = Some(sm.to_string());
+                    }
                 }
                 saw_finish = true;
                 result_messages.push(Message::tool_result(id, json!({ "ok": true }).to_string()));
@@ -445,7 +471,8 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
         finished_turn,
         structured,
         usage_opt,
-    );
+    )
+    .with_finish_summary(finish_summary);
     deps.state.emit(terminal);
 
     // Post-turn hooks observe the completed turn's final text.
@@ -477,25 +504,6 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Resolve a tool call's concatenated `arguments` fragment into parsed args.
-/// An EMPTY/absent fragment is a valid no-arg call → `({}, None)`. A NON-EMPTY
-/// fragment that fails to parse returns `({}, Some(error))`: the caller
-/// surfaces that error to the model as a tool error rather than running the
-/// tool with empty args silently.
-fn resolve_tool_args(name: &str, args_json: &str) -> (Value, Option<String>) {
-    if args_json.trim().is_empty() {
-        return (json!({}), None);
-    }
-    match serde_json::from_str(args_json) {
-        Ok(v) => (v, None),
-        Err(e) => {
-            let msg = format!("malformed tool arguments for '{name}': {e} (got: {args_json})");
-            warn!(error = %e, name = %name, "tool_call args not valid JSON; surfacing tool error");
-            (json!({}), Some(msg))
-        }
-    }
-}
 
 /// Normalize a tool's return `Value` into a `tool`-message `content` STRING.
 /// OpenAI's `tool` message content is a string; tools here return arbitrary
@@ -564,28 +572,6 @@ fn accumulate_wire_usage(acc: &mut WireUsage, other: &WireUsage) {
     if other.prompt_tokens_details.is_some() {
         acc.prompt_tokens_details = other.prompt_tokens_details.clone();
     }
-}
-
-fn extract_canonical_path(args: &Value) -> Option<String> {
-    let path_str = args.get("path").and_then(|v| v.as_str())?;
-    let path = std::path::Path::new(path_str);
-    if let Ok(p) = dunce::canonicalize(path) {
-        return Some(p.display().to_string());
-    }
-    let parent = path.parent()?;
-    let file = path.file_name()?;
-    let parent = if parent.as_os_str().is_empty() {
-        std::path::Path::new(".")
-    } else {
-        parent
-    };
-    dunce::canonicalize(parent)
-        .ok()
-        .map(|p| p.join(file).display().to_string())
-}
-
-fn emit_error(state: &LoopState, message: String) {
-    state.emit(Step::turn_error(state.alloc_step_index(), message));
 }
 
 #[cfg(test)]
@@ -841,5 +827,43 @@ mod tests {
             StepStatus::Done,
             "inline-dispatched tool-call step must be Done, not Active",
         );
+    }
+
+    /// REGRESSION (L22, mirrors Anthropic #82): the assistant message carrying
+    /// `tool_calls` is pushed to history BEFORE tools dispatch. If the turn is
+    /// cancelled in that window the loop breaks WITHOUT appending the matching
+    /// `tool`-role result messages — a dangling `tool_calls` turn that 400s the
+    /// NEXT OpenAI request ("must be followed by tool messages responding to
+    /// each tool_call_id"). The cancel branch must balance every pending call
+    /// with a cancelled `tool` message (correlated by id) so history stays valid.
+    #[test]
+    fn cancelled_turn_balances_pending_tool_calls_with_tool_results() {
+        let pending_calls: Vec<(String, String, Value, Option<String>)> = vec![
+            ("call_a".into(), "view_file".into(), json!({"path": "a.rs"}), None),
+            ("call_b".into(), "list_subdomains".into(), json!({}), None),
+        ];
+
+        // --- assembly copied from run_turn's cancel branch ---
+        let cancelled: Vec<Message> = pending_calls
+            .into_iter()
+            .map(|(id, _name, _args, _err)| {
+                Message::tool_result(id, json!({ "error": "cancelled" }).to_string())
+            })
+            .collect();
+
+        // One `tool` message per pending call, ids preserved, content marks cancel.
+        assert_eq!(cancelled.len(), 2);
+        let ids: Vec<&str> = cancelled
+            .iter()
+            .map(|m| {
+                assert_eq!(m.role, Role::Tool, "balancing message must be a tool result");
+                assert!(
+                    m.content.as_deref().unwrap().contains("cancelled"),
+                    "content should mark the call cancelled"
+                );
+                m.tool_call_id.as_deref().expect("tool_call_id correlates")
+            })
+            .collect();
+        assert_eq!(ids, vec!["call_a", "call_b"], "every tool_call_id answered");
     }
 }

@@ -82,7 +82,7 @@ pub(crate) fn install_rpc_listener() -> Result<(), JsValue> {
         let payment = extract_payment(&data);
 
         wasm_bindgen_futures::spawn_local(async move {
-            let response = handle_agent_call(&id, &message, &from, payment).await;
+            let response = handle_agent_call(&id, &message, &from, &origin, payment).await;
             if let Some(source) = source {
                 let _ = js_sys::Reflect::get(&source, &JsValue::from_str("postMessage"))
                     .ok()
@@ -261,10 +261,34 @@ async fn settle_incoming(price: u128, p: &PaymentParts, my_name: &str) -> Result
     Ok(())
 }
 
+/// Whether the calling `origin` belongs to an agent owned by the SAME on-chain
+/// owner as THIS agent — the "own agent" trust boundary for the free path. A
+/// self-origin (caller name == our name) is trivially same-owner; otherwise both
+/// names' on-chain owners are resolved and compared (case-insensitive). Returns
+/// false for an apex/unknown caller, an RPC failure, or an unowned name —
+/// default-deny, so an unauthenticated cross-origin caller never earns free
+/// service. `origin` is the BROWSER-set message origin (trustworthy), not the
+/// caller-supplied `from` field (spoofable).
+async fn caller_is_same_owner(origin: &str) -> bool {
+    let Some(caller) = super::tenant::tenant_name_from_origin(origin) else {
+        return false;
+    };
+    let Some(my_name) = super::tenant::current_name() else {
+        return false;
+    };
+    if caller.eq_ignore_ascii_case(&my_name) {
+        return true;
+    }
+    let caller_owner = super::registry::owner_of_name(&caller).await.ok().flatten();
+    let my_owner = super::registry::owner_of_name(&my_name).await.ok().flatten();
+    matches!((caller_owner, my_owner), (Some(a), Some(b)) if a.eq_ignore_ascii_case(&b))
+}
+
 async fn handle_agent_call(
     id: &str,
     message: &str,
     from: &str,
+    origin: &str,
     payment: Option<PaymentParts>,
 ) -> JsValue {
     web_sys::console::log_1(&JsValue::from_str(&format!(
@@ -291,6 +315,21 @@ async fn handle_agent_call(
                 paid_wei = price;
             }
         }
+    } else if !caller_is_same_owner(origin).await {
+        // L17: a FREE (price 0) call is served only to the agent's OWN owner
+        // (the legitimate same-owner `call_agent` path). A cross-owner origin —
+        // e.g. a hostile *.localharness.xyz page a victim merely visits that
+        // iframes this `?rpc=1` endpoint, which can load the agent if the
+        // browser does not partition third-party OPFS — is REFUSED rather than
+        // handed free inference + tool effects (and the agent's reply text).
+        // Storage partitioning is not a guarantee; charge a price to accept paid
+        // calls from anyone, otherwise only your own agents call for free.
+        return build_response(
+            id,
+            Err("this agent only answers free calls from its owner's agents — \
+                 set an x402 price to accept paid calls from others"
+                .into()),
+        );
     }
 
     // #30: process the turn, then ALWAYS surface it to the owner — a system

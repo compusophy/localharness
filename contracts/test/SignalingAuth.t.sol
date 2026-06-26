@@ -41,21 +41,25 @@ contract SignalingAuthTest is Test {
         return keccak256(abi.encodePacked("localharness.devices", who));
     }
 
-    /// The digest a signer authorizes: keccak256(topic || ephemeral || pubkey),
-    /// matching the facet AND `registry::announce_digest`.
+    /// The digest a signer authorizes:
+    /// keccak256(block.chainid || address(this) || topic || ephemeral || pubkey),
+    /// matching the facet's chain-bound digest (audit I7). NOTE: the Rust
+    /// `registry::announce_digest` still uses the OLD (unbound) preimage — the
+    /// client lockstep + web redeploy is a coordinated follow-up, so this Solidity
+    /// source is intentionally AHEAD of the deployed facet + the Rust client.
     function _digest(bytes32 topic, address eph, bytes memory pubkey)
         internal
-        pure
+        view
         returns (bytes32)
     {
-        return keccak256(abi.encodePacked(topic, eph, pubkey));
+        return keccak256(abi.encodePacked(block.chainid, address(sig), topic, eph, pubkey));
     }
 
     /// The digest a signer authorizes to evict `eph` from `topic`:
-    /// keccak256("localharness.leave" || topic || ephemeral) — DOMAIN-SEPARATED
-    /// from `_digest` so an `announce` sig can't be replayed as a `leave`.
-    function _leaveDigest(bytes32 topic, address eph) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked("localharness.leave", topic, eph));
+    /// keccak256("localharness.leave" || block.chainid || address(this) || topic
+    /// || ephemeral) — DOMAIN-SEPARATED from `_digest` + chain-bound (audit I7).
+    function _leaveDigest(bytes32 topic, address eph) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked("localharness.leave", block.chainid, address(sig), topic, eph));
     }
 
     /// Sign `digest` with `pk` and pack r‖s‖v (65 bytes), v in {27,28} — the

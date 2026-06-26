@@ -657,9 +657,23 @@ pub(crate) async fn fetch_revert_reason(tx_hash: &str) -> Option<String> {
         method: "eth_call",
         params: serde_json::json!([{ "from": from, "to": to, "data": input }, block]),
     };
-    let client = reqwest::Client::new();
-    let resp = client.post(RPC_URL()).json(&body).send().await.ok()?;
-    let json: serde_json::Value = resp.json().await.ok()?;
+    let client = read_client();
+    // Bound the replay's send+body-read against RPC_TIMEOUT_MS (the wasm fetch
+    // has no default timeout); any timeout/network failure → None (best-effort).
+    let json: serde_json::Value = timeout_send("revert replay", async {
+        let resp = client
+            .post(RPC_URL())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("revert replay send: {e}"))?;
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("revert replay parse: {e}"))
+    })
+    .await
+    .ok()?
+    .ok()?;
 
     // The revert payload can live in error.data (string or {message,data}).
     let err = json.get("error")?;
@@ -703,6 +717,7 @@ pub(crate) const GENERIC_REVERT_HINT: &str = "the transaction reverted on-chain.
 /// fetch + decode the revert REASON (so the user sees WHY, not just a hash)
 /// and always append the generic hint.
 pub(crate) async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
+    let client = read_client();
     for _ in 0..30 {
         let body = RpcRequest {
             jsonrpc: "2.0",
@@ -710,19 +725,23 @@ pub(crate) async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
             method: "eth_getTransactionReceipt",
             params: serde_json::json!([tx_hash]),
         };
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(RPC_URL())
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("receipt poll: {e}"))?;
-        // Receipt comes back as an object or null — bypass the
-        // RpcResponse string-only deserializer.
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| format!("receipt parse: {e}"))?;
+        // Bound each poll's send+body-read against RPC_TIMEOUT_MS so a
+        // TCP-connected-but-silent node can't hang the loop forever (the wasm
+        // no-op-timeout case) — same guard the JSON-RPC reads use. Receipt
+        // comes back as an object or null, so bypass the RpcResponse
+        // string-only deserializer.
+        let json: serde_json::Value = timeout_send("receipt poll", async {
+            let resp = client
+                .post(RPC_URL())
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("receipt poll: {e}"))?;
+            resp.json::<serde_json::Value>()
+                .await
+                .map_err(|e| format!("receipt parse: {e}"))
+        })
+        .await??;
         if let Some(receipt) = json.get("result").filter(|v| !v.is_null()) {
             let status = receipt
                 .get("status")
@@ -758,16 +777,21 @@ pub(crate) async fn receipt_contract_address(tx_hash: &str) -> Result<String, St
         method: "eth_getTransactionReceipt",
         params: serde_json::json!([tx_hash]),
     };
-    let client = reqwest::Client::new();
-    let json: serde_json::Value = client
-        .post(RPC_URL())
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("receipt fetch: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("receipt parse: {e}"))?;
+    let client = read_client();
+    // Bound the send+body-read against RPC_TIMEOUT_MS (the wasm fetch has no
+    // default timeout) — same guard as the JSON-RPC reads.
+    let json: serde_json::Value = timeout_send("receipt fetch", async {
+        client
+            .post(RPC_URL())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("receipt fetch: {e}"))?
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("receipt parse: {e}"))
+    })
+    .await??;
     json.get("result")
         .and_then(|r| r.get("contractAddress"))
         .and_then(|a| a.as_str())

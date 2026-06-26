@@ -170,11 +170,19 @@ impl EncryptedFilesystem {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Filesystem for EncryptedFilesystem {
     async fn read(&self, path: &str) -> Result<Vec<u8>> {
+        if Self::is_exempt(path) {
+            // Mirror the `write_atomic` exemption (the EXEMPT invariant holds in
+            // BOTH directions): exempt files are stored verbatim, so read them
+            // verbatim too — never route a possibly sealed-LOOKING exempt blob
+            // (e.g. a `.lh_device_key` ciphertext that happens to begin with the
+            // magic) through the seed-key GCM decrypt.
+            return self.inner.read(path).await;
+        }
         let bytes = self.inner.read(path).await?;
         if Self::looks_sealed(&bytes) {
             self.open(path, &bytes)
         } else {
-            // Legacy plaintext (or an exempt file) — pass through as-is.
+            // Legacy plaintext — pass through as-is.
             Ok(bytes)
         }
     }
@@ -336,6 +344,25 @@ mod tests {
             // Reading back through the wrapper also returns the plaintext.
             assert_eq!(enc.read(&path).await.unwrap(), body.as_bytes());
         }
+    }
+
+    /// I1: an exempt file whose RAW bytes happen to look sealed (magic +
+    /// ≥ MIN_SEALED_LEN, e.g. an unrelated ciphertext like a `.lh_device_key`
+    /// blob) reads back VERBATIM — `read` honors the exemption symmetrically
+    /// with `write_atomic` instead of routing it through the seed-key GCM
+    /// decrypt (which would fail auth and lose the key).
+    #[tokio::test]
+    async fn exempt_file_with_sealed_looking_bytes_reads_verbatim() {
+        let (dir, enc, raw) = setup();
+        let path = p(&dir, ".lh_device_key");
+        let mut blob = MAGIC.to_vec();
+        blob.extend_from_slice(&[0xABu8; 40]);
+        assert!(EncryptedFilesystem::looks_sealed(&blob), "test blob must look sealed");
+        // Stored verbatim by the exempt write path...
+        enc.write_atomic(&path, &blob).await.unwrap();
+        assert_eq!(raw.read(&path).await.unwrap(), blob);
+        // ...and read back verbatim, NOT decrypt-attempted.
+        assert_eq!(enc.read(&path).await.unwrap(), blob);
     }
 
     /// PINNED exemption list. Removing `.lh_wallet` (the seed — the key

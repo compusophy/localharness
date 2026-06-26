@@ -172,9 +172,12 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   // --- step 2: credential present -> verify on-chain + mint ------------------
-  // The credential's payTo (if any) is informational; the mint recipient is the
-  // server-resolved `payTo` (authenticated caller or the explicit on-behalf
-  // address), never a free-floating credential field.
+  // SECURITY: the mint recipient is the PROVEN on-chain USDC.e payer of the
+  // settlement tx (resolved inside mintFromSettlement), NOT the caller-supplied
+  // `payTo`/`pay_to` — otherwise anyone could replay another party's (or any
+  // treasury-inbound) settlement and mint the $LH to themselves. `payTo` is
+  // advisory only; the mint follows the money. The authenticated caller normally
+  // IS the payer (an agent pays from its own identity).
   const out = await mintFromSettlement(credential.settlementTx, payTo);
   if (!out.minted) {
     // 402 = "still owed / not yet verifiable" (retry after confirmation); other
@@ -192,7 +195,7 @@ export default async function handler(req: Request): Promise<Response> {
       lh_wei: out.lhWei,
       mint_tx: out.tx ?? null,
       settlement_tx: credential.settlementTx,
-      pay_to: payTo,
+      pay_to: out.recipient ?? payTo, // the PROVEN on-chain payer the $LH was minted to
     },
     200,
     origin,

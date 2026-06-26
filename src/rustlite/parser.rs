@@ -443,21 +443,20 @@ impl<'a> Parser<'a> {
                         continue;
                     }
 
-                    // Assignment: expr followed by `=` (and the expr must be a place)
-                    if matches!(self.peek(), TokenKind::Eq) && !matches!(self.peek(), TokenKind::EqEq) {
-                        // Check it's actually `=` not `==`
-                        if matches!(self.tokens[self.pos].kind, TokenKind::Eq) {
-                            self.advance(); // consume =
-                            let value = self.parse_expr()?;
-                            self.expect(&TokenKind::Semi)?;
-                            let place = expr_to_place(&expr)?;
-                            stmts.push(Stmt::Assign {
-                                place,
-                                value,
-                                span: expr.span,
-                            });
-                            continue;
-                        }
+                    // Assignment: expr followed by `=` (and the expr must be a
+                    // place). The lexer emits distinct `Eq`/`EqEq` tokens, so a
+                    // single `Eq` check already excludes `==`.
+                    if matches!(self.peek(), TokenKind::Eq) {
+                        self.advance(); // consume =
+                        let value = self.parse_expr()?;
+                        self.expect(&TokenKind::Semi)?;
+                        let place = expr_to_place(&expr)?;
+                        stmts.push(Stmt::Assign {
+                            place,
+                            value,
+                            span: expr.span,
+                        });
+                        continue;
                     }
 
                     let is_void_loop =

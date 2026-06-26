@@ -40,6 +40,16 @@ const MAX_RECURSION_DEPTH: usize = 96;
 
 /// Parse a token stream into a single [`Facet`].
 pub fn parse(tokens: &[SolTok]) -> Result<Facet, CompileError> {
+    // `peek`/`span`/`advance` clamp with `self.tokens.len() - 1`, which underflows
+    // on an empty slice. In-crate `lex` always appends an `Eof`, but `parse` is a
+    // public entry point — guard the degenerate input instead of panicking.
+    if tokens.is_empty() {
+        return Err(CompileError::at_code(
+            codes::EXPECTED_ITEM,
+            "empty token stream".to_string(),
+            Span { start: 0, end: 0 },
+        ));
+    }
     let mut p = Parser { tokens, pos: 0, depth: 0 };
     let facet = p.parse_facet()?;
     // Reject trailing tokens after the facet (a second top-level item, etc.).
@@ -862,6 +872,16 @@ mod tests {
             "facet C { function get() external view returns (uint256) { return 1; } } facet D {}",
         )
         .unwrap_err();
+        assert_eq!(e.code, Some(codes::EXPECTED_ITEM));
+    }
+
+    #[test]
+    fn empty_token_stream_errors_instead_of_panicking() {
+        // L41 regression: `parse` is a public entry point. An empty slice must
+        // return a clean error, not underflow `tokens.len() - 1` (panic in debug,
+        // OOB index in release). In-crate `lex` always appends `Eof`, but an
+        // external caller can hand `parse(&[])` directly.
+        let e = parse(&[]).expect_err("an empty token slice must error, not panic");
         assert_eq!(e.code, Some(codes::EXPECTED_ITEM));
     }
 

@@ -77,9 +77,12 @@ impl Tool for ViewFile {
         // read, same as before.)
         if let Some(meta) = self.fs.metadata(&args.path).await? {
             if meta.size > MAX_FILE_BYTES {
+                // The whole file is read into memory before slicing, so a
+                // start_line/end_line range can't dodge this cap — don't suggest
+                // it (a model that retried with a range just looped). State the
+                // hard limit plainly so it stops retrying. (L26)
                 return Err(Error::other(format!(
-                    "file is {} bytes, over the {MAX_FILE_BYTES}-byte view cap; \
-                     pass start_line/end_line to read a range",
+                    "file is {} bytes, over the {MAX_FILE_BYTES}-byte view cap — too large to view",
                     meta.size
                 )));
             }

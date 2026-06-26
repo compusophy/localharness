@@ -387,7 +387,7 @@ export async function verifySettlement(settlementTx: string): Promise<MppVerifyR
 // --- mint orchestration (reuse MintGateFacet via _stripe helpers) ------------
 
 export type MppMintResult =
-  | { minted: true; idempotent?: boolean; tx?: string; lhWei: string }
+  | { minted: true; idempotent?: boolean; tx?: string; lhWei: string; recipient?: string }
   | { minted: false; error: string; status: number };
 
 /**
@@ -416,16 +416,27 @@ export async function mintFromSettlement(
   const v = await verifySettlement(settlementTx);
   if (!v.ok) return { minted: false, error: v.error, status: v.status };
 
+  // SECURITY: credit the PROVEN on-chain USDC.e payer (`v.payer`), never the
+  // caller-supplied `lhAddress`/`pay_to`. A settlement tx is proof of PAYMENT, not
+  // of identity — minting to a free-floating address would let anyone replay another
+  // party's (or any treasury-inbound) USDC.e transfer and mint the $LH to themselves
+  // (front-running a legit buyer's settlement, or claiming an unrelated inbound).
+  // The mint must follow the money: only whoever actually moved value gets credited.
+  const recipient = v.payer;
+  if (!isHexAddress(recipient)) {
+    return { minted: false, error: 'could not determine the settlement payer on-chain', status: 502 };
+  }
+
   const validBefore = BigInt(Math.floor(Date.now() / 1000) + 3600);
   let signature: `0x${string}`;
   try {
-    signature = await signFiatMint(lhAddress, v.lhWei, receiptId, validBefore);
+    signature = await signFiatMint(recipient, v.lhWei, receiptId, validBefore);
   } catch (e) {
     return { minted: false, error: 'mint signing failed: ' + (e as Error).message, status: 500 };
   }
   try {
-    const tx = await submitMintFromFiat(lhAddress, v.lhWei, receiptId, validBefore, signature);
-    return { minted: true, tx, lhWei: v.lhWei.toString() };
+    const tx = await submitMintFromFiat(recipient, v.lhWei, receiptId, validBefore, signature);
+    return { minted: true, tx, lhWei: v.lhWei.toString(), recipient };
   } catch (e) {
     // The submit may have raced another path (webhook-style double fire) — if the
     // receipt actually landed, report success honestly.

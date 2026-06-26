@@ -117,24 +117,13 @@ impl FileMeta {
     }
 }
 
-/// Lowercase hex of `bytes`.
-fn hex(bytes: &[u8]) -> String {
-    const HEXD: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push(HEXD[(b >> 4) as usize] as char);
-        s.push(HEXD[(b & 0xf) as usize] as char);
-    }
-    s
-}
-
 /// The conflict-copy name for a file whose content hashed to `hash`:
 /// `<name>.conflict-<shorthash>`. Deterministic from `name` + `hash`, so both
 /// devices derive the SAME conflict name for the same losing content (which is
 /// what keeps the merged set convergent). The short hash takes the FIRST
 /// [`CONFLICT_HASH_HEX_LEN`] hex chars of the hash (or all of it, if shorter).
 pub fn conflict_name(name: &str, hash: &[u8]) -> String {
-    let full = hex(hash);
+    let full = crate::encoding::bytes_to_hex(hash);
     let short = if full.len() >= CONFLICT_HASH_HEX_LEN {
         &full[..CONFLICT_HASH_HEX_LEN]
     } else {

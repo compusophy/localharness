@@ -235,6 +235,23 @@ const TICK_SOFT_BUDGET_MS = ((): number => {
   return Number.isFinite(n) && n >= 5000 ? Math.min(Math.trunc(n), 290_000) : 20_000;
 })();
 
+// How many DUE off-chain files the tick READS bodies for (the scan window),
+// kept LARGER than the agent processing cap (MAX_OFFCHAIN_JOBS_PER_TICK). The
+// store sorts due files most-overdue-first and slices to the limit BEFORE the
+// reminder/agent split, so a burst of overdue AGENT jobs could slice
+// time-sensitive REMINDERS out of the batch entirely (the "remind me in 15 min
+// is never starved" guarantee broke — L48). Scanning a wider window then firing
+// ALL due reminders (cheap pushes, no model / wall-clock) on top of up-to-cap
+// agent runs reserves capacity for reminders. Env-overridable; floored at the
+// processing cap and clamped under the store's 1000-entry listing cap.
+const OFFCHAIN_DUE_SCAN = ((): number => {
+  const n = Number(process.env.SCHEDULER_OFFCHAIN_DUE_SCAN ?? '64');
+  const floor = MAX_OFFCHAIN_JOBS_PER_TICK;
+  return Number.isFinite(n) && n > 0
+    ? Math.min(Math.max(Math.trunc(n), floor), 1000)
+    : Math.max(64, floor);
+})();
+
 // Status enum (LibScheduleStorage.Status). Only Active (0) jobs are fired.
 const STATUS_ACTIVE = 0;
 
@@ -1060,6 +1077,34 @@ function commitSpend(tb: TickBudget, owner: string, cost: bigint): void {
   tb.perOwner.set(ownerKey, (tb.perOwner.get(ownerKey) ?? 0n) + cost);
 }
 
+// ---- shared poke spend ledger (L8 / I15) ------------------------------------
+//
+// The cron handler threads ONE tick budget through its whole batch so
+// GLOBAL_TICK_CAP_WEI / PER_OWNER_TICK_CAP_WEI bound the worker's real upstream
+// (Gemini) spend per invocation. The unauthenticated `?poke=<jobId>` heartbeat
+// used to construct a FRESH `newTickBudget()` PER REQUEST, so every poke got a
+// full, independent cap allowance — a caller could enumerate due jobs and poke
+// each to drive the platform's per-minute Gemini fan-out well past the global
+// cap. Share a COARSE, window-reset ledger across pokes in this isolate so
+// aggregate poke-driven spend is bounded the way a cron tick is. Edge isolates
+// are ephemeral + per-region, so this is best-effort — the same guarantee as the
+// per-isolate `pokeWindow` rate limiter — not a global lock; per-job budgets /
+// escrow still bound each individual run.
+const POKE_BUDGET_WINDOW_MS = 60_000; // one cron-tick cadence
+let pokeBudget: TickBudget | null = null;
+let pokeBudgetWindowStart = 0;
+
+/** The poke ledger for `now`, rolled over once per POKE_BUDGET_WINDOW_MS so a
+ * burst of pokes within a window shares ONE cap (and a quiet window starts
+ * fresh). */
+function sharedPokeBudget(now: number): TickBudget {
+  if (pokeBudget === null || now - pokeBudgetWindowStart >= POKE_BUDGET_WINDOW_MS) {
+    pokeBudget = newTickBudget();
+    pokeBudgetWindowStart = now;
+  }
+  return pokeBudget;
+}
+
 /** Outcome of a bounded ping-pong run. `calls` = generateContent calls made
  * (the agent's turns + each sub-agent turn) = the unit COST_WEI meters on. */
 interface PingPongResult {
@@ -1079,6 +1124,11 @@ interface PingPongResult {
    * relays this to the facet's `completeJob` (after recordRun debits this
    * run's calls) — the job ends + the remainder refunds to the owner. */
   goalReport?: string;
+  /** Set when the agent's OWN model turn (generateContent) threw mid-loop: the
+   * error message. `calls` still carries the TRUE count made so far, so the
+   * caller bills the real spend (NOT a hard-coded 1) and the on-chain debit /
+   * meter stays in lockstep with the per-tick ledger (L44). */
+  error?: string;
 }
 
 /**
@@ -1152,10 +1202,15 @@ async function runPingPong(
       tickCapped = true;
       return false;
     }
-    if (Date.now() >= modelDeadlineMs) {
+    if (calls > 0 && Date.now() >= modelDeadlineMs) {
       // Wall-clock fair share spent: stop HERE so the jobs behind this one in
       // the batch still get processed (and so the platform never kills the
-      // function mid-batch, which would skip them SILENTLY).
+      // function mid-batch, which would skip them SILENTLY). The FIRST call
+      // (`calls === 0`) is ALWAYS allowed past the CLOCK gate (it still honors
+      // the per-job budget + per-tick caps above): a job the caller already
+      // SELECTED/CLAIMED — especially an off-chain agent job, whose claim
+      // already DELETED its file — must get at least one model call, else it is
+      // consumed (a one-shot job lost) having never run the model (M10).
       clockCapped = true;
       return false;
     }
@@ -1167,7 +1222,28 @@ async function runPingPong(
     if (!mayMeterCall()) break;
     calls++;
     commitSpend(tb, owner, COST_WEI);
-    const parts = await generateContent(persona, contents, true);
+    let parts: GeminiPart[];
+    try {
+      parts = await generateContent(persona, contents, true);
+    } catch (e) {
+      // The agent's OWN model turn failed (Gemini non-2xx). `calls` already
+      // counts this turn (incremented + committed to the shared ledger BEFORE
+      // the await), as do any earlier rounds (e.g. a successful call_agent in
+      // round 0). RETURN with the TRUE count instead of throwing: the old throw
+      // lost the partial count, so the callers hard-coded 1 and UNDER-BILLED the
+      // owner by (N-1) while the ledger held N (and the off-chain catch even
+      // double-committed) — L44. Surfacing it as a result keeps the on-chain
+      // debit / meter debit and the per-tick ledger in lockstep.
+      return {
+        output: (e as Error).message,
+        calls,
+        rounds: round + 1,
+        budgetCapped,
+        tickCapped,
+        clockCapped,
+        error: (e as Error).message,
+      };
+    }
 
     const call = findToolCall(parts);
     if (!call) {
@@ -1845,6 +1921,16 @@ async function processJob(
     clockCapped = result.clockCapped;
     goalReport = result.goalReport;
     runNote = result.output;
+    // A model error INSIDE the loop is now RETURNED (not thrown) with the true
+    // call count, so mark the run errored + bill the real `calls` here; the catch
+    // below now only fires for a PRE-loop read failure (L44).
+    if (result.error !== undefined) {
+      ran = 'error';
+      console.error(
+        `[scheduler] job ${idStr} target ${name} model ERROR mid-run ` +
+          `(still recordRun, billing ${calls} call(s)): ${result.error}`,
+      );
+    }
     // MVP output sink = the Vercel log. The reply is recorded here so a scheduled
     // run is observable in the function logs.
     // TODO: richer output routing — persist the transcript on-chain / in a store,
@@ -1870,8 +1956,10 @@ async function processJob(
       calls = 1;
       commitSpend(tb, job.owner, COST_WEI);
     } else if (calls === 0) {
-      // The loop entered but threw on its very first call (which it commits BEFORE
-      // awaiting generateContent), so the ledger already has 1 call. Bill for it.
+      // Defensive fallback: the loop started but threw WITHOUT returning a count.
+      // runPingPong now RETURNS its own model errors with the true `calls` (L44),
+      // so this is only reachable on an UNEXPECTED throw after its first commit —
+      // the ledger then already holds 1 call, so bill for it.
       calls = 1;
     }
     console.error(`[scheduler] job ${idStr} target ${name} run ERROR (will still recordRun): ${runNote}`);
@@ -1928,11 +2016,15 @@ async function processJob(
   // Exhausted when `runsLeft == 0 || remaining < spentWei`, where
   // `remaining = budgetWei - spentWei`): the partial-remainder hard stop fires
   // when what's left can't fund another run of THIS size, not only when the
-  // budget hit exactly zero. `spentWei` is already capped to `job.budgetWei`,
-  // so `job.budgetWei - spentWei` never underflows.
+  // budget hit exactly zero. Test against the LIVE budget (re-read above), NOT
+  // the start-of-run `job.budgetWei`: a mid-run schedule_task/scheduleChildJob
+  // can draw the parent's budget down, so the stale snapshot over-states what
+  // remains → mispredicts 'not exhausted' → the owner misses the terminal
+  // completion push (L49). `spentWei` is already capped to `liveBudgetWei`, so
+  // `liveBudgetWei - spentWei` never underflows.
   const exhaustedNow =
     outcome === 'recorded' &&
-    (job.runsLeft <= 1 || job.budgetWei - spentWei < spentWei);
+    (job.runsLeft <= 1 || liveBudgetWei - spentWei < spentWei);
   if (outcome === 'recorded' && ran === 'ok' && (goal === 'completed' || exhaustedNow)) {
     const pushBody = goalReport !== undefined ? goalReport : runNote;
     const pushName = goal === 'completed' ? `GOAL COMPLETE: ${name}` : name;
@@ -2062,6 +2154,12 @@ async function fireOffchainJob(
   let ran: 'ok' | 'error' = 'ok';
   let note = '';
   let goalReport: string | undefined;
+  // `ranLoop` = the ping-pong loop actually started (and self-committed its calls
+  // to the tick ledger). A PRE-loop read failure (persona/lessons) leaves it
+  // false → the loop committed nothing, so the catch charges + commits ONE call.
+  // Mirrors processJob; replaces the old `calls === 0` guard that double-committed
+  // when runPingPong threw mid-loop after committing N (that throw is gone — L44).
+  let ranLoop = false;
   try {
     const basePersona = withLessons(
       (await personaOf(fallbackTokenId)) ?? defaultPersona(name),
@@ -2073,6 +2171,7 @@ async function fireOffchainJob(
     const task = isGoal
       ? `THE GOAL:\n${rawTask.slice(GOAL_PREFIX.length).trim()}`
       : rawTask || 'Perform your scheduled task and report concisely.';
+    ranLoop = true;
     const result = await runPingPong(
       persona,
       task,
@@ -2087,16 +2186,22 @@ async function fireOffchainJob(
     calls = result.calls;
     goalReport = result.goalReport;
     note = result.output;
+    // A model error inside the loop is RETURNED with the true call count (L44):
+    // mark the run errored + bill the real `calls` (the meter debit below uses
+    // `calls`); the catch now only fires for a PRE-loop read failure.
+    if (result.error !== undefined) ran = 'error';
     console.log(
       `[scheduler] offchain agent ${job.id} target ${name} calls=${calls}/${maxCalls} reply: ${note.slice(0, 600)}`,
     );
   } catch (e) {
     ran = 'error';
     note = (e as Error).message;
-    // runPingPong commits its FIRST call to the ledger before awaiting; if it
-    // threw with calls still 0 the loop never committed, so bill one call and
-    // commit it so the ledger matches the meter debit below.
-    if (calls === 0) {
+    // Only a PRE-loop read failure reaches here now (runPingPong RETURNS its own
+    // model errors with the true count). The loop never started, so it committed
+    // nothing: charge ONE call + commit it so the ledger matches the meter debit
+    // below. (Gating on `!ranLoop` instead of `calls === 0` removes the old
+    // double-commit when runPingPong threw mid-loop after committing N — L44.)
+    if (!ranLoop) {
       calls = 1;
       commitSpend(tb, job.owner, COST_WEI);
     }
@@ -2163,7 +2268,11 @@ async function fireOffchainDue(
   const now = Math.floor(Date.now() / 1000);
   let due: { job: OffchainJob; path: string; sha: string }[];
   try {
-    due = await listDueOffchain(now, MAX_OFFCHAIN_JOBS_PER_TICK);
+    // Scan a WIDER window than we process (OFFCHAIN_DUE_SCAN) so a burst of
+    // overdue AGENT jobs can't slice time-sensitive REMINDERS out of the due set
+    // before the kind split below (L48). Agents are still capped to
+    // MAX_OFFCHAIN_JOBS_PER_TICK when we split.
+    due = await listDueOffchain(now, OFFCHAIN_DUE_SCAN);
   } catch (e) {
     console.error(`[scheduler] offchain due scan failed: ${(e as Error).message}`);
     return { scanned: 0, results: [] };
@@ -2175,7 +2284,10 @@ async function fireOffchainDue(
   // case must NOT be starved by a slow on-chain/agent batch that already spent the
   // tick's soft budget. Fire them all (claim-gated, so still single-fire).
   const reminders = due.filter((d) => d.job.kind === 'reminder');
-  const agents = due.filter((d) => d.job.kind === 'agent');
+  // Cap AGENT runs at the processing budget (the wider scan was only to keep
+  // reminders in the batch — L48); agents beyond the cap are left UNCLAIMED, so
+  // they re-fire next tick.
+  const agents = due.filter((d) => d.job.kind === 'agent').slice(0, MAX_OFFCHAIN_JOBS_PER_TICK);
   for (const entry of reminders) {
     try {
       results.push(await fireOffchainJob(entry, tb, Date.now()));
@@ -2189,11 +2301,23 @@ async function fireOffchainDue(
   // stop STARTING new ones once the soft budget is gone (they re-fire next tick —
   // their file is untouched because we never claimed it).
   for (let i = 0; i < agents.length; i++) {
-    if (Date.now() - tickStart >= TICK_SOFT_BUDGET_MS) {
+    const nowMs = Date.now();
+    // Per-agent fair share of the REMAINING wall-clock over the REMAINING agents,
+    // anchored to NOW — not tickStart. The off-chain batch runs AFTER the on-chain
+    // batch + reminders, so a tickStart-anchored deadline (the old
+    // `tickStart + budget*(i+1)/N`) could already be IN THE PAST: fireOffchainJob
+    // would CLAIM (delete) the job, runPingPong would clock-cap at 0 calls, and
+    // writeNextSlot would CONSUME the fire — a one-shot agent job lost having
+    // never run the model (M10). SPILL the rest (leave the files untouched so they
+    // re-fire next tick) once no usable wall-clock remains — mirroring the
+    // on-chain mid-batch defer. (runPingPong additionally GUARANTEES the first
+    // model call past its clock gate, so a claimed job always runs at least once.)
+    const slice = Math.floor((TICK_SOFT_BUDGET_MS - (nowMs - tickStart)) / (agents.length - i));
+    if (slice <= 0) {
       console.warn(`[scheduler] offchain: ${agents.length - i} agent job(s) deferred — tick wall-clock budget exhausted`);
       break;
     }
-    const modelDeadline = tickStart + Math.floor((TICK_SOFT_BUDGET_MS * (i + 1)) / agents.length);
+    const modelDeadline = nowMs + slice;
     try {
       results.push(await fireOffchainJob(agents[i], tb, modelDeadline));
     } catch (e) {
@@ -2249,11 +2373,26 @@ export default async function handler(req: Request): Promise<Response> {
   // runs ONE job. No cron secret needed — processJob re-validates (known + Active
   // + due) and recordRun is CAS-guarded, so a poke can only run a genuinely-due
   // job once; not-due → safe no-write skip. Lets any keeper be the heartbeat when
-  // the Vercel cron stalls. Rate-limited per IP (read-spam is the only abuse).
+  // the Vercel cron stalls. Rate-limited per IP (read-spam is the only abuse), and
+  // metered against a SHARED per-isolate ledger so pokes can't bypass the per-tick
+  // spend caps (L8 / I15).
   {
     const poke = new URL(req.url).searchParams.get('poke');
     if (poke !== null) {
-      const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || 'unknown';
+      // Platform-TRUSTED client IP for the rate-limit key. The LEFTMOST
+      // x-forwarded-for entry is CLIENT-SUPPLIED (an attacker prepends a random
+      // value per request to mint a fresh rate key, defeating the 60/min cap —
+      // L8). Vercel sets `x-real-ip` to the genuine client IP and appends the
+      // real edge hop to the RIGHT of XFF, so prefer x-real-ip, else the
+      // RIGHTMOST XFF hop — never the spoofable left.
+      const xff = (req.headers.get('x-forwarded-for') ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const ip =
+        (req.headers.get('x-real-ip') ?? '').trim() ||
+        (xff.length ? xff[xff.length - 1] : '') ||
+        'unknown';
       const retry = pokeWindow.hit(ip);
       if (retry > 0) {
         return new Response(JSON.stringify({ error: 'rate limited', retryAfterSeconds: retry }), {
@@ -2270,7 +2409,13 @@ export default async function handler(req: Request): Promise<Response> {
           headers: { 'content-type': 'application/json' },
         });
       }
-      const result = await processJob(id, newTickBudget(), Date.now() + TICK_SOFT_BUDGET_MS);
+      // SHARED poke ledger (window-reset), NOT a fresh newTickBudget() per
+      // request: otherwise each poke gets a full, independent GLOBAL/PER_OWNER cap
+      // allowance and a caller could poke every due job to blow past the per-tick
+      // spend ceiling (L8 / I15). processJob's canSpend gate now bounds aggregate
+      // poke spend per window; a capped poke returns outcome 'spilled'.
+      const now = Date.now();
+      const result = await processJob(id, sharedPokeBudget(now), now + TICK_SOFT_BUDGET_MS);
       return new Response(JSON.stringify({ poked: poke, result }), {
         status: 200,
         headers: { 'content-type': 'application/json' },

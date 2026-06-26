@@ -408,7 +408,7 @@ impl Vm<'_> {
                     self.mstore(off, &val);
                     self.pc += 1;
                 }
-                0x51 => {
+                op::MLOAD => {
                     // MLOAD(off) — not emitted by codegen but cheap + correct to support.
                     let off = word_to_usize(&self.pop()?);
                     let w = self.mload(off);

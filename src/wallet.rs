@@ -302,11 +302,31 @@ pub fn at_rest_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
 /// CLI (`bin/localharness::link`); they MUST agree byte-for-byte, hence one
 /// impl here next to the sibling key derivations where a native test pins it.
 pub fn adopt_code_key(code: &str) -> [u8; 32] {
-    let mut hasher = Keccak256::new();
-    hasher.update(b"localharness/v0/adopt");
-    hasher.update(code.trim().to_uppercase().as_bytes());
+    // Stretch the low-entropy human pairing code with an iterated keccak KDF: an
+    // attacker who captures ONLY the sealed `#s=<ct>` blob (a leaked QR / URL) must
+    // pay ADOPT_KDF_ROUNDS keccaks PER candidate code to brute-force it offline.
+    // Combined with the higher-entropy code (`events::devices::generate_pair_code`,
+    // now 8 chars ≈ 2^40) and the receiver no longer persisting the ciphertext in
+    // its history, this puts the offline search out of practical reach. (Keccak is
+    // GPU-parallel; a memory-hard KDF would be stronger still — audit follow-up.)
+    // The output is shared BYTE-FOR-BYTE by the browser and the `localharness link`
+    // CLI (both call this) — changing ADOPT_KDF_ROUNDS or the tags breaks in-flight
+    // links and the pinned `adopt_code_key_pinned_*` test.
+    const ADOPT_KDF_ROUNDS: u32 = 200_000;
+    let mut acc = {
+        let mut hasher = Keccak256::new();
+        hasher.update(b"localharness/v0/adopt");
+        hasher.update(code.trim().to_uppercase().as_bytes());
+        hasher.finalize()
+    };
+    for _ in 0..ADOPT_KDF_ROUNDS {
+        let mut hasher = Keccak256::new();
+        hasher.update(b"localharness/v0/adopt-kdf");
+        hasher.update(&acc[..]);
+        acc = hasher.finalize();
+    }
     let mut out = [0u8; 32];
-    out.copy_from_slice(&hasher.finalize());
+    out.copy_from_slice(&acc);
     out
 }
 
@@ -641,11 +661,12 @@ mod tests {
     /// so a phone typing `abc123` and the CLI passing ` ABC123 ` agree.
     #[test]
     fn adopt_code_key_pinned_and_case_insensitive() {
-        // Generated ONCE from the live implementation (2026-06-21).
+        // Generated ONCE from the live implementation (2026-06-26, after the
+        // KDF-stretch hardening — audit H1: 200k iterated keccak rounds).
         assert_eq!(
             hex_encode(&adopt_code_key("ABC234")),
-            "76375069e23267cc461bdc0d247401b56d022d8b33a0155ddbb46784d81ebd77",
-            "adopt-code key derivation changed — in-flight adopt links break"
+            "b43a133dacf72b743f1451cdaaf0134a96e6e73ef93d28286ea15916073b6e31",
+            "adopt-code key derivation changed — in-flight adopt links break + CLI/browser drift"
         );
         // Case + surrounding whitespace are normalized away (same key).
         assert_eq!(adopt_code_key("abc234"), adopt_code_key("ABC234"));

@@ -38,7 +38,7 @@ use crate::backends::gemini::wire::{
 use crate::builtins::{register_builtins, BuiltinDeps, FINISH_TOOL_NAME};
 use crate::error::{Error, Result};
 use crate::filesystem::SharedFilesystem;
-use crate::hooks::TurnContext;
+use crate::hooks::{HookRunner, TurnContext};
 use crate::tools::{Tool, ToolContext, ToolRunner};
 use crate::types::{BuiltinTool, CapabilitiesConfig, ToolCall};
 
@@ -76,30 +76,42 @@ pub struct StartSubagent {
     /// can do real work); when `None` (no filesystem supplied to the parent)
     /// the subagent is text-only + `finish`.
     fs: Option<SharedFilesystem>,
+    /// The parent's hooks/policies. Threaded into the subagent's
+    /// `dispatch_tool_call` so its tool calls inherit the parent's PreToolCall
+    /// deny/containment policies (e.g. `policy::workspace_only`). `None` =
+    /// no inheritance (then only the PROTECTED_FILES basename guard bounds the
+    /// subagent's fs tools). See M8.
+    hooks: Option<Arc<HookRunner>>,
 }
 
 impl StartSubagent {
-    /// Construct a text-only spawner (no filesystem tools). Kept for callers
-    /// that don't have a filesystem to share.
+    /// Construct a text-only spawner (no filesystem tools, no inherited
+    /// policies). Kept for callers that don't have a filesystem to share.
     pub fn new(client: SharedClient, model: impl Into<String>) -> Self {
         Self {
             client,
             model: model.into(),
             fs: None,
+            hooks: None,
         }
     }
 
     /// Construct a tool-bearing spawner whose subagents get the filesystem
-    /// builtins over `fs` (the same store the parent's fs builtins use).
+    /// builtins over `fs` (the same store the parent's fs builtins use) and
+    /// whose tool calls run through `hooks` (the parent's PreToolCall
+    /// deny/containment policies), so the subagent can't escape the parent's
+    /// confinement.
     pub fn with_filesystem(
         client: SharedClient,
         model: impl Into<String>,
         fs: Option<SharedFilesystem>,
+        hooks: Option<Arc<HookRunner>>,
     ) -> Self {
         Self {
             client,
             model: model.into(),
             fs,
+            hooks,
         }
     }
 
@@ -119,12 +131,14 @@ impl StartSubagent {
         };
         let deps = BuiltinDeps {
             // No chat/image client: the subagent must NOT get start_subagent
-            // (nested) or generate_image even were they in the allowlist.
+            // (nested) or generate_image even were they in the allowlist — so
+            // no nested-subagent path consumes `hooks` here.
             chat_client: None,
             chat_model: String::new(),
             image_client: None,
             image_model: String::new(),
             fs: self.fs.clone(),
+            hooks: None,
         };
         let runner = ToolRunner::new();
         register_builtins(&runner, &caps, &deps);
@@ -242,9 +256,10 @@ impl Tool for StartSubagent {
             parts: vec![Part::Text { text: args.prompt }],
         }];
 
-        // A detached turn context — the subagent has no parent hooks/session,
-        // so the shared dispatch pipeline runs the tool with policies/hooks
-        // disabled (None) but the SAME execute + error-lift semantics.
+        // A fresh turn context — the subagent has no parent session, but it
+        // DOES inherit the parent's hooks (`self.hooks`) so the shared dispatch
+        // pipeline enforces the parent's PreToolCall deny/containment policies
+        // (e.g. workspace_only) on every subagent tool call.
         let turn_ctx = TurnContext::default();
 
         let mut last_text = String::new();
@@ -346,9 +361,13 @@ impl Tool for StartSubagent {
                     id: None,
                     canonical_path: None,
                 };
-                // No hooks/policies for the detached subagent: pass None so the
-                // pipeline runs execute + error-lift with the same semantics.
-                let result = dispatch_tool_call(Some(&runner), None, &turn_ctx, &tool_call).await;
+                // Inherit the parent's hooks/policies: a PreToolCall deny
+                // (workspace_only / a custom containment policy) short-circuits
+                // before the tool runs, with the same execute + error-lift
+                // semantics as the main loop.
+                let result =
+                    dispatch_tool_call(Some(&runner), self.hooks.as_ref(), &turn_ctx, &tool_call)
+                        .await;
                 let value = result.result.clone().unwrap_or(Value::Null);
                 response_parts.push(Part::FunctionResponse {
                     function_response: FunctionResponse {
@@ -393,7 +412,7 @@ mod tests {
                 .expect("client builds"),
         );
         let fs: SharedFilesystem = Arc::new(NativeFilesystem::new());
-        let sub = StartSubagent::with_filesystem(client, "gemini-test", Some(fs));
+        let sub = StartSubagent::with_filesystem(client, "gemini-test", Some(fs), None);
         let runner = sub.build_runner();
         let mut names = runner.names();
         names.sort();
@@ -470,7 +489,7 @@ mod tests {
                 .expect("client builds"),
         );
         let fs: SharedFilesystem = Arc::new(NativeFilesystem::new());
-        let sub = StartSubagent::with_filesystem(client, "gemini-test", Some(fs));
+        let sub = StartSubagent::with_filesystem(client, "gemini-test", Some(fs), None);
         let runner = sub.build_runner();
         let runner_names = runner.names();
         for tool in runner.iter_tools() {

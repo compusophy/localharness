@@ -946,7 +946,9 @@ const MAX_SOCKETS = 8;
 const sockets = []; // index = handle; closed slots become null
 
 function urlIsAllowed(url) {
-  // Port of display.rs::net::url_is_allowed — wss:// only, no loopback/LAN/IP.
+  // Hand-port of src/rustlite/loader.rs::url_is_allowed — wss:// only, no
+  // loopback/LAN/IP. MUST stay in lockstep with that Rust core (audit L19):
+  // trailing-dot normalization + WHATWG "last label is a number" IPv4 rejection.
   const m = url.split('://');
   if (m.length < 2 || m[0].toLowerCase() !== 'wss') return false;
   const rest = m.slice(1).join('://');
@@ -957,14 +959,21 @@ function urlIsAllowed(url) {
   const host = hostport.split(':')[0] || '';
   if (host === '') return false;
   const lower = host.toLowerCase();
-  if (lower === 'localhost' || lower.endsWith('.localhost') || lower.endsWith('.local')) {
+  // WHATWG drops a single trailing dot before classifying the host, so
+  // `localhost.` and `127.0.0.1.` are the loopback names the resolver sees.
+  const normalized = lower.endsWith('.') ? lower.slice(0, -1) : lower;
+  if (normalized === '') return false;
+  if (normalized === 'localhost' || normalized.endsWith('.localhost') || normalized.endsWith('.local')) {
     return false;
   }
-  const octets = lower.split('.');
-  if (octets.length === 4 && octets.every((o) => o.length > 0 && /^[0-9]+$/.test(o))) {
-    return false; // bare IPv4 literal
-  }
-  return lower.includes('.');
+  // Reject anything the WHATWG host parser treats as IPv4: its LAST label "is a
+  // number" — all decimal digits (decimal/octal) OR a 0x/0X hex literal. Catches
+  // a bare 32-bit int (2130706433 == 127.0.0.1) and hex-dotted forms (0x7f.0.0.1)
+  // the old per-octet all-decimal-digits check missed.
+  const lastLabel = normalized.split('.').pop() || '';
+  const looksNumeric = lastLabel !== '' && (lastLabel.startsWith('0x') || /^[0-9]+$/.test(lastLabel));
+  if (looksNumeric) return false;
+  return normalized.includes('.');
 }
 
 function memU8() {

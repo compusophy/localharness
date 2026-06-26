@@ -345,6 +345,20 @@ impl TempoTxBuilder {
         self.inner.fee_token = Some(addr);
         self
     }
+    /// Set the tx-expiry upper bound (unix secs). The tx is invalid once the
+    /// block timestamp passes this — bounds how long a signed (esp. relay-
+    /// sponsored) tx can be replayed/front-run before its nonce is consumed.
+    /// Already committed in BOTH signing hashes; default `None` (no expiry).
+    pub fn valid_before(mut self, secs: u64) -> Self {
+        self.inner.valid_before = Some(secs);
+        self
+    }
+    /// Set the tx-validity lower bound (unix secs) — the tx is invalid until
+    /// the block timestamp reaches it. Committed in both hashes; default `None`.
+    pub fn valid_after(mut self, secs: u64) -> Self {
+        self.inner.valid_after = Some(secs);
+        self
+    }
     pub fn call(mut self, call: TempoCall) -> Self {
         self.inner.calls.push(call);
         self
@@ -384,6 +398,16 @@ impl TempoTxBuilder {
 /// `fee_token` (None = native). Returns the 0x76-prefixed raw bytes
 /// ready for `eth_sendRawTransaction`.
 pub fn sign_self_paid(tx: TempoTx, sender: &k256::ecdsa::SigningKey) -> Vec<u8> {
+    // Hard guard (release + debug): a `.sponsored()` tx signs the
+    // sponsored sender-hash branch (fee_token blanked) but serializes the
+    // real fee_token with no fee_payer sig → the node reconstructs the
+    // self-paid hash and ecrecover yields a PHANTOM sender (the exact
+    // identity-brick the golden vectors warn about). Reject it outright.
+    assert!(
+        !tx.sponsored,
+        "sign_self_paid called on a sponsored TempoTx — use sign_sponsored \
+         (or drop TempoTxBuilder::sponsored())"
+    );
     let sender_hash = tx.sender_hash();
     let sig = crate::wallet::sign_hash(sender, &sender_hash);
     tx.serialize_signed(&sig, None)
@@ -400,7 +424,11 @@ pub fn sign_sponsored(
     sender: &k256::ecdsa::SigningKey,
     fee_payer: &k256::ecdsa::SigningKey,
 ) -> Vec<u8> {
-    debug_assert!(
+    // Hard guard (release + debug): a non-sponsored tx signs the self-paid
+    // sender-hash branch, but serializing WITH a fee_payer sig commits the
+    // sponsored layout → the recovered sender is a phantom. Reject it in
+    // release too (a stripped debug_assert left this latent in published builds).
+    assert!(
         tx.sponsored,
         "sign_sponsored called on a non-sponsored TempoTx — \
          use TempoTxBuilder::sponsored()"
@@ -501,6 +529,24 @@ fn rlp_access_list(list: &[AccessListItem]) -> Vec<u8> {
     wallet::rlp_list(&items)
 }
 
+/// Normalize a signature's recovery-id byte to Tempo's 0/1 on-wire
+/// convention, accepting BOTH input conventions EXPLICITLY: Ethereum
+/// 27/28 (what `wallet::sign_hash` emits) and the bare 0/1 recovery id
+/// (what the mainnet sponsor relay returns). A blind `saturating_sub(27)`
+/// silently zeroed a 0/1-convention sig (v=1 → 0), so ecrecover would
+/// resolve to a phantom address while the verifier — which accepts both
+/// conventions — passed it. Any other byte is a corrupted signature; we
+/// panic rather than emit a tx with a wrong recovery id (default-deny —
+/// the real flow never reaches here, since `wallet::recover_address`
+/// rejects v ∉ {0,1,27,28} before a sig is serialized).
+fn normalize_recovery_id(v: u8) -> u8 {
+    match v {
+        27 | 28 => v - 27,
+        0 | 1 => v,
+        other => panic!("invalid signature recovery id {other}: expected 0/1 or 27/28"),
+    }
+}
+
 /// Encode a 65-byte (r ‖ s ‖ v) signature in Tempo's `TempoSignature`
 /// format. For secp256k1: 65 raw bytes (r 32 ‖ s 32 ‖ v 1) with NO
 /// type prefix, packed into a single RLP byte string. `v` is
@@ -509,7 +555,7 @@ fn rlp_access_list(list: &[AccessListItem]) -> Vec<u8> {
 fn rlp_compact_signature(sig: &[u8; 65]) -> Vec<u8> {
     let mut packed = [0u8; 65];
     packed.copy_from_slice(sig);
-    packed[64] = packed[64].saturating_sub(27); // 27/28 → 0/1
+    packed[64] = normalize_recovery_id(packed[64]); // 27/28 or 0/1 → 0/1
     wallet::rlp_bytes(&packed)
 }
 
@@ -527,7 +573,7 @@ fn rlp_compact_signature(sig: &[u8; 65]) -> Vec<u8> {
 /// transaction" — deterministic per (sender key + nonce + payload),
 /// intermittent across keys. `rlp_int_bytes` does the stripping.
 fn rlp_vrs_signature(sig: &[u8; 65]) -> Vec<u8> {
-    let v = sig[64].saturating_sub(27); // 27/28 → 0/1
+    let v = normalize_recovery_id(sig[64]); // 27/28 or 0/1 → 0/1
     wallet::rlp_list(&[
         wallet::rlp_uint(v as u128),
         rlp_int_bytes(&sig[..32]),
@@ -670,6 +716,90 @@ mod tests {
         assert!(
             !enc.windows(2).any(|w| w == [0xa0, 0x00]),
             "non-minimal integer (0xa0 0x00 ..) leaked into the fee_payer sig RLP"
+        );
+    }
+
+    #[test]
+    fn signature_encoders_normalize_both_v_conventions() {
+        // A relay-supplied sig in the 0/1 recovery-id convention must NOT be
+        // zeroed by a blind saturating_sub(27): v=1 (0/1) and v=28 (27/28)
+        // both mean recovery id 1, so they MUST encode identically on-wire.
+        // The old `saturating_sub(27)` turned v=1 → 0 → a phantom fee_payer.
+        let mut sig_27_28 = [0xABu8; 65];
+        let mut sig_0_1 = [0xABu8; 65];
+        sig_27_28[64] = 28; // 27/28 convention → recovery id 1
+        sig_0_1[64] = 1; // 0/1 convention   → recovery id 1 (must STAY 1)
+
+        // SENDER slot (flat 65 bytes): trailing v byte must be 1 in both.
+        let flat_a = rlp_compact_signature(&sig_27_28);
+        let flat_b = rlp_compact_signature(&sig_0_1);
+        assert_eq!(flat_a, flat_b, "0/1 and 27/28 sender sigs must encode identically");
+        assert_eq!(*flat_a.last().unwrap(), 1, "sender recovery id must normalize to 1");
+
+        // FEE_PAYER slot (rlp([v, r, s])): the v element must be 1 in both.
+        let vrs_a = rlp_vrs_signature(&sig_27_28);
+        let vrs_b = rlp_vrs_signature(&sig_0_1);
+        assert_eq!(vrs_a, vrs_b, "0/1 and 27/28 fee_payer sigs must encode identically");
+
+        // v=0 (0/1) and v=27 (27/28) both mean recovery id 0.
+        let mut sig_v0 = [0xABu8; 65];
+        let mut sig_v27 = [0xABu8; 65];
+        sig_v0[64] = 0;
+        sig_v27[64] = 27;
+        assert_eq!(rlp_compact_signature(&sig_v0), rlp_compact_signature(&sig_v27));
+        assert_eq!(*rlp_compact_signature(&sig_v0).last().unwrap(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid signature recovery id")]
+    fn signature_encoder_rejects_invalid_recovery_id() {
+        // A corrupted v (∉ {0,1,27,28}) must hard-panic, never silently emit a
+        // tx with a bogus recovery id (default-deny).
+        let mut sig = [0xABu8; 65];
+        sig[64] = 5;
+        let _ = rlp_compact_signature(&sig);
+    }
+
+    #[test]
+    #[should_panic(expected = "sponsored TempoTx")]
+    fn sign_self_paid_rejects_sponsored_tx() {
+        // L3: signing a sponsored tx self-paid would brick the sender hash —
+        // reject it in release as well as debug.
+        let (sender, _) = golden_keys();
+        let tx = dummy_tx().set_sponsored(true);
+        let _ = sign_self_paid(tx, &sender);
+    }
+
+    #[test]
+    #[should_panic(expected = "non-sponsored TempoTx")]
+    fn sign_sponsored_rejects_self_paid_tx() {
+        // L3: signing a non-sponsored tx sponsored is the mirror brick.
+        let (sender, fee_payer) = golden_keys();
+        let tx = dummy_tx(); // not .sponsored()
+        let _ = sign_sponsored(tx, &sender, &fee_payer);
+    }
+
+    #[test]
+    fn builder_validity_window_setters_populate_both_hashes() {
+        // I2: the new valid_before/valid_after setters must actually land in
+        // the encoded fields (they feed both signing hashes). A tx with an
+        // expiry must hash differently from one without.
+        let base = dummy_tx();
+        let bounded = TempoTxBuilder::new(42431)
+            .max_priority_fee_per_gas(1_000_000_000)
+            .max_fee_per_gas(40_000_000_000)
+            .gas_limit(200_000)
+            .nonce(0)
+            .valid_before(1_900_000_000)
+            .valid_after(1_800_000_000)
+            .call(TempoCall { to: [0x11; 20], value_wei: 0, input: vec![0xde, 0xad, 0xbe, 0xef] })
+            .build();
+        assert_eq!(bounded.valid_before, Some(1_900_000_000));
+        assert_eq!(bounded.valid_after, Some(1_800_000_000));
+        assert_ne!(
+            base.sender_hash(),
+            bounded.sender_hash(),
+            "an expiry window must change the sender-hash preimage"
         );
     }
 

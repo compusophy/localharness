@@ -172,11 +172,14 @@ pub(super) fn adopt_device_pressed() {
     });
 }
 
-/// 6-char one-time pairing code (Crockford-ish base32, no ambiguous
-/// chars) from the browser CSPRNG. Short enough to read aloud / type.
+/// 8-char one-time pairing code (Crockford-ish base32, no ambiguous chars) from
+/// the browser CSPRNG — ~40 bits of entropy (32^8). The alphabet is 32 symbols and
+/// 256 % 32 == 0, so the `% 32` map is unbiased (no modulo skew). Bumped from 6
+/// (~30 bits) so the sealed-seed ciphertext can't be cheaply brute-forced offline
+/// even if it leaks (audit H1); still short enough to read aloud / type.
 fn generate_pair_code() -> String {
     const ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-    let mut bytes = [0u8; 6];
+    let mut bytes = [0u8; 8];
     let _ = getrandom::getrandom(&mut bytes);
     bytes
         .iter()

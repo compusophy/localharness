@@ -133,6 +133,14 @@ pub(crate) struct App {
     /// while `None` (pre-identity, seedless origins) `shared_opfs` serves
     /// the raw handle and everything stays plaintext, exactly as before.
     pub(crate) opfs_at_rest: Option<SharedFilesystem>,
+    /// The 32-byte key backing the currently-installed `opfs_at_rest`.
+    /// Lets [`install_at_rest_encryption`] tell a repeated re-derive (same
+    /// seed → same key → no-op) from a SEED CHANGE (an in-tab
+    /// `wallet_store::import` of a DIFFERENT seed). On a change it rewraps;
+    /// without this, post-import writes seal under the stale key and orphan
+    /// on the next reload (silent data loss for the new identity). `None`
+    /// whenever `opfs_at_rest` is `None`.
+    pub(crate) opfs_at_rest_key: Option<[u8; 32]>,
     /// Restored-from-OPFS history bytes from a previous session. Set
     /// once on mount (if the marker file exists) and consumed by the
     /// next `start_session`. None after first use so it doesn't get
@@ -205,6 +213,7 @@ impl App {
             opfs_cwd: Vec::new(),
             opfs: None,
             opfs_at_rest: None,
+            opfs_at_rest_key: None,
             pending_history: None,
             wallet: None,
             verify_state: VerifyState::Pending,
@@ -248,16 +257,23 @@ pub(crate) fn shared_opfs() -> SharedFilesystem {
 }
 
 /// Install the at-rest encryption layer over the shared OPFS handle.
-/// Idempotent — the first install wins for the tab's lifetime (the key is
-/// deterministic from the seed, so repeated wallet loads derive the same
-/// key anyway). Called from `wallet_store::{load, create_and_persist,
-/// import}`, the three places a [`wallet_store::MasterWallet`]
+/// Idempotent for the COMMON case — a repeated load of the SAME seed
+/// derives the same key, so re-installing it is a no-op. But an in-tab
+/// `wallet_store::import` of a DIFFERENT seed yields a different key: that
+/// must REWRAP the layer here, or every subsequent write would seal under
+/// the stale (old-seed) key and become unreadable on the next reload (the
+/// new seed derives a new key) — silent data loss for the new identity.
+/// Called from `wallet_store::{load, create_and_persist, import,
+/// persist_current_seed}`, the places a [`wallet_store::MasterWallet`]
 /// materializes; never called on seedless origins, which keep today's
 /// plaintext behavior.
 pub(crate) fn install_at_rest_encryption(key: [u8; 32]) {
     APP.with(|cell| {
         let mut app = cell.borrow_mut();
-        if app.opfs_at_rest.is_some() {
+        // Same seed re-derives the same key → genuine no-op. A DIFFERENT
+        // key means the seed changed (in-tab re-import) → fall through and
+        // rewrap so post-import writes use the key the next reload derives.
+        if app.opfs_at_rest.is_some() && app.opfs_at_rest_key == Some(key) {
             return;
         }
         if app.opfs.is_none() {
@@ -265,6 +281,7 @@ pub(crate) fn install_at_rest_encryption(key: [u8; 32]) {
         }
         let raw: SharedFilesystem = app.opfs.as_ref().unwrap().clone();
         app.opfs_at_rest = Some(Arc::new(EncryptedFilesystem::new(raw, &key)));
+        app.opfs_at_rest_key = Some(key);
     });
 }
 
@@ -728,6 +745,19 @@ fn mount() -> Result<(), JsValue> {
             // are already installed above, so the form works.
             if read_query_param("adopt").is_some() {
                 let ct_hex = read_fragment_param("s").unwrap_or_default();
+                // SECURITY (audit H1): the sealed-seed ciphertext rides in the URL
+                // fragment (`#s=<ct>`). It's now captured into the form's hidden
+                // input below, so strip it from the address bar + this device's
+                // history immediately — leaving `#s=<ct>` there persists an
+                // offline-brute-force handle on the pairing code if the history
+                // ever leaks (QR-scanner logs, shared/synced history, back button).
+                if let Ok(window) = dom::window() {
+                    if let Ok(history) = window.history() {
+                        let path = window.location().pathname().unwrap_or_else(|_| "/".into());
+                        let _ = history
+                            .replace_state_with_url(&JsValue::NULL, "", Some(&format!("{path}?adopt=1")));
+                    }
+                }
                 root.set_inner_html(&templates::adopt_join(&ct_hex).into_string());
                 dom::mark_ready();
                 return Ok(());

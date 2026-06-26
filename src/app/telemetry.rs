@@ -49,16 +49,52 @@ pub(crate) fn redact(s: &str) -> String {
     s.split_inclusive(char::is_whitespace)
         .map(|tok| {
             let t = tok.trim();
-            let hex = t.trim_start_matches("0x");
-            let secret = (t.len() >= 20 && (t.starts_with("sk-") || t.starts_with("AIza")))
-                || (hex.len() >= 64 && hex.chars().all(|c| c.is_ascii_hexdigit()));
-            if secret {
-                tok.replace(t, "[redacted]")
-            } else {
+            let red = redact_token(t);
+            if red == t {
                 tok.to_string()
+            } else {
+                tok.replace(t, &red)
             }
         })
         .collect()
+}
+
+/// Redact secrets inside ONE whitespace-delimited token, even when the secret is
+/// GLUED to a non-whitespace prefix (`key=AIza…`, `apikey:sk-…`, a `?key=AIza…`
+/// query fragment). The old code only matched markers at the token START, so a
+/// prefixed key shipped unredacted (L35). We split the token on the usual
+/// key/value & query delimiters (`=`/`:`/`&`/`?`) and redact each field.
+fn redact_token(tok: &str) -> String {
+    tok.split_inclusive(['=', ':', '&', '?'])
+        .map(|field| match field.chars().last() {
+            // Keep the trailing delimiter verbatim; redact only the value.
+            Some(d @ ('=' | ':' | '&' | '?')) => {
+                let cut = field.len() - d.len_utf8();
+                format!("{}{d}", redact_value(&field[..cut]))
+            }
+            _ => redact_value(field),
+        })
+        .collect()
+}
+
+/// Redact a single delimiter-free value: an `sk-`/`AIza` key found ANYWHERE in it
+/// (redact from the marker to the end, keeping the prefix), or a 32-byte hex blob
+/// (private key; an optional `0x` prefix is tolerated).
+fn redact_value(val: &str) -> String {
+    let marker = [val.find("sk-"), val.find("AIza")]
+        .into_iter()
+        .flatten()
+        .min();
+    if let Some(idx) = marker {
+        if val.len() - idx >= 20 {
+            return format!("{}[redacted]", &val[..idx]);
+        }
+    }
+    let hex = val.trim_start_matches("0x");
+    if hex.len() >= 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return "[redacted]".to_string();
+    }
+    val.to_string()
 }
 
 /// Hard cap on the report body (mirrors `proxy/api/telemetry.ts` MAX_BODY_BYTES
@@ -136,7 +172,12 @@ pub(crate) async fn report_event(
         }
         None => (title, signature),
     };
-    if !SENT.with(|s| s.borrow_mut().insert(signature.clone())) {
+    // The per-session dedup collapses RECURRING AUTOMATIC reports (errors,
+    // cartridge failures) so one break files once. DELIBERATE feedback
+    // (`kind == "feedback"`) is a user-initiated submit and must ALWAYS send
+    // (matching this fn's doc) — exempt it, or two near-identical notes sharing
+    // a 48-char fingerprint get silently dropped while the UI paints "✓ sent" (L34).
+    if kind != "feedback" && !SENT.with(|s| s.borrow_mut().insert(signature.clone())) {
         return; // already reported this signature this session
     }
     let mut body = redact(&freeform);

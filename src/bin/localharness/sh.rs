@@ -6,10 +6,14 @@
 //! rustlite builds cartridges, the WASI runtime runs compiled CLIs, bashlite
 //! scripts the tools.
 //!
-//! Value-moving commands ride the **dry-run-manifest** gate: the script first
-//! runs DRY (nothing sent), emitting a one-line plan per move; without
-//! `--confirm` it prints the plan and stops; with `--confirm` it shows the plan
-//! then runs LIVE. Read-only / composition scripts (no moves) just run.
+//! Value-moving commands ride the **dry-run-manifest** gate: the script runs
+//! DRY exactly ONCE (nothing sent), emitting a one-line plan per move and
+//! capturing each move (command + effective args) into the manifest; without
+//! `--confirm` it prints the plan and stops; with `--confirm` it executes
+//! EXACTLY the captured manifest — it never re-runs the script, so a divergent
+//! second pass (time/random/fs-state-dependent control flow) can't swap in a
+//! value move the user never approved. Read-only / composition scripts (no
+//! moves) just run.
 
 use std::sync::Arc;
 
@@ -25,16 +29,31 @@ use crate::{load_signer, load_sponsor};
 
 /// A native bashlite host: the fs sandbox rooted at the script's directory, the
 /// read-only `lh-*` reads, and the value-moving `lh-*` writes behind the
-/// dry-run-manifest gate. `run_builtin` tries reads, then writes, then fs.
+/// dry-run-manifest gate. The host runs the script DRY-ONLY: it COLLECTS each
+/// value move into [`Self::manifest`] and sends nothing. The approved manifest
+/// — not a script re-run — is what executes LIVE (see [`run_source`]), so no
+/// cross-pass divergence can substitute an unapproved move. `run_builtin` tries
+/// reads, then writes, then fs.
 struct CliBashHost {
     fs: RootedFilesystem,
     identity: Option<String>,
     signer: Option<SigningKey>,
     sponsor: SigningKey,
     fee_token: String,
-    dry_run: bool,
-    /// One line per value move encountered (the confirm manifest).
-    manifest: Vec<String>,
+    /// Every value move encountered, in order — the confirm manifest. On
+    /// `--confirm` EXACTLY these execute (the script is never re-run).
+    manifest: Vec<PlannedMove>,
+}
+
+/// One value move captured during the dry pass: the command, its EFFECTIVE args
+/// (source-file paths already substituted with content), and the one-line plan
+/// shown to the user. The live pass dispatches EXACTLY this rather than
+/// re-running the script, so the confirmed plan is BINDING — a divergent second
+/// pass (clock/random/fs-state) can't swap in a move the user never authorized.
+struct PlannedMove {
+    cmd: String,
+    args: Vec<String>,
+    plan: String,
 }
 
 #[async_trait(?Send)]
@@ -71,11 +90,18 @@ impl BashHost for CliBashHost {
                 }
             }
             let env = WriteEnv { signer, sponsor: &self.sponsor, fee_token: &self.fee_token };
+            // DRY-ONLY here: collect the plan and send nothing. The APPROVED
+            // manifest (not a re-run of this script) is what executes live, so
+            // record the command + effective args alongside the plan.
             if let Some((out, plan)) =
-                bashlite::platform::dispatch_write(cmd, &effective, &env, self.dry_run).await
+                bashlite::platform::dispatch_write(cmd, &effective, &env, true).await
             {
                 if !plan.is_empty() {
-                    self.manifest.push(plan);
+                    self.manifest.push(PlannedMove {
+                        cmd: cmd.to_string(),
+                        args: effective,
+                        plan,
+                    });
                 }
                 return out;
             }
@@ -85,8 +111,10 @@ impl BashHost for CliBashHost {
     }
 }
 
-/// Run `path` once with the given `dry_run` flag; returns the script result and
-/// the value-move manifest it produced.
+/// Run `path` once DRY (sends nothing); returns the script result and the
+/// value-move manifest it produced. The script is NEVER run live — the approved
+/// manifest is dispatched directly (see [`run_source`]) so no cross-pass
+/// divergence can inject an unapproved move.
 async fn run_pass(
     src: &str,
     base: &str,
@@ -94,8 +122,7 @@ async fn run_pass(
     signer: Option<SigningKey>,
     sponsor: SigningKey,
     fee_token: String,
-    dry_run: bool,
-) -> Result<(bashlite::ScriptResult, Vec<String>), String> {
+) -> Result<(bashlite::ScriptResult, Vec<PlannedMove>), String> {
     let fs = RootedFilesystem::new(Arc::new(NativeFilesystem::new()), base.to_string());
     let mut host = CliBashHost {
         fs,
@@ -103,7 +130,6 @@ async fn run_pass(
         signer,
         sponsor,
         fee_token,
-        dry_run,
         manifest: Vec::new(),
     };
     let res = bashlite::run(&mut host, src).await.map_err(|e| e.to_string())?;
@@ -137,8 +163,8 @@ pub(crate) async fn cmd_sh_inline(src: &str, as_name: Option<&str>, confirm: boo
     run_source(src, ".", as_name, confirm).await
 }
 
-/// The shared run pipeline: load identity/sponsor, run the DRY pass to collect
-/// the value-move manifest, then print (read/compose scripts) or gate on
+/// The shared run pipeline: load identity/sponsor, run the DRY pass ONCE to
+/// collect the value-move manifest, then print (read/compose scripts) or gate on
 /// `--confirm` (value-moving scripts). `base` roots the fs sandbox.
 async fn run_source(src: &str, base: &str, as_name: Option<&str>, confirm: bool) -> i32 {
     let signer = as_name.and_then(|n| load_signer(Some(n)).ok());
@@ -150,15 +176,17 @@ async fn run_source(src: &str, base: &str, as_name: Option<&str>, confirm: bool)
     };
     let fee_token = registry::ALPHA_USD_ADDRESS().to_string();
 
-    // Pass 1 — DRY-RUN: collect the value-move manifest; send nothing.
+    // DRY-RUN (the ONLY script execution): collect the value-move manifest;
+    // send nothing. The captured moves ARE what executes on --confirm — the
+    // script is never re-run, so a divergent second pass can't inject a move the
+    // user didn't approve.
     let (dry, manifest) = match run_pass(
         src,
         base,
-        identity.clone(),
+        identity,
         signer.clone(),
         sponsor.clone(),
         fee_token.clone(),
-        true,
     )
     .await
     {
@@ -185,26 +213,81 @@ async fn run_source(src: &str, base: &str, as_name: Option<&str>, confirm: bool)
     }
     eprintln!("\nthis script moves value ({} action(s)):", manifest.len());
     for m in &manifest {
-        eprintln!("  - {m}");
+        eprintln!("  - {}", m.plan);
     }
     if !confirm {
         eprintln!("nothing sent. re-run with --confirm to execute.");
         return 0;
     }
 
-    // Pass 2 — LIVE: re-run for real (reads are idempotent; writes execute).
+    // --confirm given — execute EXACTLY the approved manifest, in order. Bind
+    // execution to the plan the user saw: dispatch each captured move LIVE
+    // rather than re-running the script (a re-run could diverge and move value
+    // the user never authorized).
     eprintln!("--confirm given — executing…");
-    match run_pass(src, base, identity, signer, sponsor, fee_token, false).await {
-        Ok((live, _)) => {
-            print!("{}", live.stdout);
-            if !live.stderr.is_empty() {
-                eprint!("{}", live.stderr);
+    let Some(signer) = signer.as_ref() else {
+        // A move was only ever recorded with a signer present, so this is
+        // unreachable — refuse rather than silently skip if it somehow occurs.
+        eprintln!("sh: no identity — run with --as <name>");
+        return 2;
+    };
+    let env = WriteEnv { signer, sponsor: &sponsor, fee_token: &fee_token };
+    let mut code = 0;
+    for m in &manifest {
+        match bashlite::platform::dispatch_write(&m.cmd, &m.args, &env, false).await {
+            Some((out, _plan)) => {
+                print!("{}", out.stdout);
+                if !out.stderr.is_empty() {
+                    eprint!("{}", out.stderr);
+                }
+                if out.code != 0 {
+                    code = out.code;
+                }
             }
-            live.exit_code
+            // A manifest entry is always a value-moving command dispatch_write
+            // owns; treat the impossible None as an error, never a silent skip.
+            None => {
+                eprintln!("sh: {}: not a value-moving command", m.cmd);
+                code = 2;
+            }
         }
-        Err(e) => {
-            eprintln!("sh: {e}");
-            2
-        }
+    }
+    code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M7 regression: the dry pass must capture each value move STRUCTURALLY
+    /// (command + effective args + plan), because `--confirm` executes exactly
+    /// that captured manifest — it never re-runs the script. A re-run could
+    /// diverge (clock/random/fs-state-dependent control flow) and move value the
+    /// user never approved; binding execution to the captured move closes that.
+    #[tokio::test]
+    async fn dry_pass_captures_structured_moves_not_a_rerun() {
+        let k = wallet::generate();
+        let fs = RootedFilesystem::new(Arc::new(NativeFilesystem::new()), ".".to_string());
+        let mut host = CliBashHost {
+            fs,
+            identity: Some(bytes_to_hex_str(&wallet::address(&k.signer))),
+            signer: Some(k.signer.clone()),
+            sponsor: k.signer.clone(),
+            fee_token: registry::ALPHA_USD_ADDRESS().to_string(),
+            manifest: Vec::new(),
+        };
+        // `lh-send` to a 0x ADDRESS is network-free in the dry pass (no resolve).
+        let addr = "0x00000000000000000000000000000000000000aa";
+        let res = bashlite::run(&mut host, &format!("lh-send {addr} 2.5"))
+            .await
+            .expect("script runs");
+        assert_eq!(res.exit_code, 0, "{:?}", res.stderr);
+        // Exactly one move, captured with its command + effective args + plan —
+        // enough to re-dispatch it live WITHOUT re-running the script.
+        assert_eq!(host.manifest.len(), 1);
+        let m = &host.manifest[0];
+        assert_eq!(m.cmd, "lh-send");
+        assert_eq!(m.args, vec![addr.to_string(), "2.5".to_string()]);
+        assert!(m.plan.contains("send 2.5 $LH"), "{}", m.plan);
     }
 }

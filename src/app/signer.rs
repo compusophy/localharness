@@ -474,11 +474,14 @@ fn build_challenge_response(id: &str, nonce_hex: &str, name: &str) -> Result<JsV
 /// token-bound account). Instead the tenant sends the tx's structured
 /// fields; we independently reconstruct the sender_hash, enforce that
 /// every call targets an allowlisted contract (the registry diamond or
-/// the $LH credits token) with zero native value, cross-check the
-/// reconstruction against the claimed digest, and only then sign. The
-/// cross-origin sponsored path is only ever used for register /
-/// setMetadata / submitFeedback (diamond) and approve / transfer ($LH);
-/// TBA-touching flows run apex-side with the wallet directly, never here.
+/// the $LH credits token) with zero native value AND a DEFAULT-DENY
+/// per-selector calldata policy — diamond calls must be in the documented
+/// cross-origin-sponsorable write set (`diamond_signable_selectors`), and
+/// $LH-token calls are limited to `approve` → diamond, `transfer` /
+/// `transferWithMemo` → the #81/L16 recipient gate, with every other
+/// selector refused — then cross-check the reconstruction against the
+/// claimed digest and only then sign. TBA-touching flows run apex-side
+/// with the wallet directly, never here.
 async fn build_sponsored_tx_response(
     data: JsValue,
     purpose: String,
@@ -515,6 +518,18 @@ async fn build_sponsored_tx_response(
     let registry_addr = parse_addr20(crate::registry::REGISTRY_ADDRESS())?;
     let token_addr = parse_addr20(crate::registry::LOCALHARNESS_TOKEN_ADDRESS())?;
 
+    // DEFAULT-DENY selector allowlists (M5 / L15). A trusted-but-hostile
+    // `*.localharness.xyz` must not be able to get the master to sign an
+    // arbitrary diamond write or an un-gated $LH-token call, so neither target
+    // is signable by address alone — the per-call calldata policy below gates
+    // BOTH by 4-byte selector and refuses anything not explicitly listed. Memo
+    // selectors are computed (not eyeballed) so they track the canonical sigs.
+    let diamond_selectors = diamond_signable_selectors();
+    let transfer_with_memo_sel =
+        crate::registry::selector("transferWithMemo(address,uint256,bytes32)");
+    let transfer_from_with_memo_sel =
+        crate::registry::selector("transferFromWithMemo(address,address,uint256,bytes32)");
+
     let calls_val = get("calls").ok_or_else(|| "tx.calls missing".to_string())?;
     let calls_arr: js_sys::Array = calls_val
         .dyn_into()
@@ -522,14 +537,17 @@ async fn build_sponsored_tx_response(
     if calls_arr.length() == 0 {
         return Err("tx.calls empty".into());
     }
-    // #81: allowlisting the $LH token by TARGET alone is a confused-deputy
-    // drain — the token accepts value-moving calls, so any trusted subdomain
-    // (incl. a hostile one the victim merely VISITS) could have the master sign
-    // `transfer(attacker, balance)`. Gate the token's calldata: `approve` may
-    // only target the diamond (escrow), `transferFrom` is never signed here, and
-    // a `transfer` (send_lh) is signed ONLY for a subdomain the master OWNS
-    // (the on-chain ownership check below, after the loop).
-    let mut needs_owner_check = false;
+    // #81 / M5 / L16: allowlisting the $LH token by TARGET alone is a
+    // confused-deputy drain — the token accepts value-moving calls, so any
+    // trusted subdomain (incl. a hostile one the victim merely VISITS) could
+    // have the master sign `transfer(attacker, balance)`. Gate the token's
+    // calldata DEFAULT-DENY: `approve` may only target the diamond (escrow);
+    // `transferFrom`/`transferFromWithMemo` are never signed here; a value-
+    // moving `transfer`/`transferWithMemo` records its recipient so the gate
+    // after the loop can allow a payment INTO the requesting agent's own TBA
+    // (visitor per-turn payment, L16) yet still require ownership for a send_lh
+    // to any other recipient (#81); every other selector is refused.
+    let mut transfer_recipients: Vec<[u8; 20]> = Vec::new();
     let mut calls = Vec::with_capacity(calls_arr.length() as usize);
     for i in 0..calls_arr.length() {
         let c = calls_arr.get(i);
@@ -561,14 +579,35 @@ async fn build_sponsored_tx_response(
         } else {
             hex_to_bytes(&cinput)?
         };
-        // Per-call $LH-token calldata policy (#81).
-        if to == token_addr {
+        // Per-call calldata policy — DEFAULT-DENY by 4-byte selector for BOTH
+        // allowlisted targets (M5 / L15). `to` is guaranteed ∈ {diamond, token}.
+        if to == registry_addr {
+            // L15: a diamond call is signable only if its selector is in the
+            // documented cross-origin-sponsorable write set (mirrors the relay's
+            // `DIAMOND_WRITE_SIGS`). Without this a hostile subdomain could have
+            // the master sign e.g. `createInvite`/`spendTreasury` and drain via
+            // the standing $LH approval. Admin/owner-gated selectors are absent.
+            let sel = input
+                .get(0..4)
+                .ok_or_else(|| "refusing to sign: diamond call has no selector".to_string())?;
+            if !diamond_selectors.iter().any(|s| s.as_slice() == sel) {
+                return Err(format!(
+                    "refusing to sign: diamond selector {} is not in the cross-origin allowlist",
+                    bytes_to_hex_str(sel)
+                ));
+            }
+        } else if to == token_addr {
             match input.get(0..4) {
                 // transferFrom(address,address,uint256) — never via this path
                 // (the master pushes funds with `transfer`; `transferFrom` is the
                 // diamond pulling, not a cross-origin-signable master action).
                 Some([0x23, 0xb8, 0x72, 0xdd]) => {
                     return Err("refusing to sign: $LH transferFrom is not permitted via the cross-origin signer".into());
+                }
+                // transferFromWithMemo(address,address,uint256,bytes32) — the same
+                // allowance-pull shape as transferFrom (M5); never signed here.
+                Some(s) if s == transfer_from_with_memo_sel.as_slice() => {
+                    return Err("refusing to sign: $LH transferFromWithMemo is not permitted via the cross-origin signer".into());
                 }
                 // approve(address,uint256) — spender (arg0, input[16..36]) must be
                 // the diamond, so a hostile page can't approve itself to drain.
@@ -577,13 +616,21 @@ async fn build_sponsored_tx_response(
                         return Err("refusing to sign: $LH approve must target the diamond".into());
                     }
                 }
-                // transfer(address,uint256) — send_lh. Only legit from a subdomain
-                // the master owns; verified on-chain after the loop.
+                // transfer(address,uint256) / transferWithMemo(...) — both move
+                // value (M5: transferWithMemo was an un-gated drain). Record the
+                // recipient; the gate after the loop allows a payment INTO the
+                // requesting agent's TBA (L16) and otherwise requires ownership.
                 Some([0xa9, 0x05, 0x9c, 0xbb]) => {
-                    needs_owner_check = true;
+                    transfer_recipients.push(transfer_recipient(&input)?);
                 }
-                // Other selectors move no $LH (e.g. accidental no-ops) — allowed.
-                _ => {}
+                Some(s) if s == transfer_with_memo_sel.as_slice() => {
+                    transfer_recipients.push(transfer_recipient(&input)?);
+                }
+                // DEFAULT-DENY (M5): every other $LH-token selector is refused —
+                // the old `_ => {}` wrongly assumed "no other selector moves $LH".
+                _ => {
+                    return Err("refusing to sign: this $LH-token call is not in the cross-origin allowlist".into());
+                }
             }
         }
         calls.push(crate::tempo_tx::TempoCall { to, value_wei, input });
@@ -623,24 +670,46 @@ async fn build_sponsored_tx_response(
 
     let (signer, address) = wallet_handle()?;
 
-    // #81 ownership gate: a $LH `transfer` is only signed for a subdomain THIS
-    // identity owns on-chain — closing the confused-deputy where visiting a
-    // hostile `*.localharness.xyz` (which is `is_trusted_origin`) makes the
-    // master sign `transfer(attacker, balance)`. Fails CLOSED (refuse) on a
-    // missing/foreign owner or an RPC error — send_lh from the user's own
-    // subdomain still works; a drain from someone else's does not.
-    if needs_owner_check {
+    // #81 + L16 transfer gate: a value-moving $LH `transfer`/`transferWithMemo`
+    // is signed only when EITHER (a) the recipient is the requesting agent
+    // subdomain's own on-chain TBA — a VISITOR paying the agent its per-turn
+    // price, where the payer is by definition NOT the agent's owner so an owner
+    // check would wrongly reject it (L16) — OR (b) THIS identity owns that
+    // subdomain on-chain (the owner's own send_lh to an arbitrary recipient,
+    // #81). Closes the confused-deputy where visiting a hostile
+    // `*.localharness.xyz` (which is `is_trusted_origin`) makes the master sign
+    // `transfer(attacker, balance)`. Fails CLOSED on a non-tenant origin, a
+    // missing/foreign owner, or an RPC error.
+    if !transfer_recipients.is_empty() {
         let sub = super::tenant::tenant_name_from_origin(&origin).ok_or_else(|| {
             "refusing to sign a $LH transfer: request is not from a tenant subdomain".to_string()
         })?;
-        match crate::registry::owner_of_name(&sub).await {
-            Ok(Some(owner)) if owner.eq_ignore_ascii_case(&bytes_to_hex_str(&address)) => {}
-            Ok(_) => {
+        // The agent's TBA — a transfer INTO it is a payment, not a send_lh, so it
+        // skips the owner check (L16). Resolve once; an RPC failure leaves it
+        // None so a payment-in falls through to the owner check (fail-closed).
+        let sub_tba = crate::registry::tba_of_name(&sub)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|t| parse_addr20(&t).ok());
+        // Cache the (single-RPC) ownership result for the send_lh branch.
+        let mut owner_ok: Option<bool> = None;
+        for recipient in &transfer_recipients {
+            if sub_tba == Some(*recipient) {
+                continue; // payment INTO the agent — no owner check (L16)
+            }
+            if owner_ok.is_none() {
+                owner_ok = Some(match crate::registry::owner_of_name(&sub).await {
+                    Ok(Some(owner)) => owner.eq_ignore_ascii_case(&bytes_to_hex_str(&address)),
+                    Ok(None) => false,
+                    Err(e) => return Err(format!("$LH transfer ownership check failed: {e}")),
+                });
+            }
+            if owner_ok != Some(true) {
                 return Err(format!(
                     "refusing to sign a $LH transfer for '{sub}': that subdomain is not owned by this identity"
                 ));
             }
-            Err(e) => return Err(format!("$LH transfer ownership check failed: {e}")),
         }
     }
 
@@ -661,6 +730,87 @@ async fn build_sponsored_tx_response(
 /// whitespace (the fields arrive as JS strings).
 fn parse_addr20(s: &str) -> Result<[u8; 20], String> {
     crate::encoding::parse_address(s.trim())
+}
+
+/// The recipient (arg0, ABI word 0) of a `$LH` `transfer`/`transferWithMemo`
+/// call — `input[16..36]`. Errors (fail-closed) when the calldata is too short
+/// to carry a recipient, so a malformed transfer can't slip past the L16/#81
+/// recipient gate untracked.
+fn transfer_recipient(input: &[u8]) -> Result<[u8; 20], String> {
+    let to_arg = input
+        .get(16..36)
+        .ok_or_else(|| "refusing to sign: malformed $LH transfer calldata".to_string())?;
+    let mut r = [0u8; 20];
+    r.copy_from_slice(to_arg);
+    Ok(r)
+}
+
+/// The diamond function selectors the cross-origin signer will sign — the
+/// documented cross-origin-sponsorable WRITE set, mirroring the relay's
+/// `DIAMOND_WRITE_SIGS` (`proxy/api/sponsor.ts`) so the control doesn't depend
+/// solely on the separately-deployed relay (L15). DEFAULT-DENY: a diamond call
+/// whose selector isn't here is refused. Admin/owner-gated selectors
+/// (`diamondCut`, `adminReset*`, `mintFromFiat`, `meter`, `recordRun`) are
+/// deliberately ABSENT — they revert without the role anyway and must never be
+/// cross-origin-signed. Selectors are computed from the canonical signatures so
+/// they stay in lockstep with `registry::selector`.
+fn diamond_signable_selectors() -> Vec<[u8; 4]> {
+    [
+        "register(string)",
+        "registerMain(uint256)",
+        "releaseName(uint256)",
+        "createTokenBoundAccount(uint256)",
+        "setMetadata(uint256,bytes32,bytes)",
+        "withdrawCredits(uint256)",
+        "depositCredits(uint256)",
+        "redeem(string)",
+        "openSession()",
+        "submitFeedback(string)",
+        "scheduleJob(uint256,bytes,uint64,uint128,uint32)",
+        "cancelJob(uint256)",
+        "createInvite(bytes32,uint256,uint64)",
+        "acceptInvite(string)",
+        "reclaimInvite(bytes32)",
+        "postBounty(bytes,uint128,uint64)",
+        "claimBounty(uint256,uint256)",
+        "submitResult(uint256,bytes)",
+        "acceptResult(uint256)",
+        "settle(address,address,uint256,uint256,uint256,bytes32,bytes)",
+        "cancelBounty(uint256)",
+        "reclaimExpired(uint256)",
+        "attest(uint256,uint8,bytes32)",
+        "announce(bytes32,address,address,bytes,bytes)",
+        "leave(bytes32,address,address,bytes)",
+        "postSignal(address,bytes)",
+        "setPushSub(bytes)",
+        "createGuild(string)",
+        "inviteToGuild(uint256,address)",
+        "setRole(uint256,address,uint8)",
+        "fundGuild(uint256,uint256)",
+        "spendTreasury(uint256,address,uint256,bytes)",
+        "acceptGuildInvite(uint256)",
+        "leaveGuild(uint256)",
+        "formParty(uint256[],uint16[],uint64)",
+        "fundParty(uint256,uint128)",
+        "propose(uint256,address,uint256,bytes,uint64)",
+        "vote(uint256,bool)",
+        "proposeWeighted(uint256,address,uint256,uint256,string)",
+        "voteWeighted(uint256,bool)",
+        "executeWeighted(uint256)",
+        "setShares(uint256,address,uint256)",
+        "createRoom()",
+        "roomAddMember(uint256,address)",
+        "appendOp(uint256,bytes)",
+        "clearRoom(uint256)",
+        "stakeValidation(bytes32,uint256,bool,uint256)",
+        "resolveValidation(uint256,bool)",
+        "setTithe(uint256,uint256)",
+        "revokeTithe()",
+        "collectTithe(address)",
+    ]
+    .iter()
+    .map(|&sig| crate::registry::selector(sig))
+    .collect()
 }
 
 fn wallet_handle() -> Result<(k256::ecdsa::SigningKey, [u8; 20]), String> {

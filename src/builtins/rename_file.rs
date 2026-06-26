@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
-use crate::filesystem::SharedFilesystem;
+use crate::filesystem::{EntryKind, SharedFilesystem};
 use crate::tools::{Tool, ToolContext};
 
 pub struct RenameFile {
@@ -67,6 +67,21 @@ impl Tool for RenameFile {
         }
         if crate::builtins::is_protected_path(&args.to) {
             return Err(crate::builtins::protected_path_error(&args.to));
+        }
+        // Renaming a DIRECTORY relocates everything under it, so renaming an
+        // ancestor of the seed moves `.lh_wallet` even though the from/to
+        // basename checks above pass — the same identity brick. Walk `from`
+        // when it's a directory and refuse if it CONTAINS a protected file.
+        // (Best-effort, like the existence check below.) (I8)
+        if matches!(self.fs.metadata(&args.from).await, Ok(Some(m)) if m.kind == EntryKind::Directory) {
+            if let Ok(entries) = self.fs.walk(&args.from, None).await {
+                if let Some(hit) = entries
+                    .iter()
+                    .find(|e| crate::builtins::is_protected_path(&e.path))
+                {
+                    return Err(crate::builtins::protected_path_error(&hit.path));
+                }
+            }
         }
         // Refuse to SILENTLY clobber an existing destination — native rename
         // overwrites by platform default, which is irreversible data loss and
@@ -139,5 +154,29 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&from).unwrap(), "SOURCE", "source untouched");
         let _ = std::fs::remove_file(from);
         let _ = std::fs::remove_file(to);
+    }
+
+    /// Renaming a DIRECTORY that contains a protected identity file relocates
+    /// the seed — the from/to basename guards don't see nested contents, so it
+    /// must be refused. (I8)
+    #[tokio::test]
+    async fn refuses_to_rename_a_dir_containing_the_seed() {
+        let base = std::env::temp_dir().join(format!("rn_dir_{}", uuid::Uuid::new_v4()));
+        let from = base.join("from");
+        std::fs::create_dir_all(&from).unwrap();
+        let seed = from.join(".lh_wallet");
+        std::fs::write(&seed, b"SECRET SEED PHRASE").unwrap();
+        let to = base.join("to");
+        let tool = RenameFile::new(Arc::new(NativeFilesystem::new()));
+        let res = tool
+            .execute(
+                json!({"from": from.display().to_string(), "to": to.display().to_string()}),
+                None,
+            )
+            .await;
+        assert!(res.is_err(), "must refuse to rename a dir holding the seed");
+        assert!(seed.exists(), "seed must stay put after the refused rename");
+        assert!(!to.exists(), "destination must not be created");
+        std::fs::remove_dir_all(&base).ok();
     }
 }

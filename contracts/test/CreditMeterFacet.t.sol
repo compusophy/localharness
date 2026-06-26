@@ -60,7 +60,6 @@ contract CreditMeterFacetTest is Test {
     address proxyMeter = address(0xBEEF);
 
     event CreditsWithdrawn(address indexed user, uint256 amount, uint256 newBalance);
-    event Charged(address indexed user, uint256 amount);
 
     function setUp() public {
         facet = new MeterHarness();
@@ -140,51 +139,9 @@ contract CreditMeterFacetTest is Test {
         facet.withdrawCredits(1 ether);
     }
 
-    // --- chargeFromWallet (wallet-primary default billing) ---------------
-
-    /// THE wallet-primary path: the proxy charges the user's WALLET directly
-    /// into the diamond (revenue), WITHOUT any `creditOf` ledger entry.
-    function test_chargeFromWallet_pulls_wallet_to_diamond() public {
-        vm.expectEmit(true, false, false, true);
-        emit Charged(user, 2 ether);
-        vm.prank(proxyMeter);
-        facet.chargeFromWallet(user, 2 ether);
-
-        assertEq(lh.balanceOf(user), 98 ether); // wallet debited
-        assertEq(lh.balanceOf(address(facet)), 2 ether); // revenue in the diamond
-        assertEq(facet.creditOf(user), 0); // NO meter envelope used
-    }
-
-    /// Only the owner-set meter (the proxy) may charge — same gate as `meter()`.
-    function test_chargeFromWallet_only_meter() public {
-        vm.prank(address(0xBAD));
-        vm.expectRevert(CreditMeterFacet.NotMeter.selector);
-        facet.chargeFromWallet(user, 1 ether);
-        assertEq(lh.balanceOf(user), 100 ether);
-    }
-
-    /// A short wallet reverts so the proxy reads it as "out of funds".
-    function test_chargeFromWallet_short_balance_reverts() public {
-        vm.prank(proxyMeter);
-        vm.expectRevert(); // mock transferFrom reverts on insufficient balance
-        facet.chargeFromWallet(user, 1000 ether);
-    }
-
-    /// No approval → the pull reverts (the proxy treats it as out-of-funds).
-    function test_chargeFromWallet_without_approval_reverts() public {
-        vm.prank(user);
-        lh.approve(address(facet), 0);
-        vm.prank(proxyMeter);
-        vm.expectRevert();
-        facet.chargeFromWallet(user, 1 ether);
-    }
-
-    function test_chargeFromWallet_unconfigured_token_reverts() public {
-        facet._setCreditsToken(address(0));
-        vm.prank(proxyMeter);
-        vm.expectRevert(CreditMeterFacet.NotConfigured.selector);
-        facet.chargeFromWallet(user, 1 ether);
-    }
+    // chargeFromWallet (wallet-primary default billing) was REMOVED — the
+    // wallet-primary model was rejected and the function was inert (audit L13).
+    // Its tests are deleted along with it.
 
     /// Conservation fuzz: any deposit / meter / withdraw interleaving keeps
     /// the diamond's token balance >= the total ledger (withdrawals always

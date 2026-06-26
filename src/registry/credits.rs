@@ -31,8 +31,7 @@ pub async fn can_claim_credits(account_hex: &str) -> Result<bool, String> {
     let mut padded = [0u8; 32];
     padded[12..].copy_from_slice(&account_bytes);
     let result_hex = read_view(selector("canClaim(address)"), &[padded]).await?;
-    let trimmed = result_hex.trim().trim_start_matches("0x");
-    Ok(trimmed.chars().last().map(|c| c == '1').unwrap_or(false))
+    decode_u256_as_u64(&result_hex).map(|v| v != 0)
 }
 
 /// `eth_call dailyAllowance()` — the current per-claim amount in

@@ -3,7 +3,7 @@
 // =============================================================================
 
 use crate::app::chat::access::{
-    build_actor_setup, transfer_selector, u256_be, withdraw_credits_selector,
+    build_actor_setup, lh_transfer_calldata, u256_be, withdraw_credits_selector,
 };
 use crate::encoding::parse_address;
 use crate::tools::ClosureTool;
@@ -65,18 +65,15 @@ fn notify_recipient_of_incoming_lh(recipient_arg: String, to_hex: String, amount
     });
 }
 
-/// ERC-20 `transfer(to, amount)` TempoCall against the $LH token.
+/// ERC-20 `transfer(to, amount)` TempoCall against the $LH token. Calldata comes
+/// from the ONE shared builder (`access::lh_transfer_calldata`) so this can't
+/// diverge from the visitor-pay / prefund encodings.
 fn lh_transfer_call(
     to_hex: &str,
     amount_wei: u128,
 ) -> Result<crate::tempo_tx::TempoCall, crate::error::Error> {
     let to_bytes = parse_address(to_hex).map_err(crate::error::Error::other)?;
-    let mut to_padded = [0u8; 32];
-    to_padded[12..].copy_from_slice(&to_bytes);
-    let mut calldata = Vec::with_capacity(4 + 64);
-    calldata.extend_from_slice(&transfer_selector());
-    calldata.extend_from_slice(&to_padded);
-    calldata.extend_from_slice(&u256_be(amount_wei));
+    let calldata = lh_transfer_calldata(&to_bytes, amount_wei);
     let token_addr = parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS())
         .map_err(crate::error::Error::other)?;
     Ok(crate::tempo_tx::TempoCall {

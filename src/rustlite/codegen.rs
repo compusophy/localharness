@@ -588,10 +588,16 @@ impl WasmEmitter {
                 code.push(OP_LOCAL_GET);
                 leb128_u32(local_idx, code);
             }
-            TypedExprKind::Path(_segments) => {
-                // Unit enum variant — represented as tag value (i32)
+            TypedExprKind::Path(segments) => {
+                // Unit enum variant — lowered to its DISCRIMINANT (the variant's
+                // ordinal in the enum declaration) so distinct variants are
+                // distinct i32 values. Emitting a constant 0 for every variant
+                // (the old stub) made all variants equal and every `match` take
+                // its first arm. The variant list rides on the expr's resolved
+                // enum type (typecheck attaches it).
+                let disc = enum_variant_discriminant(&expr.ty, segments);
                 code.push(OP_I32_CONST);
-                leb128_i32(0, code);
+                leb128_i32(disc, code);
             }
             TypedExprKind::FieldAccess { object, field_index, .. } => {
                 // For now: emit the object, then load from offset
@@ -1000,8 +1006,21 @@ impl WasmEmitter {
         Ok(())
     }
 
-    fn emit_pattern_check(&mut self, pattern: &crate::rustlite::ast::Pattern, scrutinee_local: u32, _scrutinee_ty: &ResolvedType, code: &mut Vec<u8>) -> Result<(), CompileError> {
+    fn emit_pattern_check(&mut self, pattern: &crate::rustlite::ast::Pattern, scrutinee_local: u32, scrutinee_ty: &ResolvedType, code: &mut Vec<u8>) -> Result<(), CompileError> {
         match &pattern.kind {
+            crate::rustlite::ast::PatternKind::Path(segments) => {
+                // Unit enum variant pattern — match iff the scrutinee equals the
+                // variant's discriminant (its ordinal in the enum declaration),
+                // mirroring the discriminant the `Path` expr arm emits. The old
+                // catch-all returned a constant 1 here, so every variant pattern
+                // matched and a `match` on an enum always took its first arm.
+                code.push(OP_LOCAL_GET);
+                leb128_u32(scrutinee_local, code);
+                let disc = enum_variant_discriminant(scrutinee_ty, segments);
+                code.push(OP_I32_CONST);
+                leb128_i32(disc, code);
+                code.push(OP_I32_EQ);
+            }
             crate::rustlite::ast::PatternKind::Literal(lit) => {
                 code.push(OP_LOCAL_GET);
                 leb128_u32(scrutinee_local, code);
@@ -1177,6 +1196,21 @@ impl WasmEmitter {
 
 fn is_wildcard(pattern: &crate::rustlite::ast::Pattern) -> bool {
     matches!(pattern.kind, crate::rustlite::ast::PatternKind::Wildcard | crate::rustlite::ast::PatternKind::Binding(_))
+}
+
+/// Discriminant (ordinal) of a unit enum variant within its enum declaration.
+/// `ty` is the resolved enum type (typecheck attaches the variant list to a
+/// variant `Path`); `segments` is the path, so the variant name is its last
+/// segment. Distinct variants get distinct i32 tags so `match` can tell them
+/// apart. Falls back to 0 if `ty` is not an enum (unreachable after typecheck).
+fn enum_variant_discriminant(ty: &ResolvedType, segments: &[String]) -> i32 {
+    if let ResolvedType::Enum { variants, .. } = ty {
+        let name = segments.last().map(String::as_str).unwrap_or("");
+        if let Some(pos) = variants.iter().position(|(n, _)| n == name) {
+            return pos as i32;
+        }
+    }
+    0
 }
 
 fn resolved_to_wasm(ty: &ResolvedType) -> u8 {
@@ -1710,5 +1744,34 @@ mod tests {
             leaked.is_some(),
             "a block-local declared in an `if` must NOT be visible after the block",
         );
+    }
+
+    #[test]
+    fn enum_variants_get_distinct_discriminants() {
+        // L38: unit variants must lower to their ordinal (a distinct i32 tag),
+        // not a constant 0 — otherwise all variants are equal and a `match`
+        // always takes its first arm. The path's last segment names the variant.
+        let ty = typecheck::ResolvedType::Enum {
+            name: "Dir".to_string(),
+            variants: vec![
+                ("North".to_string(), typecheck::VariantShape::Unit),
+                ("East".to_string(), typecheck::VariantShape::Unit),
+                ("South".to_string(), typecheck::VariantShape::Unit),
+            ],
+        };
+        assert_eq!(enum_variant_discriminant(&ty, &["Dir".into(), "North".into()]), 0);
+        assert_eq!(enum_variant_discriminant(&ty, &["Dir".into(), "East".into()]), 1);
+        assert_eq!(enum_variant_discriminant(&ty, &["South".into()]), 2);
+    }
+
+    #[test]
+    fn enum_match_compiles_to_a_module() {
+        // L38: an enum + `match` now lowers (discriminant per variant + i32.eq
+        // pattern checks) instead of silently miscompiling.
+        let wasm = compile_to_wasm(
+            "enum Dir { North, East, South }\n\
+             fn pick(d: Dir) -> i32 { match d { Dir::North => 1, Dir::East => 2, _ => 3 } }",
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
     }
 }

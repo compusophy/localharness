@@ -130,6 +130,12 @@ contract MultiSignerAccount is IERC6551Account, IERC6551Executable, IERC1271 {
     function _isAuthorized(address signer) internal view returns (bool) {
         if (signer == address(0)) return false;
         address holder = owner();
+        // Fail CLOSED when there is no holder — `owner()` returns the zero
+        // address on a chainId mismatch (the clone running on the wrong chain),
+        // and an unenrolled signer's `_signerEnroller` slot is also zero, so
+        // without this guard `_signerEnroller[signer] == holder` (0 == 0) would
+        // spuriously authorize ANY unenrolled signer.
+        if (holder == address(0)) return false;
         if (signer == holder) return true;
         // An additional signer is authorized only while the holder who
         // enrolled it still holds the NFT — so a transfer silently revokes

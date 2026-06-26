@@ -249,6 +249,7 @@ impl ConnectionStrategy for AnthropicConnectionStrategy {
                 image_client: None,
                 image_model: String::new(),
                 fs,
+                hooks: self.runners.hook_runner.clone(), // for subagent policy inheritance (M8); inert here (no chat_client)
             };
             let registered = register_builtins(runner, &self.config.capabilities, &deps);
             if !registered.is_empty() {
@@ -647,6 +648,7 @@ mod tests {
             image_client: None,
             image_model: String::new(),
             fs: Some(Arc::new(NativeFilesystem::new()) as crate::filesystem::SharedFilesystem),
+            hooks: None,
         };
         register_builtins(&runner, &CapabilitiesConfig::unrestricted(), &deps);
         let decls = build_tool_declarations(&runner);
@@ -667,6 +669,7 @@ mod tests {
             image_client: None,
             image_model: String::new(),
             fs: Some(Arc::new(NativeFilesystem::new()) as crate::filesystem::SharedFilesystem),
+            hooks: None,
         };
         let registered = register_builtins(&runner, &CapabilitiesConfig::unrestricted(), &deps);
         assert!(

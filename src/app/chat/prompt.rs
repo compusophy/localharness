@@ -255,7 +255,7 @@ pub(crate) fn base_system_prompt(
              enums, fns, match, if/else, while/loop, let mut. No traits, \
              no generics, no references. Returns the i32 result.\n\
            • run_cartridge(source) — compile a rustlite cartridge and run it \
-             on the VISUAL DISPLAY the user sees (a pixel framebuffer — 320x240 \
+             on the VISUAL DISPLAY the user sees (a pixel framebuffer — 512x512 \
              by default, or export `fn dims() -> i32` = (width<<16)|height, each \
              16..1024, for a custom size/aspect). \
              The cartridge exports `fn frame(t: i32)` (animated, t = elapsed ms) \
@@ -588,7 +588,8 @@ pub(crate) fn base_system_prompt(
          host fns as `display::clear(…)` etc. (after the `use`), and ALWAYS call \
          `display::present()` LAST each frame to flush. Colors are 0xRRGGBB \
          packed into an i32 (white = 16777215, black = 0). The framebuffer is \
-         256 wide × 144 tall.\n\
+         512 wide × 512 tall by default (export `dims()` for a custom \
+         size/aspect, each side 16..1024).\n\
          HOST ABI (exact names + arity — calling a wrong name/arity is a compile \
          error). Drawing: clear(rgb); set_pixel(x,y,rgb); \
          fill_rect(x,y,w,h,rgb); draw_char(x,y,code,rgb,scale) (code = ASCII int, \

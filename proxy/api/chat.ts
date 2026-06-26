@@ -10,6 +10,7 @@
 // (no name-entry UI in a cartridge). GET is open (the room id is the capability).
 
 import { verifyAuthToken, isAllowedOrigin } from './_auth';
+import { SlidingWindow, claimedAddress } from './_ratelimit';
 
 export const config = { runtime: 'edge' };
 
@@ -19,6 +20,11 @@ const CHAT_DIR = 'chat';
 const MAX_MESSAGES = 80; // rolling window kept per room
 const MAX_TEXT = 280;
 const ROOM_RE = /^[a-z0-9-]{1,63}$/;
+// Per-sender flood cap (best-effort, per-isolate — see api/_ratelimit.ts). The
+// GET poll path is open + uncapped; this guards only the GitHub-store WRITE rate
+// so chat spam from throwaway wallets can't exhaust the shared token.
+const CHAT_PER_MIN = 30;
+const senderWindow = new SlidingWindow(CHAT_PER_MIN, 60_000);
 
 interface Msg { n: number; name: string; text: string; ts: number }
 interface Log { next: number; messages: Msg[] }
@@ -99,6 +105,21 @@ export default async function handler(req: Request): Promise<Response> {
   if (req.method !== 'POST') return json({ error: 'GET or POST' }, 405, origin);
 
   const token = req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? '';
+  // Rate limit per CLAIMED address BEFORE the signature check — a flood must not
+  // cost a curve recovery per request, and this caps the GitHub-store write rate
+  // so chat spam can't exhaust the shared token (see api/_ratelimit.ts; the
+  // window gates nothing of value, the debit/auth happen downstream).
+  const claimed = claimedAddress(token);
+  if (claimed) {
+    const wait = senderWindow.hit(claimed);
+    if (wait > 0) {
+      return json(
+        { error: `rate limited: at most ${CHAT_PER_MIN} messages per 60s`, retryAfterSeconds: wait },
+        429,
+        origin,
+      );
+    }
+  }
   const now = Math.floor(Date.now() / 1000);
   const auth = verifyAuthToken(token, now);
   if (!auth.ok) return json({ error: 'auth: ' + auth.error }, auth.status, origin);
