@@ -56,6 +56,24 @@ The signer is now **default-deny** per selector. Confirm legit flows still sign:
   not falsely show "✓ sent" for a silently-deduped second submit.
 - L33: the on-chain inbox bell shouldn't drop a notification on a transient RPC blip.
 
+## 7. Proxy auth-token route-binding (L9 / L10 / L7) — `_authcore.ts` + every minter
+The proxy auth token now binds the target endpoint (`localharness-proxy:<addr>:<ts>:<route>`).
+The proxy verifier is DUAL-ACCEPT (route-bound first, legacy unbound fallback), and
+the new browser bundle mints route-bound tokens. The risk is a ROUTE MISMATCH (browser
+mints route X, the endpoint verifies route Y → 401). So smoke EVERY authed browser flow
+and confirm none 401s on auth:
+- **gemini**: send a chat message in credits mode (inference authenticates). ✅
+- **publish**: publish an app/HTML face from the studio. ✅
+- **schedule**: `schedule_task` / a reminder. ✅
+- **notify**: the `notify` tool / cross-agent notify. ✅
+- **fetch**: a cartridge `host_net`/`web_fetch` through the proxy. ✅
+- **broadcast**: a `feed`/ready-up broadcast from a cartridge. ✅
+- **chat**: post in a `host::chat` groupchat (the chat relay). ✅
+- **signal**: "sync my devices" (signaling announce/leave). ✅
+Any `401` / "signature does not match address" on these = a route the browser minter and
+the proxy verifier disagree on — check the route string on both sides. (The map lives in
+`proxy/api/_authcore.ts` header + `registry::proxy_auth_token` call sites.)
+
 ## How to run
 Use browser-use to load the prod site (or a Vercel preview), authenticate as a test
 identity, and walk each flow. The cheap dogfood path is your own
