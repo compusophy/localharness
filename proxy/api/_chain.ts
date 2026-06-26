@@ -10,8 +10,15 @@ export const TEMPO_RPC = process.env.TEMPO_RPC ?? 'https://rpc.moderato.tempo.xy
 export const REGISTRY = process.env.REGISTRY ?? '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
 export const CHAIN_ID = Number(process.env.CHAIN_ID ?? '42431');
 export const LH_TOKEN = process.env.LH_TOKEN ?? '0x90B84c7234Aae89BadA7f69160B9901B9bc37B17';
-// The chain's canonical sponsor fee token (a USD-currency TIP-20, NOT $LH). Default
-// is Moderato AlphaUSD; prod sets FEE_TOKEN to mainnet USDC.e
-// (0x20c000000000000000000000b9537d11c60e8b50) alongside the other env values. Used
-// by the sponsor relay to pin which token pays gas (see sponsor.ts step 4).
-export const FEE_TOKEN = process.env.FEE_TOKEN ?? '0x20c0000000000000000000000000000000000001';
+// The chain's canonical sponsor fee token (a USD-currency TIP-20, NOT $LH). Used by
+// the sponsor relay to pin which token pays gas (see sponsor.ts step 4). The fallback
+// is now CHAIN-AWARE: mainnet (4217) → USDC.e, else Moderato AlphaUSD. An explicit
+// FEE_TOKEN still wins. This prevents the silent failure where, with FEE_TOKEN unset
+// but CHAIN_ID=4217, the relay expected AlphaUSD while the browser/CLI correctly send
+// USDC.e (`chain::active().fee_token`) → every sponsored register/setMetadata 400'd
+// with LH_RELAY_FEETOKEN. Mirror of src/registry/chain.rs `MAINNET/MODERATO.fee_token`.
+const FEE_TOKEN_DEFAULT =
+  CHAIN_ID === 4217
+    ? '0x20c000000000000000000000b9537d11c60e8b50' // USDC.e (mainnet)
+    : '0x20c0000000000000000000000000000000000001'; // AlphaUSD (Moderato)
+export const FEE_TOKEN = process.env.FEE_TOKEN ?? FEE_TOKEN_DEFAULT;
