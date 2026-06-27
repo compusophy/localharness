@@ -1,0 +1,62 @@
+name: Release
+
+# Records a GitHub "crates-io" Deployment for each release tag, so the repo's
+# Deployments sidebar reflects what's live on crates.io. This does NOT publish —
+# `scripts/release.{sh,ps1}` remains the single publisher (atomic local flow).
+# `release.sh` pushes the `vX.Y.Z` tag, then `cargo publish`es; this workflow
+# fires on the tag and polls crates.io until that version is live before marking
+# the deployment, so the badge is honest (success only once it's actually up).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  deployments: write
+  contents: read
+
+jobs:
+  crates-io-deployment:
+    name: record crates.io deployment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for crates.io, then record the Deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');      // e.g. v0.57.0
+            const version = tag.replace(/^v/, '');
+            const crate = 'localharness';
+
+            // release.sh `cargo publish`es right after pushing the tag; poll
+            // crates.io until the version is live (up to ~5 min) before recording.
+            const url = `https://crates.io/api/v1/crates/${crate}/${version}`;
+            let live = false;
+            for (let i = 0; i < 30; i++) {
+              try {
+                const res = await fetch(url, { headers: { 'User-Agent': 'localharness-ci (github actions)' } });
+                if (res.ok) { live = true; break; }
+              } catch (_) { /* transient — retry */ }
+              await new Promise((r) => setTimeout(r, 10000));
+            }
+
+            const dep = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: tag,
+              environment: 'crates-io',
+              required_contexts: [],
+              auto_merge: false,
+              production_environment: true,
+              description: `${crate} ${version} → crates.io`,
+            });
+
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: dep.data.id,
+              state: live ? 'success' : 'failure',
+              environment_url: `https://crates.io/crates/${crate}`,
+              log_url: `https://crates.io/crates/${crate}/${version}`,
+              description: live ? `published ${version}` : `version ${version} not on crates.io after polling`,
+            });

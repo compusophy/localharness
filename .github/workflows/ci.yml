@@ -1,0 +1,67 @@
+name: CI
+
+# The gate, as GitHub Actions: clippy across the shipped feature configs (kept
+# warning-clean), the full test suite, the wasm guard, and the proxy tsc + test
+# suite. `cargo fmt` is intentionally NOT enforced — this codebase is hand-
+# formatted to match surrounding style, not rustfmt-canonical. The heavy
+# `browser-app-local` (in-browser Gemma / Burn) config is left to the local
+# pre-release sweep — it pulls ~570MB and isn't in the shipped bundle.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: rust — clippy + test + wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # Clippy across every SHIPPED feature config — all kept warning-clean.
+      - name: clippy (default / native)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: clippy (wallet)
+        run: cargo clippy --features wallet --all-targets -- -D warnings
+      - name: clippy (wallet + anthropic + openai)
+        run: cargo clippy --features "wallet anthropic openai" --all-targets -- -D warnings
+      - name: clippy (browser-app, wasm32)
+        run: cargo clippy --no-default-features --features browser-app --target wasm32-unknown-unknown -- -D warnings
+
+      - name: test (wallet + anthropic + openai — superset)
+        run: cargo test --features "wallet anthropic openai"
+      - name: test (default)
+        run: cargo test
+
+      - name: wasm guard (SDK-only)
+        run: cargo check --no-default-features --target wasm32-unknown-unknown
+
+  proxy:
+    name: proxy — tsc + tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proxy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: tsc --noEmit
+        run: npx tsc --noEmit
+      - name: proxy test suite (auth-parity / sponsor / mpp / webpush)
+        run: bash test/run.sh
