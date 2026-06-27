@@ -179,6 +179,15 @@ pub fn recover_address(signature: &[u8; 65], prehash: &[u8; 32]) -> Result<[u8; 
     };
     let rec = RecoveryId::try_from(rec_id).map_err(|e| e.to_string())?;
     let sig = Signature::from_slice(&signature[..64]).map_err(|e| e.to_string())?;
+    // EIP-2 low-s (anti-malleability, audit I3): k256's `normalize_s` returns
+    // `Some` only when `s` is in the upper half of the curve order — i.e. the
+    // malleable high-s twin of a canonical signature. Reject it so this off-chain
+    // verifier agrees with the on-chain HALF_N gate (X402Facet / MultiSignerAccount)
+    // and the proxy's `_x402.ts`/`_authcore.ts` — otherwise we'd recover a valid
+    // address from a signature the chain (and a payer's intent) would refuse.
+    if sig.normalize_s().is_some() {
+        return Err("malleable (high-s) signature rejected".to_string());
+    }
     let verifying = VerifyingKey::recover_from_prehash(prehash, &sig, rec)
         .map_err(|e| e.to_string())?;
 
@@ -428,6 +437,47 @@ mod tests {
         let w = generate();
         assert_eq!(w.address.len(), 20);
         assert_eq!(w.address_hex().len(), 42); // 0x + 40 hex chars
+    }
+
+    #[test]
+    fn recover_rejects_high_s_malleable_signature() {
+        // EIP-2 low-s gate (audit I3): the malleable high-s twin (r, n-s, v^1)
+        // recovers the same key on a permissive verifier but must be rejected here,
+        // matching the on-chain HALF_N gate. Our own `sign_hash` emits low-s (proven
+        // by the round-trip test below), so the twin is built by replacing s with n-s.
+        fn n_minus_s(s: &[u8; 32]) -> [u8; 32] {
+            // secp256k1 group order n, big-endian.
+            const N: [u8; 32] = [
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0xff, 0xff, 0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2,
+                0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
+            ];
+            let mut out = [0u8; 32];
+            let mut borrow = 0i16;
+            for i in (0..32).rev() {
+                let d = N[i] as i16 - s[i] as i16 - borrow;
+                if d < 0 {
+                    out[i] = (d + 256) as u8;
+                    borrow = 1;
+                } else {
+                    out[i] = d as u8;
+                    borrow = 0;
+                }
+            }
+            out
+        }
+        let w = generate();
+        let hash = [0x42u8; 32];
+        let low = sign_hash(&w.signer, &hash);
+        assert_eq!(recover_address(&low, &hash).unwrap(), w.address); // low-s verifies
+        let mut high = low;
+        let s: [u8; 32] = low[32..64].try_into().unwrap();
+        high[32..64].copy_from_slice(&n_minus_s(&s));
+        high[64] ^= 1; // the malleable twin's flipped recovery bit
+        assert!(
+            recover_address(&high, &hash).is_err(),
+            "high-s (malleable) signature must be rejected"
+        );
     }
 
     #[test]

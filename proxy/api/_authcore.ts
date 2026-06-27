@@ -57,6 +57,13 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
  * `message` is wrapped with "\x19Ethereum Signed Message:\n<len>", keccak'd, then
  * ecrecover'd. `sigHex` is 65 bytes (r||s||v), v ∈ {27,28} or {0,1}.
  */
+// secp256k1n / 2 — the EIP-2 low-s bound (matches X402Facet.HALF_N, proxy/_x402.ts,
+// and the Rust wallet.rs recover_address gate). noble recovers the same address from
+// a malleated high-s twin, so a token signed with high-s would otherwise pass auth —
+// reject it (audit I3).
+export const SECP256K1_HALF_N =
+  0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
+
 export function recoverAddress(message: string, sigHex: string): string {
   const msgBytes = new TextEncoder().encode(message);
   const prefix = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${msgBytes.length}`);
@@ -64,6 +71,9 @@ export function recoverAddress(message: string, sigHex: string): string {
 
   const sig = hexToBytes(stripHex(sigHex));
   if (sig.length !== 65) throw new Error('signature must be 65 bytes');
+  if (BigInt('0x' + bytesToHex(sig.slice(32, 64))) > SECP256K1_HALF_N) {
+    throw new Error('signature has high-s (EIP-2 malleable) — not accepted');
+  }
   let v = sig[64];
   if (v >= 27) v -= 27;
 

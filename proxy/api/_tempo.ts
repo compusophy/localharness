@@ -168,9 +168,17 @@ export function signHash65(digest: Uint8Array, privKeyHex: string): Uint8Array {
   return out;
 }
 
+// secp256k1n / 2 — EIP-2 low-s bound (matches X402Facet.HALF_N + _authcore.ts +
+// the Rust recover_address gate). Reject the malleable high-s twin (audit I3).
+const SECP256K1_HALF_N =
+  0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
+
 /** Lowercase 0x address from a 65-byte (r||s||v) sig over `digest`. */
 export function recoverAddressFromDigest(sig65: Uint8Array, digest: Uint8Array): string {
   if (sig65.length !== 65) throw new Error('signature must be 65 bytes');
+  if (BigInt('0x' + bytesToHex(sig65.slice(32, 64))) > SECP256K1_HALF_N) {
+    throw new Error('signature has high-s (EIP-2 malleable) — not accepted');
+  }
   let v = sig65[64];
   if (v >= 27) v -= 27;
   const signature = secp256k1.Signature.fromCompact(
