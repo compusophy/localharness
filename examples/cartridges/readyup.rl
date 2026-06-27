@@ -100,7 +100,7 @@ fn frame(t: i32) {
                     // Opens the host's composer (text input over the canvas)
                     // prefilled with the default; [send] broadcasts the typed
                     // message to every subscriber.
-                    host::agent::broadcast_compose("Ready Up!", "Tap in — it's go time.");
+                    host::agent::broadcast_compose("Ready Up!", "Tap in - it's go time.");
                 }
             }
         }

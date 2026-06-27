@@ -86,11 +86,24 @@ pub fn line_col(source: &str, offset: usize) -> (usize, usize) {
 /// gets one `^` so there is always a visible marker). Tabs in the shown line
 /// are widened to a single space so the caret row stays aligned. Returns
 /// `None` only when `source` is empty (nothing to point into).
+/// Largest char boundary `<= i`, clamped to `s.len()`. A span byte-offset can land
+/// INSIDE a multi-byte char (e.g. an em-dash in a string literal), and slicing
+/// there panics; `str::floor_char_boundary` is still unstable, so roll the
+/// two-liner. (Without this, one non-ASCII source byte turned a clean CompileError
+/// into a compiler PANIC — caught by the cartridge corpus.)
+fn floor_char_boundary(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 pub fn render_snippet(source: &str, span: Span) -> Option<String> {
     if source.is_empty() {
         return None;
     }
-    let start = span.start.min(source.len());
+    let start = floor_char_boundary(source, span.start);
     let (line, col) = line_col(source, start);
     // The full text of the line containing `start`.
     let line_start = source[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
@@ -103,8 +116,8 @@ pub fn render_snippet(source: &str, span: Span) -> Option<String> {
         .map(|c| if c == '\t' { ' ' } else { c })
         .collect();
     // Caret coverage: the span's char-width on this line, at least 1.
-    let span_end = span.end.clamp(start, line_end.max(start));
-    let width = source[start..span_end.min(source.len())].chars().count().max(1);
+    let span_end = floor_char_boundary(source, span.end.clamp(start, line_end.max(start)));
+    let width = source[start..span_end].chars().count().max(1);
     let line_chars = line_text.chars().count();
     let pad = (col - 1).min(line_chars);
     let carets = width.min((line_chars + 1).saturating_sub(pad)).max(1);
@@ -285,6 +298,11 @@ mod tests {
         // tabs are widened to spaces so the caret row aligns
         let snip = super::render_snippet("\tlet q = ;", super::Span { start: 9, end: 10 }).unwrap();
         assert!(!snip.contains('\t'), "{snip}");
+        // a span offset landing INSIDE a multi-byte char (an em-dash in a string
+        // literal) must clamp to a char boundary, not panic the slicer.
+        let src = "let s = \"a \u{2014} b\";"; // \u{2014} (em-dash) is 3 bytes
+        let dash = src.find('\u{2014}').unwrap();
+        assert!(super::render_snippet(src, super::Span { start: dash + 1, end: dash + 2 }).is_some());
     }
 
     #[test]
