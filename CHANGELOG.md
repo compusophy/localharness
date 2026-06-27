@@ -5,6 +5,64 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.0]
+
+A security-hardening release: the 2026-06-26 whole-codebase audit (76
+adversarially-verified findings) plus route-bound proxy auth, GitHub Actions CI,
+and a chain-aware sponsor-relay fee-token fallback. Downstream SDK consumers get the
+audit hardening for the first time here — the web/proxy/contract halves already
+reached production via their own deploys.
+
+### Security
+
+- **Whole-codebase audit hardening (76 findings).** Seed-adoption KDF hardened — the
+  receiver strips the `#s=<ct>` fragment from history, `adopt_code_key` is now
+  200k-iterated keccak, and pairing codes widened 6→8 chars (H1). The MPP fiat
+  on-ramp mints to the PROVEN on-chain USDC.e payer, never a caller-supplied address
+  (H2). The sponsor relay validates `intent.feeToken` against the chain's canonical
+  fee token (L5). Signaling/chat endpoints rate-limited + signal-slot anti-forgery;
+  notify recipient window moved post-auth; global telemetry cap; cross-origin signer
+  default-deny; `?rpc=1` owner-gated; P2P `"p"`-tag spoof closed; `RootedFilesystem`
+  backslash escape fixed; subagent hook/policy inheritance enforced (M8); the bashlite
+  confirm-gate bound to the approved plan; secret redaction hardened against prefixes.
+- **Route-bound proxy auth tokens (L9/L10/L7).** Personal-sign auth tokens now bind
+  the target endpoint (`localharness-proxy:<addr>:<ts>:<route>`) — a token minted for
+  a cheap route can no longer be replayed against a high-value write
+  (publish/schedule/sponsor/mint). A single `proxy/api/_authcore.ts` primitive
+  verifies with dual-accept (route-bound, falling back to the legacy unbound message)
+  so un-migrated clients keep working; the divergent verifier copies in
+  `_stripe.ts`/`sponsor.ts` are deleted (ONE auth implementation). Every Rust +
+  inline token minter binds its route.
+- **Contracts (source + tests).** Removed the inert `chargeFromWallet` (L13); clear
+  MAIN on ERC721 transfer (L14); `MultiSignerAccount` fails closed on a zero owner
+  (I6); `SignalingFacet` announce/leave digests are chain-bound (I7). Live diamond
+  cuts are applied out-of-band.
+
+### Fixed
+
+- **Chain-aware sponsor-relay fee-token fallback.** With `FEE_TOKEN` unset and
+  `CHAIN_ID=4217`, the relay's hard-coded AlphaUSD default mismatched the USDC.e the
+  browser/CLI send, 400'ing every sponsored register/setMetadata. The fallback is now
+  chain-aware (4217 → USDC.e, else AlphaUSD), mirroring `src/registry/chain.rs`; an
+  explicit `FEE_TOKEN` still wins.
+- **Correctness pass (from the audit).** rustlite branch/operand type agreement,
+  diverging-block `Never`, enum discriminants, UTF-8 string lexer; soliditylite emits
+  clean `CompileError`s over panics; OpenAI loop cancel-balance + finish summary;
+  scheduler wall-clock deadline / billing / reminder-priority; at-rest key re-derive
+  on in-tab re-import; notification cursor; escrow withdrawable.
+
+### Added
+
+- **GitHub Actions CI.** `ci.yml` runs the gate on push/PR — clippy across the 4
+  shipped feature configs, the full test suite, the wasm32 guard, and the proxy `tsc`
+  + tests. `release.yml` records a `crates-io` GitHub Deployment on each `vX.Y.Z` tag.
+
+### Changed
+
+- Deduplicated to the canonical hex/ABI codecs; default framebuffer 512×512 in the
+  system prompt + self-docs; clippy clean across all shipped feature configs on
+  stable 1.96.
+
 ## [0.56.0] - 2026-06-25
 
 Multiplayer cartridges land — real-time browser-to-browser WebRTC — alongside a
