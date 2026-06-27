@@ -231,13 +231,27 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
 
         let paused = 'request: loop {
             let request = build_request(&deps.config, &deps.state.history.lock());
-            let mut stream = match deps.client.stream_messages(&request).await {
-                Ok(s) => s,
-                Err(e) => {
-                    emit_error(&deps.state, e.to_string());
-                    deps.state.idle.store(true, Ordering::Release);
-                    deps.state.idle_notify.notify_waiters();
-                    return Err(e);
+            // Retry the stream OPEN on a transient transport/5xx/timeout (shared
+            // policy with the gemini + subagent loops; #29). A mid-stream error and
+            // auth/credits/rate-limit still fail fast.
+            let mut stream = {
+                let mut attempt = 0u32;
+                loop {
+                    attempt += 1;
+                    match deps.client.stream_messages(&request).await {
+                        Ok(s) => break s,
+                        Err(e) => {
+                            if crate::backends::retry::should_retry(e.code(), attempt) {
+                                crate::runtime::sleep_ms(crate::backends::retry::backoff_ms(attempt))
+                                    .await;
+                                continue;
+                            }
+                            emit_error(&deps.state, e.to_string());
+                            deps.state.idle.store(true, Ordering::Release);
+                            deps.state.idle_notify.notify_waiters();
+                            return Err(e);
+                        }
+                    }
                 }
             };
 
