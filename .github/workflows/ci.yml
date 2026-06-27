@@ -1,8 +1,10 @@
 name: CI
 
 # The gate, as GitHub Actions: clippy across the shipped feature configs (kept
-# warning-clean), the full test suite, the wasm guard, and the proxy tsc + test
-# suite. `cargo fmt` is intentionally NOT enforced — this codebase is hand-
+# warning-clean), the full test suite, the wasm guard, the cartridge corpus +
+# codegen/host-parity proofs (rustlite compiles + runs real cartridges — the gate
+# `cargo test` can't, which let a compiler panic ship before 0.57.0), and the
+# proxy tsc + test suite. `cargo fmt` is intentionally NOT enforced — this is hand-
 # formatted to match surrounding style, not rustfmt-canonical. The heavy
 # `browser-app-local` (in-browser Gemma / Burn) config is left to the local
 # pre-release sweep — it pulls ~570MB and isn't in the shipped bundle.
@@ -48,6 +50,32 @@ jobs:
 
       - name: wasm guard (SDK-only)
         run: cargo check --no-default-features --target wasm32-unknown-unknown
+
+  cartridges:
+    name: cartridges — corpus + codegen + host parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # These compile each examples/cartridges/*.rl via the localharness CLI,
+      # instantiate the emitted wasm under a stub host, and assert it doesn't trap
+      # / draws correctly — catching rustlite codegen bugs and JS↔Rust host-table
+      # drift that a bare `cargo test` (wasm-magic-header check only) cannot. The
+      # release script runs these via verify.sh; mirror the cheap (no wasm-pack)
+      # subset here so they gate every push, not just a release.
+      - name: cartridge corpus (compile -> instantiate -> run -> assert)
+        run: node scripts/test-cartridges.mjs
+      - name: variable framebuffer resolution (dims convention)
+        run: node scripts/test-variable-resolution.mjs
+      - name: cartridge-in-cartridge composition (host::compose wiring)
+        run: node scripts/test-compose-wiring.mjs
+      - name: worker host-parity (off-main-thread cartridge runtime)
+        run: node scripts/test-worker-host-parity.mjs
 
   proxy:
     name: proxy — tsc + tests
