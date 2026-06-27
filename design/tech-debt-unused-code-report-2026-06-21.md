@@ -1,5 +1,10 @@
 # Unused / Legacy Code Debt Report - 2026-06-21
 
+> ⚠️ HISTORICAL SNAPSHOT (note added 2026-06-27). Much of this has since been
+> actioned — see the overnight tech-debt loop and `design/cleanup-backlog.md`. Treat
+> the findings below as a point-in-time snapshot, not a live TODO: VERIFY each item
+> against current source before acting on it.
+
 ## Executive summary
 
 The repo is not failing from obvious Rust warnings: `cargo check` is clean, and
