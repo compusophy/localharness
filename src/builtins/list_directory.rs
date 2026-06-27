@@ -85,14 +85,27 @@ mod tests {
 
     #[tokio::test]
     async fn lists_known_directory() {
-        let tmp = std::env::temp_dir();
+        // Use an ISOLATED tempdir, NOT the shared OS temp_dir: listing the global
+        // temp dir raced other processes churning files in it (an entry vanished
+        // between readdir and its stat → the read errored mid-listing), which flaked
+        // this test under CI contention. An owned tempdir has stable contents.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.txt"), b"hi").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
         let tool = ListDirectory::new(Arc::new(NativeFilesystem::new()));
         let out = tool
-            .execute(json!({"path": tmp.display().to_string()}), None)
+            .execute(json!({"path": dir.path().display().to_string()}), None)
             .await
             .unwrap();
-        assert!(out["entries"].is_array(), "entries should be an array");
-        assert!(out["count"].as_u64().is_some());
+        let names: Vec<&str> = out["entries"]
+            .as_array()
+            .expect("entries should be an array")
+            .iter()
+            .filter_map(|e| e["name"].as_str())
+            .collect();
+        assert!(names.contains(&"a.txt"), "should list the file: {names:?}");
+        assert!(names.contains(&"sub"), "should list the subdir: {names:?}");
+        assert_eq!(out["count"].as_u64(), Some(2));
     }
 
     #[tokio::test]
