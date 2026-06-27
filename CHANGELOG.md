@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.0] - 2026-06-27
+
+Correctness + reliability on the back of the 0.57.0 audit: signature-malleability
+hardening, transient-error retry on the main turn, an in-feed rendering fix, and the
+cartridge proofs now gating every push.
+
+### Security
+
+- **Reject high-s (malleable) signatures in address recovery (I3).** `recover_address`
+  (and the proxy's `_authcore.ts` / `_tempo.ts` verifiers) accepted EIP-2-malleable
+  high-s signatures — the `(r, n-s, v^1)` twin recovers the SAME address, so a token or
+  intent signed high-s could pass off-chain auth even though the on-chain HALF_N gate
+  (X402Facet / MultiSignerAccount) rejects it. Low-s is now enforced on every path
+  (k256 `normalize_s` in Rust; `s <= secp256k1n/2` in TS). Our own signers already emit
+  low-s, so legitimate auth is unaffected.
+
+### Fixed
+
+- **Retry the main turn stream-open on transient failures (#29).** A Gemini HTTP 503
+  aborted the whole turn because the gemini/anthropic turn loops opened their model
+  stream once, while the subagent already retried. A shared `backends::retry` policy
+  now retries transient transport/5xx/timeout stream-opens (auth/credits/rate-limit
+  fail fast; a mid-stream failure is not retried — the partial response already went out).
+- **In-feed cartridge embeds respect their aspect ratio (#30).** The inline embed stage
+  hard-coded 4:3 (the obsolete 320x240 default), letterboxing 512x512 / portrait
+  cartridges; it now follows the cartridge's own `dims()`, capped in height so a tall
+  app stays inline.
+
+### Added
+
+- **CI gates the cartridge corpus + codegen/host-parity proofs.** A rustlite compiler
+  panic reached `main` before 0.57.0 because CI ran clippy/test/wasm/proxy but not the
+  cartridge proofs; a `cartridges` job now compiles + runs every `examples/cartridges/*.rl`
+  (plus variable-resolution, host::compose wiring, worker host-parity) on every push.
+
 ## [0.57.0] - 2026-06-27
 
 A security-hardening release: the 2026-06-26 whole-codebase audit (76

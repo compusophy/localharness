@@ -20,7 +20,7 @@
      manifest and regenerate. -->
 
 <!-- GEN:version -->
-**version:** 0.57.0 (the crate version; the deployed web bundle matches crates.io when current)
+**version:** 0.58.0 (the crate version; the deployed web bundle matches crates.io when current)
 <!-- /GEN:version -->
 
 ## The crate (SDK)
