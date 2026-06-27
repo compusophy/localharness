@@ -341,13 +341,15 @@ impl Vm<'_> {
                 op::DIV => {
                     let a = word_to_u128(&self.pop()?);
                     let b = word_to_u128(&self.pop()?);
-                    self.stack.push(u128_to_word(if b == 0 { 0 } else { a / b }));
+                    // EVM DIV-by-zero is 0 (checked_div → None → 0).
+                    self.stack.push(u128_to_word(a.checked_div(b).unwrap_or(0)));
                     self.pc += 1;
                 }
                 op::MOD => {
                     let a = word_to_u128(&self.pop()?);
                     let b = word_to_u128(&self.pop()?);
-                    self.stack.push(u128_to_word(if b == 0 { 0 } else { a % b }));
+                    // EVM MOD-by-zero is 0 (checked_rem → None → 0).
+                    self.stack.push(u128_to_word(a.checked_rem(b).unwrap_or(0)));
                     self.pc += 1;
                 }
                 op::LT => {

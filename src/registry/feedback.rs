@@ -87,7 +87,7 @@ pub async fn list_feedback() -> Result<Vec<FeedbackEntry>, String> {
             out.push(entry);
         }
     }
-    out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    out.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
     Ok(out)
 }
 

@@ -297,17 +297,15 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
                                     },
                                 );
                             }
-                            Block::Text { text } => {
-                                // content_block_start for a text block may
-                                // carry a non-empty seed (rare).
-                                if !text.is_empty() {
-                                    accumulated_text.push_str(&text);
-                                    deps.state.emit(Step::text_delta(
-                                        &trajectory_id,
-                                        step_index,
-                                        &text,
-                                    ));
-                                }
+                            // content_block_start for a text block may carry a
+                            // non-empty seed (rare); an empty one falls to `_`.
+                            Block::Text { text } if !text.is_empty() => {
+                                accumulated_text.push_str(&text);
+                                deps.state.emit(Step::text_delta(
+                                    &trajectory_id,
+                                    step_index,
+                                    &text,
+                                ));
                             }
                             _ => {}
                         }

@@ -247,11 +247,8 @@ impl WorkerCandidate {
     /// ordering surprises). An unproven agent (count 0) sorts as avg 0 — below
     /// any proven one at the same task-fit tier, but still eligible.
     fn avg_milli(&self) -> u64 {
-        if self.rep_count == 0 {
-            0
-        } else {
-            (self.rep_sum * 1000) / self.rep_count
-        }
+        // checked_div: an unproven agent (rep_count 0) averages 0.
+        (self.rep_sum * 1000).checked_div(self.rep_count).unwrap_or(0)
     }
 }
 
