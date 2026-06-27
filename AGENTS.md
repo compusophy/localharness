@@ -560,9 +560,10 @@ localharnesslite** (CLI `sh` + browser `execute_script`; design/bashlite.md). Op
 - **Browser relay E2E + web redeploy** — the keyless bundle routes onboarding
   through the relay (committed); needs an in-browser onboarding test, then a
   deliberate `build-web.sh` + deploy.
-- **Relay funded-agent self-pay** — the onboarding-only gate refuses WALLET-funded
-  callers (fiat $LH lands in the meter, not the wallet, so onboarding is fine); a
-  graduated wallet-funded agent has no CLI self-pay path on mainnet yet.
+- **Relay funded-agent writes (PARTIAL)** — a funded agent CAN now spend its own $LH
+  on mainnet via the relay (`SELF_PAY_SELECTORS`: transfer/settle/approve/createInvite
+  are gate-exempt). OPEN: its other writes (publish/schedule `setMetadata`) still gate
+  to `LH_RELAY_FUNDED`, and it can't self-pay gas (holds $LH, never the AlphaUSD fee token).
 - **SessionRoom phase 2** — multi-identity rooms: ECIES-grant `K_room` (v1 live).
 - **P2P teams** — 2-device E2E, mutable shared-FS, team UI.
 - **Local Gemma** — shipped behind `browser-app-local`; a live WebGPU run pending.
