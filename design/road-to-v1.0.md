@@ -74,6 +74,11 @@ routes it to Track B).
 
 ## Should-have (strongly wanted, not strictly blocking)
 
+- **Admin-panel complete refactor** (telemetry #36) — the admin surface (`#header-admin-panel`
+  / `.admin-dialog`) is a dense settings grab-bag that clashes with the chat-native design
+  (maintainer: "horrendous artifact that doesn't fit"); re-think it chat-native + coherent
+  (keep the no-DOM / one-box / centered-overlay rules). A UX-coherence gate for a
+  not-embarrassing launch.
 - Notifications fire FAILING on-chain push-sub writes on mainnet (address-keyed path bypasses
   the relay) → confusing failed-tx in the bell (frank #27/#32). Move push subs off-chain;
   retire the on-chain path at the reset (also closes a plaintext-bearer-cap privacy hole).
