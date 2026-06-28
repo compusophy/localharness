@@ -11,6 +11,7 @@ use thiserror::Error;
 
 /// All errors the SDK can produce.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// OS-level I/O error.
     #[error("io: {0}")]

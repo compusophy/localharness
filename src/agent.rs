@@ -62,6 +62,7 @@ use crate::types::{
 
 /// Backend-agnostic agent configuration (tools, policies, triggers, workspaces).
 #[derive(Default)]
+#[non_exhaustive]
 pub struct AgentConfig {
     /// Optional system-level instructions for the model.
     pub system_instructions: Option<SystemInstructions>,
@@ -168,6 +169,7 @@ impl AgentConfig {
 ///
 /// Pairs the generic `AgentConfig` (hooks, tools, policies, triggers)
 /// with `GeminiBackendConfig` (model, API key, thinking, etc.).
+#[non_exhaustive]
 pub struct GeminiAgentConfig {
     /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,
@@ -393,6 +395,7 @@ impl GeminiAgentConfig {
 /// # Ok(())
 /// # }
 /// ```
+#[non_exhaustive]
 pub struct MockAgentConfig {
     /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,
@@ -482,6 +485,7 @@ impl MockAgentConfig {
 /// parallel of [`GeminiAgentConfig`]; additive — `start_gemini` and the
 /// neutral `AgentConfig` are untouched.
 #[cfg(feature = "anthropic")]
+#[non_exhaustive]
 pub struct AnthropicAgentConfig {
     /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,
@@ -650,6 +654,7 @@ impl AnthropicAgentConfig {
 /// parallel of [`GeminiAgentConfig`] / [`AnthropicAgentConfig`]; additive —
 /// `start_gemini` and the neutral `AgentConfig` are untouched.
 #[cfg(feature = "openai")]
+#[non_exhaustive]
 pub struct OpenAiAgentConfig {
     /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,
@@ -807,6 +812,7 @@ impl OpenAiAgentConfig {
 ///
 /// [`Filesystem`]: crate::filesystem::Filesystem
 #[cfg(feature = "local")]
+#[non_exhaustive]
 pub struct LocalAgentConfig {
     /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,

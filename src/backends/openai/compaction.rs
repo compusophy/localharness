@@ -11,6 +11,7 @@
 use parking_lot::Mutex;
 
 use crate::backends::compaction::{self as engine, CompactionModel};
+#[allow(unused_imports)] // COMPACTION_TAG: used only in cfg(test); should_compact in non-test code
 pub use crate::backends::compaction::{should_compact, COMPACTION_TAG};
 use crate::backends::openai::api::SharedClient;
 use crate::backends::openai::wire::{ChatRequest, Message, Role};

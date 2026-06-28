@@ -15,6 +15,7 @@ use crate::backends::anthropic::wire::{
     Block, Message, MessagesRequest, Role, DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
 };
 use crate::backends::compaction::{self as engine, CompactionModel};
+#[allow(unused_imports)] // COMPACTION_TAG: used only in cfg(test); should_compact in non-test code
 pub use crate::backends::compaction::{should_compact, COMPACTION_TAG};
 use crate::error::Result;
 

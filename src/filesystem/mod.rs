@@ -1,8 +1,8 @@
 //! Filesystem abstraction for the built-in fs tools.
 //!
-//! The 6 fs-shaped builtins (`list_directory`, `view_file`, `find_file`,
-//! `search_directory`, `create_file`, `edit_file`) call through this
-//! trait so the same tool code can target a native OS filesystem
+//! The 8 fs-shaped builtins (`list_directory`, `view_file`, `find_file`,
+//! `search_directory`, `create_file`, `edit_file`, `delete_file`, `rename_file`)
+//! call through this trait so the same tool code can target a native OS filesystem
 //! ([`NativeFilesystem`]) or, eventually, OPFS in a browser tab. The
 //! native impl is gated behind the `native` cargo feature.
 //!
@@ -15,7 +15,7 @@
 //!
 //! Implement [`Filesystem`] for your type, then hand it to the agent
 //! via `GeminiAgentConfig::with_filesystem` — the runtime will register
-//! the 6 fs builtins on top of it:
+//! the 8 fs builtins on top of it:
 //!
 //! ```no_run
 //! use std::sync::Arc;

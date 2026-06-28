@@ -1,17 +1,21 @@
 /// Token types (keywords, operators, literals).
-pub mod token;
+pub(crate) mod token;
 /// Byte-level lexer with string escapes.
-pub mod lexer;
+pub(crate) mod lexer;
 /// Full AST (structs, enums, functions, match, etc.).
-pub mod ast;
+#[allow(dead_code)] // internal compiler IR; not every field is read in every build/target
+pub(crate) mod ast;
 /// Recursive-descent parser with precedence climbing.
-pub mod parser;
+pub(crate) mod parser;
 /// Scope-based type resolution and mutability checking.
-pub mod typecheck;
+#[allow(dead_code)] // internal compiler pass; some helpers are target/test-only
+pub(crate) mod typecheck;
 /// Wasm binary emitter (sections, opcodes, LEB128).
-pub mod codegen;
+#[allow(dead_code)] // internal wasm emitter; some helpers are target/test-only
+pub(crate) mod codegen;
 /// Wasm32-only cartridge instantiation via `WebAssembly`.
-pub mod loader;
+#[allow(dead_code)] // wasm32-only cartridge runtime; methods unused in the native lib build
+pub(crate) mod loader;
 
 /// Compile a Rust-subset source string into wasm bytes.
 ///

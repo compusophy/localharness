@@ -1,11 +1,11 @@
 //! The crate-wide built-in tool registry — backend-NEUTRAL.
 //!
 //! Each tool implements [`Tool`] and is registered into a [`ToolRunner`] by
-//! [`register_builtins`](crate::builtins::register_builtins) according to the
+//! `register_builtins` according to the
 //! [`CapabilitiesConfig`]. EVERY backend (Gemini, Anthropic, local — and the
 //! mock when an Agent injects a runner) registers from here; only the two
 //! Gemini-client-coupled tools (`start_subagent`, `generate_image`) skip when
-//! no client is supplied in [`BuiltinDeps`](crate::builtins::BuiltinDeps).
+//! no client is supplied in `BuiltinDeps`.
 //!
 //! Lived at `backends/gemini/tools/` until 0.29.x (the Gemini backend was
 //! written first); a re-export shim remains there so old paths compile.
@@ -125,7 +125,7 @@ pub(crate) fn protected_path_error(path: &str) -> crate::error::Error {
 ///   deny/containment policies (e.g. `policy::workspace_only`). Without it a
 ///   subagent escapes the parent's confinement — its only remaining bound is
 ///   the PROTECTED_FILES basename guard. `None` = no policy inheritance.
-pub struct BuiltinDeps {
+pub(crate) struct BuiltinDeps {
     pub chat_client: Option<SharedClient>,
     pub chat_model: String,
     pub image_client: Option<SharedClient>,
@@ -149,7 +149,7 @@ macro_rules! fs_tool {
 
 /// Register the enabled built-in tools into `runner` based on
 /// `capabilities.effective_tools()`. Returns the names registered.
-pub fn register_builtins(
+pub(crate) fn register_builtins(
     runner: &ToolRunner,
     capabilities: &CapabilitiesConfig,
     deps: &BuiltinDeps,

@@ -116,7 +116,7 @@ impl StartSubagent {
     }
 
     /// Build the subagent's isolated [`ToolRunner`] from the reduced
-    /// allowlist, reusing the crate's [`register_builtins`] so the subagent's
+    /// allowlist, reusing the crate's `register_builtins` so the subagent's
     /// tools are constructed and gated exactly like the main agent's. The fs
     /// builtins register only when a filesystem is present (same rule as the
     /// main path); `finish` always registers.

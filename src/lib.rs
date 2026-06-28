@@ -30,13 +30,34 @@
 //! | 1 | [`Agent`] | High-level facade: connect, chat, shutdown. |
 //! | 2 | [`Conversation`] / [`ChatResponse`] | Stateful session, multi-cursor streams. |
 //! | 3 | [`connections::Connection`] | Transport abstraction. |
-//! | aux | [`Filesystem`] | What the 6 fs-shaped built-in tools call into; swap the impl to target OPFS, an in-memory FS, etc. |
+//! | aux | [`Filesystem`] | What the 8 fs-shaped built-in tools call into; swap the impl to target OPFS, an in-memory FS, etc. |
 //!
 //! [`Agent`]: agent::Agent
 //! [`Conversation`]: conversation::Conversation
 //! [`ChatResponse`]: conversation::ChatResponse
 //! [`connections::Connection`]: connections::Connection
 //! [`Filesystem`]: filesystem::Filesystem
+//!
+//! ## Stability & MSRV
+//!
+//! MSRV is Rust 1.85 (edition 2024); raising it is a minor-version bump. The 1.0
+//! semver promise COVERS the agent-SDK surface: the layer seams (`Agent` + the
+//! `*AgentConfig`s, `Conversation`/`ChatResponse`/`ChatCursor`,
+//! `connections::Connection`/`ConnectionStrategy`); the extension traits
+//! (`tools::Tool`/`ToolRunner`, `hooks`, `policy`, `triggers`); the wire-neutral
+//! types (`content`, `types`, `error::Error`/`Result`, `filesystem::Filesystem` + the
+//! 8 fs builtins, the named `builtins`); and the root-re-exported backend
+//! constructors + `*BackendConfig`/`*Connection`/`*ConnectionStrategy`.
+//!
+//! NOT covered (may change in any release, semver-exempt): the `wallet` feature —
+//! the entire `registry` surface is coupled to live on-chain diamond addresses +
+//! facets that churn via `diamondCut`, plus `wallet`/`tempo_tx`; the per-backend
+//! `backends::*::{wire,api,compaction}` modules; opaque history byte formats
+//! (`history_bytes`/`set_history_bytes`); the `browser-app` app (wasm-only, private);
+//! the `local` feature; and the platform compiler/runtime helpers (`rustlite`,
+//! `soliditylite`, `bashlite`, `raster`, `compose`). Growable public structs/enums
+//! carry `#[non_exhaustive]` (or grow only via `..Default::default()`-friendly
+//! fields) so additive changes stay non-breaking.
 
 // On wasm32 the crate is single-threaded (browser) and intentionally
 // uses `Arc` over non-Send/Sync values via the `MaybeSendSync` marker
@@ -45,13 +66,11 @@
 // wasm rather than peppering `#[allow]` across the modules.
 #![cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
 
-// On wasm32 the upper architecture (Agent → Conversation → Connection)
-// is temporarily gated behind `native` because its trait bounds require
-// `Send` futures, which reqwest's browser fetch can't satisfy. The wasm
-// surface exposes `error`, `content`, `types`, and the low-level
-// `backends::gemini::api::GeminiClient` so a web demo can drive the
-// Gemini REST API directly. Lifting the gate is M2.5: thread a
-// `MaybeSend` shim through the Tool/Connection/Hook traits.
+// On wasm32 the full architecture (Agent → Conversation → Connection) compiles:
+// the trait bounds use the `MaybeSendSync` marker (runtime.rs) so every
+// `#[async_trait]` is `?Send` on wasm, and the agent/conversation/connections
+// modules are declared unconditionally. Only `run_command` + the MCP stdio bridge
+// are `feature = "native"`-gated; the browser app supplies its own OPFS filesystem.
 /// Layer-1 agent facade: connect, chat, shutdown.
 pub mod agent;
 /// Backend implementations (Gemini, MCP).

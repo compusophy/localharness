@@ -19,9 +19,11 @@
 //! simply don't register on this backend (Anthropic has no image endpoint;
 //! a neutral subagent is the design's deferred `OneShot` refactor).
 
-pub mod api;
-pub mod compaction;
-pub mod wire;
+pub(crate) mod api;
+#[allow(dead_code)] // backend-internal; some helpers are target/test-only
+pub(crate) mod compaction;
+#[allow(dead_code)] // wire DTOs: serde-populated fields aren't all read in Rust
+pub(crate) mod wire;
 #[path = "loop.rs"]
 mod r#loop;
 
@@ -59,6 +61,7 @@ const STEP_BROADCAST_CAPACITY: usize = 256;
 
 /// Configuration for the Anthropic Messages backend.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AnthropicBackendConfig {
     /// Anthropic API key (BYOK) — or, in credits mode, the proxy auth token.
     pub api_key: String,
@@ -71,7 +74,7 @@ pub struct AnthropicBackendConfig {
     /// Optional sampling temperature.
     pub temperature: Option<f32>,
     /// `max_tokens` for the response. Anthropic REQUIRES this; defaults to
-    /// [`wire::DEFAULT_MAX_TOKENS`].
+    /// `wire::DEFAULT_MAX_TOKENS`.
     pub max_tokens: Option<u32>,
     /// Override the base URL (test server, proxy, regional endpoint).
     pub base_url: Option<url::Url>,

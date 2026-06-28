@@ -23,27 +23,33 @@
 //! - [`compile`] — the top-level `&str → CompiledArtifact` pipeline, mirroring
 //!   [`crate::rustlite::compile`].
 //! - [`emit_constant_getter`] — the worked single-function emitter, refactored to
-//!   drive [`codegen::assemble`] so its bytes are byte-IDENTICAL to the
+//!   drive `codegen::assemble` so its bytes are byte-IDENTICAL to the
 //!   source-compiled path for the constant-getter case (the golden gate). Its
 //!   `init_code` is the same shape already proven deployable on the live Tempo
 //!   EVM (design `soliditylite.md` §4 update, loop tick 4).
 
 /// EVM bytecode assembler: opcodes, minimal-width push, two-pass label
 /// resolution, and the init-wrapper constructor.
-pub mod asm;
+#[allow(dead_code)] // internal bytecode assembler; some helpers are test-only
+pub(crate) mod asm;
 /// SolidityLite AST — the parsed shape of the v1 facet subset.
-pub mod ast;
+#[allow(dead_code)] // internal compiler IR; not every field is read in every build
+pub(crate) mod ast;
 /// EVM codegen — a typed facet → runtime bytecode + the shared dispatch/body emit.
-pub mod codegen;
+#[allow(dead_code)] // internal EVM codegen; some helpers are test-only
+pub(crate) mod codegen;
 /// Minimal EVM-subset interpreter — the dependency-free execution DIFF-HARNESS for
 /// [`codegen`] (issue #37). Deploys + calls a compiled facet in-process and asserts
 /// its results against the known-good shipped features. `wallet`-gated (keccak).
 #[cfg(feature = "wallet")]
-pub mod interp;
+#[allow(dead_code)] // the EVM diff-harness oracle; exercised by examples/tests, not the lib
+pub(crate) mod interp;
 /// Byte-level lexer for the v1 Solidity-subset surface.
-pub mod lexer;
+#[allow(dead_code)] // some lexer items are used only by the wallet-gated interp/codegen
+pub(crate) mod lexer;
 /// Recursive-descent parser (with the rustlite recursion guard).
-pub mod parser;
+#[allow(dead_code)] // some parser items are used only by the wallet-gated interp/codegen
+pub(crate) mod parser;
 
 /// A compiled contract: the deployed runtime bytecode plus the full init code
 /// (constructor + runtime) to hand to a CREATE transaction.
@@ -83,7 +89,7 @@ pub struct CompiledArtifact {
 /// The all-zero placeholders for `<FB>`/`<BODY>` are back-patched by the
 /// assembler in pass 2. Zeros use `PUSH1 0x00`, never `PUSH0`.
 ///
-/// This now drives the SHARED [`codegen::assemble`] (a one-function call), so its
+/// This now drives the SHARED `codegen::assemble` (a one-function call), so its
 /// output is byte-IDENTICAL to [`compile`]'ing a single `return <intlit>;` facet
 /// — the golden invariant the source-driven path is gated against.
 pub fn emit_constant_getter(selector: [u8; 4], value_be32: [u8; 32]) -> CompiledArtifact {

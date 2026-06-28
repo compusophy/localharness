@@ -87,6 +87,7 @@ const MAX_TOOL_ROUNDS: u32 = 5;
 
 /// Configuration for the local (in-browser Gemma) backend.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct LocalBackendConfig {
     /// Model id label (e.g. `"gemma-3-270m"`). Informational only — there is
     /// one local model today.

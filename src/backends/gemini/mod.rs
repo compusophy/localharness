@@ -5,12 +5,14 @@
 //! hooks + policies + `ToolRunner`, appends the response to history,
 //! and continues until the model produces no further function calls.
 
-pub mod api;
-pub mod compaction;
-pub mod wire;
+pub(crate) mod api;
+#[allow(dead_code)] // backend-internal; some helpers are target/test-only
+pub(crate) mod compaction;
+#[allow(dead_code, clippy::enum_variant_names)] // wire DTOs: private-item lints don't apply to the public API
+pub(crate) mod wire;
 #[path = "loop.rs"]
 mod r#loop;
-pub mod tools;
+pub(crate) mod tools;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -41,6 +43,7 @@ const STEP_BROADCAST_CAPACITY: usize = 256;
 
 /// Configuration for the Gemini REST backend.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct GeminiBackendConfig {
     /// Gemini API key.
     pub api_key: String,
@@ -74,7 +77,7 @@ pub struct GeminiBackendConfig {
     /// Capability/built-in-tool selection. Defaults to the read-only
     /// safety set.
     pub capabilities: CapabilitiesConfig,
-    /// Filesystem implementation the 6 fs built-ins call into. When
+    /// Filesystem implementation the 8 fs built-ins call into. When
     /// `None`, `connect` falls back to `NativeFilesystem::new()` on
     /// native (and to `None` on wasm — so fs builtins simply don't
     /// register until a custom impl is supplied).
@@ -116,7 +119,7 @@ impl GeminiBackendConfig {
         self
     }
 
-    /// Plug in a custom [`Filesystem`] implementation that the 6 fs
+    /// Plug in a custom [`Filesystem`] implementation that the 8 fs
     /// built-ins will call into. Without this, `connect` falls back to
     /// `NativeFilesystem::new()` on native (or to no filesystem at all
     /// on wasm, in which case the fs builtins skip registration).
@@ -699,7 +702,7 @@ mod tests {
     }
 
     /// `with_filesystem` must override the default and the runtime must
-    /// route the 6 fs builtins through the supplied impl.
+    /// route the 8 fs builtins through the supplied impl.
     #[tokio::test]
     async fn with_filesystem_override_flows_to_tools() {
         let fs = Arc::new(TrackingFs::default());

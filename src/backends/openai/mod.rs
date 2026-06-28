@@ -17,9 +17,11 @@
 //! filesystem builtin registers, while the two Gemini-client-coupled tools
 //! (`start_subagent`, `generate_image`) don't register on this backend.
 
-pub mod api;
-pub mod compaction;
-pub mod wire;
+pub(crate) mod api;
+#[allow(dead_code)] // backend-internal; some helpers are target/test-only
+pub(crate) mod compaction;
+#[allow(dead_code)] // wire DTOs: serde-populated fields aren't all read in Rust
+pub(crate) mod wire;
 #[path = "loop.rs"]
 mod r#loop;
 
@@ -55,6 +57,7 @@ const STEP_BROADCAST_CAPACITY: usize = 256;
 
 /// Configuration for the OpenAI Chat Completions backend.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OpenAiBackendConfig {
     /// OpenAI API key (BYOK) — or, in credits mode, the proxy auth token.
     pub api_key: String,
