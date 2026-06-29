@@ -413,12 +413,16 @@ pub(crate) async fn start_session(
             cfg = cfg.with_auth_provider(p);
         }
         // The on-disk history is the LAST backend's wire format. Only seed it
-        // into Anthropic when it actually parses as Anthropic history —
+        // into Anthropic when it STRICTLY parses as Anthropic history —
         // otherwise (e.g. switching from a Gemini session) start fresh rather
-        // than failing the whole session start. The mount-time transcript
-        // paint stays regardless, so the user still sees the prior turns.
+        // than failing the whole session start. `history_loads` matches what
+        // `set_history_bytes` will do; the old `decode_transcript_bytes().is_ok()`
+        // gate was LENIENT (returned Ok(empty) for a Gemini blob), so it let an
+        // incompatible history through and the restore crashed with `missing
+        // field content`. The mount-time transcript paint stays regardless, so
+        // the user still sees the prior turns even when the model starts fresh.
         if let Some(bytes) = pending_history {
-            if crate::backends::anthropic::decode_transcript_bytes(&bytes).is_ok() {
+            if crate::backends::anthropic::history_loads(&bytes) {
                 cfg = cfg.with_history_bytes(bytes);
             }
         }
@@ -541,10 +545,12 @@ pub(crate) async fn start_session(
         // If a previous session left history on OPFS, restore it into the
         // new connection. Consumed once — subsequent key changes start
         // fresh from the in-memory agent's history. Only seed it when it
-        // parses as Gemini history (so switching back from a Claude session
-        // doesn't fail the session start on an incompatible wire format).
+        // STRICTLY parses as Gemini history (so switching back from a Claude
+        // session doesn't crash the start on an incompatible wire format).
+        // `history_loads` matches `set_history_bytes`; the old lenient
+        // `decode_transcript_bytes().is_ok()` gate let a Claude blob through.
         if let Some(bytes) = pending_history {
-            if crate::backends::gemini::decode_transcript_bytes(&bytes).is_ok() {
+            if crate::backends::gemini::history_loads(&bytes) {
                 cfg = cfg.with_history_bytes(bytes);
             }
         }

@@ -482,6 +482,16 @@ pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<crate::types::Transcr
     Ok(project_history(&history))
 }
 
+/// True iff `bytes` STRICTLY decode as Gemini history — the EXACT parse
+/// [`GeminiConnection::set_history_bytes`] performs (the Anthropic twin of
+/// [`crate::backends::anthropic::history_loads`]). Gates cross-backend history
+/// seeding so an Anthropic-format blob doesn't crash a Gemini session start: the
+/// lenient [`decode_transcript_bytes`] returns `Ok(empty)` for the wrong format,
+/// which an `.is_ok()` gate would wrongly accept.
+pub fn history_loads(bytes: &[u8]) -> bool {
+    crate::backends::state::history::decode::<wire::Content>(bytes).is_ok()
+}
+
 fn project_history(history: &[wire::Content]) -> Vec<crate::types::TranscriptEntry> {
     use crate::types::{TranscriptEntry, TranscriptRole, TranscriptToolCall};
     use std::collections::{HashMap, VecDeque};
@@ -648,6 +658,33 @@ impl Connection for GeminiConnection {
 mod tests {
     use super::*;
     use crate::filesystem::{DirEntry, EntryKind, Filesystem, Metadata, WalkEntry};
+
+    /// Twin of the Anthropic regression (telemetry #37): the session-start gate
+    /// must match `set_history_bytes` so it never accepts a history the strict
+    /// restore then crashes on. (Gemini's `parts` is `#[serde(default)]` and
+    /// unknown fields are ignored, so a foreign blob decodes as empty turns
+    /// rather than crashing — but a history with a MALFORMED entry is the case
+    /// the old lenient `decode_transcript_bytes().is_ok()` gate let through while
+    /// the strict `set_history_bytes` rejected the whole array.)
+    #[test]
+    fn history_loads_gates_unrestorable_bytes() {
+        // Second entry is malformed (a bare number, not a Content object).
+        let partly_bad = br#"[{"role":"user","parts":[{"text":"ok"}]},42]"#;
+        // The LENIENT transcript decoder skips the bad entry → Ok (why `.is_ok()`
+        // was insufficient as a restore gate).
+        assert!(decode_transcript_bytes(partly_bad).is_ok());
+        // The STRICT gate (== `set_history_bytes`) rejects the whole array.
+        assert!(!history_loads(partly_bad));
+
+        // A real Gemini history loads; empty bytes are a valid fresh start.
+        let history = vec![wire::Content {
+            role: wire::ContentRole::User,
+            parts: vec![wire::Part::Text { text: "hi".into() }],
+        }];
+        let bytes = crate::backends::state::history::encode(&history).unwrap();
+        assert!(history_loads(&bytes));
+        assert!(history_loads(b""));
+    }
     use crate::tools::ToolRunner;
     use async_trait::async_trait;
     use parking_lot::Mutex;

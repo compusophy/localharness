@@ -452,6 +452,17 @@ pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<crate::types::Transcr
     Ok(project_history(&history))
 }
 
+/// True iff `bytes` STRICTLY decode as this backend's history — the EXACT parse
+/// [`AnthropicConnection::set_history_bytes`] performs. The browser persists ONE
+/// history file across model switches, so it must gate cross-backend seeding on
+/// this rather than on [`decode_transcript_bytes`]: that decoder is LENIENT
+/// (`decode_lenient` skips per-entry failures, so a Gemini-format blob returns
+/// `Ok(empty)` and slips past an `.is_ok()` check), after which `set_history_bytes`
+/// crashed the whole session start with `missing field \`content\``.
+pub fn history_loads(bytes: &[u8]) -> bool {
+    crate::backends::state::history::decode::<wire::Message>(bytes).is_ok()
+}
+
 fn project_history(history: &[wire::Message]) -> Vec<crate::types::TranscriptEntry> {
     use crate::types::{TranscriptEntry, TranscriptRole, TranscriptToolCall};
     use wire::{Block, Role};
@@ -611,6 +622,35 @@ mod tests {
     use super::*;
     use crate::filesystem::NativeFilesystem;
     use crate::tools::ToolRunner;
+
+    /// Regression (telemetry #37): a Gemini→Claude model switch crashed session
+    /// start with `start_anthropic: set_history_bytes: missing field \`content\``.
+    /// The browser persists ONE history file across backends; the session-start
+    /// gate used the LENIENT `decode_transcript_bytes().is_ok()`, which returns
+    /// `Ok(empty)` for a Gemini-format blob (`decode_lenient` skips the
+    /// per-entry failures), so the incompatible history slipped through and the
+    /// STRICT `set_history_bytes` then crashed. `history_loads` matches the
+    /// strict restore, so the gate now rejects foreign-format bytes and the
+    /// session starts fresh on the new backend instead of failing outright.
+    #[test]
+    fn history_loads_gates_foreign_backend_bytes() {
+        // Gemini wire shape: `parts`, no `content`.
+        let gemini_blob = br#"[{"role":"user","parts":[{"text":"hi"}]}]"#;
+        // The LENIENT transcript decoder ACCEPTS it (yields an empty transcript)
+        // — exactly why the old `.is_ok()` gate was insufficient.
+        assert!(decode_transcript_bytes(gemini_blob).is_ok());
+        // The STRICT gate (identical to what `set_history_bytes` runs) REJECTS it.
+        assert!(!history_loads(gemini_blob));
+
+        // A real Anthropic history loads; empty bytes are a valid fresh start.
+        let history = vec![wire::Message {
+            role: wire::Role::User,
+            content: vec![wire::Block::Text { text: "hi".into() }],
+        }];
+        let bytes = crate::backends::state::history::encode(&history).unwrap();
+        assert!(history_loads(&bytes));
+        assert!(history_loads(b""));
+    }
     use crate::types::StepStatus;
     use futures_util::stream::StreamExt;
 
