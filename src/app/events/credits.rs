@@ -62,13 +62,6 @@ pub(super) fn run_set_model_access(mode: String) {
     {
         let _ = storage.set_item("lh_model_access", &mode);
     }
-    // Repaint the admin credits section if it's open.
-    if dom::by_id("credits-section").is_some() {
-        dom::swap_outer(
-            "credits-section",
-            &crate::app::templates::admin_credits_section().into_string(),
-        );
-    }
     // If the api-key modal happens to be open (BYOK-without-key path),
     // switching to credits dismisses it. No terminal status text — credits
     // is the default and the account tab holds the controls.

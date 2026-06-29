@@ -22,13 +22,6 @@ pub(crate) fn feedback_onchain_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Toggle + persist the on-chain-feedback setting (admin row).
-pub(crate) fn set_feedback_onchain(on: bool) {
-    if let Some(s) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = s.set_item("lh_feedback_onchain", if on { "on" } else { "off" });
-    }
-}
-
 /// Validate + rate-limit the feedback textarea, mirror it to OPFS, and submit it
 /// on-chain (signed by the apex iframe wallet, sponsor-paid).
 pub(crate) fn feedback_submit() {

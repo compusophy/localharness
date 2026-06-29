@@ -466,65 +466,6 @@ pub(super) fn toggle_telemetry_pressed() {
     );
 }
 
-/// Flip whether feedback ALSO mirrors on-chain. Off by default — off-chain (the
-/// rich telemetry issue) is the cheap primary path; the on-chain write costs
-/// sponsor gas, so it's opt-in.
-pub(super) fn toggle_feedback_onchain_pressed() {
-    let now_on = !crate::app::feedback::feedback_onchain_enabled();
-    crate::app::feedback::set_feedback_onchain(now_on);
-    dom::swap_inner(
-        "feedback-onchain-toggle",
-        if now_on { "feedback on-chain: on" } else { "feedback on-chain: off" },
-    );
-}
-
-pub(super) fn enable_notifications_pressed() {
-    wasm_bindgen_futures::spawn_local(async move {
-        let msg = "notify-msg";
-        dom::swap_inner(msg, "<span style=\"color:var(--muted)\">enabling…</span>");
-        match crate::app::notifications::enable_and_publish().await {
-            Ok(_tx) => dom::swap_inner(
-                msg,
-                "<span style=\"color:var(--muted)\">notifications on — push subscription published on-chain</span>",
-            ),
-            Err(e) => dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &e)),
-        }
-    });
-}
-
-/// Fire a LOCAL test notification (+ vibration) so the user verifies the
-/// permission + service-worker render path in one tap, without scheduling
-/// anything. This does NOT exercise the closed-tab Web Push leg (that needs
-/// a real push from the proxy); it proves the device-side half.
-pub(super) fn test_notification_pressed() {
-    wasm_bindgen_futures::spawn_local(async move {
-        let msg = "notify-msg";
-        crate::app::notifications::vibrate(200);
-        match crate::app::notifications::ensure_permission().await {
-            Ok(true) => match crate::app::notifications::show(
-                "localharness test",
-                "notifications are working on this device",
-            )
-            .await
-            {
-                Ok(()) => dom::swap_inner(
-                    msg,
-                    "<span style=\"color:var(--muted)\">test notification sent — check your shade</span>",
-                ),
-                Err(e) => dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &e)),
-            },
-            Ok(false) => dom::swap_inner(
-                msg,
-                &dom::msg_span(
-                    dom::Msg::Error,
-                    "notification permission is blocked — allow notifications for this site in the browser settings, then retry",
-                ),
-            ),
-            Err(e) => dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &e)),
-        }
-    });
-}
-
 /// Trigger the browser's PWA install prompt from INSIDE the app: boot.js
 /// stashes `beforeinstallprompt` on `window.__lhInstall`; this click (a user
 /// gesture) calls `.prompt()` on it. When the stash is empty the app is
@@ -617,27 +558,17 @@ pub(super) fn header_admin_toggle() {
         });
     }
 
-    // Pre-fill api key from sessionStorage (sync) then refresh from
-    // OPFS (async). Same pattern as the old in-chrome key restore.
+    // On a tenant/other host, prefill the agent-config fields (prompt, x402
+    // price, tool allowlist) + the model / public-face status into the (still
+    // collapsed) `agent` group so they're ready the moment the user expands it.
+    // The collapsed `<details>` keeps its children in the DOM, so every id below
+    // still resolves. (BYOK key prefill is gone — there's no `#key` field in the
+    // sheet; the gemini key lives in its own api-key modal.)
     if matches!(
         crate::app::tenant::current(),
         crate::app::tenant::Host::Tenant(_) | crate::app::tenant::Host::Other(_)
     ) {
-        if let Ok(Some(storage)) = dom::session_storage() {
-            if let Ok(Some(cached)) = storage.get_item("gemini_api_key") {
-                if let Some(input) = dom::input_by_id("key") {
-                    input.set_value(&cached);
-                    super::refresh_keymeta();
-                }
-            }
-        }
         wasm_bindgen_futures::spawn_local(async move {
-            if let Some(persisted) = crate::app::key_store::load().await {
-                if let Some(input) = dom::input_by_id("key") {
-                    input.set_value(&persisted);
-                    super::refresh_keymeta();
-                }
-            }
             // Restore the saved custom prompt into the textarea so the
             // user can edit instead of re-typing.
             if let Some(prompt) = crate::app::system_prompt::load().await {
@@ -733,29 +664,4 @@ pub(super) fn header_admin_close() {
         r#"<div id="header-admin-panel" hidden></div>"#,
     );
     dom::restore_focus();
-}
-
-/// Switch the active admin tab by flipping the `tab-<name>` class on
-/// `#admin-dialog` (CSS shows the matching `.panel-<name>`), and sync the
-/// `.active` state on the tab buttons.
-pub(super) fn show_admin_tab(name: &str) {
-    let Some(dialog) = dom::by_id("admin-dialog") else { return };
-    let mut cls: Vec<String> = dialog
-        .class_name()
-        .split_whitespace()
-        .filter(|c| !c.starts_with("tab-"))
-        .map(String::from)
-        .collect();
-    cls.push(format!("tab-{name}"));
-    dialog.set_class_name(&cls.join(" "));
-
-    for tab in ["agent", "account", "usage"] {
-        let Some(el) = dom::by_id(&format!("admin-tab-btn-{tab}")) else { continue };
-        let c = el.class_name();
-        let mut classes: Vec<&str> = c.split_whitespace().filter(|x| *x != "active").collect();
-        if tab == name {
-            classes.push("active");
-        }
-        el.set_class_name(&classes.join(" "));
-    }
 }

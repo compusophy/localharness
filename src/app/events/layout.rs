@@ -19,7 +19,7 @@ pub(super) fn toggle_preview() {
 }
 
 /// Flip a render-mode class on `<html>`, persist the pref in `localStorage`,
-/// then re-render `#display-section` so the toggles reflect the new state. No
+/// then re-render `#display-toggles` so the toggles reflect the new state. No
 /// reload — the token block (`style.rs`) + `styles.css` react to the class
 /// instantly. Mirrored at mount by `mod::apply_render_modes`.
 fn set_render_mode(class: &str, key: &str, on_val: &str, off_val: &str) {
@@ -38,8 +38,8 @@ fn set_render_mode(class: &str, key: &str, on_val: &str, off_val: &str) {
         let _ = storage.set_item(key, if next_on { on_val } else { off_val });
     }
     dom::swap_outer(
-        "display-section",
-        &templates::admin_display_section().into_string(),
+        "display-toggles",
+        &templates::display_toggles().into_string(),
     );
 }
 

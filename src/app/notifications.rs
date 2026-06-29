@@ -666,53 +666,6 @@ pub(crate) async fn enable_device_push() -> Result<String, String> {
     crate::registry::set_push_sub_sponsored(&signer, &sponsor, merged.as_bytes(), token).await
 }
 
-/// The admin [enable notifications] flow: permission → push subscription →
-/// publish the subscription JSON on-chain under
-/// `keccak256("localharness.push_sub")` for the owner's MAIN tokenId
-/// (fallback: this name's own id — mirrors the Gemini-key-sync slot rule, so
-/// ONE subscription serves every subdomain of the identity). Sponsored write,
-/// zero-click. Returns the tx hash.
-///
-/// KNOWN TRADEOFF (v1): the subscription is stored PLAINTEXT on-chain. The
-/// endpoint is a bearer capability URL — anyone reading chain state can send
-/// this device (unauthenticated-origin) pushes until the user unsubscribes.
-/// Payloads are still E2E-encrypted to this browser (p256dh/auth), so no
-/// third party can read OUR pushes; the exposure is spam/identification.
-/// Follow-up: ECIES-seal the JSON to a proxy-held key so only the scheduler
-/// can read it.
-pub(crate) async fn enable_and_publish() -> Result<String, String> {
-    if !ensure_permission().await? {
-        return Err("notification permission denied — allow notifications for this site in the browser settings".to_string());
-    }
-    let sub_json = tag_sub_with_dev(&subscribe_push().await?).await;
-
-    let (name, owner) = crate::app::tenant::current_tenant_owner().await?;
-    let token_id = match crate::registry::main_of(&owner).await {
-        Ok(id) if id != 0 => id,
-        _ => match crate::registry::id_of_name(&name).await {
-            Ok(id) if id != 0 => id,
-            Ok(_) => return Err("this subdomain isn't registered on-chain yet".to_string()),
-            Err(e) => return Err(format!("id_of_name: {e}")),
-        },
-    };
-
-    // MULTI-DEVICE merge (see enable_device_push) — never overwrite siblings.
-    let slot = crate::registry::push_sub_of(token_id).await.ok().flatten();
-    let Some(merged) = crate::registry::merge_push_sub(slot.as_deref(), &sub_json) else {
-        return Ok("already registered".to_string());
-    };
-
-    let registry_addr = crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS())?;
-    let call = crate::tempo_tx::TempoCall {
-        to: registry_addr,
-        value_wei: 0,
-        input: crate::registry::encode_set_push_sub(token_id, merged.as_bytes()),
-    };
-    let gas = crate::app::gas::set_metadata_gas(merged.len());
-    crate::app::events::run_sponsored_tempo_call(&owner, vec![call], gas, "publish push subscription")
-        .await
-}
-
 /// Silently refresh a STALE push subscription on app open. Reinstalling the
 /// PWA / clearing site data invalidates the browser's old push endpoint, but
 /// the on-chain slot keeps serving it — every worker push then dies with an

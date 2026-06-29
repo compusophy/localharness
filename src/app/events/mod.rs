@@ -159,9 +159,6 @@ enum Action {
     ToggleTheme,
     /// Flip the mobile-preview frame (`html.preview-mobile`) — live + persisted.
     TogglePreview,
-    ShowAdminTab(String),
-    RevealSecurity,
-    HideSecurity,
     ResetArm,
     ResetConfirm,
     ResetCancel,
@@ -246,14 +243,8 @@ enum Action {
     UnlinkDevice(String),
     UnlinkConfirm(String),
     UnlinkCancel,
-    /// Ask Notification permission (this click is the required user gesture),
-    /// subscribe Web Push, and publish the subscription on-chain so the
-    /// scheduler worker can notify the owner with the tab closed.
-    EnableNotifications,
     /// Toggle off-chain telemetry (auto error reports) on/off for this device.
     ToggleTelemetry,
-    /// Toggle whether feedback ALSO mirrors on-chain (default off — off-chain primary).
-    ToggleFeedbackOnchain,
     /// Header notification bell: enable Web Push for THIS device (address-keyed,
     /// direct gesture) and open the in-app panel. The path a visitor uses to let
     /// their phone be pinged — the cartridge tap can't prompt for permission.
@@ -264,9 +255,6 @@ enum Action {
     NotifClearConfirm,
     /// [cancel] in the clear confirm: dismiss it, keep the notifications.
     NotifClearCancel,
-    /// Fire a local test notification (+vibration) so the user can verify the
-    /// permission + service-worker path without scheduling anything.
-    TestNotification,
     /// Trigger the browser's PWA install prompt from inside the app (the
     /// stashed `beforeinstallprompt` in boot.js) instead of the browser menu.
     InstallApp,
@@ -298,9 +286,6 @@ impl Action {
             "header-admin-close" => Action::HeaderAdminClose,
             "toggle-theme" => Action::ToggleTheme,
             "toggle-preview" => Action::TogglePreview,
-            "show-admin-tab" => Action::ShowAdminTab(arg.unwrap_or_default()),
-            "reveal-security" => Action::RevealSecurity,
-            "hide-security" => Action::HideSecurity,
             "reset-arm" => Action::ResetArm,
             "reset-confirm" => Action::ResetConfirm,
             "reset-cancel" => Action::ResetCancel,
@@ -339,14 +324,11 @@ impl Action {
             "unlink-device" => Action::UnlinkDevice(arg.unwrap_or_default()),
             "unlink-confirm" => Action::UnlinkConfirm(arg.unwrap_or_default()),
             "unlink-cancel" => Action::UnlinkCancel,
-            "enable-notifications" => Action::EnableNotifications,
             "toggle-telemetry" => Action::ToggleTelemetry,
-            "toggle-feedback-onchain" => Action::ToggleFeedbackOnchain,
             "notif-bell" => Action::NotifBell,
             "notif-clear-all" => Action::NotifClearAll,
             "notif-clear-confirm" => Action::NotifClearConfirm,
             "notif-clear-cancel" => Action::NotifClearCancel,
-            "test-notification" => Action::TestNotification,
             "install-app" => Action::InstallApp,
             _ => return None,
         })
@@ -1297,19 +1279,6 @@ fn dispatch(action: Action) {
         Action::HeaderAdminClose => admin::header_admin_close(),
         Action::ToggleTheme => layout::toggle_theme(),
         Action::TogglePreview => layout::toggle_preview(),
-        Action::ShowAdminTab(name) => admin::show_admin_tab(&name),
-        Action::RevealSecurity => {
-            dom::swap_outer(
-                "security-slot",
-                &templates::admin_security_expanded().into_string(),
-            );
-        }
-        Action::HideSecurity => {
-            dom::swap_outer(
-                "security-slot",
-                &templates::admin_security_collapsed().into_string(),
-            );
-        }
         Action::ResetArm => {
             // Remember the [reset…] trigger, swap in the typed-confirm dialog,
             // then pull focus INTO it (lands on the RESET input) — a11y #75.
@@ -1358,14 +1327,11 @@ fn dispatch(action: Action) {
         Action::UnlinkDevice(addr) => devices::unlink_device_prompt(addr),
         Action::UnlinkConfirm(addr) => devices::unlink_confirm_pressed(addr),
         Action::UnlinkCancel => devices::unlink_cancel_pressed(),
-        Action::EnableNotifications => admin::enable_notifications_pressed(),
         Action::ToggleTelemetry => admin::toggle_telemetry_pressed(),
-        Action::ToggleFeedbackOnchain => admin::toggle_feedback_onchain_pressed(),
         Action::NotifBell => admin::notif_bell_pressed(),
         Action::NotifClearAll => admin::notif_clear_all_pressed(),
         Action::NotifClearConfirm => admin::notif_clear_confirmed(),
         Action::NotifClearCancel => admin::notif_clear_cancelled(),
-        Action::TestNotification => admin::test_notification_pressed(),
         Action::InstallApp => admin::install_app_pressed(),
     }
 }

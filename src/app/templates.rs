@@ -1236,10 +1236,11 @@ pub(crate) fn volatile_storage_warning() -> Markup {
     }
 }
 
-/// Apex admin dropdown — single global header admin, same archetype
-/// as the tenant variant. Shows the apex wallet's address (the visitor's
-/// master identity), with seed phrase + reset buried under a
-/// `[security]` toggle so they're not lying around in plain view.
+/// The header settings panel (cog) for the APEX identity hub. A chromeless
+/// disclosure SHEET — no title bar, no × close: it dismisses the same way as the
+/// notif / feedback dropdowns (outside-click · ESC · a second cog tap). Identity
+/// and the `$LH` balance sit at rest; everything else collapses into native
+/// `<details>` groups so the panel opens small instead of a long scroll.
 pub(crate) fn admin_dropdown_apex() -> Markup {
     let owner_hex = super::APP.with(|cell| {
         cell.borrow().wallet.as_ref().map(|w| w.address_hex())
@@ -1247,92 +1248,195 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
     let has_wallet = owner_hex.is_some();
     html! {
         div #header-admin-panel .header-admin-panel {
-            // Full-page tabbed admin. Apex is the identity hub — no agent
-            // config lives here — so it has Account + Usage tabs only.
-            div #admin-dialog .admin-dialog.admin-tabbed.tab-account {
-                div.admin-tabs {
-                    button #admin-tab-btn-account type="button"
-                        data-action="show-admin-tab" data-arg="account"
-                        .admin-tab-button.active { "account" }
-                    // The tab arg/class stays "usage" (one CSS/dispatch
-                    // surface for both panels); the label says what the
-                    // panel actually holds — the $LH economy controls.
-                    button #admin-tab-btn-usage type="button"
-                        data-action="show-admin-tab" data-arg="usage"
-                        .admin-tab-button { "economy" }
-                    span.admin-tabs-spacer {}
-                    button type="button" data-action="header-admin-close" .modal-close aria-label="close admin" { "×" }
-                }
-                div.admin-tab-panel.panel-account {
-                    (admin_identity_section(None, owner_hex.as_deref(), None, has_wallet))
-                    @if has_wallet {
-                        (admin_devices_section())
-                    }
-                    (admin_security_collapsed())
-                }
-                div.admin-tab-panel.panel-usage {
-                    @if has_wallet { (admin_credits_section()) }
-                    @if has_wallet { (admin_invite_section()) }
-                }
-                div.admin-footer {
-                    span.admin-version { (APP_VERSION) }
-                }
+            div #admin-dialog .admin-dialog.admin-sheet {
+                // RESTING: who am I (owner/wallet rows) — or the create/import
+                // recovery path when this device has no identity.
+                (admin_identity_section(None, owner_hex.as_deref(), None, has_wallet))
+                // RESTING: the one number people open settings to glance at.
+                @if has_wallet { (admin_balance_line()) }
+                @if has_wallet { (admin_group("grp-funds", "funds", admin_funds_body())) }
+                @if has_wallet { (admin_group("grp-devices", "devices", admin_devices_body())) }
+                (admin_group("grp-app", "app & display", admin_device_body()))
+                // Seed/import/reset only make sense WITH a wallet — and the
+                // no-wallet identity path above already owns `#import-slot`, so
+                // gating here also avoids a duplicate id.
+                @if has_wallet { (admin_group("grp-security", "security", admin_security_body())) }
+                div.admin-footer { span.admin-version { (APP_VERSION) } }
             }
         }
     }
 }
 
-/// Tenant admin dropdown — same archetype as apex. Adds the subdomain
-/// name + TBA wallet line, plus the gemini api key (only the tenant
-/// runs the agent, so the key lives here). Seed phrase + reset are
-/// buried under `[security]` the same way as apex.
+/// One collapsible group in the settings sheet — a native `<details>` (the same
+/// primitive as the brand menu), so disclosure needs no `Action`/handler and the
+/// collapsed body stays in the DOM (every `header_admin_toggle` prefill id keeps
+/// resolving). A `+`/`−` twist on the left, the group label on the right.
+fn admin_group(id: &str, label: &str, body: Markup) -> Markup {
+    html! {
+        details #(id) .admin-group {
+            summary.admin-group-summary {
+                span.admin-group-twist {}
+                span.admin-group-label { (label) }
+            }
+            div.admin-group-body { (body) }
+        }
+    }
+}
+
+/// The resting `$LH` balance line — promoted out of the (now collapsed) funds
+/// group because it's the number people open settings to see. Filled async by
+/// `refresh_credits_pill` (targets `#credits-balance`).
+fn admin_balance_line() -> Markup {
+    html! {
+        div.admin-identity-row.admin-balance-row {
+            span.admin-identity-label { "$LH" }
+            code #credits-balance .admin-identity-value { "…" }
+        }
+    }
+}
+
+/// `funds` group body — redeem a code, buy `$LH` (inline Stripe), and the
+/// owner-funded invite. The balance lives in the resting line above, so it's not
+/// repeated here. Ids (`#redeem-code`/`#buy-area`/`#buy-msg`/`#credits-msg`) are
+/// preserved from the old credits section so the handlers are unchanged.
+fn admin_funds_body() -> Markup {
+    html! {
+        div.redeem-row {
+            input #redeem-code .redeem-input type="text" aria-label="redeem code" placeholder="redeem code";
+            button type="button" data-action="redeem-code" .ghost { "redeem" }
+        }
+        div #buy-area { (buy_area_default()) }
+        div #buy-msg .admin-msg-slot {}
+        div #credits-msg .admin-msg-slot {}
+        (admin_invite_section())
+    }
+}
+
+/// `devices` group body (apex) — seed-adoption pairing (QR) + P2P device sync.
+fn admin_devices_body() -> Markup {
+    html! {
+        div #pair-slot .pair-slot {
+            button #pair-btn type="button" data-action="add-device" .ghost { "add a device" }
+        }
+        div.pair-slot {
+            button type="button" data-action="sync-devices" .ghost { "sync my devices" }
+        }
+        div #pair-msg .admin-msg-slot {}
+    }
+}
+
+/// `app & display` group body (both hosts) — per-device PWA + render prefs, the
+/// coherent replacement for the mis-titled "notifications" grab-bag: install /
+/// files / light mode / desktop view / the telemetry opt-out. The broken
+/// on-chain enable-notifications + test buttons were cut (the bell still owns
+/// push); the feedback-on-chain toggle was cut (default-off, on-chain retiring).
+fn admin_device_body() -> Markup {
+    html! {
+        div.pair-slot {
+            button type="button" data-action="install-app" .ghost { "install app" }
+            button type="button" data-action="toggle-files" .ghost { "files" }
+        }
+        div #install-msg .admin-msg-slot {}
+        (display_toggles())
+        div.pair-slot {
+            button #telemetry-toggle type="button" data-action="toggle-telemetry" .ghost {
+                (if crate::app::telemetry::enabled() { "telemetry: on" } else { "telemetry: off" })
+            }
+        }
+        div #telemetry-msg .admin-msg-slot { "auto error reports — redacted on-device, off-chain" }
+    }
+}
+
+/// The two render-mode toggles (light mode / desktop view), with their `.active`
+/// state computed at render time. Pulled into its own `#display-toggles` element
+/// so `events::layout::set_render_mode` can re-render JUST these after a flip
+/// (live active-state feedback) instead of repainting a whole section.
+pub(crate) fn display_toggles() -> Markup {
+    let light = render_pref_is("lh-theme", "light");
+    let desktop = render_pref_is("lh-preview", "desktop");
+    html! {
+        div #display-toggles .pair-slot {
+            button type="button" data-action="toggle-theme" .ghost .active[light] { "light mode" }
+            button type="button" data-action="toggle-preview" .ghost .active[desktop] { "desktop view" }
+        }
+    }
+}
+
+/// `security` group body — seed reveal · import a different seed · reset this
+/// device. Always in the DOM now: native `<details>` provides the collapse the
+/// old reveal/hide swap used to, so the bespoke collapsed/expanded templates and
+/// their `RevealSecurity`/`HideSecurity` actions are gone. Reset stays
+/// confirm-gated (the `reset-arm` → typed-confirm flow is unchanged).
+fn admin_security_body() -> Markup {
+    html! {
+        div.admin-subsection {
+            div.admin-subsection-title { "seed phrase" }
+            div #seed-reveal .seed-reveal {
+                button type="button" data-action="reveal-seed" .ghost { "reveal" }
+            }
+        }
+        div.admin-subsection {
+            div.admin-subsection-title { "import a different seed" }
+            (import_seed_inline())
+        }
+        div.admin-subsection {
+            div.admin-subsection-title { "reset this device" }
+            div #reset-confirm-slot {
+                button type="button" data-action="reset-arm" .ghost { "reset…" }
+            }
+        }
+    }
+}
+
+/// The header settings panel (cog) for a TENANT (the agent's own subdomain) or
+/// `Host::Other`. The same chromeless disclosure sheet as apex; the resting head
+/// is the agent's identity card (`#financial-slot`, injected on open by
+/// `header_admin_toggle`) plus the spendable `$LH` line, then the `agent` config
+/// group, `funds`, `app & display`, and `security`.
 pub(crate) fn admin_dropdown_tenant() -> Markup {
     html! {
         div #header-admin-panel .header-admin-panel {
-            // Full-page tabbed admin: Agent (configure this agent) /
-            // Account (identity + key + security) / Usage. Tab switch is a
-            // class-flip on #admin-dialog (Action::ShowAdminTab), mirroring
-            // the mobile tab bar.
-            div #admin-dialog .admin-dialog.admin-tabbed.tab-account {
-                div.admin-tabs {
-                    button #admin-tab-btn-agent type="button"
-                        data-action="show-admin-tab" data-arg="agent"
-                        .admin-tab-button { "agent" }
-                    button #admin-tab-btn-account type="button"
-                        data-action="show-admin-tab" data-arg="account"
-                        .admin-tab-button.active { "account" }
-                    span.admin-tabs-spacer {}
-                    button type="button" data-action="header-admin-close" .modal-close aria-label="close admin" { "×" }
-                }
-                div.admin-tab-panel.panel-agent {
-                    (admin_model_section())
-                    (admin_prompt_section())
-                    (admin_x402_price_section())
-                    (admin_tool_allowlist_section())
-                    (admin_app_section())
-                }
-                div.admin-tab-panel.panel-account {
-                    // Agent card (name/owner/wallet/balance/tools/rpc/
-                    // pricing), folded in from the retired right rail.
-                    // Injected from App state by header_admin_toggle.
-                    div #financial-slot .financial-placeholder { "—" }
-                    // Platform credits only (the BYOK gemini-key UI is hidden —
-                    // the handlers + auto-restore stay, just no admin clutter).
-                    (admin_credits_section())
-                    // Owner-funded invites: escrow your own $LH behind a
-                    // shareable `?invite=` link (InviteFacet createInvite).
-                    (admin_invite_section())
-                    // Notifications: permission + Web Push subscription,
-                    // published on-chain for the tab-closed scheduler pushes.
-                    (admin_notify_section())
-                    (admin_display_section())
-                    (admin_security_collapsed())
-                }
-                div.admin-footer {
-                    span.admin-version { (APP_VERSION) }
-                }
+            div #admin-dialog .admin-dialog.admin-sheet {
+                // RESTING: the agent's identity card (name/owner/wallet/$LH/
+                // tools), injected from App state by header_admin_toggle.
+                div #financial-slot .financial-placeholder { "—" }
+                // RESTING: the owner's spendable $LH (refresh_credits_pill).
+                (admin_balance_line())
+                (admin_group("grp-agent", "agent", admin_agent_body()))
+                (admin_group("grp-funds", "funds", admin_funds_body()))
+                (admin_group("grp-app", "app & display", admin_device_body()))
+                (admin_group("grp-security", "security", admin_security_body()))
+                div.admin-footer { span.admin-version { (APP_VERSION) } }
             }
         }
+    }
+}
+
+/// `agent` group body (tenant) — the few essential agent knobs: the model the
+/// in-tab agent runs on and the public face visitors see, a one-line chat-native
+/// signpost, and an `advanced` sub-group for the power config.
+fn admin_agent_body() -> Markup {
+    html! {
+        (admin_model_section())
+        (admin_app_section())
+        p.admin-blurb {
+            "or just ask me in chat — e.g. change my persona, or publish my app."
+        }
+        (admin_group("grp-advanced", "advanced", admin_advanced_body()))
+    }
+}
+
+/// `advanced` sub-group (tenant) — demoted two taps deep: these have no full
+/// chat-tool parity (the prompt textarea ALSO publishes the on-chain persona
+/// `ask_agent` reads; the x402 price has no chat tool; the tool allowlist is a
+/// security control that must not be self-grantable), so they stay in-modal but
+/// out of plain view. All ids are unchanged so the prefill on open still
+/// resolves inside the collapsed `<details>`.
+fn admin_advanced_body() -> Markup {
+    html! {
+        (admin_prompt_section())
+        (admin_x402_price_section())
+        (admin_tool_allowlist_section())
     }
 }
 
@@ -1547,45 +1651,6 @@ fn admin_identity_section(
     }
 }
 
-/// Credit balance display. Filled async by `refresh_credits_pill`. The
-/// daily-claim mechanism was removed: registration is free (the on-chain
-/// `registrationCost` is 0), so credits aren't gating anything right now —
-/// the balance is informational while the credit model is reworked (the
-/// future direction is continuous streaming + a subscription, not a manual
-/// daily claim).
-pub(crate) fn admin_credits_section() -> Markup {
-    // ONE unified `$LH` balance — wallet + per-request meter summed in
-    // `refresh_credits_pill` (they're auto-bridged both ways, so they're one
-    // spendable pot in practice; the meter is just the no-approval billing
-    // buffer). Titled "$LH" rather than "model credits" so it reads as your
-    // whole balance, not a separate meter (the agent's TBA stays its own
-    // section). The BYOK toggle + time-boxed sessions stay hidden (handlers +
-    // `lh_model_access` default=credits remain). `redeem` is how you fund it.
-    html! {
-        div #credits-section .admin-section {
-            div.admin-section-title { "$LH" }
-            // A label:value row like every other stat — the bare centered
-            // number read as orphaned from its section title.
-            div.admin-identity-row {
-                span.admin-identity-label { "balance" }
-                code #credits-balance .admin-identity-value { "…" }
-            }
-            div.redeem-row {
-                input #redeem-code .redeem-input type="text" aria-label="redeem code" placeholder="redeem code";
-                button type="button" data-action="redeem-code" .ghost { "redeem" }
-            }
-            // Buy $LH with a card. "buy $LH" swaps #buy-area to the INLINE Stripe
-            // card form (buy_inline_form) IN PLACE — no popup modal (issue: the
-            // user asked for this repeatedly). $2 min, whole dollars.
-            div #buy-area {
-                (buy_area_default())
-            }
-            div #buy-msg .admin-msg-slot {}
-            div #credits-msg .admin-msg-slot {}
-        }
-    }
-}
-
 /// "Invite a friend" panel — the owner-side of the user-funded invite
 /// primitive (InviteFacet `createInvite`). The owner types a `$LH` amount;
 /// `events::create_invite_pressed` generates a bearer code client-side
@@ -1639,119 +1704,14 @@ pub(crate) fn invite_result_panel(code: &str, link: &str) -> Markup {
     }
 }
 
-/// Notifications — [enable notifications] asks the browser for Notification
-/// permission (this click IS the user gesture browsers require), subscribes
-/// Web Push against the service worker, and publishes the subscription
-/// on-chain (`keccak256("localharness.push_sub")`, MAIN tokenId) so the
-/// proxy's scheduler worker can notify the owner when a scheduled job runs —
-/// tab closed, app installed or not. Also unlocks the agent's `notify` tool
-/// without a mid-turn permission prompt.
-pub(crate) fn admin_notify_section() -> Markup {
-    html! {
-        div.admin-section {
-            div.admin-section-title { "app" }
-            div.pair-slot {
-                button type="button" data-action="install-app" .ghost {
-                    "install app"
-                }
-                button type="button" data-action="toggle-files" .ghost {
-                    "files"
-                }
-            }
-            div #install-msg .admin-msg-slot {}
-            div.admin-section-title { "notifications" }
-            div.pair-slot {
-                button type="button" data-action="enable-notifications" .ghost {
-                    "enable notifications"
-                }
-                button type="button" data-action="test-notification" .ghost {
-                    "test"
-                }
-            }
-            div #notify-msg .admin-msg-slot {}
-            // Off-chain telemetry: auto error reports (redacted on-device) help
-            // improve the platform. On by default; toggle off here.
-            div.admin-section-title { "telemetry" }
-            div.pair-slot {
-                button #telemetry-toggle type="button" data-action="toggle-telemetry" .ghost {
-                    (if crate::app::telemetry::enabled() { "telemetry: on" } else { "telemetry: off" })
-                }
-            }
-            div #telemetry-msg .admin-msg-slot { "auto error reports — redacted on-device, off-chain" }
-            // Feedback destination: off-chain (rich GitHub-issue) is the default,
-            // cheap path; the on-chain mirror costs sponsor gas and is opt-in.
-            div.admin-section-title { "feedback" }
-            div.pair-slot {
-                button #feedback-onchain-toggle type="button" data-action="toggle-feedback-onchain" .ghost {
-                    (if crate::app::feedback::feedback_onchain_enabled() { "feedback on-chain: on" } else { "feedback on-chain: off" })
-                }
-            }
-            div #feedback-onchain-msg .admin-msg-slot { "feedback files off-chain with full context; enable to ALSO mirror the short note on-chain (gas)" }
-        }
-    }
-}
-
-/// Display modes — live toggles for the light theme + the desktop-view escape
-/// from the mobile-first phone frame (`style.rs` / `styles.css`). Persisted in
-/// `localStorage` (`events::layout`) and re-applied at mount (`apply_render_modes`);
-/// the `?theme=`/`?preview=` URL params override the saved pref. The app defaults
-/// to the 9:16 phone frame on desktop, so the toggle reads "desktop view" and is
-/// `.active` once that wider view is chosen.
-pub(crate) fn admin_display_section() -> Markup {
-    let light = render_pref_is("lh-theme", "light");
-    let desktop = render_pref_is("lh-preview", "desktop");
-    html! {
-        div.admin-section #display-section {
-            div.admin-section-title { "display" }
-            div.pair-slot {
-                button type="button" data-action="toggle-theme" .ghost .active[light] {
-                    "light mode"
-                }
-                button type="button" data-action="toggle-preview" .ghost .active[desktop] {
-                    "desktop view"
-                }
-            }
-        }
-    }
-}
-
 /// True iff the `localStorage` render pref `key` currently equals `val` — used
-/// to mark the display toggles `.active` at render time.
+/// to mark the `app & display` toggles `.active` at render time.
 fn render_pref_is(key: &str, val: &str) -> bool {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
         .and_then(|s| s.get_item(key).ok().flatten())
         .as_deref()
         == Some(val)
-}
-
-pub(crate) fn admin_devices_section() -> Markup {
-    html! {
-        div.admin-section {
-            div.admin-section-title { "devices" }
-            // Option A — identity IS the seed. "Add a device" shows a QR
-            // whose fragment carries this device's seed ENCRYPTED under a
-            // one-time code; scanning it on the other device + typing the
-            // code imports the same seed there. Both devices then resolve
-            // the SAME owner address, so every subdomain shows on every
-            // device with zero on-chain pairing, no device keys, no glue.
-            div #pair-slot .pair-slot {
-                button #pair-btn type="button" data-action="add-device" .ghost {
-                    "add a device"
-                }
-            }
-            // P2P collaboration (Layer 5): announce this device on-chain,
-            // discover the owner's other online devices, connect over WebRTC,
-            // and union-sync the shared folder. Needs SignalingFacet cut + a
-            // second device online.
-            div.pair-slot {
-                button type="button" data-action="sync-devices" .ghost {
-                    "sync my devices"
-                }
-            }
-            div #pair-msg .admin-msg-slot {}
-        }
-    }
 }
 
 /// Encode a share/pairing link as an inline SVG QR code (black modules
@@ -1859,51 +1819,6 @@ pub(crate) fn identity_choice(name: &str) -> Markup {
             div #import-slot {}
             div #seed-msg .admin-msg-slot {}
             div.pair-waiting { "or open “add a device” on a device you already use" }
-        }
-    }
-}
-
-/// Collapsed `[security]` section — the entry point the user has to
-/// click before seed phrase / import / reset show up. Buries the
-/// dangerous affordances one menu deeper so they don't sit in plain
-/// view inside the admin dropdown.
-pub(crate) fn admin_security_collapsed() -> Markup {
-    html! {
-        div #security-slot .admin-section {
-            div.admin-section-title { "security" }
-            button type="button" data-action="reveal-security" .ghost {
-                "seed phrase, import, reset"
-            }
-        }
-    }
-}
-
-/// Expanded `[security]` section — swapped into `#security-slot`
-/// when the user clicks the collapsed entry point. Contains the
-/// seed-reveal slot (driven by `Action::RevealSeed`), the import
-/// form, and the reset button. A `[hide]` button at the bottom
-/// flips back to the collapsed view.
-pub(crate) fn admin_security_expanded() -> Markup {
-    html! {
-        div #security-slot .admin-section {
-            div.admin-section-title { "security" }
-            div.admin-subsection {
-                div.admin-subsection-title { "seed phrase" }
-                div #seed-reveal .seed-reveal {
-                    button type="button" data-action="reveal-seed" .ghost { "reveal" }
-                }
-            }
-            div.admin-subsection {
-                div.admin-subsection-title { "import a different seed" }
-                (import_seed_inline())
-            }
-            div.admin-subsection {
-                div.admin-subsection-title { "reset this device" }
-                div #reset-confirm-slot {
-                    button type="button" data-action="reset-arm" .ghost { "reset…" }
-                }
-            }
-            button type="button" data-action="hide-security" .ghost { "hide" }
         }
     }
 }

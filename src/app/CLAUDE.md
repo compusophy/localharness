@@ -36,7 +36,7 @@ highlights, never its container**. Concretely:
 Three header overlays, now UNIFIED (do not re-fork them into separate behaviors):
 - **Markup** (`templates.rs`): each is a panel inside its header wrap
   (`.notif-bell-wrap` / `.feedback-bug-wrap` / `.header-admin`). Admin's visible box
-  is `.admin-dialog` inside `#header-admin-panel`.
+  is `.admin-dialog.admin-sheet` inside `#header-admin-panel`.
 - **Positioning** (`styles.css`, the "UNIFIED HEADER MODALS" rule): all three are
   `position:fixed`, CENTERED (`top/left:50% + translate(-50%,-50%)`), clamped
   (`width:min(360px,100vw-2pad)`, `max-height:100dvh-6pad`), one z-layer
@@ -51,6 +51,20 @@ Three header overlays, now UNIFIED (do not re-fork them into separate behaviors)
   Brand menu is a native `<details>`; we clear its `open` attr ourselves.
 - If you add a 4th overlay: give it a `*-wrap`, add it to `close_all_header_overlays`,
   reuse the unified CSS rule + `--z-menu`, make it a real toggle.
+
+**Admin cog = a chromeless disclosure SHEET** (`templates::admin_dropdown_{apex,tenant}`,
+`.admin-dialog.admin-sheet`) — NO title bar, NO × (it GENERALIZES from the notif/feedback
+panels; dismiss is outside-click · ESC · a second cog tap, not a close button). Tab-less:
+identity + the `$LH` balance (`admin_balance_line`, `#credits-balance`) sit at REST; every
+other concern collapses into a native `<details>` group via `admin_group(id,label,body)` —
+apex: funds · devices · app & display · security; tenant: a `#financial-slot` head + agent
+(model · public face · a `<details>` "advanced" sub-group = persona/x402/allowlist) · funds ·
+app & display · security. Disclosure is the native `<details>` itself (no `Action`/handler,
+no `Closure`); the collapsed body stays in the DOM so `header_admin_toggle`'s async prefill
+ids still resolve. Apex `security` is `has_wallet`-gated (it shares `#import-slot` with the
+no-wallet identity path). This REPLACED the old `.admin-tabbed` tabs + `ShowAdminTab` /
+`Reveal`+`HideSecurity` swaps; the on-chain enable-notifications + test buttons and the
+feedback-on-chain toggle were CUT (push still rides the bell pending the off-chain migration).
 
 ## Turn-status / stage painter (`chat/stage.rs` + `turn_stage.rs`)
 Pending-turn cue: ONE pulsing glyph in `#turn-status` (header) + a `data-stage` word
