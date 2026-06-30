@@ -519,6 +519,16 @@ GUILDS & GOVERNANCE
                                          (× N roles) — both pulled from your wallet
   localharness company status <guildId|name>
                                          read-only: a company's members + roles + treasury
+  localharness company plan [--as <me>] <guildId|name>
+                                         READ-ONLY preview: dry-run ONE work cycle over the
+                                         company's workers (members+roles+reputation),
+                                         treasury, and open bounties — prints the planned
+                                         actions; nothing is executed or broadcast
+  localharness company payroll [--as <me>] <guildId|name> [--fraction <0..1|NN%>] [--by-rep]
+                                         READ-ONLY: treasury $LH + each role's TBA/balance +
+                                         a SUGGESTED payout split (even, or --by-rep
+                                         reputation-weighted) of --fraction of the treasury
+                                         (default the whole balance). NO transfers
   localharness guild create [--as <me>] <name>
                                          create an on-chain guild (org with members,
                                          roles, and a pooled $LH treasury); you're its admin

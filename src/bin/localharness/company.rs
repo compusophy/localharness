@@ -2,6 +2,8 @@ use crate::{
     bytes_to_hex_str, collect_flags, ensure_wallet_covers, fmt_lh, load_signer,
     load_signer_and_sponsor, name_is_valid, parse_address, registry, tempo_tx, wallet,
 };
+use localharness::work_cycle::{Action, Criteria, Role, Stage, Task, WorkerState};
+use localharness::work_cycle_runtime::{plan_cycle, CyclePlan, Reader};
 
 // ---- company (CLI twin of the browser found_company / company_status tools) ---
 //
@@ -19,7 +21,7 @@ use crate::{
 // roster is the founder wearing many personas (named, not faked).
 
 pub(crate) const COMPANY_USAGE: &str = "\
-usage: localharness company <found|status> ...
+usage: localharness company <found|status|plan|payroll> ...
   company found  [--as <me>] <name> <mission...> [--roles a,b,c]
                  [--seed-treasury <lh>] [--prefund-each <lh>] [--confirm]
                                         stand up a whole company: an on-chain guild
@@ -31,7 +33,17 @@ usage: localharness company <found|status> ...
                                         --seed-treasury deposits $LH into the treasury;
                                         --prefund-each funds EACH role's TBA (× N roles),
                                         both pulled from YOUR wallet.
-  company status <guildId|name>          read-only: members + roles + treasury $LH";
+  company status <guildId|name>          read-only: members + roles + treasury $LH
+  company plan   [--as <me>] <guildId|name>
+                                        READ-ONLY preview: read the company's workers
+                                        (members+roles+reputation), treasury, and open
+                                        bounties, then dry-run ONE work cycle and print
+                                        the planned Actions. Nothing is executed/broadcast.
+  company payroll [--as <me>] <guildId|name> [--fraction <0..1|NN%>] [--by-rep]
+                                        READ-ONLY: print the treasury $LH + each role's
+                                        TBA + balance + a SUGGESTED payout split (even, or
+                                        --by-rep reputation-weighted) of --fraction of the
+                                        treasury (default the whole balance). NO transfers.";
 
 const FOUND_USAGE: &str = "\
 usage: localharness company found [--as <me>] <name> <mission...> [--roles a,b,c] \
@@ -215,6 +227,14 @@ pub(crate) async fn company(caller: Option<&str>, rest: &[String]) -> i32 {
                 2
             }
         },
+        Some("plan") => match rest.get(1) {
+            Some(target) => company_plan(caller, target).await,
+            None => {
+                eprintln!("usage: localharness company plan <guildId|name>");
+                2
+            }
+        },
+        Some("payroll") => company_payroll(caller, &rest[1..]).await,
         _ => {
             eprintln!("{COMPANY_USAGE}");
             2
@@ -535,40 +555,9 @@ async fn prefund_role_tba(
 /// a numeric guild id (pure read, no key) OR a guild name matched among the
 /// caller's guilds (needs a local key to resolve). Composes existing reads only.
 pub(crate) async fn company_status(caller: Option<&str>, target: &str) -> i32 {
-    let guild_id = if let Ok(id) = target.trim().trim_start_matches('#').parse::<u64>() {
-        id
-    } else {
-        // Resolve by NAME among the caller's guilds — needs a local key.
-        let signer = match load_signer(caller) {
-            Ok(s) => s,
-            Err(code) => return code,
-        };
-        let addr = bytes_to_hex_str(&wallet::address(&signer));
-        let ids = match registry::guilds_of(&addr).await {
-            Ok(ids) => ids,
-            Err(e) => {
-                eprintln!("RPC error: {e}");
-                return 1;
-            }
-        };
-        let want = target.to_ascii_lowercase();
-        let mut found = None;
-        for id in ids {
-            if registry::guild_name(id).await.unwrap_or_default().to_ascii_lowercase() == want {
-                found = Some(id);
-                break;
-            }
-        }
-        match found {
-            Some(id) => id,
-            None => {
-                eprintln!(
-                    "no company named '{target}' among the guilds you belong to — pass a \
-                     numeric guild id, or `guild mine` to list them"
-                );
-                return 1;
-            }
-        }
+    let guild_id = match resolve_company_guild_id(caller, target).await {
+        Ok(id) => id,
+        Err(code) => return code,
     };
 
     let name = registry::guild_name(guild_id).await.unwrap_or_default();
@@ -601,6 +590,438 @@ pub(crate) async fn company_status(caller: Option<&str>, target: &str) -> i32 {
         println!("    {m}  [{role}]");
     }
     0
+}
+
+// ---- company plan / payroll (READ-ONLY previews) ----------------------------
+//
+// Both compose the SAME registry reads `company status` uses (guild name +
+// address + treasury + members + roles) plus a few more pure reads
+// (`main_of`/`name_of_id`/`reputation_of`/`tba_of_token_id`/`token_balance_of`/
+// `bounties_of`/`get_bounty`). They NEVER sign, broadcast, or move `$LH` — `plan`
+// dry-runs one `work_cycle` via the pure `work_cycle_runtime::plan_cycle`; the
+// real executor that maps the planned Actions onto sponsored writes is deferred
+// and greenlight-gated (see `work_cycle_runtime.rs`).
+
+/// How far the dry run walks the cycle before stopping (it stops early the moment
+/// the board goes quiescent; this only bounds a pathologically busy board).
+const PLAN_MAX_STEPS: usize = 64;
+
+/// On-chain bounties don't carry a business role or a quality bar, so an open
+/// bounty maps to a [`Task`] with these defaults (the generic "doer" role + a
+/// mid acceptance bar). TODO: thread a richer task spec once BountyFacet stores
+/// a role/criteria.
+const DEFAULT_TASK_ROLE: Role = Role::Coder;
+const DEFAULT_MIN_QUALITY: u8 = 3;
+
+/// Resolve a `<guildId|name>` target to a guild id. A numeric target (optional
+/// `#`/whitespace) is a pure, key-free read; a name is matched among the caller's
+/// guilds (needs a local key). Shared by `status`/`plan`/`payroll`. `Err(code)` is
+/// the exit code to return (the same convention as `load_signer`).
+async fn resolve_company_guild_id(caller: Option<&str>, target: &str) -> Result<u64, i32> {
+    if let Ok(id) = target.trim().trim_start_matches('#').parse::<u64>() {
+        return Ok(id);
+    }
+    // Resolve by NAME among the caller's guilds — needs a local key.
+    let signer = load_signer(caller)?;
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
+    let ids = match registry::guilds_of(&addr).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            return Err(1);
+        }
+    };
+    let want = target.to_ascii_lowercase();
+    for id in ids {
+        if registry::guild_name(id).await.unwrap_or_default().to_ascii_lowercase() == want {
+            return Ok(id);
+        }
+    }
+    eprintln!(
+        "no company named '{target}' among the guilds you belong to — pass a numeric \
+         guild id, or `guild mine` to list them"
+    );
+    Err(1)
+}
+
+/// Map a role subdomain's name to a [`work_cycle::Role`] by its `<company>-<slug>`
+/// suffix (the `company found` slug table) — unknown/bare names default to the
+/// generic doer ([`Role::Coder`]). Pure.
+fn role_from_name(name: &str) -> Role {
+    match name.rsplit('-').next().unwrap_or("") {
+        "exec" => Role::Executive,
+        "pm" => Role::ProductManager,
+        "coder" => Role::Coder,
+        "review" => Role::Reviewer,
+        "acct" => Role::Accounting,
+        "hr" => Role::Hr,
+        "mktg" => Role::Marketing,
+        _ => Role::Coder,
+    }
+}
+
+/// A registry-backed [`Reader`] for the work-cycle planner. The `Reader` trait is
+/// SYNCHRONOUS but registry reads are async, so [`ChainReader::load`] PRE-FETCHES
+/// everything into plain fields (read-only) and the trait methods just hand back
+/// clones — the same shape as the `MockReader` used in tests.
+struct ChainReader {
+    tasks: Vec<Task>,
+    workers: Vec<WorkerState>,
+    treasury: u128,
+}
+
+impl Reader for ChainReader {
+    fn tasks(&self) -> Vec<Task> {
+        self.tasks.clone()
+    }
+    fn workers(&self) -> Vec<WorkerState> {
+        self.workers.clone()
+    }
+    fn treasury_balance(&self) -> u128 {
+        self.treasury
+    }
+}
+
+impl ChainReader {
+    /// Read the company's treasury, workers (guild members → role + reputation),
+    /// and open bounties into an in-memory snapshot. Pure reads only — no signing,
+    /// no broadcast.
+    async fn load(guild_id: u64) -> Result<ChainReader, String> {
+        let treasury = registry::treasury_balance_of(guild_id).await.unwrap_or(0);
+        let members = registry::members_of_guild(guild_id).await?;
+
+        let mut workers: Vec<WorkerState> = Vec::with_capacity(members.len());
+        for (idx, m) in members.iter().enumerate() {
+            let token_id = registry::main_of(m).await.unwrap_or(0);
+            let name = if token_id != 0 {
+                registry::name_of_id(token_id).await.unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let reputation = if token_id != 0 {
+                registry::reputation_of(token_id)
+                    .await
+                    .map(|(_, sum)| sum.min(u32::MAX as u64) as u32)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            // Use the member's MAIN tokenId as the worker id; fall back to a
+            // distinct synthetic id when a member hasn't set a MAIN.
+            let id = if token_id != 0 { token_id } else { (idx as u64) + 1 };
+            workers.push(WorkerState { id, role: role_from_name(&name), reputation, available: true });
+        }
+
+        let tasks = load_open_tasks(&members).await;
+        Ok(ChainReader { tasks, workers, treasury })
+    }
+}
+
+/// Map the company's OPEN bounties (posted by any guild member) into `Posted`
+/// tasks the planner can allocate. READ-ONLY. Claimed/Submitted bounties are
+/// SKIPPED — the off-chain quality a Reviewer would judge isn't on-chain, so the
+/// preview won't fabricate a verdict; only the unassigned (Open) work is shown.
+async fn load_open_tasks(poster_addrs: &[String]) -> Vec<Task> {
+    let mut seen: Vec<u64> = Vec::new();
+    let mut tasks: Vec<Task> = Vec::new();
+    for addr in poster_addrs {
+        let ids = registry::bounties_of(addr).await.unwrap_or_default();
+        for id in ids {
+            if seen.contains(&id) {
+                continue;
+            }
+            seen.push(id);
+            if let Ok(b) = registry::get_bounty(id).await {
+                if b.status == 0 {
+                    // BountyFacet status 0 == Open (escrowed, unclaimed).
+                    tasks.push(Task {
+                        id,
+                        role: DEFAULT_TASK_ROLE,
+                        reward: b.reward_wei,
+                        min_reputation: 0,
+                        criteria: Criteria { min_quality: DEFAULT_MIN_QUALITY },
+                        stage: Stage::Posted,
+                    });
+                }
+            }
+        }
+    }
+    tasks.sort_by_key(|t| t.id);
+    tasks
+}
+
+/// `company plan <guildId|name>` — READ-ONLY dry run of ONE work cycle. Builds a
+/// [`ChainReader`], runs the pure [`plan_cycle`], and prints the planned Actions
+/// under a "PREVIEW ONLY" banner. Honors `LH_CHAIN`. Executes/broadcasts NOTHING.
+pub(crate) async fn company_plan(caller: Option<&str>, target: &str) -> i32 {
+    let guild_id = match resolve_company_guild_id(caller, target).await {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    let reader = match ChainReader::load(guild_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("company plan: {e}");
+            return 1;
+        }
+    };
+    let name = registry::guild_name(guild_id).await.unwrap_or_default();
+    let treasury_addr = registry::guild_address(guild_id).await.unwrap_or_default();
+    let label = if name.is_empty() {
+        format!("company #{guild_id}")
+    } else {
+        format!("company #{guild_id} '{name}'")
+    };
+    let plan = plan_cycle(&reader, PLAN_MAX_STEPS);
+    println!("{}", format_plan(&label, &treasury_addr, &plan));
+    0
+}
+
+/// Render a single [`work_cycle::Role`] as its short label.
+fn role_label(r: Role) -> &'static str {
+    match r {
+        Role::Executive => "executive",
+        Role::ProductManager => "pm",
+        Role::Coder => "coder",
+        Role::Reviewer => "reviewer",
+        Role::Accounting => "accounting",
+        Role::Hr => "hr",
+        Role::Marketing => "marketing",
+    }
+}
+
+/// Render one planned [`Action`] as a human line (pure, no `$LH` moves).
+fn fmt_action(a: &Action) -> String {
+    match a {
+        Action::PostBounty { task_id, reward } => {
+            format!("post bounty for task #{task_id} (reward {})", fmt_lh(*reward))
+        }
+        Action::AssignTask { task_id, worker_id } => {
+            format!("assign task #{task_id} → worker #{worker_id}")
+        }
+        Action::AcceptResult { task_id, worker_id } => {
+            format!("accept task #{task_id} from worker #{worker_id}")
+        }
+        Action::RejectResult { task_id, worker_id } => {
+            format!("reject task #{task_id} from worker #{worker_id}")
+        }
+        Action::Payout { task_id, worker_id, amount } => {
+            format!("pay {} to worker #{worker_id} for task #{task_id}", fmt_lh(*amount))
+        }
+        Action::Attest { subject_id, rating, work_ref } => {
+            format!("attest worker #{subject_id} rating {rating} (work #{work_ref})")
+        }
+    }
+}
+
+/// Format a [`CyclePlan`] for `company plan` — the PREVIEW banner, the state read
+/// in (workers + treasury), and the ordered planned Actions. Pure (testable).
+fn format_plan(label: &str, treasury_addr: &str, plan: &CyclePlan) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("PREVIEW ONLY — nothing executed or broadcast".to_string());
+    lines.push(format!("{label} — work-cycle plan"));
+    lines.push(format!("  treasury: {}  ({treasury_addr})", fmt_lh(plan.state_before.treasury)));
+    lines.push(format!("  workers:  {}", plan.state_before.workers.len()));
+    for w in &plan.state_before.workers {
+        lines.push(format!(
+            "    #{}  {:<10} rep {}{}",
+            w.id,
+            role_label(w.role),
+            w.reputation,
+            if w.available { "" } else { "  (busy)" }
+        ));
+    }
+    lines.push(format!("  backlog:  {} task(s)", plan.state_before.backlog.tasks.len()));
+    if plan.actions.is_empty() {
+        lines.push("  planned actions: none — the board is quiescent".to_string());
+    } else {
+        lines.push(format!("  planned actions ({}):", plan.actions.len()));
+        for (i, a) in plan.actions.iter().enumerate() {
+            lines.push(format!("    {}. {}", i + 1, fmt_action(a)));
+        }
+    }
+    lines.push(format!("  {}", plan.summary));
+    lines.push("Nothing above was executed, signed, or broadcast.".to_string());
+    lines.join("\n")
+}
+
+/// A payroll row: a role-agent, its TBA + spendable `$LH`, its reputation, and the
+/// suggested payout (filled by [`payroll_plan`]).
+struct PayrollRow {
+    label: String,
+    role: Role,
+    tba: Option<String>,
+    balance: u128,
+    reputation: u32,
+}
+
+const PAYROLL_USAGE: &str =
+    "usage: localharness company payroll [--as <me>] <guildId|name> [--fraction <0..1|NN%>] [--by-rep]";
+
+/// `company payroll <guildId|name> [--fraction <f>] [--by-rep]` — READ-ONLY: print
+/// the treasury, each role's TBA + `$LH` balance, and a SUGGESTED payout split of
+/// `--fraction` of the treasury (default the whole balance), EVEN or `--by-rep`
+/// reputation-weighted. Moves NO `$LH` — a suggestion only.
+pub(crate) async fn company_payroll(caller: Option<&str>, args: &[String]) -> i32 {
+    let by_rep = args.iter().any(|a| a == "--by-rep");
+    let args: Vec<String> = args.iter().filter(|a| *a != "--by-rep").cloned().collect();
+    let (vals, positional) = match collect_flags(&args, ["--fraction"], PAYROLL_USAGE) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let [fraction_arg] = vals;
+    let Some(target) = positional.first() else {
+        eprintln!("{PAYROLL_USAGE}");
+        return 2;
+    };
+    let fraction_bps = match fraction_arg.as_deref() {
+        Some(s) => match parse_fraction(s) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("company payroll: {e}");
+                return 2;
+            }
+        },
+        None => 10_000, // default: split the whole treasury
+    };
+
+    let guild_id = match resolve_company_guild_id(caller, target).await {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+
+    let name = registry::guild_name(guild_id).await.unwrap_or_default();
+    let treasury_addr = registry::guild_address(guild_id).await.unwrap_or_default();
+    let treasury = registry::treasury_balance_of(guild_id).await.unwrap_or(0);
+    let members = match registry::members_of_guild(guild_id).await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            return 1;
+        }
+    };
+
+    let mut rows: Vec<PayrollRow> = Vec::with_capacity(members.len());
+    for m in &members {
+        let token_id = registry::main_of(m).await.unwrap_or(0);
+        let agent_name = if token_id != 0 {
+            registry::name_of_id(token_id).await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let tba = if token_id != 0 {
+            registry::tba_of_token_id(token_id).await.ok().flatten()
+        } else {
+            None
+        };
+        let balance = match &tba {
+            Some(addr) => registry::token_balance_of(addr).await.unwrap_or(0),
+            None => 0,
+        };
+        let reputation = if token_id != 0 {
+            registry::reputation_of(token_id)
+                .await
+                .map(|(_, sum)| sum.min(u32::MAX as u64) as u32)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let label = if agent_name.is_empty() { m.clone() } else { agent_name };
+        let role = role_from_name(&label);
+        rows.push(PayrollRow { label, role, tba, balance, reputation });
+    }
+
+    let weights: Vec<u32> = rows.iter().map(|r| r.reputation).collect();
+    let (pool, payouts) = payroll_plan(treasury, fraction_bps, &weights, by_rep);
+
+    let glabel = if name.is_empty() {
+        format!("company #{guild_id}")
+    } else {
+        format!("company #{guild_id} '{name}'")
+    };
+    println!("PREVIEW ONLY — nothing executed or broadcast");
+    println!("{glabel} — payroll suggestion");
+    println!("  treasury:        {}  ({treasury_addr})", fmt_lh(treasury));
+    println!("  payout fraction: {}  → pool {}", fmt_fraction(fraction_bps), fmt_lh(pool));
+    println!("  split:           {}", if by_rep { "reputation-weighted" } else { "even" });
+    if rows.is_empty() {
+        println!("  no members (or the guild does not exist) — nothing to pay");
+        return 0;
+    }
+    println!("  {} role(s):", rows.len());
+    let mut suggested_total: u128 = 0;
+    for (r, pay) in rows.iter().zip(payouts.iter()) {
+        suggested_total = suggested_total.saturating_add(*pay);
+        let tba = r.tba.as_deref().unwrap_or("(TBA not deployed)");
+        println!(
+            "    {:<22} {:<10} TBA {tba}  bal {}  rep {}  → suggested {}",
+            r.label,
+            role_label(r.role),
+            fmt_lh(r.balance),
+            r.reputation,
+            fmt_lh(*pay)
+        );
+    }
+    println!("  suggested total: {}", fmt_lh(suggested_total));
+    println!("NO transfers were made — this is a suggestion only.");
+    0
+}
+
+/// Pure payroll math: a `fraction_bps`/10000 slice of `treasury_wei` split across
+/// the rows — EVENLY, or by reputation `weights` when `by_rep` (falling back to
+/// even when every weight is 0). Floor division leaves any remainder in the
+/// treasury, so the suggestion never overspends the pool. Returns
+/// `(pool, per-row payout)` aligned to `weights`.
+fn payroll_plan(treasury_wei: u128, fraction_bps: u32, weights: &[u32], by_rep: bool) -> (u128, Vec<u128>) {
+    let pool = treasury_wei.saturating_mul(fraction_bps as u128) / 10_000;
+    let n = weights.len();
+    if n == 0 {
+        return (pool, Vec::new());
+    }
+    let total_weight: u128 = weights.iter().map(|w| *w as u128).sum();
+    let payouts: Vec<u128> = if by_rep && total_weight > 0 {
+        weights.iter().map(|w| pool.saturating_mul(*w as u128) / total_weight).collect()
+    } else {
+        let each = pool / n as u128;
+        vec![each; n]
+    };
+    (pool, payouts)
+}
+
+/// One $LH in 18-decimal wei — the unit `parse_token_amount` works in.
+const ONE_LH_WEI: u128 = 1_000_000_000_000_000_000;
+
+/// Parse a payout `--fraction` into basis points (0..=10000). Accepts a decimal
+/// `0..=1` (`0.5`, `.25`, `1`) OR a percent (`50%`, `100%`). Reuses the canonical
+/// 18-decimal token-amount parser then scales to bps; rejects out-of-range /
+/// garbage with a clear message (never panics). Pure.
+fn parse_fraction(raw: &str) -> Result<u32, String> {
+    let s = raw.trim();
+    let invalid = || format!("invalid --fraction '{raw}' — use a decimal 0..1 (e.g. 0.5) or a percent (e.g. 50%)");
+    if let Some(pct) = s.strip_suffix('%') {
+        // pct% → bps = pct*100. parse_token_amount(pct) = pct * 1e18, so
+        // bps = (pct*1e18) / 1e16. Cap at 100%.
+        let wei = localharness::encoding::parse_token_amount(pct.trim()).ok_or_else(invalid)?;
+        if wei > 100 * ONE_LH_WEI {
+            return Err("--fraction must be between 0 and 100%".to_string());
+        }
+        return Ok((wei / 10_000_000_000_000_000) as u32);
+    }
+    // decimal 0..1 → bps = frac * 10000. parse_token_amount(frac) = frac * 1e18,
+    // so bps = (frac*1e18) / 1e14.
+    let wei = localharness::encoding::parse_token_amount(s).ok_or_else(invalid)?;
+    if wei > ONE_LH_WEI {
+        return Err("--fraction must be between 0 and 1 (or use NN%)".to_string());
+    }
+    Ok((wei / 100_000_000_000_000) as u32)
+}
+
+/// Render basis points as a percent with two decimals (`10000` → `100.00%`).
+fn fmt_fraction(bps: u32) -> String {
+    format!("{}.{:02}%", bps / 100, bps % 100)
 }
 
 #[cfg(test)]
@@ -973,5 +1394,207 @@ mod tests {
         assert_eq!(as_id("-1"), None); // u64 has no sign
         assert_eq!(as_id("99999999999999999999999999"), None); // overflows u64
         assert_eq!(as_id(""), None);
+    }
+
+    // ---- company plan / payroll (READ-ONLY previews) — pure cores. NO chain
+    // contact: the plan tests drive a MockReader through the SAME pure
+    // `plan_cycle` the command uses; the payroll tests exercise the split math
+    // and fraction parsing directly. ----
+
+    /// In-memory [`Reader`] — the stand-in for `ChainReader` (which pre-fetches
+    /// the identical three reads from the diamond). Mirrors the runtime test's
+    /// helper so the plan-formatting tests need no chain.
+    struct MockReader {
+        tasks: Vec<Task>,
+        workers: Vec<WorkerState>,
+        treasury: u128,
+    }
+
+    impl Reader for MockReader {
+        fn tasks(&self) -> Vec<Task> {
+            self.tasks.clone()
+        }
+        fn workers(&self) -> Vec<WorkerState> {
+            self.workers.clone()
+        }
+        fn treasury_balance(&self) -> u128 {
+            self.treasury
+        }
+    }
+
+    fn posted_task(id: u64, role: Role, reward: u128) -> Task {
+        Task {
+            id,
+            role,
+            reward,
+            min_reputation: 0,
+            criteria: Criteria { min_quality: DEFAULT_MIN_QUALITY },
+            stage: Stage::Posted,
+        }
+    }
+
+    #[test]
+    fn role_from_name_maps_slug_suffix_else_defaults_to_doer() {
+        assert_eq!(role_from_name("acme-exec"), Role::Executive);
+        assert_eq!(role_from_name("acme-pm"), Role::ProductManager);
+        assert_eq!(role_from_name("acme-coder"), Role::Coder);
+        assert_eq!(role_from_name("acme-review"), Role::Reviewer);
+        assert_eq!(role_from_name("acme-acct"), Role::Accounting);
+        assert_eq!(role_from_name("acme-hr"), Role::Hr);
+        assert_eq!(role_from_name("acme-mktg"), Role::Marketing);
+        // Unknown suffix / bare name / empty → the generic doer (Coder).
+        assert_eq!(role_from_name("randomagent"), Role::Coder);
+        assert_eq!(role_from_name("pm"), Role::ProductManager); // bare slug still maps
+        assert_eq!(role_from_name(""), Role::Coder);
+    }
+
+    #[test]
+    fn chain_reader_reads_through_prefetched_fields() {
+        // The registry-backed Reader's PURE surface (no chain): it just hands back
+        // the snapshot, and `plan_cycle` over an empty board is quiescent.
+        let r = ChainReader {
+            tasks: vec![],
+            workers: vec![WorkerState { id: 3, role: Role::Reviewer, reputation: 4, available: true }],
+            treasury: 7 * LH,
+        };
+        assert_eq!(r.treasury_balance(), 7 * LH);
+        assert_eq!(r.workers().len(), 1);
+        assert!(r.tasks().is_empty());
+        assert!(plan_cycle(&r, PLAN_MAX_STEPS).is_quiescent());
+    }
+
+    #[test]
+    fn format_plan_prints_actions_under_the_preview_banner() {
+        // One open (Posted) task + a matching available coder → the dry run plans
+        // exactly one AssignTask, rendered under the PREVIEW banner.
+        let reader = MockReader {
+            tasks: vec![posted_task(1, Role::Coder, 50 * LH)],
+            workers: vec![WorkerState { id: 7, role: Role::Coder, reputation: 2, available: true }],
+            treasury: 100 * LH,
+        };
+        let plan = plan_cycle(&reader, PLAN_MAX_STEPS);
+        let out = format_plan("company #5 'acme'", "0xtreasury", &plan);
+        assert!(out.starts_with("PREVIEW ONLY — nothing executed or broadcast"));
+        assert!(out.contains("company #5 'acme' — work-cycle plan"));
+        assert!(out.contains("(0xtreasury)"));
+        assert!(out.contains("#7  coder"));
+        assert!(out.contains("planned actions (1):"));
+        assert!(out.contains("assign task #1 → worker #7"));
+        assert!(out.contains("PLAN (preview only")); // the cycle summary line
+        assert!(out.trim_end().ends_with("Nothing above was executed, signed, or broadcast."));
+    }
+
+    #[test]
+    fn format_plan_reports_a_quiescent_board() {
+        let reader = MockReader {
+            tasks: vec![],
+            workers: vec![WorkerState { id: 1, role: Role::Coder, reputation: 0, available: true }],
+            treasury: LH,
+        };
+        let plan = plan_cycle(&reader, PLAN_MAX_STEPS);
+        let out = format_plan("company #1", "0xabc", &plan);
+        assert!(out.contains("planned actions: none — the board is quiescent"));
+        // A quiescent board still carries the no-broadcast assurance.
+        assert!(out.contains("nothing executed or broadcast"));
+    }
+
+    #[test]
+    fn fmt_action_renders_every_variant() {
+        assert_eq!(
+            fmt_action(&Action::PostBounty { task_id: 1, reward: LH }),
+            "post bounty for task #1 (reward 1.00 LH)"
+        );
+        assert_eq!(
+            fmt_action(&Action::AssignTask { task_id: 2, worker_id: 7 }),
+            "assign task #2 → worker #7"
+        );
+        assert_eq!(
+            fmt_action(&Action::Payout { task_id: 2, worker_id: 7, amount: 3 * LH }),
+            "pay 3.00 LH to worker #7 for task #2"
+        );
+        assert_eq!(
+            fmt_action(&Action::Attest { subject_id: 7, rating: 5, work_ref: 2 }),
+            "attest worker #7 rating 5 (work #2)"
+        );
+    }
+
+    #[test]
+    fn payroll_even_split_floor_divides_and_never_overspends() {
+        // Whole treasury, 3 even rows: 99/3 = 33 each, no remainder.
+        let (pool, pay) = payroll_plan(99, 10_000, &[0, 0, 0], false);
+        assert_eq!(pool, 99);
+        assert_eq!(pay, vec![33, 33, 33]);
+        // A non-divisible pool leaves the remainder in the treasury (33*3=99<=100).
+        let (pool, pay) = payroll_plan(100, 10_000, &[5, 5, 5], false);
+        assert_eq!(pool, 100);
+        assert_eq!(pay, vec![33, 33, 33]);
+        assert!(pay.iter().sum::<u128>() <= pool);
+    }
+
+    #[test]
+    fn payroll_fraction_scales_the_pool() {
+        // Half of 100 = 50, split evenly across 2 = 25 each.
+        let (pool, pay) = payroll_plan(100, 5_000, &[0, 0], false);
+        assert_eq!(pool, 50);
+        assert_eq!(pay, vec![25, 25]);
+        // 25% of 1000 = 250, even across 5 = 50 each.
+        let (pool, pay) = payroll_plan(1_000, 2_500, &[0, 0, 0, 0, 0], false);
+        assert_eq!(pool, 250);
+        assert_eq!(pay, vec![50, 50, 50, 50, 50]);
+    }
+
+    #[test]
+    fn payroll_reputation_weighted_splits_by_weight() {
+        // Pool 100, weights 1:3 → 25 and 75; never overspends.
+        let (pool, pay) = payroll_plan(100, 10_000, &[1, 3], true);
+        assert_eq!(pool, 100);
+        assert_eq!(pay, vec![25, 75]);
+        assert!(pay.iter().sum::<u128>() <= pool);
+        // by_rep but every weight 0 → fall back to an even split.
+        let (_, pay) = payroll_plan(100, 10_000, &[0, 0], true);
+        assert_eq!(pay, vec![50, 50]);
+    }
+
+    #[test]
+    fn payroll_handles_empty_roster_and_saturates() {
+        // No rows → empty payout vec (pool still computed).
+        let (pool, pay) = payroll_plan(100, 10_000, &[], false);
+        assert_eq!(pool, 100);
+        assert!(pay.is_empty());
+        // A u128::MAX treasury saturates the pool multiply (no overflow panic).
+        let (pool, pay) = payroll_plan(u128::MAX, 10_000, &[1], true);
+        assert_eq!(pool, u128::MAX / 10_000);
+        assert_eq!(pay, vec![pool]);
+    }
+
+    #[test]
+    fn parse_fraction_decimal_and_percent_forms() {
+        assert_eq!(parse_fraction("0.5").unwrap(), 5_000);
+        assert_eq!(parse_fraction("1").unwrap(), 10_000);
+        assert_eq!(parse_fraction(".25").unwrap(), 2_500);
+        assert_eq!(parse_fraction("  0.1  ").unwrap(), 1_000);
+        assert_eq!(parse_fraction("50%").unwrap(), 5_000);
+        assert_eq!(parse_fraction("100%").unwrap(), 10_000);
+        assert_eq!(parse_fraction("5%").unwrap(), 500);
+        // Out of range / garbage → clean errors, never a panic.
+        assert!(parse_fraction("1.5").is_err());
+        assert!(parse_fraction("200%").is_err());
+        assert!(parse_fraction("nope").is_err());
+        assert!(parse_fraction("-0.5").is_err());
+    }
+
+    #[test]
+    fn fmt_fraction_renders_two_decimals() {
+        assert_eq!(fmt_fraction(10_000), "100.00%");
+        assert_eq!(fmt_fraction(5_000), "50.00%");
+        assert_eq!(fmt_fraction(2_500), "25.00%");
+        assert_eq!(fmt_fraction(500), "5.00%");
+    }
+
+    #[test]
+    fn load_open_tasks_default_role_and_quality_are_doer_grade() {
+        // The documented approximation for role/criteria-free on-chain bounties.
+        assert_eq!(DEFAULT_TASK_ROLE, Role::Coder);
+        assert_eq!(DEFAULT_MIN_QUALITY, 3);
     }
 }
