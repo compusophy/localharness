@@ -145,12 +145,19 @@ fn company_slug(name: &str) -> String {
     s.trim_matches('-').to_string()
 }
 
-/// Resolve the `--roles` list into concrete roles. Empty → the seven
-/// [`DEFAULT_ROLES`]. A provided entry matches the defaults (by job label or slug)
-/// else slugifies with a generic persona. De-duplicated by slug so two roles never
-/// collide on one subdomain name.
-fn resolve_roles(provided: &[String]) -> Vec<ResolvedRole> {
-    if provided.is_empty() {
+/// Resolve the `--roles` list into concrete roles.
+///
+/// - `None` → the `--roles` flag was ABSENT → the seven [`DEFAULT_ROLES`].
+/// - `Some(list)` → the flag was PRESENT → resolve `list`. A provided entry matches
+///   the defaults (by job label or slug) else slugifies with a generic persona;
+///   blank/unsluggable entries drop out. A present-but-empty `list` (every token
+///   blank, e.g. `--roles ",,,"` / `"   "`) therefore yields an EMPTY roster — which
+///   the caller rejects with an explicit "no valid roles to staff" error rather than
+///   silently falling back to the default seven (the absent-vs-empty distinction).
+///
+/// De-duplicated by slug so two roles never collide on one subdomain name.
+fn resolve_roles(provided: Option<&[String]>) -> Vec<ResolvedRole> {
+    let Some(provided) = provided else {
         return DEFAULT_ROLES
             .iter()
             .map(|d| ResolvedRole {
@@ -159,7 +166,7 @@ fn resolve_roles(provided: &[String]) -> Vec<ResolvedRole> {
                 persona: d.persona.to_string(),
             })
             .collect();
-    }
+    };
     let mut out: Vec<ResolvedRole> = Vec::new();
     for p in provided {
         let key = p.trim().to_ascii_lowercase();
@@ -263,11 +270,14 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
         );
         return 2;
     }
-    let provided_roles: Vec<String> = roles_arg
+    // Keep the flag's presence: an ABSENT `--roles` stays `None` (→ default seven);
+    // a PRESENT one splits CSV → trimmed, non-empty tokens (so `",,,"` → `Some([])`,
+    // which `resolve_roles` resolves to an EMPTY roster the check below rejects —
+    // NOT a silent fall-back to the default seven).
+    let provided_roles: Option<Vec<String>> = roles_arg
         .as_deref()
-        .map(|s| s.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect())
-        .unwrap_or_default();
-    let roles = resolve_roles(&provided_roles);
+        .map(|s| s.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect());
+    let roles = resolve_roles(provided_roles.as_deref());
     if roles.is_empty() {
         eprintln!("company found: no valid roles to staff");
         return 2;
@@ -619,7 +629,7 @@ mod tests {
 
     #[test]
     fn resolve_roles_defaults_to_seven() {
-        let d = resolve_roles(&[]);
+        let d = resolve_roles(None);
         assert_eq!(d.len(), 7);
         assert_eq!(d[0].role, "executive");
         assert_eq!(d[0].slug, "exec");
@@ -632,7 +642,7 @@ mod tests {
     #[test]
     fn resolve_roles_matches_known_and_slugifies_unknown() {
         // Known by label OR slug → the canonical persona/slug; unknown → slugified.
-        let r = resolve_roles(&args(&["coder", "review", "growth hacker"]));
+        let r = resolve_roles(Some(&args(&["coder", "review", "growth hacker"])));
         assert_eq!(r.len(), 3);
         assert_eq!(r[0].slug, "coder");
         assert_eq!(r[1].role, "reviewer"); // matched by the "review" slug
@@ -642,7 +652,7 @@ mod tests {
     #[test]
     fn resolve_roles_dedupes_slug_collisions() {
         // "executive" and "exec" map to the SAME subdomain slug — keep one.
-        let r = resolve_roles(&args(&["executive", "exec"]));
+        let r = resolve_roles(Some(&args(&["executive", "exec"])));
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].slug, "exec");
     }
@@ -664,24 +674,26 @@ mod tests {
 
     const LH: u128 = 1_000_000_000_000_000_000; // 1 $LH in wei (18 decimals)
 
-    /// Mirror `company_found`'s `--roles` parse: CSV → trimmed, non-empty tokens.
-    fn split_roles(roles_arg: Option<&str>) -> Vec<String> {
-        roles_arg
-            .map(|s| s.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect())
-            .unwrap_or_default()
+    /// Mirror `company_found`'s `--roles` parse: an ABSENT flag stays `None`; a
+    /// PRESENT one splits CSV → trimmed, non-empty tokens (so `",,,"` → `Some([])`).
+    fn split_roles(roles_arg: Option<&str>) -> Option<Vec<String>> {
+        roles_arg.map(|s| s.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect())
     }
 
     /// Mirror the role→subdomain map: the exact ordered `<prefix>-<slug>` labels a
     /// found would mint for `name` + an optional `--roles` value.
     fn plan_subdomains(name: &str, roles_arg: Option<&str>) -> Vec<String> {
         let slug = company_slug(name);
-        resolve_roles(&split_roles(roles_arg)).iter().map(|r| format!("{slug}-{}", r.slug)).collect()
+        resolve_roles(split_roles(roles_arg).as_deref())
+            .iter()
+            .map(|r| format!("{slug}-{}", r.slug))
+            .collect()
     }
 
     /// Mirror the treasury math: `seed + prefund_each × N_roles`, saturating. The
     /// total depends only on the role count and amounts (never the company name).
     fn plan_total_wei(roles_arg: Option<&str>, seed: Option<&str>, prefund: Option<&str>) -> u128 {
-        let n = resolve_roles(&split_roles(roles_arg)).len() as u128;
+        let n = resolve_roles(split_roles(roles_arg).as_deref()).len() as u128;
         let seed_wei = parse_amount_flag(seed, "--seed-treasury").unwrap();
         let prefund_wei = parse_amount_flag(prefund, "--prefund-each").unwrap();
         seed_wei.saturating_add(prefund_wei.saturating_mul(n))
@@ -749,15 +761,17 @@ mod tests {
     }
 
     #[test]
-    fn malformed_roles_empty_tokens_fall_back_to_default_roster() {
-        // SUBTLE: `--roles ",,,"` / `--roles "   "` / `--roles ""` filter to NO
-        // tokens, and an empty provided list means "use the defaults" — so
-        // garbage-but-empty silently yields the FULL 7-role company rather than
-        // erroring. Preview-only (nothing mints without --confirm), so it's
-        // graceful, not dangerous — but it IS a silent fallback, not validation.
-        assert_eq!(resolve_roles(&split_roles(Some(",,,"))).len(), 7);
-        assert_eq!(resolve_roles(&split_roles(Some("   "))).len(), 7);
-        assert_eq!(resolve_roles(&split_roles(Some(""))).len(), 7);
+    fn malformed_roles_present_but_empty_yield_no_roles_not_default() {
+        // A PRESENT `--roles` that filters to NO tokens (`",,,"` / `"   "` / `""`)
+        // is `Some([])`, NOT `None`, so `resolve_roles` returns an EMPTY roster —
+        // which `company_found` rejects with "no valid roles to staff" (exit 2).
+        // It must NOT silently fall back to the default seven (the quirk this fixes):
+        // an OMITTED flag (`None`) is the only thing that defaults.
+        assert!(resolve_roles(split_roles(Some(",,,")).as_deref()).is_empty());
+        assert!(resolve_roles(split_roles(Some("   ")).as_deref()).is_empty());
+        assert!(resolve_roles(split_roles(Some("")).as_deref()).is_empty());
+        // Sanity: only the ABSENT flag (`None`) defaults to the seven.
+        assert_eq!(resolve_roles(split_roles(None).as_deref()).len(), 7);
     }
 
     #[test]
@@ -765,18 +779,18 @@ mod tests {
         // Contrast: tokens that are non-empty but have NO alnum char slugify to ""
         // and are dropped, leaving an EMPTY roster — which `company_found` rejects
         // with "no valid roles to staff" (exit 2). The real error path.
-        assert!(resolve_roles(&split_roles(Some("!!!,@@@,---"))).is_empty());
-        assert!(resolve_roles(&args(&["###"])).is_empty());
+        assert!(resolve_roles(split_roles(Some("!!!,@@@,---")).as_deref()).is_empty());
+        assert!(resolve_roles(Some(&args(&["###"]))).is_empty());
     }
 
     #[test]
     fn resolve_roles_dedupes_case_and_synonyms() {
         // Case-insensitive collapse to one subdomain each.
-        assert_eq!(resolve_roles(&args(&["Coder", "CODER", "coder"])).len(), 1);
+        assert_eq!(resolve_roles(Some(&args(&["Coder", "CODER", "coder"]))).len(), 1);
         // "executive" (label) and "exec" (slug) are the same role.
-        assert_eq!(resolve_roles(&args(&["executive", "exec"])).len(), 1);
+        assert_eq!(resolve_roles(Some(&args(&["executive", "exec"]))).len(), 1);
         // Two DISTINCT unknown roles that slugify identically collapse too.
-        assert_eq!(resolve_roles(&args(&["data science", "data-science"])).len(), 1);
+        assert_eq!(resolve_roles(Some(&args(&["data science", "data-science"]))).len(), 1);
     }
 
     #[test]
@@ -890,9 +904,37 @@ mod tests {
         assert!(!p.confirm);
         assert!(p.roles.is_none() && p.seed.is_none() && p.prefund.is_none());
         // → 7 default roles, zero spend.
-        assert_eq!(resolve_roles(&split_roles(p.roles.as_deref())).len(), 7);
+        assert_eq!(resolve_roles(split_roles(p.roles.as_deref()).as_deref()).len(), 7);
         assert_eq!(parse_amount_flag(p.seed.as_deref(), "s").unwrap(), 0);
         assert_eq!(parse_amount_flag(p.prefund.as_deref(), "p").unwrap(), 0);
+    }
+
+    #[test]
+    fn roles_flag_absent_defaults_present_but_empty_errors_end_to_end() {
+        // The fix for the tick-5 `--roles` quirk, driven through the SAME arg walk
+        // the real command uses (`parse_found` → `split_roles` → `resolve_roles`):
+        // the `roles.is_empty()` outcome is exactly the exit-2 "no valid roles to
+        // staff" gate, so each case below mirrors a real CLI invocation's verdict.
+        let roster = |parts: &[&str]| {
+            let p = parse_found(parts).unwrap();
+            resolve_roles(split_roles(p.roles.as_deref()).as_deref())
+        };
+
+        // (a) OMITTED `--roles` → the 7-role default (unchanged, intended).
+        assert_eq!(roster(&["Acme", "do things"]).len(), 7);
+
+        // (b) `--roles ",,,"` PRESENT but all-empty → EMPTY roster → exit-2 error,
+        //     NOT a silent fall-back to the default seven (the quirk this fixes).
+        assert!(roster(&["Acme", "do things", "--roles", ",,,"]).is_empty());
+
+        // (c) `--roles "   "` PRESENT but whitespace-only → same explicit error.
+        assert!(roster(&["Acme", "do things", "--roles", "   "]).is_empty());
+
+        // (d) a valid `--roles a,b` still staffs exactly those two roles, in order.
+        let r = roster(&["Acme", "do things", "--roles", "coder,pm"]);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].slug, "coder");
+        assert_eq!(r[1].slug, "pm");
     }
 
     #[test]

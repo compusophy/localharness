@@ -162,6 +162,15 @@ pub mod keeper;
 /// See `src/work_cycle.rs`.
 pub mod work_cycle;
 
+/// PURE PLANNING SHELL over [`work_cycle`]: a [`work_cycle_runtime::Reader`]
+/// (no `registry`/`wallet` dep) feeds the read-only company view into
+/// [`work_cycle_runtime::plan_cycle`], which runs [`work_cycle::step`] to
+/// quiescence and returns a [`work_cycle_runtime::CyclePlan`] of WHAT WOULD
+/// HAPPEN — preview ONLY, executes/broadcasts NOTHING. The greenlight-gated
+/// executor that maps each planned [`work_cycle::Action`] onto its sponsored
+/// `registry` call is deferred. Native-testable. See `src/work_cycle_runtime.rs`.
+pub mod work_cycle_runtime;
+
 /// SessionRoom op sealing/opening + deterministic per-room key derivation (#22):
 /// AES-256-GCM confidentiality under `K_room` inside a writer-signed,
 /// room-bound `signaling_seal` envelope. Needs `wallet` for k256/keccak.
