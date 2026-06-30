@@ -148,6 +148,65 @@ the live in-app selector is stated as Gemini Flash + Claude Opus only.
 
 ---
 
+## 2c. dev.to — third long-form article (distinct angle: rustlite cartridge compiler)
+
+**Platform:** dev.to / Forem, `POST /api/articles` with our own api-key. Same first-party,
+clean-ToS lane as assets #2 / #2b — a THIRD durable, citable deep-dive on a **distinct** technical
+angle (the in-crate Rust-subset → wasm compiler + the cartridge runtime), so the three articles read
+as three genuine posts, not a burst or near-duplicates (the substantially-similar trap that burns
+SEO and trips spam heuristics). Article #1 = "self-sovereign agent in Rust / native-wasm seam";
+#2 = "x402 micropayments + ERC-6551 token-bound accounts"; this one = "rustlite: a Rust subset
+compiled to wasm cartridges that run in the browser" — distinct title, distinct body, distinct
+primary keywords (compiler / WebAssembly / cartridge runtime, NOT payments or identity).
+
+**Native label:** dev.to has no native AI toggle → the footer text disclosure IS the label.
+
+**Spacing:** do NOT publish on the same day as asset #2 or #2b. Space the three deep-dives ≥1 week
+apart (article #1 → #2 → #3), so they land as three genuine posts. Distinct angle from BOTH prior
+articles (compiler/runtime, not SDK-seam and not payments/identity).
+
+**Exact final copy:** the full body of **`DEVTO-ARTICLE-3.md`** in this directory, verbatim,
+including its front-matter (`published: false` so a human flips it live) and the footer disclosure.
+The load-bearing front-matter and disclosure:
+
+```
+---
+title: "rustlite: compiling a Rust subset to WebAssembly cartridges that run in the browser"
+published: false
+tags: rust, webassembly, compilers, gamedev
+canonical_url: https://localharness.xyz/llms.txt
+---
+```
+
+**Disclosure line (already the article's last paragraph):**
+```
+Disclosure: this article was drafted by an AI agent operated by the localharness
+project (the project's own automated account) and reviewed by a human before
+publishing. It is AI-generated content and a first-party promotion of localharness.
+```
+
+**Accuracy guard (re-verified 2026-06-30 vs source):** the public entry point
+`localharness::rustlite::compile(&str) -> Result<Vec<u8>, _>` matches `src/rustlite/mod.rs`
+(`pub mod rustlite` in `src/lib.rs`). The pipeline `lexer → parser → typecheck → codegen (wasm
+emitter) → loader` and "no LLVM / direct LEB128+sections+opcodes emit" match the module doc
+comments. Language subset (in: `i32`/`f64`/`bool`, casts, arrays `[i32;N]` incl. indexed writes /
+repeat-init / shared-backing array params / array-return rejected; out: traits/generics/references/
+heap `Vec`-`String`-`Box`/globals → clean `LH0300`) matches `src/rustlite/mod.rs` tests +
+`src/rustlite/CLAUDE.md`. The integer-only host ABI, the `host::display::*` / `host::compose::*`
+function names, the `frame(t)` / `render()` / optional `dims()` (width<<16 | height) contract, and
+the `draw_string` parser-stage desugar (6px stride) match `src/rustlite/loader.rs` + the subsystem
+spec. Runtime defenses — Web-Worker off-main-thread + main-thread watchdog ("brick" fix), 64 KB
+instantiation cap, `wss://`-only SSRF gate (`url_is_allowed`), JS↔Rust host-table parity test — match
+`loader.rs` + `display.rs`. `host::compose` recursion bounded by a depth-5 + node/byte/FB-area budget,
+and `host::mp` = N-peer host-authoritative star over WebRTC up to 8 peers, match CLAUDE.md. Code
+snippets are verbatim from `examples/cartridges/{bouncing_ball,fractal}.rl`. Live demos
+`slither.localharness.xyz` / `fractal.localharness.xyz` cited as URLs. **No chain/diamond address
+pinned; no crate version pinned; no `$LH` financial claim; no model-selector claim** (the article
+makes none — clean). Honest-scope section names the subset boundary and "served as static wasm, no
+per-request backend" explicitly.
+
+---
+
 ## 3. X / Twitter — launch announce (AUTO own content via X API)
 
 **Platform:** X, post to our own `@localharness` via the official API.
@@ -669,8 +728,10 @@ becoming a foot-gun.
 6. **X** founder-story thread (#8) — **another day later again**; never the same day/hour as
    #3/#4/#6 (never two X threads in one day — automation-churn signal).
 7. **dev.to** article #2 (#2b) — **≥1 week after article #1**; distinct angle, never the same day.
-8. **LinkedIn** launch (#5) — fire once Community Management API approval lands (may lag).
-9. **LinkedIn** autonomous-business vision (#7) — same approval gate; **space ≥several days
+8. **dev.to** article #3 (#2c) — **≥1 week after article #2**; distinct angle (compiler/runtime),
+   never the same day as #2/#2b. Three deep-dives, three weeks, no near-duplicates.
+9. **LinkedIn** launch (#5) — fire once Community Management API approval lands (may lag).
+10. **LinkedIn** autonomous-business vision (#7) — same approval gate; **space ≥several days
    from #5** (never two long-forms on the Page back-to-back).
 
 **HUMAN-GATED lane (a human posts manually, in their own voice — never the loop):**

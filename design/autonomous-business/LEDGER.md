@@ -4,6 +4,37 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 6 — 2026-06-30T10:30Z
+<!-- tick-window: 2026-06-30T1030Z -->
+
+**Goal:** connect the work-cycle core to a (preview-only) runtime; fix the CLI quirk;
+architecture doc; marketing #3. Four agents parallel — all non-owner-blocked.
+
+**Shipped (verified — re-ran native lib + wasm guard + wallet bin + secret-scan):**
+- **CODE — `work_cycle_runtime.rs` (pure planning shell, +lib.rs):** `Reader` trait
+  (tasks/workers/treasury_balance — no registry dep) → `plan_cycle(reader, max_steps)
+  -> CyclePlan{state_before, actions, state_after, summary}`. Builds State from reads,
+  runs `work_cycle::step` to quiescence, returns the planned `Action`s — **PREVIEW ONLY,
+  never executes** (summary literally prefixed "PLAN (preview only — nothing executed)";
+  treasury debit is a pure projection). MockReader + 7 tests.
+  - PASS `cargo test --lib work_cycle` (20: 13 core + 7 runtime) · native + wasm + clippy clean.
+- **CODE — CLI `--roles` fix (`bin/company.rs`):** `resolve_roles(Option<&[String]>)` —
+  absent flag → 7 defaults; present-but-empty → exit-2 error (no more silent fallback).
+  24 tests pass.
+- **DOCS — `ARCHITECTURE.md`:** full map w/ a pure-core ↔ I/O-shell boundary diagram +
+  honest per-layer status table + the Action→`registry::*_sponsored` executor mapping.
+- **MARKETING — `DEVTO-ARTICLE-3.md`** (rustlite compiler, source-pinned) + `CALENDAR.md`
+  (3-week day×platform schedule keyed to READY-QUEUE ids, spacing rules honored).
+
+**Next tick (non-blocked):** the deferred executor as a PREVIEW-only wiring (real Reader
+impl over registry reads + a `plan`/dry-run CLI subcommand that PRINTS the CyclePlan; no
+broadcast until greenlit); accounting/HR role tooling (treasury/payroll preview, role
+roster); more docs/marketing. Owner-gated items still wait on DECISIONS.md.
+
+**Human-blocked → DECISIONS.md** (unchanged; 8 decisions await answers).
+
+---
+
 ## Tick 5 — 2026-06-30T10:00Z
 <!-- tick-window: 2026-06-30T1000Z -->
 

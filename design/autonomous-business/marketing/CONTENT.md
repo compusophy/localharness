@@ -384,6 +384,11 @@ Live: localharness.xyz
 
 ## 6. Two-week content calendar
 
+> NOTE: the **canonical launch schedule is `CALENDAR.md`** (a 3-week day×platform plan
+> keyed to `READY-QUEUE.md` ids, covering the full asset set incl. the 3 dev.to
+> articles). The table below is the older draft schedule keyed to *this file's* post
+> numbers — kept for reference; follow `CALENDAR.md` at fire time.
+
 Assumes a launch on Day 1 (Mon, Week 1). One primary asset per day; "—" = no post.
 
 | Day | Platform | Theme / Asset |
