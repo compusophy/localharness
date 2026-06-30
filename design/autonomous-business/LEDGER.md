@@ -4,6 +4,38 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 5 — 2026-06-30T10:00Z
+<!-- tick-window: 2026-06-30T1000Z -->
+
+**Goal:** non-owner-blocked progress while DECISIONS.md awaits answers — the
+"company does work" core, CLI hardening, docs, marketing. Four agents parallel.
+
+**Shipped (verified — re-ran native lib + wasm guard + wallet bin + secret-scan):**
+- **CODE — pure `work_cycle` core (`src/work_cycle.rs`, +lib.rs):** models one
+  claim→work→judge→pay→attest cycle as DATA — pure types + `assign_next_task` /
+  `evaluate_result` / `compute_payout` / `step(State)->(State, Vec<Action>)`; `Action`
+  variants doc-mapped to real `registry` bounty/reputation calls (I/O stays in a future
+  wiring shell, decisions in the pure core). Mirrors keeper.rs/lessons.rs style, zero deps.
+  - PASS `cargo test --lib work_cycle` (13) · PASS native check · PASS wasm guard.
+- **CODE — CLI hardening (`src/bin/localharness/company.rs`):** +17 tests (6→23) —
+  preview golden map + treasury math, amount-parse rejections, malformed `--roles`,
+  long-input clamps, `company status` parsing. Found 2 BENIGN quirks (no bug): empty-ish
+  `--roles` silently falls back to defaults; lone `.` = 0 wei ("skip"). PASS (23/23).
+- **DOCS:** `FOUND-A-COMPANY.md` — user quickstart (browser tool + CLI, preview-vs-
+  `--confirm`, `--dev`→testnet, treasury math, honest "not yet" notes).
+- **MARKETING:** LinkedIn long-form (#7) + founder-story X thread (#8) in READY-QUEUE,
+  accuracy-guarded (found_company framed shipped; autonomous operation in-progress;
+  x402 "built/design-level" not mainnet-live).
+
+**Next tick (still non-blocked):** wire `work_cycle` to a runtime shell that builds
+`State` from on-chain reads + maps `Action`s to sponsored calls (no auto-broadcast —
+preview/dry-run only until owner greenlights); stricter `--roles` validation; more docs/
+marketing. Owner-gated items still wait on DECISIONS.md.
+
+**Human-blocked → DECISIONS.md** (unchanged; 8 decisions await answers).
+
+---
+
 ## Tick 4 — 2026-06-30T09:30Z
 <!-- tick-window: 2026-06-30T0930Z -->
 

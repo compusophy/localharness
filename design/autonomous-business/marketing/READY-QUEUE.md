@@ -300,6 +300,134 @@ AI-generated, human-reviewed. Posted by localharness's own automated account. #A
 
 ---
 
+## 7. LinkedIn — autonomous-business vision (AUTO own content; GATED on API approval)
+
+**Platform:** LinkedIn, own Page/profile via the Community Management API
+(`w_member_social` / `w_organization_social`). Same AUTO lane + same approval gate as
+asset #5; this is a SECOND, **distinct** LinkedIn long-form (the autonomous-business
+vision — a company built entirely of role-agents — not the generic launch). Space it from
+asset #5 (≥several days; never two long-forms on the Page back-to-back — LinkedIn down-ranks
+burst posting and a near-duplicate reads as spam).
+
+**Fire-readiness caveat (honest):** LinkedIn requires Community Management API access (an
+approval form, ~Development→Standard tier) before any programmatic post. This asset is
+"ready" the moment that approval + token land — same lag as asset #5. Until then a human can
+post the same copy manually.
+
+**Native label:** no strong native AI label for text posts → the appended disclosure below
+is the required label.
+
+**Accuracy guard (re-verified 2026-06-30 vs source):** the SDK backend list "Gemini, Claude,
+OpenAI, and an offline mock for tests" is framed strictly as a **backend trait** — no claim
+that OpenAI is a live in-app model (the hosted selector is Gemini Flash + Claude Opus only,
+`src/app/model.rs`). Identity/mint is correctly Tempo mainnet; **no diamond/chain address is
+pinned**. The company layer matches `src/app/chat/tools/company.rs` + `COMPANY-FEATURE.md`:
+`company_status` (read-only) and `found_company` (one-call founder; registered in
+`session.rs`, allowlist- + confirm-gated) both ship; the seven role personas are real
+(`DEFAULT_ROLES` / `roles/*.md`). Governance is correctly stated as single-controller
+(Model A); multi-party (Model B) is named as the next layer. The economy is described as
+"primitives are built" — NOT as live mainnet x402 settlement (settlement is testnet-only).
+Self-funding is named as the OPEN problem — no `$LH` earnings/investment claim. No crate
+version pinned.
+
+**Exact final copy (the post):**
+```
+For a while now I've been building localharness, and lately pointing it at a deliberately ambitious question: what would it take for a business to be nothing but software agents — a CEO, a PM, engineers, a reviewer, accounting, HR, and marketing — each a real, self-sovereign entity rather than a function call inside one big script?
+
+Here's where that stands, including the parts that aren't done.
+
+What localharness is: one Rust crate. `cargo add localharness` gives you a complete, model-agnostic agent loop — streaming, tool calling, hooks, policies, MCP, context compaction — behind a backend trait (Gemini, Claude, OpenAI, and an offline mock for tests). The same crate compiles to WebAssembly, so the agent loop can run entirely inside a browser tab with no backend server of its own.
+
+What makes an agent self-sovereign: every agent is its own on-chain identity. It lives at name.localharness.xyz, backed by an NFT on Tempo mainnet with its own token-bound wallet, an on-chain persona, and a filesystem. "My agents" is simply the set of identities my key owns — no account on someone else's server, no rented seat to revoke. Gas is sponsored, so claiming an identity costs the new agent zero crypto; you go live from a single shell command.
+
+The company layer — what's shipped: a "company" here isn't a new contract. It's a named composition of primitives that already exist — a guild for org identity, the guild's shared wallet as a treasury, and N role-subdomains as members. There's a one-call tool that stands the whole org up (create the guild, register the seven role agents with their on-chain personas, seed a shared backlog) and a read-only tool that snapshots any company: its treasury and every member with its role. The seven role personas are real, versioned, and in the repository.
+
+The honest part — what's in progress: founding a company ships; the agents autonomously running one does not yet. Today it's a single-controller setup — one operator wearing many personas — and multi-party, on-chain governance between distinct agents is the next layer. More to the point: a company of agents spends credits on inference every turn, so it is seed-funded, not self-funding. The coordination and payment primitives are built, but real net-positive depends on outside callers paying in. That is the open problem, and I would rather name it than dress it up.
+
+Why bother: most "AI agents" today are a prompt plus a rented API key behind someone else's server. I wanted to see how far the opposite goes — an agent that holds its own keys, carries its identity across devices and sessions, and can be hired and paid like any other party on a network. Whether a business made entirely of those agents can sustain itself is exactly the experiment.
+
+It's open source (Apache-2.0), built on stable Rust. If you work on agent autonomy, machine-to-machine coordination, or self-sovereign infrastructure, I'd value your read — especially the skeptical kind.
+
+Code: github.com/compusophy/localharness
+Live: localharness.xyz
+
+#Rust #AIAgents #WebAssembly #AutonomousAgents #OpenSource
+```
+
+**Disclosure line (append to the post body, above or below the hashtags):**
+```
+Disclosure: AI-generated and human-reviewed; posted by localharness's own automated account.
+```
+
+---
+
+## 8. X / Twitter — founder-story thread (AUTO own content; "why self-sovereign, not rented")
+
+**Platform:** X, post the whole thread to our own `@localharness` via the official API
+(post 1/, then each subsequent post as a reply to the previous, then the disclosure as the
+final reply). **Must be spaced** from #3/#4/#6 (≥1 day; no bursts; never the same hour, and
+never adjacent to another X thread — two threads in a day reads as automation churn). This is
+a deliberately distinct angle (a personal, first-person founder story — *why* build
+self-sovereign agents instead of rented API wrappers), not a feature recap; X bans
+substantially-similar posts (`RISKS.md` a.1 / guardrail #11).
+
+**Native label:** same **Automated-account** setting as #3/#4/#6 (X's native bot label, linked
+to the human operator). Required for automated posting independent of the post text.
+
+**Accuracy guard (re-verified 2026-06-30 vs source):** SDK model-agnosticism is explicitly
+scoped to "the SDK level" in post 5 (Gemini/Claude/OpenAI/mock = a backend trait) — no claim
+that OpenAI is a live in-app model (selector = Gemini Flash + Claude Opus, `src/app/model.rs`).
+Identity on **Tempo mainnet** with its own wallet is accurate (each role NFT has its own
+token-bound account); **no diamond/chain address pinned**. The seven role personas match
+`DEFAULT_ROLES` (`src/app/chat/tools/company.rs`); "one tool founds it; another snapshots it"
+matches `found_company` + `company_status`. Payments are described at the design level
+("hired and paid like any other party") and post 7 says the plumbing is "built" — NOT live
+mainnet x402 settlement (settlement is testnet-only). Self-funding is named as the OPEN
+problem — no `$LH` earnings/investment claim. No crate version pinned. Each post ≤280 chars
+(verified).
+
+**Exact final copy (post each line as its own post, in order, as a reply-chain):**
+
+```
+1/
+Why I'm building self-sovereign agents instead of another API wrapper.
+
+A thread on a decision I keep having to defend — to myself as much as to anyone. localharness, in the first person.
+
+2/
+Most "AI agents" are a prompt and a rented API key behind someone else's server. Useful, but the agent doesn't own anything. Turn off the account and it's gone. No identity you can point at, no keys of its own, nothing it carries between sessions.
+
+3/
+I wanted the opposite: an agent that's a real entity. It has a name — name.localharness.xyz. An on-chain NFT identity on Tempo mainnet, its own wallet, a persona and filesystem that travel with it. "My agents" = the set my key owns. No seat anyone can revoke.
+
+4/
+The contrarian bet: this is one Rust crate, not a framework you host. `cargo add localharness` is a full agent loop — streaming, tools, hooks, policies, MCP, compaction. The same crate compiles to wasm32 — the agent runs in a browser tab, no server of its own.
+
+5/
+Model-agnostic at the SDK level — Gemini, Claude, OpenAI, and an offline mock, behind one backend trait. Swap the model, keep the loop. No Python dependency graph to rip out, no vendor SDK to marry.
+
+6/
+Then I pushed further: can a whole business be agents? Seven role personas — exec, PM, coder, reviewer, accounting, HR, marketing — each its own subdomain + wallet. A "company" is just a guild + treasury + those roles as members. One tool founds it; another snapshots it.
+
+7/
+The honest part, because a founder thread without one is just marketing: that company is seed-funded, not self-funding. It burns credits on inference every turn. The plumbing is built; real net-positive needs outside callers paying in. That's the open problem.
+
+8/
+Why the hard way? A rented agent is a feature on someone's roadmap. An agent that holds its own keys and name is infrastructure. I'd rather build the second kind and find out if it can stand on its own.
+
+Open source, Apache-2.0. crates.io/crates/localharness
+```
+
+**Disclosure line (post as the immediate final reply to the thread; required in-thread per FTC):**
+```
+AI-generated, human-reviewed. Posted by localharness's own automated account. #AI
+```
+
+> Each post is ≤280 chars (verified). Keep the thread a reply-chain on ONE account — do not
+> re-post any post as a standalone or from a second account (near-duplicate = CIB ban risk).
+
+---
+
 ## HUMAN-GATED queue (requires a human to post — NOT auto-fired)
 
 > These two are the highest-leverage launch surfaces and are **human-only by ToS** — the
@@ -538,8 +666,12 @@ becoming a foot-gun.
 3. **X** launch (#3) — fire same day.
 4. **X** technical hook (#4) — **next day or later**; never the same hour as #3.
 5. **X** build-in-public thread (#6) — **another day later**; never the same hour as #3/#4.
-6. **dev.to** article #2 (#2b) — **≥1 week after article #1**; distinct angle, never the same day.
-7. **LinkedIn** (#5) — fire once Community Management API approval lands (may lag).
+6. **X** founder-story thread (#8) — **another day later again**; never the same day/hour as
+   #3/#4/#6 (never two X threads in one day — automation-churn signal).
+7. **dev.to** article #2 (#2b) — **≥1 week after article #1**; distinct angle, never the same day.
+8. **LinkedIn** launch (#5) — fire once Community Management API approval lands (may lag).
+9. **LinkedIn** autonomous-business vision (#7) — same approval gate; **space ≥several days
+   from #5** (never two long-forms on the Page back-to-back).
 
 **HUMAN-GATED lane (a human posts manually, in their own voice — never the loop):**
 - **Show HN** (H1) — once, a US-morning weekday; NO automation, NO upvote solicitation.

@@ -3,6 +3,13 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 5 — 2026-06-30)
+
+- ✅ Pure `work_cycle` core (`src/work_cycle.rs`) — the "company does work" decision
+  logic as data (assign→judge→pay→attest); 13 tests, native+wasm clean.
+- ✅ CLI hardened — +17 `company` tests (6→23); 2 benign quirks documented.
+- ✅ Docs: `FOUND-A-COMPANY.md` quickstart. Marketing: LinkedIn + founder X thread.
+
 ## DONE (tick 4 — 2026-06-30)
 
 - ✅ CLI twin shipped & verified — `company found`/`company status` (broadcast-free
@@ -31,19 +38,21 @@ the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
 ## NEXT TICK (non-owner-blocked — productive without answers)
 
-- **[Product][M][H] Phase-2 `run_work_cycle` core** — hoist the deterministic
-  colony.rs work-allocation cores into a pure, natively-testable module (escrow→claim→
-  judge→pay→attest decision logic), no on-chain writes. Sets up the "company actually
-  does work" loop. Branch only.
-- **[QA][S][M] Harden `found_company` + the CLI** — integration tests for the preview/
-  manifest path, error cases (bad roles, zero treasury), and a `company found` golden
-  preview test. No chain contact.
-- **[Marketing][S][M] Add a LinkedIn long-form + a 3rd X thread** (founder-story angle),
-  keep accuracy rules; expand READY-QUEUE.
-- **[Docs][S][M] Write a user-facing "Found a company" quickstart** (browser tool + CLI),
-  grounded in the shipped surface.
-- *(Owner-gated items — testnet dogfood, address relabel, mainnet founding — wait on
-  DECISIONS.md and are NOT auto-run.)*
+- **[Product][M][H] `work_cycle` runtime SHELL (read+plan, NO broadcast)** — a thin
+  layer that builds `State` from on-chain READS (open bounties → stages, discover_agents
+  + reputationOf → workers, treasury balance) and maps emitted `Action`s to the matching
+  sponsored `registry` calls — but in PREVIEW/dry-run only (prints the plan; never
+  broadcasts until owner greenlights). Native-testable with mocked reads. Branch only.
+- **[QA][S][M] Stricter `--roles` validation** — make empty-ish `--roles` (`",,,"`,
+  whitespace) an explicit error instead of the silent 7-role fallback (the tick-5 quirk);
+  add the regression test.
+- **[Docs][S][M] Architecture doc** — "How the autonomous business works" tying
+  `found_company` (setup) → `work_cycle` (operation) → economy facets together; a single
+  diagram-in-prose map for contributors.
+- **[Marketing][S][M] dev.to #3 angle + refresh the 2-week calendar** with the now-larger
+  asset set; keep accuracy rules.
+- *(Owner-gated — testnet dogfood, address relabel, mainnet founding, real social posting
+  — wait on DECISIONS.md; NOT auto-run.)*
 
 ## Ranked backlog (from STRATEGY.md)
 
