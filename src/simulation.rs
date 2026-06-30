@@ -456,6 +456,7 @@ mod tests {
         // treasury can't fund cycle 1.
         assert_eq!(f.ran_out_at, Some(1));
         assert_eq!(f.snapshots.len(), 1);
-        assert!(f.final_ledger.period_costs <= u128::MAX); // didn't wrap
+        // One cycle ran at cost u128::MAX, so period_costs saturated to MAX (no wrap).
+        assert_eq!(f.final_ledger.period_costs, u128::MAX);
     }
 }
