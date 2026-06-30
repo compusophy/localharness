@@ -18,7 +18,7 @@ use super::tools::bounty::{
     accept_result_tool, attest_tool, claim_bounty_tool, discover_bounties_tool, post_bounty_tool,
     submit_result_tool,
 };
-use super::tools::company::company_status_tool;
+use super::tools::company::{company_status_tool, found_company_tool};
 use super::tools::evm::{
     evm_balance_tool, evm_call_tool, evm_chains_tool, resolve_ens_tool,
 };
@@ -95,6 +95,13 @@ pub(crate) async fn start_session(
     // allowlist permits it (unrestricted agents qualify; a restrictive allowlist
     // must list `set_persona`). Low-autonomy agents are never told about it.
     let set_persona_allowed = crate::app::tool_allowlist::closure_tool_allowed("set_persona").await;
+
+    // FOUND-COMPANY GATE (same posture as `set_persona`): `found_company` stands
+    // up a whole org (mints a guild + N role subdomains, spends $LH) in one call —
+    // a high-autonomy action, so it's only granted when the allowlist permits it
+    // (unrestricted agents qualify; a restrictive allowlist must list it).
+    let found_company_allowed =
+        crate::app::tool_allowlist::closure_tool_allowed("found_company").await;
 
     let system_instructions =
         base_system_prompt(&agent_name, on_anthropic, set_persona_allowed);
@@ -406,6 +413,10 @@ pub(crate) async fn start_session(
         if set_persona_allowed {
             cfg = cfg.with_tool(set_persona_tool());
         }
+        // Company-founding tool — gated on the allowlist (see `found_company_allowed`).
+        if found_company_allowed {
+            cfg = cfg.with_tool(found_company_tool());
+        }
         // Credits mode: route Anthropic through the credit proxy (it serves
         // `/v1/messages`). BYOK has no direct-Anthropic path here, so this is
         // a no-op without a proxy base_url and the call would hit
@@ -540,6 +551,10 @@ pub(crate) async fn start_session(
         // Self-edit tool — gated on the allowlist (see `set_persona_allowed`).
         if set_persona_allowed {
             cfg = cfg.with_tool(set_persona_tool());
+        }
+        // Company-founding tool — gated on the allowlist (see `found_company_allowed`).
+        if found_company_allowed {
+            cfg = cfg.with_tool(found_company_tool());
         }
         // Credits mode: route the whole agent through the credit proxy. BYOK
         // leaves base_url None → direct to generativelanguage.googleapis.com.

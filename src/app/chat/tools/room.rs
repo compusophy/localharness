@@ -115,6 +115,65 @@ async fn read_ops(
     Ok(out)
 }
 
+/// Append an encrypted set-op for `key`→`value` to the owner's shared volume
+/// (the room is lazily created on first use), returning `(room_id, tx_hash)`.
+/// The reusable core of `shared_state_set_tool`, also called by
+/// `company::found_company` to seed a backlog. Owner-only; mirrors the CLI's
+/// `room set` (derive `K_room`, pick `next_lamport`, seal, append via a
+/// sponsored Tempo tx).
+pub(crate) async fn set_shared_state(
+    key: &str,
+    value: &str,
+) -> Result<(u64, String), crate::error::Error> {
+    if key.is_empty() {
+        return Err(crate::error::Error::other("key cannot be empty"));
+    }
+    let (identity_secret, writer_addr, owner, room_id) = owner_room_context().await?;
+    let k_room = crate::kv_room::derive_room_key(&identity_secret, room_id);
+
+    // Read the current log to pick the next lamport (max seen + 1) — exactly the
+    // CLI's discipline so writes from sibling subdomains interleave
+    // deterministically (kv_reduce LWW).
+    let existing = read_ops(room_id, &k_room).await?;
+    let lamport = crate::kv_reduce::next_lamport(&existing);
+
+    let op = crate::kv_reduce::KvOp {
+        key: key.to_string(),
+        value: Some(value.as_bytes().to_vec()),
+        lamport,
+        writer: writer_addr,
+        ts: (js_sys::Date::now() / 1000.0) as u64,
+    };
+    // Seal with the owner's identity key — its address MUST be the on-chain
+    // msg.sender that appends the blob (it is: the apex iframe signs the
+    // sponsored append as the owner's master wallet).
+    let (signer, _addr) = crate::app::chat::credit_signer()
+        .await
+        .ok_or_else(|| crate::error::Error::other("identity vanished mid-call"))?;
+    let blob = crate::kv_room::seal_op(&op, &k_room, &signer, room_id)
+        .ok_or_else(|| crate::error::Error::other("failed to seal shared-state op"))?;
+
+    // Append via the SAME sponsored Tempo path as create_subdomain. Length-scaled
+    // gas, matching registry::append_op_sponsored.
+    let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS())
+        .map_err(crate::error::Error::other)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: diamond,
+        value_wei: 0,
+        input: crate::app::registry::encode_append_op(room_id, &blob),
+    };
+    let gas = 2_000_000u128 + (blob.len() as u128) * 9_000;
+    let tx_hash = crate::app::events::run_sponsored_tempo_call(
+        &owner,
+        vec![call],
+        gas,
+        "shared_state_set",
+    )
+    .await
+    .map_err(|e| crate::error::Error::other(format!("shared_state_set failed: {e}")))?;
+    Ok((room_id, tx_hash))
+}
+
 /// `shared_state_set(key, value)` — append an encrypted set-op to the owner's
 /// shared volume (the room is lazily created on first use). Mirrors the CLI's
 /// `room set`: derive `K_room`, pick `next_lamport`, seal the op, append it via a
@@ -151,51 +210,7 @@ pub(crate) fn shared_state_set_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
                 return Err(crate::error::Error::other("key cannot be empty"));
             }
             let value = args.get("value").and_then(|v| v.as_str()).unwrap_or("");
-
-            let (identity_secret, writer_addr, owner, room_id) = owner_room_context().await?;
-            let k_room = crate::kv_room::derive_room_key(&identity_secret, room_id);
-
-            // Read the current log to pick the next lamport (max seen + 1) —
-            // exactly the CLI's discipline so writes from sibling subdomains
-            // interleave deterministically (kv_reduce LWW).
-            let existing = read_ops(room_id, &k_room).await?;
-            let lamport = crate::kv_reduce::next_lamport(&existing);
-
-            let op = crate::kv_reduce::KvOp {
-                key: key.to_string(),
-                value: Some(value.as_bytes().to_vec()),
-                lamport,
-                writer: writer_addr,
-                ts: (js_sys::Date::now() / 1000.0) as u64,
-            };
-            // Seal with the owner's identity key — its address MUST be the
-            // on-chain msg.sender that appends the blob (it is: the apex iframe
-            // signs the sponsored append as the owner's master wallet).
-            let (signer, _addr) = crate::app::chat::credit_signer().await.ok_or_else(|| {
-                crate::error::Error::other("identity vanished mid-call")
-            })?;
-            let blob = crate::kv_room::seal_op(&op, &k_room, &signer, room_id)
-                .ok_or_else(|| crate::error::Error::other("failed to seal shared-state op"))?;
-
-            // Append via the SAME sponsored Tempo path as create_subdomain.
-            // Length-scaled gas, matching registry::append_op_sponsored.
-            let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS())
-                .map_err(crate::error::Error::other)?;
-            let call = crate::tempo_tx::TempoCall {
-                to: diamond,
-                value_wei: 0,
-                input: crate::app::registry::encode_append_op(room_id, &blob),
-            };
-            let gas = 2_000_000u128 + (blob.len() as u128) * 9_000;
-            let tx_hash = crate::app::events::run_sponsored_tempo_call(
-                &owner,
-                vec![call],
-                gas,
-                "shared_state_set",
-            )
-            .await
-            .map_err(|e| crate::error::Error::other(format!("shared_state_set failed: {e}")))?;
-
+            let (room_id, tx_hash) = set_shared_state(key, value).await?;
             Ok(serde_json::json!({
                 "key": key,
                 "room_id": room_id,

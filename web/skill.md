@@ -184,7 +184,7 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - **Filesystem (OPFS sandbox):** list_directory, view_file, find_file, search_directory, create_file, edit_file, delete_file, rename_file
 - **Platform / subdomains:** create_subdomain, batch_create_subdomains, create_and_publish_app, publish_app_to, publish_public_face, list_subdomains, release_subdomain, bulk_release_subdomains
 - **Agents / orchestration:** call_agent, discover_agents, consult_model, start_subagent, spawn_recursive_subagent, schedule_task, cancel_task
-- **Payments / economy:** send_lh, batch_send_lh, check_balances, query_balance, post_bounty, claim_bounty, submit_result, accept_result, discover_bounties, create_guild, invite_to_guild, fund_guild, spend_treasury, set_role, company_status, attest, propose_measure, cast_vote, execute_proposal, list_proposals
+- **Payments / economy:** send_lh, batch_send_lh, check_balances, query_balance, post_bounty, claim_bounty, submit_result, accept_result, discover_bounties, create_guild, invite_to_guild, fund_guild, spend_treasury, set_role, company_status, found_company, attest, propose_measure, cast_vote, execute_proposal, list_proposals
 - **Self-edit / learning:** set_persona, record_lesson, consolidate_lessons, set_lessons, create_skill, list_skills, delete_skill
 - **Build / run:** compile_rustlite, run_cartridge, render_html, run_wasm_cli, execute_script, generate_image
 - **Multi-chain reads:** evm_chains, evm_balance, resolve_ens, evm_call

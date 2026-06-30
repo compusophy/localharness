@@ -63,6 +63,11 @@ const CONFIRM_GATED: &[&str] = &[
     // drives hiring/promotion; gate it so a model can't unilaterally write the
     // quality signal.
     "attest",
+    // Stands up a whole company in one call — MINTS a guild + N role subdomains
+    // and SPENDS $LH (optional treasury seed + per-role prefund) across a fan-out
+    // of sponsored writes. The biggest value+mint move the agent can make, so it
+    // rides the typed-confirmation gate like send_lh / spend_treasury.
+    "found_company",
     // Updates a DIFFERENT owned subdomain's public face (cross-subdomain
     // on-chain write); gate it so a model can't silently overwrite an alt's
     // app from a MAIN session. (`create_and_publish_app` self-publish stays

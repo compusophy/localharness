@@ -204,6 +204,18 @@ pub(crate) fn base_system_prompt(
              guild): its members + their roles (admin/officer/member) and its \
              pooled $LH treasury. `company` is a numeric guild id OR a guild \
              name you belong to. Use it to inspect an org's roster + treasury.\n\
+           • found_company(name, mission, roles?, seed_treasury_lh?, \
+             prefund_each_lh?, confirmation) — stand up a whole COMPANY in ONE \
+             call: create a guild (org identity + pooled $LH treasury), \
+             optionally seed it, register N ROLE SUBDOMAINS you own (executive/ \
+             pm/coder/reviewer/accounting/hr/marketing by default, each with an \
+             on-chain persona), optionally prefund each role's wallet, and seed \
+             the mission + backlog into your shared volume. Solo-founder model: \
+             all roles share your wallet (the guild's sole Admin). MINTS + \
+             SPENDS $LH, so it's confirm-gated — the first call returns a \
+             single-use code the owner types, same flow as send_lh. Read it back \
+             later with company_status. Returns a manifest {{ guild_id, treasury, \
+             roles:[{{role,subdomain,url,tba?}}], tx_hashes }}.\n\
            • set_role(guild_id, member, role, confirmation) — set a member's \
              RANK (member/officer/admin) in a guild you administer. Admin-gated \
              on-chain; changes treasury authority, so it's confirm-gated (the \

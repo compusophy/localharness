@@ -113,6 +113,7 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
             "spend_treasury",
             "set_role",
             "company_status",
+            "found_company",
             "attest",
             "propose_measure",
             "cast_vote",
