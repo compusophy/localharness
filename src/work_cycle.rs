@@ -185,18 +185,25 @@ pub struct State {
 /// highest reputation wins (lowest id tie-break). Only [`Stage::Posted`] tasks
 /// are assignable — a high-reward task with no eligible worker is skipped so a
 /// lower-priority staffable task still gets allocated.
+///
+/// Worker selection is the CANONICAL HR ranker: each posted task becomes a
+/// [`crate::hiring::RoleNeed`] and the worker is the [`crate::hiring::best_candidate`]
+/// over the roster (as [`crate::hiring::Candidate`]s). HR's eligibility +
+/// ordering (exact role, `available`, `reputation >= min_reputation`; highest
+/// reputation, lowest id on a tie) is IDENTICAL to the rule this used to inline,
+/// so behavior is unchanged — they now share ONE implementation and can't drift.
 pub fn assign_next_task(backlog: &Backlog, workers: &[WorkerState]) -> Option<Assignment> {
+    use crate::hiring::{best_candidate, Candidate, RoleNeed};
+
     let mut posted: Vec<&Task> =
         backlog.tasks.iter().filter(|t| t.stage == Stage::Posted).collect();
     posted.sort_by(|a, b| b.reward.cmp(&a.reward).then(a.id.cmp(&b.id)));
+    // ONE roster, ranked per task by the canonical HR ranker.
+    let pool: Vec<Candidate> = workers.iter().copied().map(Candidate::from).collect();
     for task in posted {
-        let best = workers
-            .iter()
-            .filter(|w| w.available && w.role == task.role && w.reputation >= task.min_reputation)
-            // Highest reputation; on a tie the LOWEST id (so `b.id.cmp(&a.id)`).
-            .max_by(|a, b| a.reputation.cmp(&b.reputation).then(b.id.cmp(&a.id)));
-        if let Some(w) = best {
-            return Some(Assignment { task_id: task.id, worker_id: w.id });
+        let need = RoleNeed { role: task.role, min_reputation: task.min_reputation };
+        if let Some(best) = best_candidate(&need, &pool) {
+            return Some(Assignment { task_id: task.id, worker_id: best.id });
         }
     }
     None

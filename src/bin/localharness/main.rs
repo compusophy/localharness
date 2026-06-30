@@ -529,6 +529,12 @@ GUILDS & GOVERNANCE
                                          a SUGGESTED payout split (even, or --by-rep
                                          reputation-weighted) of --fraction of the treasury
                                          (default the whole balance). NO transfers
+  localharness company books [--as <me>] <guildId|name> [--period-cost <lh>] [--period-revenue <lh>] [--seed <lh>] [--calls <n>]
+                                         READ-ONLY: read the treasury (the only on-chain
+                                         figure), build an Accounting ledger from the ESTIMATE
+                                         flags, and print net position, runway, break-even
+                                         price, and self-funding / seed-reliance. Cost/
+                                         revenue/seed/calls are INPUTS, not on-chain
   localharness guild create [--as <me>] <name>
                                          create an on-chain guild (org with members,
                                          roles, and a pooled $LH treasury); you're its admin

@@ -2,6 +2,9 @@ use crate::{
     bytes_to_hex_str, collect_flags, ensure_wallet_covers, fmt_lh, load_signer,
     load_signer_and_sponsor, name_is_valid, parse_address, registry, tempo_tx, wallet,
 };
+use localharness::accounting::{
+    breakeven_price, is_self_funding, net_position, relies_on_seed, runway_cycles, Ledger,
+};
 use localharness::work_cycle::{Action, Criteria, Role, Stage, Task, WorkerState};
 use localharness::work_cycle_runtime::{plan_cycle, CyclePlan, Reader};
 
@@ -21,7 +24,7 @@ use localharness::work_cycle_runtime::{plan_cycle, CyclePlan, Reader};
 // roster is the founder wearing many personas (named, not faked).
 
 pub(crate) const COMPANY_USAGE: &str = "\
-usage: localharness company <found|status|plan|payroll> ...
+usage: localharness company <found|status|plan|payroll|books> ...
   company found  [--as <me>] <name> <mission...> [--roles a,b,c]
                  [--seed-treasury <lh>] [--prefund-each <lh>] [--confirm]
                                         stand up a whole company: an on-chain guild
@@ -43,7 +46,14 @@ usage: localharness company <found|status|plan|payroll> ...
                                         READ-ONLY: print the treasury $LH + each role's
                                         TBA + balance + a SUGGESTED payout split (even, or
                                         --by-rep reputation-weighted) of --fraction of the
-                                        treasury (default the whole balance). NO transfers.";
+                                        treasury (default the whole balance). NO transfers.
+  company books   [--as <me>] <guildId|name> [--period-cost <lh>]
+                 [--period-revenue <lh>] [--seed <lh>] [--calls <n>]
+                                        READ-ONLY: read the treasury (the ONLY on-chain
+                                        figure), build an Accounting ledger from the
+                                        ESTIMATE flags, and print net position, runway,
+                                        break-even price, self-funding / seed-reliance.
+                                        Cost/revenue/seed/calls are INPUTS, not on-chain.";
 
 const FOUND_USAGE: &str = "\
 usage: localharness company found [--as <me>] <name> <mission...> [--roles a,b,c] \
@@ -235,6 +245,7 @@ pub(crate) async fn company(caller: Option<&str>, rest: &[String]) -> i32 {
             }
         },
         Some("payroll") => company_payroll(caller, &rest[1..]).await,
+        Some("books") => company_books(caller, &rest[1..]).await,
         _ => {
             eprintln!("{COMPANY_USAGE}");
             2
@@ -1024,6 +1035,149 @@ fn fmt_fraction(bps: u32) -> String {
     format!("{}.{:02}%", bps / 100, bps % 100)
 }
 
+// ---- company books (READ-ONLY accounting snapshot) --------------------------
+//
+// Reads the SAME chain figure `status`/`plan`/`payroll` do — the guild treasury
+// balance (the ONLY on-chain number here) — then builds an `accounting::Ledger`
+// from ESTIMATE flags (`--period-cost`/`--period-revenue`/`--seed`, plus an
+// optional `--calls` to price a break-even per paid call) and prints the pure
+// `accounting` judgements: net position (signed, seed EXCLUDED), runway, the
+// break-even price, and self-funding / seed-reliance. NEVER signs, broadcasts,
+// or moves `$LH` — the cost/revenue/seed inputs are NOT on-chain and are labeled
+// as estimates throughout.
+
+const BOOKS_USAGE: &str = "usage: localharness company books [--as <me>] <guildId|name> \
+[--period-cost <lh>] [--period-revenue <lh>] [--seed <lh>] [--calls <n>]";
+
+/// Format an `i128` `$LH` (wei) amount with a leading sign, reusing [`fmt_lh`] for
+/// the magnitude (negative is the normal early state for [`net_position`]).
+fn fmt_lh_signed(wei: i128) -> String {
+    if wei < 0 {
+        format!("-{}", fmt_lh(wei.unsigned_abs()))
+    } else {
+        fmt_lh(wei as u128)
+    }
+}
+
+/// `company books <guildId|name> [--period-cost <lh>] [--period-revenue <lh>]
+/// [--seed <lh>] [--calls <n>]` — READ-ONLY. Reads the guild treasury (the only
+/// on-chain figure), builds an [`Ledger`] from the ESTIMATE flags, and prints the
+/// `accounting` judgements. Honors `LH_CHAIN`. Moves/broadcasts NOTHING.
+pub(crate) async fn company_books(caller: Option<&str>, args: &[String]) -> i32 {
+    let (vals, positional) = match collect_flags(
+        args,
+        ["--period-cost", "--period-revenue", "--seed", "--calls"],
+        BOOKS_USAGE,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let [cost_arg, rev_arg, seed_arg, calls_arg] = vals;
+    let Some(target) = positional.first() else {
+        eprintln!("{BOOKS_USAGE}");
+        return 2;
+    };
+
+    let period_costs = match parse_amount_flag(cost_arg.as_deref(), "--period-cost") {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("company books: {e}");
+            return 2;
+        }
+    };
+    let period_revenue = match parse_amount_flag(rev_arg.as_deref(), "--period-revenue") {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("company books: {e}");
+            return 2;
+        }
+    };
+    let seed_capital = match parse_amount_flag(seed_arg.as_deref(), "--seed") {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("company books: {e}");
+            return 2;
+        }
+    };
+    // `--calls` is a COUNT (paid calls to price break-even over), not a $LH figure;
+    // default 1 (price to recover the period's whole burn in a single settle).
+    let calls = match calls_arg.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => match s.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!("company books: invalid --calls '{s}' — pass a whole number of paid calls");
+                return 2;
+            }
+        },
+        _ => 1,
+    };
+
+    let guild_id = match resolve_company_guild_id(caller, target).await {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+
+    let name = registry::guild_name(guild_id).await.unwrap_or_default();
+    let treasury_addr = registry::guild_address(guild_id).await.unwrap_or_default();
+    let treasury = registry::treasury_balance_of(guild_id).await.unwrap_or(0);
+    let label = if name.is_empty() {
+        format!("company #{guild_id}")
+    } else {
+        format!("company #{guild_id} '{name}'")
+    };
+    let ledger = Ledger { treasury, period_costs, period_revenue, seed_capital };
+    println!("{}", format_books(&label, &treasury_addr, &ledger, calls));
+    0
+}
+
+/// Format a [`Ledger`] for `company books` — the ESTIMATE banner, the on-chain
+/// treasury, the input estimates, then the pure `accounting` analysis (net
+/// position, runway, break-even price, self-funding / seed-reliance). Pure
+/// (testable), reads no chain. `calls` prices the break-even per paid call.
+fn format_books(label: &str, treasury_addr: &str, ledger: &Ledger, calls: u64) -> String {
+    let net = net_position(ledger);
+    let runway = runway_cycles(ledger.treasury, ledger.period_costs);
+    let be_price = breakeven_price(ledger.period_costs, calls);
+    let self_funding = is_self_funding(ledger);
+    let seed_reliant = relies_on_seed(ledger);
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("ESTIMATE — only the treasury balance is on-chain; cost/revenue/seed/calls are inputs".to_string());
+    lines.push(format!("{label} — books (period snapshot)"));
+    lines.push(format!("  treasury (on-chain):  {}  ({treasury_addr})", fmt_lh(ledger.treasury)));
+    lines.push("  inputs (estimates, NOT on-chain):".to_string());
+    lines.push(format!("    period cost:        {}", fmt_lh(ledger.period_costs)));
+    lines.push(format!("    period revenue:     {}", fmt_lh(ledger.period_revenue)));
+    lines.push(format!("    seed this period:   {}", fmt_lh(ledger.seed_capital)));
+    lines.push(format!("    paid calls:         {calls}"));
+    lines.push("  analysis:".to_string());
+    lines.push(format!(
+        "    net position:       {}  (earned revenue − cost; seed EXCLUDED)",
+        fmt_lh_signed(net)
+    ));
+    lines.push(match runway {
+        Some(c) => format!("    runway:             {c} cycle(s) at {}/cycle", fmt_lh(ledger.period_costs)),
+        None => "    runway:             unbounded (no burn this period)".to_string(),
+    });
+    lines.push(format!(
+        "    break-even price:   {} per call (recover the period burn over {calls} paid call(s))",
+        fmt_lh(be_price)
+    ));
+    lines.push(format!(
+        "    self-funding:       {}",
+        if self_funding { "yes — earned revenue covers cost" } else { "no — earned revenue below cost" }
+    ));
+    lines.push(format!(
+        "    relies on seed:     {}",
+        if seed_reliant { "yes — seed plugged the gap this period" } else { "no" }
+    ));
+    lines.push("Read-only — nothing executed, signed, or broadcast.".to_string());
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1596,5 +1750,78 @@ mod tests {
         // The documented approximation for role/criteria-free on-chain bounties.
         assert_eq!(DEFAULT_TASK_ROLE, Role::Coder);
         assert_eq!(DEFAULT_MIN_QUALITY, 3);
+    }
+
+    // ---- company books (READ-ONLY accounting snapshot) — pure cores. NO chain
+    // contact: the formatter is fed a hand-built `Ledger` and the analysis is the
+    // pure `accounting` judgements wired through `format_books`. ----
+
+    #[test]
+    fn fmt_lh_signed_handles_negative_zero_and_positive() {
+        assert_eq!(fmt_lh_signed(0), "0.00 LH");
+        assert_eq!(fmt_lh_signed(2 * LH as i128), "2.00 LH");
+        assert_eq!(fmt_lh_signed(-(3 * LH as i128)), "-3.00 LH");
+        // i128::MIN magnitude doesn't panic (unsigned_abs).
+        assert!(fmt_lh_signed(i128::MIN).starts_with('-'));
+    }
+
+    #[test]
+    fn books_report_renders_a_seed_propped_loss() {
+        // treasury 12 (on-chain); cost 3, revenue 1, seed 5 (ESTIMATE inputs); 1 call.
+        let ledger = Ledger {
+            treasury: 12 * LH,
+            period_costs: 3 * LH,
+            period_revenue: LH,
+            seed_capital: 5 * LH,
+        };
+        let out = format_books("company #5 'acme'", "0xtreasury", &ledger, 1);
+
+        // Banner makes clear ONLY the treasury is on-chain; the rest are estimates.
+        assert!(out.starts_with("ESTIMATE — only the treasury balance is on-chain"));
+        assert!(out.contains("company #5 'acme' — books"));
+        assert!(out.contains("treasury (on-chain):  12.00 LH  (0xtreasury)"));
+        assert!(out.contains("inputs (estimates, NOT on-chain):"));
+        // net = earned revenue (1) − cost (3) = −2 LH; seed EXCLUDED.
+        assert!(out.contains("net position:       -2.00 LH"));
+        // runway = floor(12 / 3) = 4 cycles.
+        assert!(out.contains("runway:             4 cycle(s) at 3.00 LH/cycle"));
+        // break-even over 1 call recovers the whole 3 LH burn.
+        assert!(out.contains("break-even price:   3.00 LH per call"));
+        // earned revenue (1) < cost (3) → NOT self-funding, and seed plugged the gap.
+        assert!(out.contains("no — earned revenue below cost"));
+        assert!(out.contains("yes — seed plugged the gap this period"));
+        // Read-only assurance — nothing was broadcast.
+        assert!(out.trim_end().ends_with("Read-only — nothing executed, signed, or broadcast."));
+    }
+
+    #[test]
+    fn books_report_self_funding_with_unbounded_runway() {
+        // Earned revenue covers cost; ZERO burn → runway unbounded, no seed reliance.
+        let ledger =
+            Ledger { treasury: 100 * LH, period_costs: 0, period_revenue: 5 * LH, seed_capital: 0 };
+        let out = format_books("company #1", "0xabc", &ledger, 10);
+
+        // net = 5 − 0 = +5 LH (positive, no sign prefix on the magnitude).
+        assert!(out.contains("net position:       5.00 LH"));
+        // Zero burn ⇒ runway is unbounded, never a finite count.
+        assert!(out.contains("runway:             unbounded (no burn this period)"));
+        // breakeven_price(0, 10) == 0.
+        assert!(out.contains("break-even price:   0.00 LH per call"));
+        assert!(out.contains("paid calls:         10"));
+        assert!(out.contains("yes — earned revenue covers cost"));
+        // No seed taken and no shortfall → not seed-reliant; the yes-phrase is absent.
+        assert!(!out.contains("yes — seed plugged the gap this period"));
+    }
+
+    #[test]
+    fn books_breakeven_divides_cost_across_paid_calls() {
+        // cost 100 LH over 4 paid calls → ceil(100/4) = 25 LH per call.
+        let ledger =
+            Ledger { treasury: 0, period_costs: 100 * LH, period_revenue: 0, seed_capital: 0 };
+        let out = format_books("company #2", "0xc", &ledger, 4);
+        assert!(out.contains("break-even price:   25.00 LH per call"));
+        // Broke with a bill due → not self-funding, but no seed injected → not reliant.
+        assert!(out.contains("no — earned revenue below cost"));
+        assert!(!out.contains("yes — seed plugged the gap this period"));
     }
 }
