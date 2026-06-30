@@ -4,6 +4,44 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 3 — 2026-06-30T09:00Z
+<!-- tick-window: 2026-06-30T0900Z -->
+
+**Goal:** ship the `found_company` WRITE half; settle the address drift; expand
+marketing. Three role-agents (coder, address-investigator, marketing) ran in parallel.
+
+**Shipped (verified — re-ran wasm check + drift test + secret-scan myself):**
+- **CODE (real, compiles):** `found_company(name, mission, roles?, seed_treasury_lh?,
+  prefund_each_lh?, confirmation)` — Model-A solo-founder pipeline composing existing
+  sponsored helpers (zero new on-chain surface): create_guild → optional treasury seed →
+  batch-create N role subdomains in one tx → per-role on-chain persona (+ optional
+  prefund) in one sponsored tx → seed mission/backlog into SessionRoom KV. Returns a
+  manifest `company_status` reads back. CONFIRM_GATED + allowlist-gated; both backends.
+  NEW helper `room::set_shared_state`. Files: `company.rs`, `room.rs`, `session.rs`,
+  `confirm_guard.rs`, `prompt.rs`, `docs_manifest.rs`, `web/{llms.txt,skill.md}`.
+  - PASS wasm guard · PASS `no_doc_drift` · gen-docs changed NO chain address.
+  - Honest design note: Model A skips an invite step (founder is already sole guild
+    Admin → inviteToGuild reverts AlreadyMember); manifest records each role TBA so a
+    later Model-B (distinct voters) cut can seat them.
+- **ADDRESS DRIFT — RESOLVED (not a bug):** on-chain proof — `0x8ab4f3a5…f3a77` is the
+  live MAINNET diamond (chain 4217; owner()=0x313b…EF1e, 36 facets); `0x6c31c01e…` is
+  the Moderato TESTNET diamond (chain 42431). `registry::chain.rs`, `docs_manifest`,
+  `llms.txt`, `skill.md`, `README` all already correct. Only `CLAUDE.md`/`AGENTS.md`
+  "Canonical addresses" table is the *testnet* set under an unqualified header.
+  See `ADDRESS-DRIFT.md`. NOT auto-fixed — user-curated core spec + ties to the pending
+  mainnet reset; flagged to owner.
+- **MARKETING:** READY-QUEUE expanded — 6 AUTO assets (incl. a new build-in-public X
+  thread, `found_company` honestly framed as in-progress) + 2 HUMAN-GATED (Show HN +
+  Reddit r/rust) with their exact ToS caveats. No address pinned; accuracy re-verified.
+
+**Next tick:** CLI twin of `found_company` (headless founding) + dogfood the full
+create→read cycle on testnet; or Phase-2 `run_work_cycle` (hoist colony.rs cores).
+
+**Human-blocked (unchanged):** social credentials; build-now-vs-RESET (now sharper —
+see ADDRESS-DRIFT.md); MTL/legal on transferable `$LH`; sponsor float + owner key.
+
+---
+
 ## Tick 2 — 2026-06-30T08:55Z
 <!-- tick-window: 2026-06-30T0830Z -->
 

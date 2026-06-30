@@ -3,28 +3,34 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 3 — 2026-06-30)
+
+- ✅ `found_company` WRITE half shipped & wasm/drift-verified — full Model-A founding
+  pipeline (guild + treasury + role subdomains + personas + KV backlog → manifest).
+- ✅ Address drift RESOLVED as not-a-bug (on-chain proof; `ADDRESS-DRIFT.md`) — only
+  CLAUDE.md/AGENTS.md table is mislabeled; flagged to owner, not auto-fixed.
+- ✅ Marketing READY-QUEUE expanded (build-in-public X thread + Show HN/Reddit human-gated).
+
 ## DONE (tick 2 — 2026-06-30)
 
-- ✅ `company_status` (read-only) + `set_role` + `attest` browser tools shipped &
-  wasm/drift-verified on the branch (the read half + the two gap wrappers).
-- ✅ Marketing accuracy pass (0.58.0 verified, OpenAI/Gemma SDK-only) + DEVTO-ARTICLE +
-  READY-QUEUE.
-- ✅ Loop guardrails operationalized (`LOOP-PROTOCOL.md` + `loop-secret-scan.sh`,
-  budgets, window-stamp idempotency).
+- ✅ `company_status` (read-only) + `set_role` + `attest` browser tools.
+- ✅ Marketing accuracy pass + DEVTO-ARTICLE + READY-QUEUE.
+- ✅ Loop guardrails (`LOOP-PROTOCOL.md` + `loop-secret-scan.sh`, budgets, idempotency).
 
 ## NEXT TICK (highest leverage)
 
-- **[Product][M][H] `found_company` WRITE half** — the remaining slice: compose
-  `create_guild_sponsored` + role-subdomain/persona setup + `invite_to_guild_sponsored`
-  + a `shared_state_set` backlog seed, returning a manifest that `company_status` reads
-  back. Allowlist + `CONFIRM_GATED` (mints + spends). Branch only; do not merge/deploy.
-- **[QA][S][H] Dogfood `company_status` headless** via the CLI against a known
-  guild/name to prove the read path end-to-end before depending on it.
-- **[Ops][S][M] Fix the diamond-address drift** — `CLAUDE.md` `0x6c31c01e…` vs
-  `llms.txt` `0x8ab4f3a5…`: identify the canonical post-reset address, correct the
-  source-of-truth (`docs_manifest` chain facts), regenerate GEN docs.
-- **[Marketing][S][M] Expand READY-QUEUE** with the Reddit (r/rust) + Show HN drafts as
-  *human-gated* entries (prepared, not auto), and a 2nd dev.to/X asset.
+- **[Product][M][H] CLI twin of `found_company`** — `src/bin/localharness/company.rs`
+  + main.rs dispatch, so headless founding matches the browser tool (enables the QA
+  dogfood). Branch only.
+- **[QA][S][H] Dogfood the full create→read cycle on TESTNET** — found a company via
+  the new CLI against Moderato (chain 42431, the safe `0x6c31c01e…` diamond), then
+  `company_status` it back. Proves the pipeline end-to-end with zero mainnet spend.
+- **[Owner-review][S][M] Relabel CLAUDE.md/AGENTS.md address table** — per
+  `ADDRESS-DRIFT.md`: mark the `0x6c31c01e…` set as "Moderato testnet (42431)" and make
+  the mainnet `0x8ab4f3a5…` row primary. LOCKSTEP edit (drift guard). NEEDS OWNER OK
+  (ties to the pending mainnet reset) — do not auto-apply.
+- **[Marketing][S][M] Draft the r/ethdev + a 2nd dev.to angle** (human-gated), keeping
+  bodies distinct from r/rust (no identical cross-post).
 
 ## Ranked backlog (from STRATEGY.md)
 
