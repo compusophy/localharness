@@ -3,6 +3,13 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 10 — 2026-06-30)
+
+- ✅ `company day` CLI (one-shot status+plan+payroll+books report) + 42-assertion golden
+  integration test locking the whole surface. 41 CLI tests.
+- ✅ `src/simulation.rs` — pure multi-cycle forecast (runway/throughput). 10 tests.
+- ✅ Marketing: `SEO-LANDING.md` (organic/answer-engine copy; Apache-2.0 verified).
+
 ## DONE (tick 9 — 2026-06-30)
 
 - ✅ `hiring` is the canonical ranker (assign_next_task delegates; behavior-preserving)
@@ -63,19 +70,22 @@ the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 - ✅ Marketing accuracy pass + DEVTO-ARTICLE + READY-QUEUE.
 - ✅ Loop guardrails (`LOOP-PROTOCOL.md` + `loop-secret-scan.sh`, budgets, idempotency).
 
-## NEXT TICK (non-owner-blocked — productive without answers)
+## NEXT TICK (non-owner-blocked — narrowing; high-value frontier is owner-gated)
 
-- **[Product][M][H] `company day` — full dry-run report** — a read-only command that
-  composes `status` + `plan` + `payroll` + `books` into ONE "what would the company do
-  today" preview (the operator's daily glance). Preview only, no writes.
-- **[QA][S][M] CLI integration sweep** — an end-to-end test exercising the whole
-  `company` surface (found preview / status / plan / payroll / books) over mock readers;
-  lock the output formats against regressions.
-- **[Marketing][S][M] SEO/organic landing copy** — an evergreen "what is localharness"
-  page + keyword/positioning notes for organic discovery (the GROWTH AI-discoverability
-  channel); accuracy rules apply.
+- **[Product][S][M] `company forecast` CLI over `simulation`** — a read-only command that
+  runs `simulation::simulate` from the live board + estimate flags and prints the
+  multi-cycle runway/throughput forecast. Preview only.
+- **[Exec][S][M] `STATUS.md` — state of the business** — a one-glance capabilities
+  inventory (what the system can do today, all read-only/preview) + the honest gated
+  frontier, pointing at DECISIONS.md for the asks. For the owner's return.
+- **[Marketing][S][M] Campaign playbook + asset index** — a master index of every
+  marketing asset + a launch-sequence playbook tying CALENDAR + READY-QUEUE into a
+  fire-order for when creds land.
 - *(Owner-gated — testnet dogfood, address relabel, mainnet founding, real social posting,
   the live Action executor — wait on DECISIONS.md; NOT auto-run.)*
+
+> Note: non-blocked work is narrowing toward polish/forecasting. The substantive next
+> leaps (live execution, real marketing posting) need the DECISIONS.md answers.
 
 ## Ranked backlog (from STRATEGY.md)
 

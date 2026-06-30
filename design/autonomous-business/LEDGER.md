@@ -4,6 +4,38 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 10 — 2026-06-30T12:30Z
+<!-- tick-window: 2026-06-30T1230Z -->
+
+**Goal:** the operator's daily glance (`company day`) + lock the CLI surface; a forward
+forecast core; organic-discovery copy. Three agents parallel — non-blocked.
+
+**Shipped (verified — re-ran CLI + simulation + wasm + drift + license + secret-scan):**
+- **CODE — `company day` CLI:** read-only one-shot daily report composing status + plan +
+  payroll + books (does every read ONCE; reuses the pure formatters — extracted
+  `format_status`/`format_payroll` to avoid duplication). Under a "PREVIEW ONLY" banner;
+  no broadcast. Plus a 42-assertion golden integration test locking the whole `company`
+  surface against regression. 41 CLI tests.
+- **CODE — `src/simulation.rs` (pure forecast):** `simulate(State, SimConfig) -> Forecast`
+  runs N cycles forward (deliver→step→book revenue/cost into an accounting::Ledger),
+  projecting per-cycle treasury, throughput, and `ran_out_at` runway exhaustion. Honest
+  documented `submit_quality` modeling assumption. 10 tests, native+wasm clean.
+- **MARKETING — `SEO-LANDING.md`:** FAQPage-structured organic/answer-engine copy
+  (answer-first, 5 target-query mappings, JSON-LD note, honest limitations). Verified the
+  asserted **Apache-2.0** license against `Cargo.toml` — accurate.
+
+**State:** the autonomous-company is now a complete, inspectable, forward-looking PREVIEW
+product — found → status → plan → payroll → books → day (snapshot) + simulate (forecast),
+all read-only, plus a runnable example, all 7 roles, and a stocked marketing library.
+
+**Next tick (non-blocked, narrowing):** a `company forecast` CLI over `simulation`; a
+"state of the business" capabilities summary for the owner; marketing polish. The high-
+value frontier is now the DECISIONS.md answers (live execution / real posting).
+
+**Human-blocked → DECISIONS.md** (unchanged; 8 decisions await answers).
+
+---
+
 ## Tick 9 — 2026-06-30T12:00Z
 <!-- tick-window: 2026-06-30T1200Z -->
 
