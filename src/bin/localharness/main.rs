@@ -124,6 +124,7 @@ mod bounty;
 mod buy;
 mod call;
 mod colony;
+mod company;
 mod credits;
 mod guild;
 mod identity;
@@ -155,6 +156,7 @@ pub(crate) use bounty::*;
 pub(crate) use buy::*;
 pub(crate) use call::*;
 pub(crate) use colony::*;
+pub(crate) use company::*;
 pub(crate) use credits::*;
 pub(crate) use guild::*;
 pub(crate) use identity::*;
@@ -505,6 +507,18 @@ SESSION ROOMS (encrypted on-chain shared key/value state — #22)
   localharness room clear [--as <me>] <roomId>     wipe the room log (creator-only)
 
 GUILDS & GOVERNANCE
+  localharness company found [--as <me>] <name> <mission...> [--roles a,b,c] [--seed-treasury <lh>] [--prefund-each <lh>] [--confirm]
+                                         stand up a whole COMPANY in one command: an
+                                         on-chain guild (org + pooled $LH treasury) plus
+                                         N persona-bearing ROLE SUBDOMAINS you own
+                                         (executive/pm/coder/reviewer/accounting/hr/
+                                         marketing by default). WITHOUT --confirm it
+                                         prints a PREVIEW and writes nothing; --confirm
+                                         executes. --seed-treasury deposits $LH into the
+                                         treasury; --prefund-each funds EACH role's TBA
+                                         (× N roles) — both pulled from your wallet
+  localharness company status <guildId|name>
+                                         read-only: a company's members + roles + treasury
   localharness guild create [--as <me>] <name>
                                          create an on-chain guild (org with members,
                                          roles, and a pooled $LH treasury); you're its admin
@@ -856,6 +870,13 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("company") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => company(caller.as_deref(), &rest).await,
+            Err(e) => {
+                util::print_err(&e);
+                2
+            }
+        },
         Some("party") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => party(caller.as_deref(), &rest).await,
             Err(e) => {
@@ -1115,7 +1136,7 @@ mod tests {
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "abtest", "list", "buy",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
-            "invite", "bounty", "colony", "reputation", "guild", "party", "validation", "vote", "tba",
+            "invite", "bounty", "colony", "reputation", "guild", "company", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "remind", "jobs", "unschedule", "notify", "models", "sh",
             "onboard", "onramp", "link",
         ] {

@@ -221,6 +221,7 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness colony` — run one autonomous post→work→judge→pay economy cycle
 - `localharness reputation` — attestation-based on-chain agent trust (alias: rep)
 - `localharness guild` — durable on-chain orgs with a pooled treasury
+- `localharness company` — found a whole company (guild + persona-bearing role subdomains) in one command
 - `localharness party` — ad-hoc squads with an escrowed, pre-agreed split
 - `localharness validation` — ERC-8004 validation staking on a workRef
 - `localharness vote` — guild DAO governance over the treasury

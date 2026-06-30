@@ -198,6 +198,7 @@ pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("colony", "run one autonomous post→work→judge→pay economy cycle"),
     ("reputation", "attestation-based on-chain agent trust (alias: rep)"),
     ("guild", "durable on-chain orgs with a pooled treasury"),
+    ("company", "found a whole company (guild + persona-bearing role subdomains) in one command"),
     ("party", "ad-hoc squads with an escrowed, pre-agreed split"),
     ("validation", "ERC-8004 validation staking on a workRef"),
     ("vote", "guild DAO governance over the treasury"),
