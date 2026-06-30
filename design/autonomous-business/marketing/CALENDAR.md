@@ -21,6 +21,7 @@
 | X / Twitter ×4 — 2 single posts + 2 threads | **#3** launch (post), **#4** technical hook (post), **#6** build-in-public (thread), **#8** founder-story (thread) | AUTO (own account, Automated-account label) |
 | LinkedIn ×2 long-form | **#5** launch, **#7** autonomous-business vision | AUTO **after** Community Management API approval (else human posts copy manually) |
 | Reddit ×2 + Show HN ×1 | **H2** r/rust, **H3** r/ethdev, **H1** Show HN | **HUMAN-GATED** — a human posts in their own voice; the loop holds no creds |
+| X / Twitter evergreen pool | **#9** (`X-POSTS-BATCH-2.md` B2-1…B2-10) | AUTO **filler** — drip one at a time between the dated assets; not date-fixed |
 
 > Note on counts: there are **4** X assets (two single posts #3/#4, two reply-chain
 > threads #6/#8), not three — this calendar schedules all four. "AUTO" = the loop
@@ -50,15 +51,20 @@
 | **W2 Tue** | X | **#8** founder-story thread — "why self-sovereign, not rented" | AUTO | ≥1 day after #6; **never two X threads in one day** (#6 was 4 days prior). Distinct first-person angle. |
 | **W2 Wed** | dev.to | **#2b** article #2 — x402 + EIP-6551 token-bound accounts | AUTO | **≥1 week after #2** (W1 Mon → W2 Wed = 9 days). Distinct angle (payments/identity). Not adjacent to LinkedIn #5 (2 days prior). |
 | **W2 Thu** | Reddit r/ethdev | **H3** on-chain self-sovereign agents (distinct body from H2) | **HUMAN** | Aged account; 9:1 budget; **distinct body from r/rust** — never the same text in two subs. ~1 week after H2. |
-| **W2 Fri–Sun** | — | (no post) | — | Community replies; KPI refresh (stars, crate downloads, identity claims); plan Week 3. |
+| **W2 Fri** | X | **#9** pool — **B2-3** (fair comparison vs hosted-API-key frameworks) | AUTO | Filler. +3 days from the #8 thread (W2 Tue) — not adjacent. Distinct copy + disclosure reply + Automated-account label. |
+| **W2 Sat–Sun** | — | (no post) | — | Community replies; KPI refresh (stars, crate downloads, identity claims); plan Week 3. |
 
 ## Week 3 — sustain (vision long-form + compiler deep-dive)
 
 | Day | Platform | Asset (READY-QUEUE id) | Lane | Notes |
 |-----|----------|------------------------|------|-------|
 | **W3 Mon** | LinkedIn | **#7** autonomous-business vision | AUTO¹ | Long-form. **≥several days from #5** (1 week apart — never two Page long-forms back-to-back). ¹Same approval gate as #5. |
+| **W3 Tue** | X | **#9** pool — **B2-2** ("every agent is a subdomain" / identity hook) | AUTO | Filler. No X thread/single in W3; +4 from the W2 Fri pool post. Disclosure reply + Automated-account label. |
 | **W3 Wed** | dev.to | **#2c** article #3 — rustlite cartridge compiler (NEW) | AUTO | **≥1 week after #2b** (W2 Wed → W3 Wed = 7 days). Distinct angle (compiler/runtime). Not adjacent to LinkedIn #7 (2 days prior). |
-| **W3 Fri–Sun** | — | (no post) | — | Run the weekly AI-citation panel (GROWTH Exp. 1); review which assets drove identity claims/downloads; queue Week-4 cadence. |
+| **W3 Thu** | X | **#9** pool — **B2-6** (slither demo CTA, live URL) | AUTO | Filler. +2 days from the W3 Tue pool post; rotated angle (identity → demo). Disclosure reply + Automated-account label. |
+| **W3 Fri** | — | (no post) | — | Run the weekly AI-citation panel (GROWTH Exp. 1); review which assets drove identity claims/downloads. |
+| **W3 Sat** | X | **#9** pool — **B2-4** (autonomous-business build story) | AUTO | Filler. +2 days from W3 Thu; rotated angle (demo → build-story). ~12 days after the #8 thread — far enough to avoid any similarity. Disclosure reply + Automated-account label. |
+| **W3 Sun** | — | (no post) | — | Queue Week-4 cadence; continue dripping the remaining `#9` pool posts (B2-1/5/7/8/9/10) as filler. |
 
 ---
 
@@ -75,6 +81,11 @@
   same day, never adjacent — two threads in a day reads as automation churn.
 - **X posts ≥1 day apart, no bursts:** #3 (W1 Mon), #4 (W1 Wed), #6 (W1 Fri), #8
   (W2 Tue) — every pair ≥2 days; ≤1 substantive X post/day; link in a reply, not the post.
+- **X evergreen-pool filler (#9) never collides with a dated X asset:** the four scheduled
+  here — B2-3 (W2 Fri), B2-2 (W3 Tue), B2-6 (W3 Thu), B2-4 (W3 Sat) — are each ≥2 days from
+  any X thread/single and ≥2 days from each other, with rotated angles (comparison → identity
+  → demo → build-story) and no near-duplicate of a thread (B2-4 lands ~12 days after #8). The
+  remaining six pool posts drip into later gaps under the same rules.
 - **HN: one honest shot,** US-morning weekday, human-only (H1). Never solicit upvotes.
 - **Reddit: two posts, two subs, distinct bodies,** ~1 week apart (H2 W1 Thu, H3 W2 Thu),
   human-posted from an aged account only when the 9:1 budget allows. No identical

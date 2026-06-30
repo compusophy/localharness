@@ -3,6 +3,13 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 7 — 2026-06-30)
+
+- ✅ `company plan` (registry-backed Reader → preview CyclePlan) + `company payroll`
+  (treasury/TBA balances + suggested split) — read-only CLI, 36 tests, no broadcast.
+- ✅ Docs: `SDK-QUICKSTART.md` (use-as-a-library). Marketing: 10 more X posts (batch 2).
+- ▶ The full DRY path is now CLI-runnable: found → status → plan → payroll.
+
 ## DONE (tick 6 — 2026-06-30)
 
 - ✅ `work_cycle_runtime.rs` — pure preview-only planning shell (Reader → plan_cycle →
@@ -45,18 +52,17 @@ the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
 ## NEXT TICK (non-owner-blocked — productive without answers)
 
-- **[Product][M][H] `company plan` CLI (preview executor wiring)** — a real `Reader`
-  impl over registry reads (open bounties → tasks, discover_agents + reputationOf →
-  workers, treasury balance) behind a `company plan <guild|name>` subcommand that PRINTS
-  the `CyclePlan` (what the company would do next). PREVIEW ONLY — no broadcast until
-  owner greenlights; native-testable with a mock Reader. Branch only.
-- **[Accounting/HR][S][M] Role tooling (read-only)** — a `company payroll <guild>`
-  preview (treasury balance + per-role TBA balances + a suggested payout split) and a
-  role-roster view, composing existing read helpers. No writes.
-- **[Docs][S][M] SDK-consumer doc** — a short "use localharness as a library" page
-  (cargo add, the Agent facade, a backend) for the dev.to/Reddit funnels to link.
-- **[Marketing][S][M] Batch 10 more standalone X posts** + slot them into `CALENDAR.md`;
-  keep accuracy rules.
+- **[Accounting][M][M] Pure cost-accounting core (`src/accounting.rs`)** — per-cycle
+  inference-burn vs `$LH`-revenue, net position, runway projection; pure + native+wasm
+  tested. Honest (oggoel was seed-capitalized — model the real net position).
+- **[HR][S][M] Pure hiring/role-fit core (`src/hiring.rs`)** — score candidate agents
+  against a role's needs (role match + reputation + availability) → ranked hire/assign
+  recommendations; pure + tested. Feeds `work_cycle::assign_next_task`.
+- **[Marketing][S][M] Instagram/TikTok creative briefs** — short-form video concepts +
+  scripts (the visual channels the owner named), prepared as briefs ready to shoot once
+  those accounts exist; accuracy rules apply.
+- **[Docs][S][M] Contributor onboarding note** — how to add a role/tool to the company
+  system, pointing at ARCHITECTURE.md + the pure-core convention.
 - *(Owner-gated — testnet dogfood, address relabel, mainnet founding, real social posting,
   the live Action executor — wait on DECISIONS.md; NOT auto-run.)*
 

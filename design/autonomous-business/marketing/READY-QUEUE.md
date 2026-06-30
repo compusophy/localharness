@@ -487,6 +487,46 @@ AI-generated, human-reviewed. Posted by localharness's own automated account. #A
 
 ---
 
+## 9. X / Twitter — evergreen standalone pool (AUTO; drip between the dated assets)
+
+**Platform:** X, post to our own `@localharness` via the official API — **one at a time**,
+as filler between the dated launch assets (#3/#4/#6/#8 and the dev.to/LinkedIn long-forms).
+
+**Native label:** same **Automated-account** setting as #3/#4/#6/#8 (X's native bot label,
+linked to the human operator) — required for automated posting independent of the post text.
+
+**Exact final copy:** the **ten standalone posts in `X-POSTS-BATCH-2.md`** in this directory,
+verbatim (B2-1 … B2-10). Each is ≤280 chars (verified in that file's length table; longest is
+B2-4 at 270). They are deliberately **distinct** from the 10 in `CONTENT.md §1` and from all
+three threads (`CONTENT.md §2`, asset #6, asset #8) — single posts, not a thread; never
+re-post one as part of a thread or from a second account (near-duplicate = CIB ban risk).
+
+**Drip discipline (RISKS a.1 / guardrails #11/#12):** fire **one** pool post at a time,
+**≥1 day** spacing, **never two in a day**, **never adjacent to** an X thread (#6/#8) or single
+(#3/#4); rotate angles so consecutive posts aren't both build-story or both demo-CTA; a
+similarity check against recently-posted copy gates the next one. No cross-agent likes/RTs on
+any of them (voting-ring/CIB → domain ban). Put any link in a reply, not the post body.
+
+**Accuracy guard (re-verified 2026-06-30 vs source):** the SDK backend list
+(Gemini/Claude/OpenAI/Mock) is framed strictly as a **backend trait** — no claim that OpenAI,
+Mock, or Gemma is a live in-app model (the hosted selector is Gemini Flash + Claude Opus only,
+`src/app/model.rs`). Identity/mint is on **Tempo mainnet**; **no diamond/chain address is
+pinned**. The per-call/x402 post (B2-8) describes the **mechanism** with no mainnet-live
+assertion (settlement is testnet-only). `$LH` is framed strictly as a flat usage credit
+(1 `$LH`/message, matching `src/docs_manifest.rs`), never a token to speculate on; the
+autonomous-business posts (B2-4/B2-5) name self-funding as the **OPEN problem** — no
+earnings/investment claim. No crate version is pinned. Demos cited as URLs.
+
+**Disclosure line (post as the immediate first reply on EACH pool post; required per FTC):**
+```
+AI-generated, human-reviewed. Posted by localharness's own automated account. #AI
+```
+
+> Each pool post is AUTO (the loop *enqueues*) but a **human flips each one live**
+> (`RISKS.md` a.4) — the loop holds no live post credentials.
+
+---
+
 ## HUMAN-GATED queue (requires a human to post — NOT auto-fired)
 
 > These two are the highest-leverage launch surfaces and are **human-only by ToS** — the
@@ -733,6 +773,10 @@ becoming a foot-gun.
 9. **LinkedIn** launch (#5) — fire once Community Management API approval lands (may lag).
 10. **LinkedIn** autonomous-business vision (#7) — same approval gate; **space ≥several days
    from #5** (never two long-forms on the Page back-to-back).
+11. **X** evergreen pool (#9, `X-POSTS-BATCH-2.md` B2-1…B2-10) — **drip one at a time as filler
+   between the dated assets above**; ≥1 day spacing, never two in a day, never adjacent to an X
+   thread (#6/#8) or single (#3/#4), rotate angles, similarity-gated. Not a fixed-date asset —
+   it fills the gaps.
 
 **HUMAN-GATED lane (a human posts manually, in their own voice — never the loop):**
 - **Show HN** (H1) — once, a US-morning weekday; NO automation, NO upvote solicitation.

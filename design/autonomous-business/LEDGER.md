@@ -4,6 +4,39 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 7 — 2026-06-30T11:00Z
+<!-- tick-window: 2026-06-30T1100Z -->
+
+**Goal:** wire the planning shell to a real (read-only) data source via the CLI; add
+accounting/HR preview; SDK doc; more marketing. Three agents parallel — non-blocked.
+
+**Shipped (verified — re-ran wallet bin + drift + secret-scan):**
+- **CODE — `company plan` + `company payroll` (`bin/company.rs` +main.rs):** READ-ONLY
+  previews, no broadcast. `company plan <guild|name>` builds a registry-backed
+  `ChainReader` (members→role+rep workers, treasury, open bounties→Posted tasks) and
+  dry-runs `work_cycle_runtime::plan_cycle`, printing the planned Actions under a
+  "PREVIEW ONLY — nothing executed or broadcast" banner. `company payroll <guild>
+  [--fraction] [--by-rep]` prints treasury + per-role TBA balances + a suggested even/
+  reputation-weighted split (NO transfers). 36 tests (13 new), clippy + drift clean.
+  Honest TODO: on-chain bounties carry no role/quality, so they map to Posted+Coder+
+  min-quality-3; claimed/submitted bounties skipped (no fabricated verdict).
+- **DOCS — `SDK-QUICKSTART.md`:** "use localharness as a library" — Mock-backend hello
+  agent + real-backend swap + `ClosureTool`, every API name source-verified (funnel asset).
+- **MARKETING — `X-POSTS-BATCH-2.md`:** 10 new standalone posts (all ≤280), evergreen-pool
+  entry in READY-QUEUE + 4 slotted into CALENDAR. Caught+fixed a "no solc" slip.
+
+**Now true: the full DRY path is CLI-runnable** — found → status → plan → payroll, all
+read/preview-only. The single remaining gap to a live self-operating company is the
+greenlight-gated Action executor.
+
+**Next tick (non-blocked):** accounting cost-accounting core (per-cycle burn vs revenue,
+pure+tested); a HR roster/role-assignment preview; SDK example file; more marketing.
+Owner-gated items wait on DECISIONS.md.
+
+**Human-blocked → DECISIONS.md** (unchanged; 8 decisions await answers).
+
+---
+
 ## Tick 6 — 2026-06-30T10:30Z
 <!-- tick-window: 2026-06-30T1030Z -->
 
