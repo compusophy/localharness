@@ -3,6 +3,12 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 13 — 2026-06-30)
+
+- ✅ Marketing: `LAUNCH-RUNBOOK.md` — turnkey go-live sequence (GO/NO-GO gate, D0→D42
+  timeline, disclosure matrix, abort triggers). Launch is now mechanical once creds land.
+- ▶ Loop DOWNSHIFTED to minimal ticks (product + marketing both complete; frontier owner-gated).
+
 ## DONE (tick 12 — 2026-06-30)
 
 - ✅ Marketing: `AUDIENCE-INTEL.md` (sourced market intelligence) + `CAMPAIGN-02.md`
@@ -83,21 +89,22 @@ the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 - ✅ Marketing accuracy pass + DEVTO-ARTICLE + READY-QUEUE.
 - ✅ Loop guardrails (`LOOP-PROTOCOL.md` + `loop-secret-scan.sh`, budgets, idempotency).
 
-## NEXT TICK (product complete + marketing deep — consolidate, then await owner)
+## LOOP POSTURE: MAINTENANCE MODE (downshifted tick 13)
 
-- **[Marketing][S][M] `LAUNCH-RUNBOOK.md`** — the turnkey "when creds land, fire in THIS
-  order" operator runbook: consolidates CALENDAR + READY-QUEUE + both campaigns
-  (`whoami` → `git log`) into one dated execution sequence with the per-step human-approval
-  gates, so day-one is mechanical the moment the owner provides tokens.
-- *(Then: marketing depth is high — further ticks risk low marginal value. Options: a
-  periodic AUDIENCE-INTEL refresh, a single new creative artifact, or hold for the owner.)*
-- *(Owner-gated — testnet dogfood, address relabel, mainnet founding, real social posting,
-  the live Action executor — wait on DECISIONS.md; NOT auto-run.)*
+Both halves of the mission are built out (feature-complete preview product + an 18-asset
+marketing library incl. 2 campaigns, intel, SEO, runbook). The honest high-value frontier
+is **entirely owner-gated**. To avoid churning low-value docs:
 
-> Note: BOTH the product (CLI + 5 cores + example) AND a deep marketing library (17 assets,
-> 2 campaigns, intel, SEO) are now in place. The honest high-value frontier is entirely
-> owner-gated (live execution, real posting). The loop will keep producing modest
-> non-blocked value, but the real unlock is the DECISIONS.md answers.
+- **Each minimal tick:** verify the branch is green + tree clean; do AT MOST one tiny
+  genuinely-useful refresh (e.g. a dated AUDIENCE-INTEL refresh ONLY if the landscape
+  moved); otherwise **no-op the tick** (log "idle — awaiting owner", commit nothing).
+- **Do NOT** spin up multi-agent fan-outs or manufacture new subsystems/docs for volume.
+- **Surge instantly** the moment the owner engages:
+  - *greenlight testnet* → wire + run the live pipeline on Moderato (sponsored, 0 mainnet).
+  - *creds in `.env.marketing`* → execute `LAUNCH-RUNBOOK.md` (human-gated per step).
+  - any `DECISIONS.md` answer → resume real work on that thread.
+- **Owner-gated (never auto-run):** testnet dogfood, address relabel, mainnet founding,
+  real social posting, the live Action executor.
 
 ## Ranked backlog (from STRATEGY.md)
 

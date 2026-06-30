@@ -4,6 +4,34 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 13 — 2026-06-30T14:00Z
+<!-- tick-window: 2026-06-30T1400Z -->
+
+**Goal:** the ONE remaining high-value consolidating deliverable, then downshift.
+Minimal tick (1 agent, no code) — per the tick-12 stewardship downshift.
+
+**Shipped (no code; secret-scan clean):**
+- **MARKETING — `LAUNCH-RUNBOOK.md`:** the turnkey go-live runbook. Consolidates CALENDAR
+  + both campaigns (`whoami`→`git log`) into ONE D0→D42 fire-sequence; an 8-criteria
+  GO/NO-GO gate; per-step disclosure-line + native-label matrix; ABORT/rollback triggers;
+  a "first 5 actions when creds land" quick-start. De-duped 3 cross-file asset collisions.
+  The moment creds land, launch is mechanical.
+
+**State — both halves of the mission are built out and waiting:**
+- Product: feature-complete preview surface (CLI found→…→forecast, 5 pure cores, example).
+- Marketing: 18 assets — 2 campaigns, audience intel, SEO, calendar, press/outreach,
+  visual briefs, + this runbook.
+Everything substantive left is OWNER-GATED (live execution, real posting).
+
+**Loop posture: DOWNSHIFTED.** Per the tick-12 note, ticks are now minimal — no more
+multi-agent fan-outs manufacturing low-marginal-value docs. Future ticks will do at most a
+tiny polish/refresh or effectively idle, until the owner engages (DECISIONS.md) or pauses
+(CronDelete ca03e5d2).
+
+**Human-blocked → DECISIONS.md / STATUS.md** (8 decisions await answers).
+
+---
+
 ## Tick 12 — 2026-06-30T13:30Z
 <!-- tick-window: 2026-06-30T1330Z -->
 
