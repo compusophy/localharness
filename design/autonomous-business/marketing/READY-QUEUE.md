@@ -40,7 +40,9 @@ below; a human posts each from their own account, in their own voice.
   agent drafts, a human (aged account) posts. Reading own metrics is AUTO; submitting is
   not. → ready copy + caveats in **HUMAN-GATED queue · H2** below.
 - **Instagram / TikTok** — require business verification / app-review / audit first; not
-  fire-ready.
+  fire-ready. Short-form video concepts are **PREPARED** (Tier-3, human-gated) in
+  **`VISUAL-BRIEFS.md`** — 6 Reels/TikTok briefs blocked on IG/TikTok account + API
+  approval; nothing posts until a human shoots and approves.
 
 ---
 

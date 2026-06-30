@@ -3,6 +3,12 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 8 — 2026-06-30)
+
+- ✅ Pure `src/accounting.rs` (seed-vs-earned net position, runway, breakeven) + pure
+  `src/hiring.rs` (role-fit ranking) — 26 tests; all 7 business roles now have logic.
+- ✅ Docs: `CONTRIBUTING.md`. Marketing: `VISUAL-BRIEFS.md` (6 IG/TikTok concepts).
+
 ## DONE (tick 7 — 2026-06-30)
 
 - ✅ `company plan` (registry-backed Reader → preview CyclePlan) + `company payroll`
@@ -52,17 +58,17 @@ the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
 ## NEXT TICK (non-owner-blocked — productive without answers)
 
-- **[Accounting][M][M] Pure cost-accounting core (`src/accounting.rs`)** — per-cycle
-  inference-burn vs `$LH`-revenue, net position, runway projection; pure + native+wasm
-  tested. Honest (oggoel was seed-capitalized — model the real net position).
-- **[HR][S][M] Pure hiring/role-fit core (`src/hiring.rs`)** — score candidate agents
-  against a role's needs (role match + reputation + availability) → ranked hire/assign
-  recommendations; pure + tested. Feeds `work_cycle::assign_next_task`.
-- **[Marketing][S][M] Instagram/TikTok creative briefs** — short-form video concepts +
-  scripts (the visual channels the owner named), prepared as briefs ready to shoot once
-  those accounts exist; accuracy rules apply.
-- **[Docs][S][M] Contributor onboarding note** — how to add a role/tool to the company
-  system, pointing at ARCHITECTURE.md + the pure-core convention.
+- **[Product][M][H] Integrate `hiring`/`accounting` into the shells** — use
+  `hiring::rank_candidates` in `work_cycle_runtime`'s worker selection, and add a read-only
+  `company books <guild>` CLI that builds an `accounting::Ledger` from treasury/period
+  data and prints net position + runway + breakeven (preview only, no writes).
+- **[Marketing][S][M] Press kit + cold-outreach templates** — a one-page press kit
+  (boilerplate, facts, links, screenshots list) + 3 cold-email templates (for the
+  marketing email once it exists); accuracy rules apply.
+- **[Docs][S][M] Runnable SDK example** — a complete `examples/`-style draft (Mock +
+  one real backend + a ClosureTool) extending SDK-QUICKSTART; verify it compiles.
+- *(Owner-gated — testnet dogfood, address relabel, mainnet founding, real social posting,
+  the live Action executor — wait on DECISIONS.md; NOT auto-run.)*
 - *(Owner-gated — testnet dogfood, address relabel, mainnet founding, real social posting,
   the live Action executor — wait on DECISIONS.md; NOT auto-run.)*
 

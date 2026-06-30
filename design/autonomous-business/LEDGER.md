@@ -4,6 +4,36 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 8 — 2026-06-30T11:30Z
+<!-- tick-window: 2026-06-30T1130Z -->
+
+**Goal:** complete pure-core coverage for the Accounting + HR roles; prep visual
+marketing; contributor onboarding. Three agents parallel — non-blocked.
+
+**Shipped (verified — re-ran lib tests + wasm guard + secret-scan):**
+- **CODE — `src/accounting.rs` (pure):** company economics, HONEST seed-vs-earned —
+  `Ledger{treasury,period_costs,period_revenue,seed_capital}`, `net_position` (seed
+  EXCLUDED, signed), `is_self_funding`/`relies_on_seed`, `runway_cycles`,
+  `breakeven_price`, `margin_per_call`, saturating math. 15 tests.
+- **CODE — `src/hiring.rs` (pure):** role-fit — `score_candidate`/`rank_candidates`/
+  `best_candidate` over `work_cycle::Role`, ranked identically to `assign_next_task`
+  (rep desc, id asc) so HR + allocation agree by construction. 11 tests.
+  - PASS accounting (15) + hiring (11) · native check · wasm guard.
+  - With these, all 7 business roles now have dedicated logic: coder/reviewer
+    (work_cycle), PM/exec (decisions/voting), accounting + HR (new cores), marketing.
+- **DOCS — `CONTRIBUTING.md`:** the pure-core-vs-IO-shell rule, layer map, how to add a
+  role/capability, the verify gates, loop guardrails.
+- **MARKETING — `VISUAL-BRIEFS.md`:** 6 IG/TikTok short-form video concepts (hook + shot
+  list + footage needed + disclosure), Tier-3 prepared; shoot-first = V3 (slither demo).
+
+**Next tick (non-blocked):** wire `hiring`/`accounting` into the planner (hiring →
+`work_cycle_runtime` worker ranking; an `company books` CLI preview using accounting);
+SDK example file; more marketing. Owner-gated items wait on DECISIONS.md.
+
+**Human-blocked → DECISIONS.md** (unchanged; 8 decisions await answers).
+
+---
+
 ## Tick 7 — 2026-06-30T11:00Z
 <!-- tick-window: 2026-06-30T1100Z -->
 
