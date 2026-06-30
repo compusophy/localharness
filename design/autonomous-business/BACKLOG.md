@@ -3,6 +3,13 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 11 — 2026-06-30)
+
+- ✅ `company forecast` CLI over `simulation` — CLI surface now COMPLETE
+  (found→status→plan→payroll→books→day→forecast). 45 CLI tests.
+- ✅ `STATUS.md` (one-page owner state-of-the-business).
+- ✅ Marketing: `CAMPAIGN-01.md` — the novel `whoami` launch campaign.
+
 ## DONE (tick 10 — 2026-06-30)
 
 - ✅ `company day` CLI (one-shot status+plan+payroll+books report) + 42-assertion golden
@@ -70,22 +77,22 @@ the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 - ✅ Marketing accuracy pass + DEVTO-ARTICLE + READY-QUEUE.
 - ✅ Loop guardrails (`LOOP-PROTOCOL.md` + `loop-secret-scan.sh`, budgets, idempotency).
 
-## NEXT TICK (non-owner-blocked — narrowing; high-value frontier is owner-gated)
+## NEXT TICK (CLI + cores COMPLETE — loop now leans to perpetual marketing)
 
-- **[Product][S][M] `company forecast` CLI over `simulation`** — a read-only command that
-  runs `simulation::simulate` from the live board + estimate flags and prints the
-  multi-cycle runway/throughput forecast. Preview only.
-- **[Exec][S][M] `STATUS.md` — state of the business** — a one-glance capabilities
-  inventory (what the system can do today, all read-only/preview) + the honest gated
-  frontier, pointing at DECISIONS.md for the asks. For the owner's return.
-- **[Marketing][S][M] Campaign playbook + asset index** — a master index of every
-  marketing asset + a launch-sequence playbook tying CALENDAR + READY-QUEUE into a
-  fire-order for when creds land.
+- **[Marketing][S][M] `CAMPAIGN-02`** — a second creative campaign on a distinct
+  audience/theme (e.g. a developer-technical angle, or the build-in-public "a company of
+  agents ran its own launch" meta-story), same accuracy + disclosure rules.
+- **[Marketing][S][M] Audience/competitive intel note** — where each target audience
+  gathers + the messaging that lands + a fair competitive-positioning refresh (the
+  perpetual market-intelligence a marketing function produces).
+- **[Polish][S][L] Refresh `design/autonomous-business/README`** to link STATUS.md +
+  reflect the now-complete file map.
 - *(Owner-gated — testnet dogfood, address relabel, mainnet founding, real social posting,
   the live Action executor — wait on DECISIONS.md; NOT auto-run.)*
 
-> Note: non-blocked work is narrowing toward polish/forecasting. The substantive next
-> leaps (live execution, real marketing posting) need the DECISIONS.md answers.
+> Note: the product (CLI surface + 5 pure cores + example) is complete. Per the mission's
+> marketing emphasis, ticks now perpetually produce marketing/creative + small polish.
+> The substantive leaps (live execution, real posting) need the DECISIONS.md answers.
 
 ## Ranked backlog (from STRATEGY.md)
 

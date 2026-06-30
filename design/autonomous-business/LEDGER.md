@@ -4,6 +4,36 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 11 — 2026-06-30T13:00Z
+<!-- tick-window: 2026-06-30T1300Z -->
+
+**Goal:** finish the CLI surface (forecast); a one-page owner STATUS; a novel creative
+campaign (the mission's marketing emphasis). Leaner, marketing-weighted tick.
+(Last tick flagged diminishing returns + recommended owner review/unblock — no answer
+yet, so the standing every-30-min directive holds; ticks now lean toward marketing.)
+
+**Shipped (verified — re-ran CLI + drift + check + secret-scan):**
+- **CODE — `company forecast` CLI:** read-only — builds the live board (ChainReader) and
+  runs `simulation::simulate` forward, printing the per-cycle treasury/throughput
+  projection + runway verdict ("survives N" / "RAN OUT at cycle k") + honest self-funding
+  read, under a "FORECAST (model/preview only)" banner. 45 CLI tests (4 new). No broadcast.
+  The CLI company surface is now COMPLETE: found→status→plan→payroll→books→day→forecast.
+- **EXEC — `STATUS.md`:** 11 ticks on one scannable page (capabilities / marketing
+  inventory / quality gates / gated frontier → DECISIONS.md). Updated to include forecast.
+- **MARKETING — `CAMPAIGN-01.md` (the `whoami` campaign):** a novel coordinated launch
+  with a real through-line — *every other agent answers `whoami` with a username on
+  someone else's server; a localharness agent answers with a name it owns on-chain* —
+  hero origin-film at a claimable `whoami.localharness.xyz`, AI-disclosure-as-punchline,
+  a 2-week beat-by-beat rollout re-sequencing the asset library. Accuracy-guarded.
+
+**Next tick:** non-blocked work is now genuinely narrow (the CLI/cores are complete). Lean
+to perpetual marketing (campaign assets, audience/competitive notes) + small polish, OR
+await owner answers. Owner-gated leaps (live execution, real posting) wait on DECISIONS.md.
+
+**Human-blocked → DECISIONS.md / STATUS.md** (8 decisions await answers).
+
+---
+
 ## Tick 10 — 2026-06-30T12:30Z
 <!-- tick-window: 2026-06-30T1230Z -->
 
