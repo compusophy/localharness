@@ -26,7 +26,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const IDENTITY_FILE = path.join(REPO_ROOT, '.nostr_identity');
 
-const DEFAULT_RELAYS = [
+export const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
   'wss://relay.nostr.band',
   'wss://relay.primal.net',
@@ -116,7 +116,7 @@ function big2buf32(n) {
   return Buffer.from(h, 'hex');
 }
 
-function getXOnlyPubkey(sk32) {
+export function getXOnlyPubkey(sk32) {
   const d = b2big(sk32);
   if (d <= 0n || d >= N) throw new Error('private key out of range');
   const Pp = ptMul(d, G);
@@ -199,14 +199,14 @@ function convertBits(data, from, to, pad) {
   if (pad && bits > 0) out.push((acc << (to - bits)) & maxv);
   return out;
 }
-function bech32Encode(hrp, bytes) {
+export function bech32Encode(hrp, bytes) {
   const data = convertBits([...bytes], 8, 5, true);
   const combined = data.concat(createChecksum(hrp, data));
   let s = hrp + '1';
   for (const d of combined) s += CHARSET[d];
   return s;
 }
-function bech32Decode(str) {
+export function bech32Decode(str) {
   const lower = str.toLowerCase();
   const pos = lower.lastIndexOf('1');
   const hrp = lower.slice(0, pos);
@@ -224,7 +224,7 @@ function bech32Decode(str) {
 // ---------------------------------------------------------------------------
 // NIP-01 event
 // ---------------------------------------------------------------------------
-function buildEvent(sk32, content, kind = 1, tags = []) {
+export function buildEvent(sk32, content, kind = 1, tags = []) {
   const pubkey = getXOnlyPubkey(sk32).toString('hex');
   const created_at = Math.floor(Date.now() / 1000);
   const serial = JSON.stringify([0, pubkey, created_at, kind, tags, content]);
@@ -243,7 +243,7 @@ function buildEvent(sk32, content, kind = 1, tags = []) {
 // ---------------------------------------------------------------------------
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-class WSClient extends EventEmitter {
+export class WSClient extends EventEmitter {
   constructor(socket) {
     super();
     this.socket = socket;
@@ -307,7 +307,7 @@ class WSClient extends EventEmitter {
   _destroy() { if (this.closed) return; this.closed = true; try { this.socket.end(); } catch {} }
 }
 
-function wsConnect(url, timeout = 12000) {
+export function wsConnect(url, timeout = 12000) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const host = u.hostname;
@@ -359,7 +359,7 @@ function wsConnect(url, timeout = 12000) {
 }
 
 // Publish an event to one relay and verify acceptance via a read-back REQ.
-async function publishToRelay(url, event, timeout = 12000) {
+export async function publishToRelay(url, event, timeout = 12000) {
   const result = { relay: url, connected: false, ok: null, message: '', readback: false };
   let ws;
   try {
@@ -406,7 +406,7 @@ async function publishToRelay(url, event, timeout = 12000) {
 }
 
 // Fetch an event id back from relays (for the `fetch` command / later verification).
-async function fetchFromRelay(url, eventId, timeout = 10000) {
+export async function fetchFromRelay(url, eventId, timeout = 10000) {
   const result = { relay: url, connected: false, found: false, message: '' };
   let ws;
   try { ws = await wsConnect(url, timeout); } catch (e) { result.message = 'connect: ' + (e.message || e); return result; }
@@ -452,7 +452,7 @@ function saveIdentity(id) {
   fs.writeFileSync(IDENTITY_FILE, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
 }
 
-function loadIdentity() {
+export function loadIdentity() {
   if (!fs.existsSync(IDENTITY_FILE)) {
     throw new Error(`no identity at ${IDENTITY_FILE} — run: node scripts/nostr-broadcast.mjs gen`);
   }
@@ -596,4 +596,10 @@ async function main() {
   process.exit(1);
 }
 
-main().catch((e) => { console.error('fatal:', e.message || e); process.exit(1); });
+// Only run the CLI when invoked directly (`node nostr-broadcast.mjs ...`), not when
+// imported as a module (e.g. by nostr-seti.mjs, which reuses the sign/WS primitives).
+const INVOKED_DIRECTLY =
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (INVOKED_DIRECTLY) {
+  main().catch((e) => { console.error('fatal:', e.message || e); process.exit(1); });
+}

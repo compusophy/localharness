@@ -382,8 +382,9 @@ slot.
 ### ValidationFacet — ERC-8004-style validation staking
 
 The MONEY-BACKED half of the reputation system (ReputationFacet's
-attestations are the free-signal half). **Source-complete + tested;
-NOT yet cut into the live diamond.** Storage: `LibValidationStorage`
+attestations are the free-signal half). **Cut + LIVE on the mainnet
+diamond** (verified 2026-06-30: `validationCount()` is callable).
+Storage: `LibValidationStorage`
 at `keccak256("localharness.validation.storage.v1")`. FINANCIAL —
 the InviteFacet/BountyFacet escrow state-machine with TWO escrow
 legs (`transferFrom` staker→diamond on stake AND on challenge; the
@@ -595,7 +596,7 @@ M9–M12 roadmap layers in:
   `ReputationFacet` (attestation-based trust) and `GuildFacet` +
   `VotingFacet` (member-governed treasuries); see the facet sections
   above. The ERC-8004 *validation* half is `ValidationFacet`
-  (stake / challenge / resolve escrow) — built + tested, not yet cut.
+  (stake / challenge / resolve escrow) — cut + LIVE (verified on-chain).
 - **MPP / x402 payment hooks** — per-call settlement layer.
 - **Whatever else comes up.**
 

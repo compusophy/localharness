@@ -4,7 +4,19 @@
   "buildCommand": null,
   "outputDirectory": "web",
   "installCommand": null,
+  "rewrites": [
+    { "source": "/.well-known/agent-card.json", "destination": "/.well-known/agent.json" }
+  ],
   "headers": [
+    {
+      "source": "/.well-known/(.*).json",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" },
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET, OPTIONS" }
+      ]
+    },
     {
       "source": "/pkg/(.*).wasm",
       "headers": [

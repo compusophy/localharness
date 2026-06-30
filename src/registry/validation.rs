@@ -25,8 +25,9 @@ use super::*;
 //   hasValidated(address, uint256, bytes32) -> bool
 //   validationCount() -> uint256
 //
-// NOTE: the facet is built + tested but NOT yet cut into the live diamond —
-// these helpers go live the moment script/AddValidationFacet.s.sol runs.
+// NOTE: cut + LIVE on the canonical mainnet diamond (chain 4217) — verified on
+// 2026-06-30 via `facetAddress(stakeValidation)` resolving + `validationCount()`
+// returning a value (0) rather than reverting. These helpers are callable.
 
 /// One decoded `getValidation` record. `status` is the ABI-pinned enum:
 /// 0 Open, 1 Challenged, 2 Reclaimed, 3 ValidatorWon, 4 ChallengerWon,
