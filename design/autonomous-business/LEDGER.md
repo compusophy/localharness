@@ -4,6 +4,38 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 4 — 2026-06-30T09:30Z
+<!-- tick-window: 2026-06-30T0930Z -->
+
+**Goal:** CLI twin of `found_company` (enable headless dogfood); consolidate owner
+decisions; expand marketing. Three role-agents (coder, executive, marketing) parallel.
+
+**Shipped (verified — re-ran native check + drift + secret-scan):**
+- **CODE (real, compiles, no tx broadcast):** `company` CLI command family in
+  `src/bin/localharness/company.rs` — `company found …` (same sponsored-helper pipeline
+  as the browser tool; LH_CHAIN routing inherited; **`--confirm`-less = broadcast-free
+  PREVIEW**, no signer/RPC) + `company status <guild|name>` (read-only). Wired dispatch +
+  USAGE + `CLI_COMMANDS`; gen-docs regenerated (skill.md only). 6 new unit tests pass.
+  - PASS `cargo check --features wallet` · PASS `no_doc_drift` · NO on-chain tx run.
+  - Honest deferral vs browser: CLI prints the mission in the manifest but doesn't
+    create the SessionRoom KV backlog room (createRoom ~1.3M gas) — follow-up.
+- **EXEC:** `DECISIONS.md` — consolidated owner-blocked decision brief (TL;DR table +
+  reply menu). Key coupling: answering "wait for the reset" resolves build-vs-reset +
+  testnet-dogfood + sponsor-float + transferable-`$LH` together. Recs: wait-for-reset;
+  YES to a scoped testnet-only dogfood exception; seed Tier1-2 creds; fund+monitor float;
+  apply address relabel; loop opens DRAFT PRs to main (never auto-merge).
+- **MARKETING:** 2nd dev.to (`DEVTO-ARTICLE-2.md`, x402+EIP-6551 angle, every figure
+  source-pinned) + r/ethdev human-gated draft (distinct body). Caught + softened: x402
+  settlement is NOT mainnet-live (testnet-only per `x402.rs`).
+
+**Next tick:** depends on owner answers in DECISIONS.md. If testnet-dogfood greenlit →
+run `company found … --dev --confirm` on Moderato + `company status` it back. Else →
+CLI SessionRoom backlog room, or Phase-2 `run_work_cycle` (hoist colony.rs cores).
+
+**Human-blocked → see `DECISIONS.md`** (one brief, 8 decisions, recommendations).
+
+---
+
 ## Tick 3 — 2026-06-30T09:00Z
 <!-- tick-window: 2026-06-30T0900Z -->
 

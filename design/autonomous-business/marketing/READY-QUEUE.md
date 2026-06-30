@@ -99,6 +99,55 @@ publishing. It is AI-generated content and a first-party promotion of localharne
 
 ---
 
+## 2b. dev.to — second long-form article (distinct angle: x402 + EIP-6551)
+
+**Platform:** dev.to / Forem, `POST /api/articles` with our own api-key. Same first-party,
+clean-ToS lane as asset #2 — a SECOND durable, citable deep-dive on a **distinct** technical
+angle (payments + token-bound accounts), so the two articles don't read as near-duplicates
+(the cross-post / substantially-similar trap that burns SEO and trips spam heuristics).
+
+**Native label:** dev.to has no native AI toggle → the footer text disclosure IS the label.
+
+**Spacing:** do NOT publish on the same day as asset #2 (the first article). Space the two
+deep-dives ≥1 week apart so they land as two genuine posts, not a burst. Distinct title,
+distinct body, distinct primary keywords (article #1 = "self-sovereign agent in Rust /
+native-wasm seam"; this one = "x402 micropayments + ERC-6551 token-bound accounts").
+
+**Exact final copy:** the full body of **`DEVTO-ARTICLE-2.md`** in this directory, verbatim,
+including its front-matter (`published: false` so a human flips it live) and the footer
+disclosure. The load-bearing front-matter and disclosure:
+
+```
+---
+title: "An agent that pays its own way: x402 micropayments + EIP-6551 token-bound accounts in practice"
+published: false
+tags: rust, crypto, ai, web3
+canonical_url: https://localharness.xyz/llms.txt
+---
+```
+
+**Disclosure line (already the article's last paragraph):**
+```
+Disclosure: this article was drafted by an AI agent operated by the localharness
+project (the project's own automated account) and reviewed by a human before
+publishing. It is AI-generated content and a first-party promotion of localharness.
+```
+
+**Accuracy guard (re-verified 2026-06-30 vs source):** every code constant in the body is
+pinned to `src/registry/x402.rs` (`DEFAULT_ASK_PRICE_WEI` = 0.01 `$LH`, auto-pay cap
+`REMOTE_CALL_MAX_AUTO_PAY_WEI` = 1 `$LH`, `PRICE_LOCK_OVERPAY_TOLERANCE_BPS` = 10%); the
+EIP-712 `PaymentAuthorization` struct, `settle(...)` signature, and domain (`"localharness-x402"`,
+version `"1"`) match the facet; TBA semantics (`MultiSignerAccount`: CALL-only, EIP-1271,
+signer-revoke-on-transfer, high-`s` reject) match `contracts/README.md`. CLI flags (`call --pay`/
+`--verify`, `price`, `mcp-call`) match `src/bin/localharness/main.rs`. **No diamond address is
+pinned** (facets churn via `diamondCut`); identity/mint is correctly labeled Tempo mainnet (chain
+4217) while x402 settlement is described as a diamond facet WITHOUT a mainnet-live assertion. `$LH`
+is framed strictly as a usage credit (`currency()=="credits"`), and §7 names self-funding as an
+OPEN problem — no earnings/investment claim. OpenAI/Mock/Gemma are framed as SDK-only backends;
+the live in-app selector is stated as Gemini Flash + Claude Opus only.
+
+---
+
 ## 3. X / Twitter — launch announce (AUTO own content via X API)
 
 **Platform:** X, post to our own `@localharness` via the official API.
@@ -393,22 +442,112 @@ where most of the interesting decisions were.
 > trait) — this is an SDK post and makes no claim about the live in-app model selector, which is
 > Gemini Flash + Claude Opus only. No version pinned, no on-chain address pinned. Clean.
 
+### H3. Reddit r/ethdev — **HUMAN POSTS from an aged account. 9:1 RULE GATES IT.**
+
+**Platform:** Reddit, **r/ethdev**, **a human submits** from an aged, karma-bearing account.
+
+**Hard caveats (RISKS a.1 / GROWTH §2.6 — read before posting):**
+- **Aged account + karma.** r/ethdev gates on real-contributor history; the agent never
+  submits — it only drafted this.
+- **The 9:1 / 90:10 self-promo rule is the operating constraint:** ~9 genuinely useful,
+  non-promotional contributions per 1 promotional touch, measured across *all* the account's
+  activity. Do not post until the ratio is healthy.
+- **This body is DELIBERATELY DISTINCT from the r/rust post (H2).** H2 is an SDK post
+  (native/wasm seam, backend trait, Mock); this is an on-chain-architecture post (EIP-2535
+  diamond, ERC-6551 TBAs, x402 settlement, bounty board, guarded child-diamond cut). **Never
+  paste the same body into two subs** — Reddit flags near-identical multi-sub submissions as
+  spam, and a duplicate would also collide with the r/rust draft.
+- **No upvote solicitation, no multiple promo accounts, no drive-by link drops.** Value-first;
+  be present in the comments to answer. At most ~1 self-promo touch per ~2 weeks per sub.
+
+**Exact final copy — Title:**
+```
+Self-sovereign AI agents as ERC-721 + ERC-6551 identities: per-call x402 payments, an on-chain bounty board, and agent-deployed diamond facets
+```
+
+**Exact final copy — Body:**
+```
+Sharing an architecture I've been building on Tempo: AI agents that are first-class on-chain
+entities instead of hosted API wrappers. It's an EIP-2535 diamond; the identity layer (ERC-721 +
+ERC-6551) is live on Tempo mainnet (chain 4217), and the coordination/economy facets are the layer
+I'm proving out.
+
+Identity model:
+- Each agent is an ERC-721 name NFT (it resolves to a subdomain, name.localharness.xyz).
+- Each NFT has an ERC-6551 token-bound account — the agent's own wallet. The account impl is
+  CALL-only, supports EIP-1271 + an enrollable device-signer set (multiple device EOAs drive one
+  identity without sharing the seed), and revokes those signers automatically on NFT transfer.
+- Persona, "lessons", and config live in on-chain metadata under namespaced keys, so an agent's
+  behaviour is portable across devices and sessions. "My agents" is literally `ownerOf == myEOA`.
+
+Payments (the part most relevant here):
+- Agents pay each other per call in a credit token ($LH) using the x402 "exact" scheme over
+  EIP-712. The caller signs a PaymentAuthorization (from, to, value, validAfter, validBefore,
+  bytes32 nonce) under a domain bound to chainId + the diamond; a facet verifies it (EOA ecrecover
+  + EIP-1271 for TBA signers, one-shot nonce) and settles payer → payee's TBA via TIP-20
+  transferFrom. The payer approves the diamond once; after that each call is just a signature, and
+  it's gasless for the payer (the fee-payer half is sponsored).
+- Settlement is on-success only: the reply is produced first, then settle is submitted. A failed
+  call never submits settle; the one-shot authorization just expires at validBefore. No nonce is
+  consumed, so the caller keeps their $LH.
+- Unattended pay is fenced by arithmetic, not prompts: a default floor (0.01 $LH) for unpriced
+  agents, a hard auto-pay cap (1 $LH) above which the call refuses and surfaces the price, and a
+  price-lock band (signed value must sit within +10% of the live advertised price, else re-quote
+  instead of silently overpaying). Price is advertised as on-chain metadata, not asserted in a
+  request header.
+
+Coordination primitives (all facets on the one diamond):
+- A bounty board: escrow a reward behind a task, claim/submit/accept, payout to the worker's TBA
+  (same x402 rail; payout is bound to the claimed identity, so claim-squatting just pays the
+  squatter).
+- Guilds with their own minted identity + treasury TBA, and a DAO voting facet over the treasury
+  (quorum snapshotted at propose-time so it can't be churned mid-vote).
+- Reputation via 1–5 attestations tagged to a workRef (ERC-8004-flavored).
+
+The self-extending bit: an agent can write a Solidity/EVM-subset facet, compile it to bytecode
+in-crate (no solc), and diamondCut it into its OWN child diamond. The child's cut entry point is a
+guarded facet that re-enforces reserved-selector + no-`_init`-delegatecall rules on-chain, so even a
+raw hand-signed cut can't seize ownership or swap the loupe.
+
+Honest framing: $LH is a usage-credit token (currency()=="credits"), explicitly NOT a stablecoin
+and not something to speculate on; gas is sponsored so users hold zero of the gas token. And
+self-funding is an open problem — the payment plumbing is live, but whether an agent nets positive
+depends on outside callers paying in. I'm not claiming agents are minting money.
+
+Code (Rust, Apache-2.0): https://github.com/compusophy/localharness
+Full ABI surface + live addresses (facets churn via diamondCut, so pull them live): https://localharness.xyz/llms.txt
+
+Curious what people here think about the on-success x402 settlement and the guarded child-diamond
+cut model — both were attempts to keep "agent has its own wallet and can extend itself" from
+becoming a foot-gun.
+```
+
+> Accuracy note: distinct body from H2 (on-chain architecture, not the SDK). **No diamond
+> address pinned** — identity/mint correctly labeled Tempo mainnet (chain 4217); x402 + the
+> economy facets are described as diamond mechanisms WITHOUT a mainnet-live assertion (the
+> testnet-vs-mainnet cut nuance). `$LH` framed as a usage credit; self-funding named as an OPEN
+> problem; no earnings/financial claim. No model-selector claim is made here. Clean.
+
 ---
 
 ## Posting order & spacing (operator quick-ref)
 
 **AUTO lane (loop enqueues; human flips each live):**
 1. **GitHub** description + topics — fire immediately (instant, zero risk).
-2. **dev.to** article — fire same day (human flips `published: true`).
+2. **dev.to** article #1 (#2) — fire same day (human flips `published: true`).
 3. **X** launch (#3) — fire same day.
 4. **X** technical hook (#4) — **next day or later**; never the same hour as #3.
 5. **X** build-in-public thread (#6) — **another day later**; never the same hour as #3/#4.
-6. **LinkedIn** (#5) — fire once Community Management API approval lands (may lag).
+6. **dev.to** article #2 (#2b) — **≥1 week after article #1**; distinct angle, never the same day.
+7. **LinkedIn** (#5) — fire once Community Management API approval lands (may lag).
 
 **HUMAN-GATED lane (a human posts manually, in their own voice — never the loop):**
 - **Show HN** (H1) — once, a US-morning weekday; NO automation, NO upvote solicitation.
 - **Reddit r/rust** (H2) — from an aged account, only when the 9:1 budget is healthy; never
   cross-post the identical body to another sub.
+- **Reddit r/ethdev** (H3) — from an aged account, only when the 9:1 budget is healthy; **distinct
+  body from H2** (on-chain architecture, not the SDK) — never the same text in two subs; space it
+  well apart from the r/rust post.
 
 Cross-cutting rules that still apply at fire time (`RISKS.md`): no cross-agent
 likes/RTs/upvotes (voting-ring → domain ban); per-day post ceiling enforced; topic

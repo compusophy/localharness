@@ -3,6 +3,18 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 4 — 2026-06-30)
+
+- ✅ CLI twin shipped & verified — `company found`/`company status` (broadcast-free
+  preview without `--confirm`); native check + drift PASS; no tx broadcast.
+- ✅ `DECISIONS.md` — consolidated owner decision brief (8 calls, recs, reply menu).
+- ✅ Marketing: 2nd dev.to (x402+6551) + r/ethdev human-gated draft.
+
+## ⏸ BLOCKED ON OWNER (see DECISIONS.md — answer to proceed)
+
+- Testnet-dogfood greenlight (unblocks the next QA tick) · build-vs-reset · social creds
+  · address relabel · sponsor float · MTL/`$LH` · draft-PR-to-main autonomy.
+
 ## DONE (tick 3 — 2026-06-30)
 
 - ✅ `found_company` WRITE half shipped & wasm/drift-verified — full Model-A founding
@@ -17,20 +29,21 @@ the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 - ✅ Marketing accuracy pass + DEVTO-ARTICLE + READY-QUEUE.
 - ✅ Loop guardrails (`LOOP-PROTOCOL.md` + `loop-secret-scan.sh`, budgets, idempotency).
 
-## NEXT TICK (highest leverage)
+## NEXT TICK (non-owner-blocked — productive without answers)
 
-- **[Product][M][H] CLI twin of `found_company`** — `src/bin/localharness/company.rs`
-  + main.rs dispatch, so headless founding matches the browser tool (enables the QA
-  dogfood). Branch only.
-- **[QA][S][H] Dogfood the full create→read cycle on TESTNET** — found a company via
-  the new CLI against Moderato (chain 42431, the safe `0x6c31c01e…` diamond), then
-  `company_status` it back. Proves the pipeline end-to-end with zero mainnet spend.
-- **[Owner-review][S][M] Relabel CLAUDE.md/AGENTS.md address table** — per
-  `ADDRESS-DRIFT.md`: mark the `0x6c31c01e…` set as "Moderato testnet (42431)" and make
-  the mainnet `0x8ab4f3a5…` row primary. LOCKSTEP edit (drift guard). NEEDS OWNER OK
-  (ties to the pending mainnet reset) — do not auto-apply.
-- **[Marketing][S][M] Draft the r/ethdev + a 2nd dev.to angle** (human-gated), keeping
-  bodies distinct from r/rust (no identical cross-post).
+- **[Product][M][H] Phase-2 `run_work_cycle` core** — hoist the deterministic
+  colony.rs work-allocation cores into a pure, natively-testable module (escrow→claim→
+  judge→pay→attest decision logic), no on-chain writes. Sets up the "company actually
+  does work" loop. Branch only.
+- **[QA][S][M] Harden `found_company` + the CLI** — integration tests for the preview/
+  manifest path, error cases (bad roles, zero treasury), and a `company found` golden
+  preview test. No chain contact.
+- **[Marketing][S][M] Add a LinkedIn long-form + a 3rd X thread** (founder-story angle),
+  keep accuracy rules; expand READY-QUEUE.
+- **[Docs][S][M] Write a user-facing "Found a company" quickstart** (browser tool + CLI),
+  grounded in the shipped surface.
+- *(Owner-gated items — testnet dogfood, address relabel, mainnet founding — wait on
+  DECISIONS.md and are NOT auto-run.)*
 
 ## Ranked backlog (from STRATEGY.md)
 
