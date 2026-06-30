@@ -524,6 +524,13 @@ GUILDS & GOVERNANCE
                                          company's workers (members+roles+reputation),
                                          treasury, and open bounties — prints the planned
                                          actions; nothing is executed or broadcast
+  localharness company forecast [--as <me>] <guildId|name> [--cycles <n>] [--cost-per-cycle <lh>] [--revenue-per-accepted <lh>] [--submit-quality <0-5>]
+                                         READ-ONLY multi-cycle projection: build the same
+                                         live board `plan` reads, then run the simulation
+                                         core forward over N cycles and print the per-cycle
+                                         treasury/accepted/net trajectory, the runway verdict,
+                                         and run totals. cost/revenue/quality are MODEL INPUTS
+                                         (not on-chain); nothing is executed or broadcast
   localharness company payroll [--as <me>] <guildId|name> [--fraction <0..1|NN%>] [--by-rep]
                                          READ-ONLY: treasury $LH + each role's TBA/balance +
                                          a SUGGESTED payout split (even, or --by-rep

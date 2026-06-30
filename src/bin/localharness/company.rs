@@ -5,7 +5,8 @@ use crate::{
 use localharness::accounting::{
     breakeven_price, is_self_funding, net_position, relies_on_seed, runway_cycles, Ledger,
 };
-use localharness::work_cycle::{Action, Criteria, Role, Stage, Task, WorkerState};
+use localharness::simulation::{simulate, Forecast, SimConfig};
+use localharness::work_cycle::{Action, Backlog, Criteria, Role, Stage, State, Task, WorkerState};
 use localharness::work_cycle_runtime::{plan_cycle, CyclePlan, Reader};
 
 // ---- company (CLI twin of the browser found_company / company_status tools) ---
@@ -24,7 +25,7 @@ use localharness::work_cycle_runtime::{plan_cycle, CyclePlan, Reader};
 // roster is the founder wearing many personas (named, not faked).
 
 pub(crate) const COMPANY_USAGE: &str = "\
-usage: localharness company <found|status|plan|payroll|books|day> ...
+usage: localharness company <found|status|plan|forecast|payroll|books|day> ...
   company found  [--as <me>] <name> <mission...> [--roles a,b,c]
                  [--seed-treasury <lh>] [--prefund-each <lh>] [--confirm]
                                         stand up a whole company: an on-chain guild
@@ -42,6 +43,15 @@ usage: localharness company <found|status|plan|payroll|books|day> ...
                                         (members+roles+reputation), treasury, and open
                                         bounties, then dry-run ONE work cycle and print
                                         the planned Actions. Nothing is executed/broadcast.
+  company forecast [--as <me>] <guildId|name> [--cycles <n>]
+                 [--cost-per-cycle <lh>] [--revenue-per-accepted <lh>]
+                 [--submit-quality <0-5>]
+                                        READ-ONLY multi-cycle projection: build the same live
+                                        board `plan` reads, then run the `simulation` core
+                                        forward over N cycles and print the per-cycle treasury/
+                                        accepted/net trajectory, the runway verdict, and the
+                                        run totals. cost/revenue/quality are MODEL INPUTS (not
+                                        on-chain); nothing is executed or broadcast.
   company payroll [--as <me>] <guildId|name> [--fraction <0..1|NN%>] [--by-rep]
                                         READ-ONLY: print the treasury $LH + each role's
                                         TBA + balance + a SUGGESTED payout split (even, or
@@ -252,6 +262,7 @@ pub(crate) async fn company(caller: Option<&str>, rest: &[String]) -> i32 {
                 2
             }
         },
+        Some("forecast") => company_forecast(caller, &rest[1..]).await,
         Some("payroll") => company_payroll(caller, &rest[1..]).await,
         Some("books") => company_books(caller, &rest[1..]).await,
         Some("day") => company_day(caller, &rest[1..]).await,
@@ -1434,6 +1445,226 @@ fn format_day(
     lines.join("\n")
 }
 
+// ---- company forecast (READ-ONLY multi-cycle projection) --------------------
+//
+// Builds the SAME live board `company plan` reads (the `ChainReader` path:
+// treasury + workers + open bounties), then runs the PURE `simulation::simulate`
+// core forward over N cycles and prints the company's projected TRAJECTORY —
+// per-cycle treasury / accepted / net position, the runway verdict, and the run
+// totals (final treasury, throughput, the honest self-funding / seed-reliance
+// books). cost-per-cycle / revenue-per-accepted / submit-quality are MODEL INPUTS
+// (NOT on-chain) — the documented `SimConfig` knobs — labeled as such throughout.
+// NEVER signs, broadcasts, or moves `$LH`: a `Forecast` is a projection, not a
+// commitment. Honors `LH_CHAIN` (the board reads route through the same registry
+// helpers as `plan`).
+
+const FORECAST_USAGE: &str = "usage: localharness company forecast [--as <me>] <guildId|name> \
+[--cycles <n>] [--cost-per-cycle <lh>] [--revenue-per-accepted <lh>] [--submit-quality <0-5>]";
+
+/// Forecast horizon when `--cycles` is omitted.
+const DEFAULT_FORECAST_CYCLES: usize = 12;
+/// Hard cap on `--cycles` so a zero-cost (never-runs-out) projection can't print
+/// an unbounded table.
+const MAX_FORECAST_CYCLES: usize = 1000;
+
+/// Parse `--cycles <n>` into a horizon (1..=[`MAX_FORECAST_CYCLES`]); absent/empty
+/// → [`DEFAULT_FORECAST_CYCLES`]. Pure; clean error, never a panic.
+fn parse_cycles(arg: Option<&str>) -> Result<usize, String> {
+    match arg.map(str::trim) {
+        Some(s) if !s.is_empty() => {
+            let n = s
+                .parse::<usize>()
+                .map_err(|_| format!("invalid --cycles '{s}' — pass a whole number of cycles"))?;
+            if n == 0 {
+                return Err("--cycles must be at least 1".to_string());
+            }
+            if n > MAX_FORECAST_CYCLES {
+                return Err(format!("--cycles must be {MAX_FORECAST_CYCLES} or fewer"));
+            }
+            Ok(n)
+        }
+        _ => Ok(DEFAULT_FORECAST_CYCLES),
+    }
+}
+
+/// Parse `--submit-quality <0-5>` into the fixed delivery quality the forecast
+/// assumes; absent/empty → the doer-grade [`DEFAULT_MIN_QUALITY`]. Pure; rejects
+/// out-of-range / garbage cleanly.
+fn parse_quality(arg: Option<&str>) -> Result<u8, String> {
+    match arg.map(str::trim) {
+        Some(s) if !s.is_empty() => {
+            let q = s
+                .parse::<u8>()
+                .map_err(|_| format!("invalid --submit-quality '{s}' — pass a whole number 0..=5"))?;
+            if q > 5 {
+                return Err("--submit-quality must be between 0 and 5".to_string());
+            }
+            Ok(q)
+        }
+        _ => Ok(DEFAULT_MIN_QUALITY),
+    }
+}
+
+/// `company forecast <guildId|name> [--cycles <n>] [--cost-per-cycle <lh>]
+/// [--revenue-per-accepted <lh>] [--submit-quality <0-5>]` — READ-ONLY. Builds the
+/// live board (the same [`ChainReader`] path `company plan` uses), runs
+/// [`simulate`] forward over the horizon with the flag config, and prints the
+/// projected trajectory. Honors `LH_CHAIN`. Executes / broadcasts NOTHING.
+pub(crate) async fn company_forecast(caller: Option<&str>, args: &[String]) -> i32 {
+    let (vals, positional) = match collect_flags(
+        args,
+        ["--cycles", "--cost-per-cycle", "--revenue-per-accepted", "--submit-quality"],
+        FORECAST_USAGE,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let [cycles_arg, cost_arg, rev_arg, quality_arg] = vals;
+    let Some(target) = positional.first() else {
+        eprintln!("{FORECAST_USAGE}");
+        return 2;
+    };
+
+    let cycles = match parse_cycles(cycles_arg.as_deref()) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("company forecast: {e}");
+            return 2;
+        }
+    };
+    let cost_per_cycle = match parse_amount_flag(cost_arg.as_deref(), "--cost-per-cycle") {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("company forecast: {e}");
+            return 2;
+        }
+    };
+    let revenue_per_accepted_task = match parse_amount_flag(rev_arg.as_deref(), "--revenue-per-accepted") {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("company forecast: {e}");
+            return 2;
+        }
+    };
+    let submit_quality = match parse_quality(quality_arg.as_deref()) {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("company forecast: {e}");
+            return 2;
+        }
+    };
+
+    let guild_id = match resolve_company_guild_id(caller, target).await {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    let reader = match ChainReader::load(guild_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("company forecast: {e}");
+            return 1;
+        }
+    };
+    let name = registry::guild_name(guild_id).await.unwrap_or_default();
+    let treasury_addr = registry::guild_address(guild_id).await.unwrap_or_default();
+    let label = if name.is_empty() {
+        format!("company #{guild_id}")
+    } else {
+        format!("company #{guild_id} '{name}'")
+    };
+
+    // Build the initial work-cycle state from the live board (the SAME reads
+    // `plan` uses) and project it forward — pure, no further chain contact.
+    let cfg = SimConfig { cycles, cost_per_cycle, revenue_per_accepted_task, submit_quality };
+    let initial = State {
+        backlog: Backlog { tasks: reader.tasks },
+        workers: reader.workers,
+        treasury: reader.treasury,
+    };
+    let forecast = simulate(initial, &cfg);
+    println!("{}", format_forecast(&label, &treasury_addr, &cfg, &forecast));
+    0
+}
+
+/// Format a [`Forecast`] for `company forecast` — the model/preview banner, the
+/// on-chain starting treasury, the labeled MODEL INPUTS, the per-cycle
+/// treasury/accepted/net projection, the runway verdict, and the run totals (the
+/// honest `accounting` books). Pure (testable), reads no chain — the caller runs
+/// [`simulate`] and hands the result in. Moves / broadcasts NOTHING.
+fn format_forecast(label: &str, treasury_addr: &str, cfg: &SimConfig, f: &Forecast) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("FORECAST (model/preview only — nothing executed)".to_string());
+    lines.push(format!("{label} — {}-cycle forecast", cfg.cycles));
+    // The starting treasury == the run's seed (set by `simulate` from the initial).
+    lines.push(format!(
+        "  treasury (on-chain start):  {}  ({treasury_addr})",
+        fmt_lh(f.final_ledger.seed_capital)
+    ));
+    lines.push("  model inputs (NOT on-chain):".to_string());
+    lines.push(format!("    cycles:               {}", cfg.cycles));
+    lines.push(format!("    cost per cycle:       {}", fmt_lh(cfg.cost_per_cycle)));
+    lines.push(format!("    revenue per accepted: {}", fmt_lh(cfg.revenue_per_accepted_task)));
+    lines.push(format!("    submit quality:       {} / 5", cfg.submit_quality));
+
+    if f.snapshots.is_empty() {
+        lines.push("  per-cycle projection: none — zero-cycle horizon".to_string());
+    } else {
+        lines.push(format!("  per-cycle projection ({} cycle(s)):", f.snapshots.len()));
+        lines.push(format!("    {:<6} {:<18} {:<9} {}", "cycle", "treasury", "accepted", "net position"));
+        for s in &f.snapshots {
+            lines.push(format!(
+                "    {:<6} {:<18} {:<9} {}",
+                s.cycle,
+                fmt_lh(s.treasury),
+                s.tasks_accepted_this_cycle,
+                fmt_lh_signed(s.net_position),
+            ));
+        }
+    }
+
+    // Runway verdict: the first cycle the treasury couldn't fund, or full survival.
+    match f.ran_out_at {
+        Some(c) => lines.push(format!(
+            "  runway:  RAN OUT at cycle {c} — funded {} of {} cycle(s)",
+            f.snapshots.len(),
+            cfg.cycles
+        )),
+        None => lines.push(format!("  runway:  survives all {} cycle(s)", cfg.cycles)),
+    }
+
+    // Run totals — the honest `accounting` books at the end of the projection.
+    let net = net_position(&f.final_ledger);
+    lines.push("  totals:".to_string());
+    lines.push(format!("    cycles run:         {}", f.snapshots.len()));
+    lines.push(format!("    tasks accepted:     {}", f.total_accepted));
+    lines.push(format!("    final treasury:     {}", fmt_lh(f.final_treasury)));
+    lines.push(format!(
+        "    net position:       {}  (earned revenue − cost; seed EXCLUDED)",
+        fmt_lh_signed(net)
+    ));
+    lines.push(format!(
+        "    self-funding:       {}",
+        if is_self_funding(&f.final_ledger) {
+            "yes — earned revenue covers cost"
+        } else {
+            "no — earned revenue below cost"
+        }
+    ));
+    lines.push(format!(
+        "    relies on seed:     {}",
+        if relies_on_seed(&f.final_ledger) {
+            "yes — seed plugged the gap"
+        } else {
+            "no"
+        }
+    ));
+    lines.push("FORECAST is a model/projection only — nothing executed, signed, or broadcast.".to_string());
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2079,6 +2310,120 @@ mod tests {
         // Broke with a bill due → not self-funding, but no seed injected → not reliant.
         assert!(out.contains("no — earned revenue below cost"));
         assert!(!out.contains("yes — seed plugged the gap this period"));
+    }
+
+    // ---- company forecast (READ-ONLY multi-cycle projection) — pure cores. NO
+    // chain contact: the flag parsers are exercised directly, and the formatter is
+    // fed a real `Forecast` produced by running the pure `simulation::simulate`
+    // over a hand-built board (mirrors the simulation core's own tests). ----
+
+    /// A task fixture at an explicit stage (the forecast tests need `Assigned`
+    /// pre-staged tasks the projection delivers, not just `Posted`).
+    fn fc_task(id: u64, reward: u128, min_quality: u8, stage: Stage) -> Task {
+        Task { id, role: Role::Coder, reward, min_reputation: 0, criteria: Criteria { min_quality }, stage }
+    }
+
+    #[test]
+    fn forecast_flag_parsers_default_and_validate() {
+        // --cycles: absent/empty → default; valid trims; 0 / garbage / over-cap error.
+        assert_eq!(parse_cycles(None).unwrap(), DEFAULT_FORECAST_CYCLES);
+        assert_eq!(parse_cycles(Some("")).unwrap(), DEFAULT_FORECAST_CYCLES);
+        assert_eq!(parse_cycles(Some("  20 ")).unwrap(), 20);
+        assert!(parse_cycles(Some("0")).is_err());
+        assert!(parse_cycles(Some("nope")).is_err());
+        assert!(parse_cycles(Some("100000")).is_err()); // over MAX_FORECAST_CYCLES
+
+        // --submit-quality: absent → doer-grade default; 0..=5 ok; >5 / garbage error.
+        assert_eq!(parse_quality(None).unwrap(), DEFAULT_MIN_QUALITY);
+        assert_eq!(parse_quality(Some("0")).unwrap(), 0);
+        assert_eq!(parse_quality(Some("5")).unwrap(), 5);
+        assert!(parse_quality(Some("6")).is_err());
+        assert!(parse_quality(Some("x")).is_err());
+    }
+
+    #[test]
+    fn format_forecast_renders_a_self_sustaining_projection() {
+        // A pre-staged Assigned task delivered at quality 5 ≥ its bar earns revenue
+        // (100) that dwarfs the reward payout (10) and the per-cycle cost (5), so the
+        // treasury ENDS above where it started and the run never stalls.
+        let cfg = SimConfig {
+            cycles: 6,
+            cost_per_cycle: 5 * LH,
+            revenue_per_accepted_task: 100 * LH,
+            submit_quality: 5,
+        };
+        let initial = State {
+            backlog: Backlog { tasks: vec![fc_task(1, 10 * LH, 3, Stage::Assigned { worker_id: 7 })] },
+            workers: vec![WorkerState { id: 7, role: Role::Coder, reputation: 0, available: false }],
+            treasury: 1_000 * LH,
+        };
+        let f = simulate(initial, &cfg);
+        let out = format_forecast("company #5 'acme'", "0xtreasury", &cfg, &f);
+
+        // Banner makes clear this is a model/projection — nothing executed.
+        assert!(out.starts_with("FORECAST (model/preview only — nothing executed)"));
+        assert!(out.contains("company #5 'acme' — 6-cycle forecast"));
+        // The on-chain starting treasury (the run's seed) is the live figure.
+        assert!(out.contains("treasury (on-chain start):  1000.00 LH  (0xtreasury)"));
+        // Cost / revenue / quality are labeled MODEL INPUTS, not on-chain.
+        assert!(out.contains("model inputs (NOT on-chain):"));
+        assert!(out.contains("cost per cycle:       5.00 LH"));
+        assert!(out.contains("revenue per accepted: 100.00 LH"));
+        assert!(out.contains("submit quality:       5 / 5"));
+        // A per-cycle projection row table is printed for all 6 funded cycles.
+        assert!(out.contains("per-cycle projection (6 cycle(s)):"));
+        // Funded the whole horizon (revenue keeps it solvent).
+        assert!(out.contains("runway:  survives all 6 cycle(s)"));
+        // Totals: one accept, grew to 1060, genuinely self-funding (not seed-propped).
+        assert!(out.contains("tasks accepted:     1"));
+        assert!(out.contains("final treasury:     1060.00 LH"));
+        assert!(out.contains("net position:       60.00 LH")); // +100 earned − 40 cost
+        assert!(out.contains("self-funding:       yes — earned revenue covers cost"));
+        assert!(out.contains("relies on seed:     no"));
+        assert!(out
+            .trim_end()
+            .ends_with("FORECAST is a model/projection only — nothing executed, signed, or broadcast."));
+    }
+
+    #[test]
+    fn format_forecast_flags_the_runway_wall() {
+        // Empty board, pure burn (30/cycle) from a 100 seed: 100→70→40→10, then cycle
+        // 3 can't be afforded (10 < 30) → RAN OUT at cycle 3, seed burned, no earnings.
+        let cfg = SimConfig {
+            cycles: 10,
+            cost_per_cycle: 30 * LH,
+            revenue_per_accepted_task: 0,
+            submit_quality: 5,
+        };
+        let initial = State { backlog: Backlog::default(), workers: vec![], treasury: 100 * LH };
+        let f = simulate(initial, &cfg);
+        let out = format_forecast("company #9", "0xpot", &cfg, &f);
+
+        // Runway verdict names the exhaustion cycle and how far the seed stretched.
+        assert!(out.contains("runway:  RAN OUT at cycle 3 — funded 3 of 10 cycle(s)"));
+        assert!(out.contains("per-cycle projection (3 cycle(s)):"));
+        assert!(out.contains("70.00 LH")); // a projected mid-run treasury row
+        // Totals: burned the seed (90 LH cost), earned nothing → seed-reliant.
+        assert!(out.contains("tasks accepted:     0"));
+        assert!(out.contains("net position:       -90.00 LH"));
+        assert!(out.contains("self-funding:       no — earned revenue below cost"));
+        assert!(out.contains("relies on seed:     yes — seed plugged the gap"));
+    }
+
+    #[test]
+    fn format_forecast_handles_a_zero_cycle_horizon() {
+        // A 0-cycle run yields no snapshots — the formatter degrades gracefully and
+        // still carries the read-only assurance (no panic on an empty projection).
+        let cfg = SimConfig { cycles: 0, cost_per_cycle: LH, revenue_per_accepted_task: LH, submit_quality: 3 };
+        let f = simulate(State { backlog: Backlog::default(), workers: vec![], treasury: 42 * LH }, &cfg);
+        let out = format_forecast("company #1", "0xabc", &cfg, &f);
+        assert!(out.starts_with("FORECAST (model/preview only — nothing executed)"));
+        assert!(out.contains("per-cycle projection: none — zero-cycle horizon"));
+        assert!(out.contains("runway:  survives all 0 cycle(s)"));
+        assert!(out.contains("final treasury:     42.00 LH"));
+        assert!(out
+            .trim_end()
+            .ends_with("FORECAST is a model/projection only — nothing executed, signed, or broadcast."));
     }
 
     // ---- INTEGRATION: the WHOLE `company` surface through the pure helpers /
