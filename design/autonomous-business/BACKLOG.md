@@ -3,6 +3,12 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 12 — 2026-06-30)
+
+- ✅ Marketing: `AUDIENCE-INTEL.md` (sourced market intelligence) + `CAMPAIGN-02.md`
+  (the `git log` transparency campaign).
+- ✅ `README.md` refreshed → points to STATUS.md/DECISIONS.md; reflects complete surface.
+
 ## DONE (tick 11 — 2026-06-30)
 
 - ✅ `company forecast` CLI over `simulation` — CLI surface now COMPLETE
@@ -77,22 +83,21 @@ the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 - ✅ Marketing accuracy pass + DEVTO-ARTICLE + READY-QUEUE.
 - ✅ Loop guardrails (`LOOP-PROTOCOL.md` + `loop-secret-scan.sh`, budgets, idempotency).
 
-## NEXT TICK (CLI + cores COMPLETE — loop now leans to perpetual marketing)
+## NEXT TICK (product complete + marketing deep — consolidate, then await owner)
 
-- **[Marketing][S][M] `CAMPAIGN-02`** — a second creative campaign on a distinct
-  audience/theme (e.g. a developer-technical angle, or the build-in-public "a company of
-  agents ran its own launch" meta-story), same accuracy + disclosure rules.
-- **[Marketing][S][M] Audience/competitive intel note** — where each target audience
-  gathers + the messaging that lands + a fair competitive-positioning refresh (the
-  perpetual market-intelligence a marketing function produces).
-- **[Polish][S][L] Refresh `design/autonomous-business/README`** to link STATUS.md +
-  reflect the now-complete file map.
+- **[Marketing][S][M] `LAUNCH-RUNBOOK.md`** — the turnkey "when creds land, fire in THIS
+  order" operator runbook: consolidates CALENDAR + READY-QUEUE + both campaigns
+  (`whoami` → `git log`) into one dated execution sequence with the per-step human-approval
+  gates, so day-one is mechanical the moment the owner provides tokens.
+- *(Then: marketing depth is high — further ticks risk low marginal value. Options: a
+  periodic AUDIENCE-INTEL refresh, a single new creative artifact, or hold for the owner.)*
 - *(Owner-gated — testnet dogfood, address relabel, mainnet founding, real social posting,
   the live Action executor — wait on DECISIONS.md; NOT auto-run.)*
 
-> Note: the product (CLI surface + 5 pure cores + example) is complete. Per the mission's
-> marketing emphasis, ticks now perpetually produce marketing/creative + small polish.
-> The substantive leaps (live execution, real posting) need the DECISIONS.md answers.
+> Note: BOTH the product (CLI + 5 cores + example) AND a deep marketing library (17 assets,
+> 2 campaigns, intel, SEO) are now in place. The honest high-value frontier is entirely
+> owner-gated (live execution, real posting). The loop will keep producing modest
+> non-blocked value, but the real unlock is the DECISIONS.md answers.
 
 ## Ranked backlog (from STRATEGY.md)
 

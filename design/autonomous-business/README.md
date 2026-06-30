@@ -20,20 +20,27 @@ instead of repeating.
 
 See `STRATEGY.md` for the full role→primitive mapping and the thesis.
 
+> **👉 Current state in one page: `STATUS.md`.** Owner decisions that gate the jump
+> from preview → live: `DECISIONS.md`. (The product surface — CLI + 5 pure cores +
+> a runnable example — is feature-complete; everything is read-only/preview on the
+> branch. The implementation lives in `src/` — `work_cycle`, `work_cycle_runtime`,
+> `accounting`, `hiring`, `simulation`, the `company` CLI, `examples/autonomous_company.rs`.)
+
 ## Files
 
 | File | What |
 |------|------|
+| `STATUS.md` | **One-page state of the business** (capabilities · marketing inventory · gated frontier) |
+| `DECISIONS.md` | The 8 owner-gated decisions (recommendations + reply menu) |
 | `STRATEGY.md` | Org-of-agents architecture, role→facet mapping, the thesis, blockers |
+| `ARCHITECTURE.md` | System map — pure-core ↔ I/O-shell boundary diagram |
+| `CONTRIBUTING.md` | How to add a role/capability + the verify gates |
 | `BACKLOG.md` | Prioritized cross-role queue (the loop pulls from here) |
 | `LEDGER.md` | Append-only progress log (one entry per tick) |
-| `COMPANY-FEATURE.md` | Design for the `found_company` product feature + build plan |
+| `COMPANY-FEATURE.md` / `FOUND-A-COMPANY.md` | `found_company` design + the user quickstart |
 | `roles/*.md` | 7 role-persona templates (usable as `set_persona` text) |
-| `marketing/BRAND.md` | Positioning, voice, audiences, differentiators, taglines |
-| `marketing/CONTENT.md` | Ready-to-post drafts (X, Reddit, HN, LinkedIn) + calendar |
-| `marketing/GROWTH.md` | Channel playbook, `[AUTO]/[APPROVE]/[NEVER]` matrix, KPIs |
-| `marketing/CREDENTIALS.template.md` | Exactly which creds to provide + how, securely |
-| `RISKS.md` | ToS/safety guardrails — the loop's hard fences |
+| `marketing/` | Brand, content, growth, campaigns (`whoami`, `git log`), audience intel, press kit, SEO, calendar, credentials template |
+| `RISKS.md` / `LOOP-PROTOCOL.md` | ToS/safety guardrails + the enforceable per-tick checklist |
 
 ## Hard guardrails (from RISKS.md — non-negotiable)
 

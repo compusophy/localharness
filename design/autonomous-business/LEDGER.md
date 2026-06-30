@@ -4,6 +4,37 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 12 — 2026-06-30T13:30Z
+<!-- tick-window: 2026-06-30T1330Z -->
+
+**Goal:** perpetual marketing (the mission's emphasis) now the product is complete —
+market intelligence + a 2nd campaign + README polish. Lean tick, no code/product churn.
+
+**Shipped (no code — pure marketing/docs; secret-scan clean):**
+- **MARKETING — `AUDIENCE-INTEL.md` (sourced 2026 web sweep):** real market intelligence.
+  Macro reframe: the agent-TOKEN cycle broke (ai16z ~-99.9% + a fraud class action) while
+  agent PAYMENTS got legitimized (x402 → Linux Foundation; Tempo mainnet; MCP ubiquity) →
+  lead with payments-rail + identity + no-server runtime, NEVER "token". Best channel per
+  segment: This Week in Rust / the x402 ecosystem / the MCP ecosystem. Sharpest wedge: the
+  same crate is BOTH the SDK and the deployed self-owned agent (no rival collapses those).
+- **MARKETING — `CAMPAIGN-02.md` (the `git log` campaign):** the trust second-act to
+  `whoami` — radical transparency as the moat ("instead of a demo, here's our git log").
+  Hero = the real public branch; the quotable receipt = the guardrail line that held every
+  tick (`0 writes · 0 $LH · 0 posts · 0 merges`). Turns AI-disclosure + open-self-funding
+  into the creative spine.
+- **POLISH — `README.md`:** points to STATUS.md/DECISIONS.md, reflects the complete surface.
+
+**State:** product complete; marketing library = 17 assets incl. 2 full campaigns + market
+intel. Loop is now in perpetual-marketing mode (the mission's standing directive) +
+awaiting the owner's DECISIONS.md answers for the live leaps.
+
+**Next tick:** more perpetual marketing/creative (intel refresh, a 3rd creative angle, or
+asset polish) — or owner answers. Owner-gated leaps still wait on DECISIONS.md.
+
+**Human-blocked → DECISIONS.md / STATUS.md** (8 decisions await answers).
+
+---
+
 ## Tick 11 — 2026-06-30T13:00Z
 <!-- tick-window: 2026-06-30T1300Z -->
 
