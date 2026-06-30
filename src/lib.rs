@@ -181,6 +181,16 @@ pub mod work_cycle_runtime;
 /// zero chain deps. See `src/accounting.rs`.
 pub mod accounting;
 
+/// PURE MULTI-CYCLE FORECAST core: runs [`work_cycle::step`] forward over N
+/// cycles from a [`simulation::SimConfig`] and projects the company's trajectory
+/// — per-cycle [`simulation::CycleSnapshot`]s (treasury, throughput, net
+/// position) plus the run [`simulation::Forecast`] (total accepted, runway
+/// [`simulation::Forecast::ran_out_at`], final [`accounting::Ledger`]). Each
+/// cycle injects the off-core delivery at a fixed assumed quality, advances one
+/// transition, and books revenue/costs. Preview ONLY — executes/broadcasts
+/// NOTHING. Native-testable, zero chain deps. See `src/simulation.rs`.
+pub mod simulation;
+
 /// Pure role-fit scoring core for the HR (People Ops / Recruiting) role of an
 /// autonomous company (`design/autonomous-business/roles/hr.md`): score + rank
 /// candidate agents against an open seat ([`hiring::RoleNeed`]) by exact role +

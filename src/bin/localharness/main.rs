@@ -535,6 +535,12 @@ GUILDS & GOVERNANCE
                                          flags, and print net position, runway, break-even
                                          price, and self-funding / seed-reliance. Cost/
                                          revenue/seed/calls are INPUTS, not on-chain
+  localharness company day [--as <me>] <guildId|name> [--period-cost <lh>] [--period-revenue <lh>] [--seed <lh>] [--calls <n>] [--fraction <0..1|NN%>] [--by-rep]
+                                         READ-ONLY what-would-the-company-do-today report:
+                                         does every read ONCE and prints, in one report, the
+                                         roster/status, the planned next work cycle, the
+                                         payroll suggestion, and the books snapshot — under
+                                         a PREVIEW banner. Nothing is executed or broadcast
   localharness guild create [--as <me>] <name>
                                          create an on-chain guild (org with members,
                                          roles, and a pooled $LH treasury); you're its admin

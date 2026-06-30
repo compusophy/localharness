@@ -24,7 +24,7 @@ use localharness::work_cycle_runtime::{plan_cycle, CyclePlan, Reader};
 // roster is the founder wearing many personas (named, not faked).
 
 pub(crate) const COMPANY_USAGE: &str = "\
-usage: localharness company <found|status|plan|payroll|books> ...
+usage: localharness company <found|status|plan|payroll|books|day> ...
   company found  [--as <me>] <name> <mission...> [--roles a,b,c]
                  [--seed-treasury <lh>] [--prefund-each <lh>] [--confirm]
                                         stand up a whole company: an on-chain guild
@@ -53,7 +53,15 @@ usage: localharness company <found|status|plan|payroll|books> ...
                                         figure), build an Accounting ledger from the
                                         ESTIMATE flags, and print net position, runway,
                                         break-even price, self-funding / seed-reliance.
-                                        Cost/revenue/seed/calls are INPUTS, not on-chain.";
+                                        Cost/revenue/seed/calls are INPUTS, not on-chain.
+  company day     [--as <me>] <guildId|name> [--period-cost <lh>]
+                 [--period-revenue <lh>] [--seed <lh>] [--calls <n>]
+                 [--fraction <0..1|NN%>] [--by-rep]
+                                        READ-ONLY \"what would the company do today\": does
+                                        every read ONCE and prints, in one report, the
+                                        roster/status, the planned next work cycle, the
+                                        payroll suggestion, and the books snapshot — under
+                                        a PREVIEW banner. Nothing is executed or broadcast.";
 
 const FOUND_USAGE: &str = "\
 usage: localharness company found [--as <me>] <name> <mission...> [--roles a,b,c] \
@@ -246,6 +254,7 @@ pub(crate) async fn company(caller: Option<&str>, rest: &[String]) -> i32 {
         },
         Some("payroll") => company_payroll(caller, &rest[1..]).await,
         Some("books") => company_books(caller, &rest[1..]).await,
+        Some("day") => company_day(caller, &rest[1..]).await,
         _ => {
             eprintln!("{COMPANY_USAGE}");
             2
@@ -586,21 +595,40 @@ pub(crate) async fn company_status(caller: Option<&str>, target: &str) -> i32 {
     } else {
         format!("company #{guild_id} '{name}'")
     };
-    println!("{label}");
-    println!("  treasury  {}  ({treasury_addr})", fmt_lh(treasury_wei));
-    if members.is_empty() {
-        println!("  no members (or the guild does not exist)");
-        return 0;
-    }
-    println!("  {} member(s):", members.len());
+    let mut member_roles: Vec<(String, String)> = Vec::with_capacity(members.len());
     for m in &members {
         let role = registry::role_of_guild(guild_id, m)
             .await
             .map(|r| r.label().to_string())
             .unwrap_or_else(|_| "?".to_string());
-        println!("    {m}  [{role}]");
+        member_roles.push((m.clone(), role));
     }
+    println!("{}", format_status(&label, &treasury_addr, treasury_wei, &member_roles));
     0
+}
+
+/// Format a company's roster for `company status` — the label, pooled treasury,
+/// and each member with its on-chain guild role. Pure (testable); takes the
+/// already-read `(member, role-label)` pairs so the chain reads happen once in the
+/// caller. An empty roster prints the "no members" line (the guild may not exist).
+fn format_status(
+    label: &str,
+    treasury_addr: &str,
+    treasury_wei: u128,
+    member_roles: &[(String, String)],
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(label.to_string());
+    lines.push(format!("  treasury  {}  ({treasury_addr})", fmt_lh(treasury_wei)));
+    if member_roles.is_empty() {
+        lines.push("  no members (or the guild does not exist)".to_string());
+        return lines.join("\n");
+    }
+    lines.push(format!("  {} member(s):", member_roles.len()));
+    for (m, role) in member_roles {
+        lines.push(format!("    {m}  [{role}]"));
+    }
+    lines.join("\n")
 }
 
 // ---- company plan / payroll (READ-ONLY previews) ----------------------------
@@ -945,40 +973,57 @@ pub(crate) async fn company_payroll(caller: Option<&str>, args: &[String]) -> i3
         rows.push(PayrollRow { label, role, tba, balance, reputation });
     }
 
-    let weights: Vec<u32> = rows.iter().map(|r| r.reputation).collect();
-    let (pool, payouts) = payroll_plan(treasury, fraction_bps, &weights, by_rep);
-
     let glabel = if name.is_empty() {
         format!("company #{guild_id}")
     } else {
         format!("company #{guild_id} '{name}'")
     };
-    println!("PREVIEW ONLY — nothing executed or broadcast");
-    println!("{glabel} — payroll suggestion");
-    println!("  treasury:        {}  ({treasury_addr})", fmt_lh(treasury));
-    println!("  payout fraction: {}  → pool {}", fmt_fraction(fraction_bps), fmt_lh(pool));
-    println!("  split:           {}", if by_rep { "reputation-weighted" } else { "even" });
+    println!("{}", format_payroll(&glabel, &treasury_addr, treasury, fraction_bps, by_rep, &rows));
+    0
+}
+
+/// Format a payroll suggestion for `company payroll` — the PREVIEW banner, the
+/// pooled treasury, the `--fraction` slice, the split mode, and each role's
+/// TBA/balance/reputation with its SUGGESTED payout (filled by [`payroll_plan`]).
+/// Pure (testable); moves no `$LH`. An empty roster prints the "nothing to pay"
+/// line. Shared by `company payroll` and `company day`.
+fn format_payroll(
+    glabel: &str,
+    treasury_addr: &str,
+    treasury: u128,
+    fraction_bps: u32,
+    by_rep: bool,
+    rows: &[PayrollRow],
+) -> String {
+    let weights: Vec<u32> = rows.iter().map(|r| r.reputation).collect();
+    let (pool, payouts) = payroll_plan(treasury, fraction_bps, &weights, by_rep);
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("PREVIEW ONLY — nothing executed or broadcast".to_string());
+    lines.push(format!("{glabel} — payroll suggestion"));
+    lines.push(format!("  treasury:        {}  ({treasury_addr})", fmt_lh(treasury)));
+    lines.push(format!("  payout fraction: {}  → pool {}", fmt_fraction(fraction_bps), fmt_lh(pool)));
+    lines.push(format!("  split:           {}", if by_rep { "reputation-weighted" } else { "even" }));
     if rows.is_empty() {
-        println!("  no members (or the guild does not exist) — nothing to pay");
-        return 0;
+        lines.push("  no members (or the guild does not exist) — nothing to pay".to_string());
+        return lines.join("\n");
     }
-    println!("  {} role(s):", rows.len());
+    lines.push(format!("  {} role(s):", rows.len()));
     let mut suggested_total: u128 = 0;
     for (r, pay) in rows.iter().zip(payouts.iter()) {
         suggested_total = suggested_total.saturating_add(*pay);
         let tba = r.tba.as_deref().unwrap_or("(TBA not deployed)");
-        println!(
+        lines.push(format!(
             "    {:<22} {:<10} TBA {tba}  bal {}  rep {}  → suggested {}",
             r.label,
             role_label(r.role),
             fmt_lh(r.balance),
             r.reputation,
             fmt_lh(*pay)
-        );
+        ));
     }
-    println!("  suggested total: {}", fmt_lh(suggested_total));
-    println!("NO transfers were made — this is a suggestion only.");
-    0
+    lines.push(format!("  suggested total: {}", fmt_lh(suggested_total)));
+    lines.push("NO transfers were made — this is a suggestion only.".to_string());
+    lines.join("\n")
 }
 
 /// Pure payroll math: a `fraction_bps`/10000 slice of `treasury_wei` split across
@@ -1175,6 +1220,217 @@ fn format_books(label: &str, treasury_addr: &str, ledger: &Ledger, calls: u64) -
         if seed_reliant { "yes — seed plugged the gap this period" } else { "no" }
     ));
     lines.push("Read-only — nothing executed, signed, or broadcast.".to_string());
+    lines.join("\n")
+}
+
+// ---- company day (READ-ONLY "what would the company do today" report) --------
+//
+// ONE read-only command that does every chain read ONCE, then composes the four
+// existing PURE formatters — roster/status, the planned next work cycle, the
+// payroll suggestion, and the books snapshot — into a single sectioned report
+// under a "PREVIEW ONLY" banner. It accepts the union of the `payroll`
+// (`--fraction`/`--by-rep`) and `books` (`--period-cost`/`--period-revenue`/
+// `--seed`/`--calls`) flags. NEVER signs, broadcasts, or moves `$LH`. Honors
+// `LH_CHAIN` (the reads route through the same registry helpers).
+
+const DAY_USAGE: &str = "usage: localharness company day [--as <me>] <guildId|name> \
+[--period-cost <lh>] [--period-revenue <lh>] [--seed <lh>] [--calls <n>] \
+[--fraction <0..1|NN%>] [--by-rep]";
+
+/// `company day <guildId|name> [flags]` — READ-ONLY daily report. Does every read
+/// ONCE (guild metadata + one pass over members + open bounties), then prints the
+/// roster/status, the planned next work cycle, the payroll suggestion, and the
+/// books snapshot in one report. Honors `LH_CHAIN`. Executes/broadcasts NOTHING.
+pub(crate) async fn company_day(caller: Option<&str>, args: &[String]) -> i32 {
+    let by_rep = args.iter().any(|a| a == "--by-rep");
+    let args: Vec<String> = args.iter().filter(|a| *a != "--by-rep").cloned().collect();
+    let (vals, positional) = match collect_flags(
+        &args,
+        ["--fraction", "--period-cost", "--period-revenue", "--seed", "--calls"],
+        DAY_USAGE,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let [fraction_arg, cost_arg, rev_arg, seed_arg, calls_arg] = vals;
+    let Some(target) = positional.first() else {
+        eprintln!("{DAY_USAGE}");
+        return 2;
+    };
+
+    // ---- flag parse (the SAME parsers `payroll`/`books` use) ---------------------
+    let fraction_bps = match fraction_arg.as_deref() {
+        Some(s) => match parse_fraction(s) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("company day: {e}");
+                return 2;
+            }
+        },
+        None => 10_000, // default: split the whole treasury
+    };
+    let period_costs = match parse_amount_flag(cost_arg.as_deref(), "--period-cost") {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("company day: {e}");
+            return 2;
+        }
+    };
+    let period_revenue = match parse_amount_flag(rev_arg.as_deref(), "--period-revenue") {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("company day: {e}");
+            return 2;
+        }
+    };
+    let seed_capital = match parse_amount_flag(seed_arg.as_deref(), "--seed") {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("company day: {e}");
+            return 2;
+        }
+    };
+    let calls = match calls_arg.as_deref().map(str::trim) {
+        Some(s) if !s.is_empty() => match s.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!("company day: invalid --calls '{s}' — pass a whole number of paid calls");
+                return 2;
+            }
+        },
+        _ => 1,
+    };
+
+    let guild_id = match resolve_company_guild_id(caller, target).await {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+
+    // ---- ONE read pass: guild metadata + a single sweep over the members --------
+    let name = registry::guild_name(guild_id).await.unwrap_or_default();
+    let treasury_addr = registry::guild_address(guild_id).await.unwrap_or_default();
+    let treasury = registry::treasury_balance_of(guild_id).await.unwrap_or(0);
+    let members = match registry::members_of_guild(guild_id).await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("company day: {e}");
+            return 1;
+        }
+    };
+    let label = if name.is_empty() {
+        format!("company #{guild_id}")
+    } else {
+        format!("company #{guild_id} '{name}'")
+    };
+
+    // Build, in ONE walk, the inputs all four sections need: the status roster
+    // (member + guild role), the work-cycle workers, and the payroll rows.
+    let mut member_roles: Vec<(String, String)> = Vec::with_capacity(members.len());
+    let mut workers: Vec<WorkerState> = Vec::with_capacity(members.len());
+    let mut payroll_rows: Vec<PayrollRow> = Vec::with_capacity(members.len());
+    for (idx, m) in members.iter().enumerate() {
+        let token_id = registry::main_of(m).await.unwrap_or(0);
+        let agent_name = if token_id != 0 {
+            registry::name_of_id(token_id).await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let reputation = if token_id != 0 {
+            registry::reputation_of(token_id)
+                .await
+                .map(|(_, sum)| sum.min(u32::MAX as u64) as u32)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        // (1) status: the member's on-chain GUILD role (member/officer/admin).
+        let guild_role = registry::role_of_guild(guild_id, m)
+            .await
+            .map(|r| r.label().to_string())
+            .unwrap_or_else(|_| "?".to_string());
+        member_roles.push((m.clone(), guild_role));
+        // (2) plan: a work-cycle worker (same shape as `ChainReader::load`).
+        let id = if token_id != 0 { token_id } else { (idx as u64) + 1 };
+        workers.push(WorkerState {
+            id,
+            role: role_from_name(&agent_name),
+            reputation,
+            available: true,
+        });
+        // (3) payroll: the role's TBA + spendable balance (same as `company_payroll`).
+        let tba = if token_id != 0 {
+            registry::tba_of_token_id(token_id).await.ok().flatten()
+        } else {
+            None
+        };
+        let balance = match &tba {
+            Some(addr) => registry::token_balance_of(addr).await.unwrap_or(0),
+            None => 0,
+        };
+        let plabel = if agent_name.is_empty() { m.clone() } else { agent_name };
+        let role = role_from_name(&plabel);
+        payroll_rows.push(PayrollRow { label: plabel, role, tba, balance, reputation });
+    }
+
+    let tasks = load_open_tasks(&members).await;
+    let reader = ChainReader { tasks, workers, treasury };
+    let plan = plan_cycle(&reader, PLAN_MAX_STEPS);
+    let ledger = Ledger { treasury, period_costs, period_revenue, seed_capital };
+
+    println!(
+        "{}",
+        format_day(
+            &label,
+            &treasury_addr,
+            treasury,
+            &member_roles,
+            &plan,
+            fraction_bps,
+            by_rep,
+            &payroll_rows,
+            &ledger,
+            calls,
+        )
+    );
+    0
+}
+
+/// Assemble the `company day` report from the four PURE section formatters
+/// ([`format_status`] / [`format_plan`] / [`format_payroll`] / [`format_books`])
+/// under a single "PREVIEW ONLY — read-only, nothing executed" banner. Pure
+/// (testable), reads no chain — the caller does the reads once and hands the
+/// pieces in. Composes, never re-implements, the per-command formatters.
+#[allow(clippy::too_many_arguments)] // a flat compositor of four section formatters
+fn format_day(
+    label: &str,
+    treasury_addr: &str,
+    treasury: u128,
+    member_roles: &[(String, String)],
+    plan: &CyclePlan,
+    fraction_bps: u32,
+    by_rep: bool,
+    payroll_rows: &[PayrollRow],
+    ledger: &Ledger,
+    calls: u64,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("PREVIEW ONLY — read-only, nothing executed".to_string());
+    lines.push(format!("{label} — daily report"));
+    lines.push(String::new());
+    lines.push("== roster / status ==".to_string());
+    lines.push(format_status(label, treasury_addr, treasury, member_roles));
+    lines.push(String::new());
+    lines.push("== next work cycle ==".to_string());
+    lines.push(format_plan(label, treasury_addr, plan));
+    lines.push(String::new());
+    lines.push("== payroll suggestion ==".to_string());
+    lines.push(format_payroll(label, treasury_addr, treasury, fraction_bps, by_rep, payroll_rows));
+    lines.push(String::new());
+    lines.push("== books (period snapshot) ==".to_string());
+    lines.push(format_books(label, treasury_addr, ledger, calls));
     lines.join("\n")
 }
 
@@ -1823,5 +2079,134 @@ mod tests {
         // Broke with a bill due → not self-funding, but no seed injected → not reliant.
         assert!(out.contains("no — earned revenue below cost"));
         assert!(!out.contains("yes — seed plugged the gap this period"));
+    }
+
+    // ---- INTEGRATION: the WHOLE `company` surface through the pure helpers /
+    // formatters over fixtures (found-preview, status, plan, payroll, books, day).
+    // NO chain, NO network — every section is fed pre-read fixtures, so a drift in
+    // any format reddens this one golden test and the layouts stay LOCKED. ----
+
+    /// A payroll-row fixture (the shape `company_payroll`/`company_day` build per
+    /// member from the chain reads).
+    fn payroll_row(label: &str, role: Role, tba: Option<&str>, balance: u128, rep: u32) -> PayrollRow {
+        PayrollRow { label: label.to_string(), role, tba: tba.map(String::from), balance, reputation: rep }
+    }
+
+    #[test]
+    fn company_surface_golden_end_to_end() {
+        // ---- (1) found-preview: the roster + treasury math the PREVIEW prints,
+        // via the SAME mirror helpers the found tests use (no broadcast path). ----
+        let subs = plan_subdomains("Acme Corp", None);
+        assert_eq!(subs.len(), 7); // the default seven role subdomains
+        assert_eq!(subs[0], "acme-corp-exec");
+        assert_eq!(subs[6], "acme-corp-mktg");
+        // seed 10 + prefund 2 × 7 roles = 24 $LH from the founder's wallet.
+        assert_eq!(plan_total_wei(None, Some("10"), Some("2")), 24 * LH);
+        // Fully-sponsored path: no funding flags → zero spend.
+        assert_eq!(plan_total_wei(None, None, None), 0);
+
+        // Shared label + treasury used across the read-only sections.
+        let label = "company #5 'acme'";
+        let treasury_addr = "0xtreasury";
+        let treasury = 100 * LH;
+
+        // ---- (2) status: roster + guild roles ----
+        let member_roles = vec![
+            ("0xowneraddr".to_string(), "admin".to_string()),
+            ("0xworkeraddr".to_string(), "member".to_string()),
+        ];
+        let status = format_status(label, treasury_addr, treasury, &member_roles);
+        assert!(status.starts_with("company #5 'acme'"));
+        assert!(status.contains("treasury  100.00 LH  (0xtreasury)"));
+        assert!(status.contains("2 member(s):"));
+        assert!(status.contains("0xowneraddr  [admin]"));
+        assert!(status.contains("0xworkeraddr  [member]"));
+        // An empty roster degrades to the "no members" line.
+        assert!(format_status(label, treasury_addr, treasury, &[])
+            .contains("no members (or the guild does not exist)"));
+
+        // ---- (3) plan: one open task + a matching coder → one AssignTask ----
+        let reader = MockReader {
+            tasks: vec![posted_task(1, Role::Coder, 50 * LH)],
+            workers: vec![WorkerState { id: 7, role: Role::Coder, reputation: 2, available: true }],
+            treasury,
+        };
+        let plan = plan_cycle(&reader, PLAN_MAX_STEPS);
+        let plan_out = format_plan(label, treasury_addr, &plan);
+        assert!(plan_out.starts_with("PREVIEW ONLY — nothing executed or broadcast"));
+        assert!(plan_out.contains("company #5 'acme' — work-cycle plan"));
+        assert!(plan_out.contains("planned actions (1):"));
+        assert!(plan_out.contains("assign task #1 → worker #7"));
+
+        // ---- (4) payroll: even split of the whole treasury across two roles ----
+        let rows = vec![
+            payroll_row("acme-coder", Role::Coder, Some("0xtba1"), 5 * LH, 3),
+            payroll_row("acme-review", Role::Reviewer, None, 0, 1),
+        ];
+        let pay_out = format_payroll(label, treasury_addr, treasury, 10_000, false, &rows);
+        assert!(pay_out.starts_with("PREVIEW ONLY — nothing executed or broadcast"));
+        assert!(pay_out.contains("company #5 'acme' — payroll suggestion"));
+        assert!(pay_out.contains("payout fraction: 100.00%  → pool 100.00 LH"));
+        assert!(pay_out.contains("split:           even"));
+        assert!(pay_out.contains("2 role(s):"));
+        // Whole-treasury even split across 2 rows → 50 LH each.
+        assert!(pay_out.contains("acme-coder") && pay_out.contains("→ suggested 50.00 LH"));
+        // A member without a deployed TBA is flagged, not crashed.
+        assert!(pay_out.contains("(TBA not deployed)"));
+        assert!(pay_out.contains("suggested total: 100.00 LH"));
+        assert!(pay_out.trim_end().ends_with("NO transfers were made — this is a suggestion only."));
+        // Reputation-weighted split reshapes the same pool (1:3 → 25 / 75).
+        let by_rep_out = format_payroll(label, treasury_addr, treasury, 10_000, true, &rows);
+        assert!(by_rep_out.contains("split:           reputation-weighted"));
+        assert!(by_rep_out.contains("→ suggested 75.00 LH")); // the coder (rep 3) of 1:3
+        // Empty roster → the "nothing to pay" line, no panic.
+        assert!(format_payroll(label, treasury_addr, treasury, 10_000, false, &[])
+            .contains("nothing to pay"));
+
+        // ---- (5) books: seed-propped loss snapshot ----
+        let ledger = Ledger {
+            treasury,
+            period_costs: 3 * LH,
+            period_revenue: LH,
+            seed_capital: 5 * LH,
+        };
+        let books_out = format_books(label, treasury_addr, &ledger, 1);
+        assert!(books_out.starts_with("ESTIMATE — only the treasury balance is on-chain"));
+        assert!(books_out.contains("net position:       -2.00 LH"));
+        assert!(books_out.contains("runway:             33 cycle(s) at 3.00 LH/cycle"));
+        assert!(books_out.contains("break-even price:   3.00 LH per call"));
+        assert!(books_out.contains("yes — seed plugged the gap this period"));
+
+        // ---- (6) day: ONE report composing all four sections under the banner ----
+        let day_out = format_day(
+            label,
+            treasury_addr,
+            treasury,
+            &member_roles,
+            &plan,
+            10_000,
+            false,
+            &rows,
+            &ledger,
+            1,
+        );
+        // The day-level banner + the section headers, in order.
+        assert!(day_out.starts_with("PREVIEW ONLY — read-only, nothing executed"));
+        assert!(day_out.contains("company #5 'acme' — daily report"));
+        let roster_at = day_out.find("== roster / status ==").expect("roster header");
+        let plan_at = day_out.find("== next work cycle ==").expect("plan header");
+        let payroll_at = day_out.find("== payroll suggestion ==").expect("payroll header");
+        let books_at = day_out.find("== books (period snapshot) ==").expect("books header");
+        assert!(roster_at < plan_at && plan_at < payroll_at && payroll_at < books_at);
+        // Each section's signature content is present (the formatters were reused,
+        // not re-implemented — so these mirror the standalone-command asserts above).
+        assert!(day_out.contains("0xowneraddr  [admin]")); // status
+        assert!(day_out.contains("assign task #1 → worker #7")); // plan
+        assert!(day_out.contains("payout fraction: 100.00%  → pool 100.00 LH")); // payroll
+        assert!(day_out.contains("net position:       -2.00 LH")); // books
+        // The nested per-section banners ride along (defense-in-depth read-only).
+        assert!(day_out.contains("PREVIEW ONLY — nothing executed or broadcast")); // plan/payroll
+        assert!(day_out.contains("ESTIMATE — only the treasury balance is on-chain")); // books
+        assert!(day_out.trim_end().ends_with("Read-only — nothing executed, signed, or broadcast."));
     }
 }
