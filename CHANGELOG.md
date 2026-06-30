@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.59.0] - 2026-06-30
+
+The **autonomous-business** layer: compose an on-chain "company" of role-agents and
+inspect its entire work cycle locally — read-only — before anything touches the chain.
+Built by composing existing economy primitives; no new on-chain surface.
+
+### Added
+
+- **`found_company` agent tool + `company found` CLI.** Stand up a business as a
+  `GuildFacet` guild (org identity + pooled `$LH` treasury TBA) with N role-agent
+  subdomains (coder, reviewer, PM, executive, accounting, HR, marketing), each with an
+  on-chain persona — one call composing only existing sponsored helpers. Value-moving, so
+  it is typed-confirmation **and** allowlist gated (like `set_persona`); the CLI mirrors
+  it and previews a broadcast-free plan unless `--confirm` is passed.
+- **`company` CLI — a read-only window onto a company.** `status`, `plan` (dry-run the
+  next work cycle off live chain reads), `payroll` (suggested split, no transfers),
+  `books` (net position / runway / breakeven), `day` (one-shot daily report), and
+  `forecast` (multi-cycle projection). None of these sign, broadcast, or move `$LH`.
+- **`set_role` + `attest` agent tools** — typed-confirmation-gated wrappers over the
+  guild-role and reputation facets.
+- **Five pure decision cores** (native + wasm, dependency-free, ~80 unit tests):
+  `work_cycle` (assign→judge→pay→attest modeled as data), `work_cycle_runtime` (previews
+  a cycle's actions, never executes), `accounting` (honest seed-vs-earned economics —
+  net position / runway / break-even), `hiring` (role-fit ranking; the single
+  implementation behind `work_cycle::assign_next_task`), and `simulation` (multi-cycle
+  forward forecast).
+- **`examples/autonomous_company.rs`** — a runnable, pure demo of the full loop (hiring →
+  work-cycle preview → honest books), no keys or chain access required.
+
+### Fixed
+
+- A `simulation` test used an always-true comparison (`x <= u128::MAX`) that tripped
+  `clippy::absurd_extreme_comparisons` under `-D warnings`; replaced with a meaningful
+  saturation assertion.
+
 ## [0.58.0] - 2026-06-27
 
 Correctness + reliability on the back of the 0.57.0 audit: signature-malleability
