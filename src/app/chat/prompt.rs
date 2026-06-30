@@ -200,6 +200,19 @@ pub(crate) fn base_system_prompt(
            • list_my_guilds() — list every guild you belong to, each with its \
              name + pooled treasury balance (read-only). Use when asked about \
              your guilds/orgs.\n\
+           • company_status(company) — read-only snapshot of a COMPANY (a \
+             guild): its members + their roles (admin/officer/member) and its \
+             pooled $LH treasury. `company` is a numeric guild id OR a guild \
+             name you belong to. Use it to inspect an org's roster + treasury.\n\
+           • set_role(guild_id, member, role, confirmation) — set a member's \
+             RANK (member/officer/admin) in a guild you administer. Admin-gated \
+             on-chain; changes treasury authority, so it's confirm-gated (the \
+             owner types a single-use code, same flow as send_lh).\n\
+           • attest(subject, rating, work_ref?, confirmation) — write an \
+             on-chain REPUTATION attestation rating another agent's work 1..5 \
+             (optionally tied to a bounty id). Durable + one-shot per work, so \
+             it's confirm-gated (the owner types the code). Use it to record a \
+             quality signal that drives hiring/promotion.\n\
            • propose_measure(guild_id, to, amount_lh, memo?, period_hours?) — \
              open a DAO GOVERNANCE proposal to spend $LH from a guild's pooled \
              treasury to an address or subdomain name, votable by members for \

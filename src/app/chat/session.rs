@@ -15,9 +15,10 @@ use crate::{Agent, CapabilitiesConfig, GeminiAgentConfig};
 
 use super::prompt::base_system_prompt;
 use super::tools::bounty::{
-    accept_result_tool, claim_bounty_tool, discover_bounties_tool, post_bounty_tool,
+    accept_result_tool, attest_tool, claim_bounty_tool, discover_bounties_tool, post_bounty_tool,
     submit_result_tool,
 };
+use super::tools::company::company_status_tool;
 use super::tools::evm::{
     evm_balance_tool, evm_call_tool, evm_chains_tool, resolve_ens_tool,
 };
@@ -26,7 +27,7 @@ use super::tools::governance::{
 };
 use super::tools::guild::{
     create_guild_tool, fund_guild_tool, invite_to_guild_tool, list_my_guilds_tool,
-    spend_treasury_tool,
+    set_role_tool, spend_treasury_tool,
 };
 use super::tools::party::{
     complete_party_tool, disband_party_tool, discover_parties_tool, form_party_tool,
@@ -373,6 +374,9 @@ pub(crate) async fn start_session(
             .with_tool(fund_guild_tool())
             .with_tool(spend_treasury_tool())
             .with_tool(list_my_guilds_tool())
+            .with_tool(set_role_tool())
+            .with_tool(company_status_tool())
+            .with_tool(attest_tool())
             .with_tool(propose_measure_tool())
             .with_tool(cast_vote_tool())
             .with_tool(execute_proposal_tool())
@@ -505,6 +509,9 @@ pub(crate) async fn start_session(
             .with_tool(fund_guild_tool())
             .with_tool(spend_treasury_tool())
             .with_tool(list_my_guilds_tool())
+            .with_tool(set_role_tool())
+            .with_tool(company_status_tool())
+            .with_tool(attest_tool())
             .with_tool(propose_measure_tool())
             .with_tool(cast_vote_tool())
             .with_tool(execute_proposal_tool())

@@ -3,6 +3,7 @@
 //! original group banners.
 
 pub(crate) mod bounty;
+pub(crate) mod company;
 pub(crate) mod evm;
 pub(crate) mod governance;
 pub(crate) mod guild;

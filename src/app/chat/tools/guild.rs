@@ -304,6 +304,87 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
+/// `set_role(guild_id, member, role, confirmation)` — set a member's RANK in a
+/// guild the caller administers (member / officer / admin). Admin-gated on-chain
+/// AND confirm-gated in-tab (it grants/changes authority over the treasury).
+/// Reuses `registry::set_role_sponsored`.
+pub(crate) fn set_role_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "guild_id": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The id of the guild you administer."
+            },
+            "member": {
+                "type": "string",
+                "description": "Whose role to set — a raw 0x… address OR a subdomain \
+                    name (resolved to that name's on-chain owner)."
+            },
+            "role": {
+                "type": "string",
+                "enum": ["member", "officer", "admin"],
+                "description": "The rank to assign: \"member\", \"officer\", or \
+                    \"admin\". (\"none\"/removal is not settable here.)"
+            },
+            "confirmation": {
+                "type": "string",
+                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. Relay \
+                    it, wait for the owner to TYPE the code in chat, then retry with it. \
+                    Never invent it; only the platform issues it."
+            }
+        },
+        "required": ["guild_id", "member", "role"]
+    });
+    ClosureTool::new(
+        "set_role",
+        "Set a member's RANK in a guild you administer — \"member\", \"officer\", or \
+         \"admin\". Admin-gated ON-CHAIN (only an Admin can set roles). Changes who can \
+         move the treasury (officer/admin can spend), so the first call does NOT \
+         execute: it returns a single-use confirmation code (also shown to the owner). \
+         State the member + new role, ask the owner to TYPE the code, then retry with \
+         `confirmation` set to it. Returns { guild_id, member, resolved_member, role, \
+         tx_hash }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let guild_id = args
+                .get("guild_id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| crate::error::Error::other("guild_id is required"))?;
+            let member_arg = args
+                .get("member")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let role_arg = args.get("role").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let role = crate::app::registry::GuildRole::parse(role_arg)
+                .map_err(crate::error::Error::other)?;
+            let member_hex = resolve_account(&member_arg).await?;
+            let (signer, fee_payer) = bounty_signers().await?;
+            let tx_hash = crate::app::registry::set_role_sponsored(
+                &signer,
+                &fee_payer,
+                guild_id,
+                &member_hex,
+                role.as_u8(),
+                crate::app::registry::ALPHA_USD_ADDRESS(),
+            )
+            .await
+            .map_err(|e| crate::error::Error::other(format!("set_role failed: {e}")))?;
+            Ok(serde_json::json!({
+                "guild_id": guild_id,
+                "member": member_arg,
+                "resolved_member": member_hex,
+                "role": role.label(),
+                "tx_hash": tx_hash,
+            }))
+        },
+    )
+}
+
 /// `list_my_guilds()` — read-only: every guild the caller belongs to, each with
 /// its name + pooled treasury balance. Reuses `registry::{guilds_of, guild_name,
 /// treasury_balance_of}`.

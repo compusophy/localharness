@@ -55,6 +55,14 @@ const CONFIRM_GATED: &[&str] = &[
     "send_lh",
     "batch_send_lh",
     "spend_treasury",
+    // Changes guild AUTHORITY (officer/admin can move the treasury), so a role
+    // grant is a privilege escalation the owner must approve — gated like a value
+    // move even though no `$LH` leaves directly.
+    "set_role",
+    // A reputation attestation is durable + one-shot per (subject, work_ref) and
+    // drives hiring/promotion; gate it so a model can't unilaterally write the
+    // quality signal.
+    "attest",
     // Updates a DIFFERENT owned subdomain's public face (cross-subdomain
     // on-chain write); gate it so a model can't silently overwrite an alt's
     // app from a MAIN session. (`create_and_publish_app` self-publish stays

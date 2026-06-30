@@ -346,3 +346,116 @@ pub(crate) fn discover_bounties_tool() -> std::sync::Arc<dyn crate::tools::Tool>
         },
     )
 }
+
+/// `attest(subject, rating, work_ref?, confirmation)` — write an on-chain
+/// REPUTATION attestation: rate another agent's work 1..5 about an optional
+/// `work_ref` (a bounty id). Reuses `registry::attest_sponsored`. Confirm-gated:
+/// an attestation is a durable, per-`(subject, work_ref)`-one-shot signal that
+/// drives hiring/promotion, so the owner confirms it like a value move.
+pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "subject": {
+                "type": "string",
+                "description": "Who you are rating — a subdomain NAME (resolved to its \
+                    on-chain tokenId) OR a raw numeric tokenId. Cannot be yourself."
+            },
+            "rating": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5,
+                "description": "Quality rating, an integer 1 (worst) to 5 (best)."
+            },
+            "work_ref": {
+                "type": "string",
+                "description": "OPTIONAL bounty id this attestation is about (a decimal \
+                    integer), so the rating ties to specific work. Omit for a general \
+                    attestation."
+            },
+            "confirmation": {
+                "type": "string",
+                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. Relay \
+                    it, wait for the owner to TYPE the code in chat, then retry with it. \
+                    Never invent it; only the platform issues it."
+            }
+        },
+        "required": ["subject", "rating"]
+    });
+    ClosureTool::new(
+        "attest",
+        "Write an on-chain REPUTATION attestation: rate another agent's work 1..5, \
+         optionally tied to a bounty id (`work_ref`). Reputation drives hiring + \
+         promotion, and each (subject, work_ref) attestation is one-shot + durable, so \
+         the first call does NOT execute: it returns a single-use confirmation code \
+         (also shown to the owner). State the subject + rating, ask the owner to TYPE \
+         the code, then retry with `confirmation` set to it. Reverts on a self-attest, \
+         an unknown subject, or a duplicate. Returns { subject, subject_token_id, \
+         rating, work_ref, tx_hash }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let subject_arg = args
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if subject_arg.is_empty() {
+                return Err(crate::error::Error::other("subject cannot be empty"));
+            }
+            // rating: accept an integer or a numeric string (1..=5).
+            let rating = args
+                .get("rating")
+                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())))
+                .ok_or_else(|| crate::error::Error::other("rating is required"))?;
+            if !(1..=5).contains(&rating) {
+                return Err(crate::error::Error::other("rating must be an integer 1-5"));
+            }
+            // subject → tokenId: a bare integer is a direct tokenId; otherwise resolve
+            // the subdomain name via id_of_name.
+            let subject_token_id = match subject_arg.parse::<u64>() {
+                Ok(id) if id != 0 => id,
+                _ => match crate::app::registry::id_of_name(&subject_arg).await {
+                    Ok(id) if id != 0 => id,
+                    Ok(_) | Err(_) => {
+                        return Err(crate::error::Error::other(format!(
+                            "subject \"{subject_arg}\" is not a registered agent (check the name)"
+                        )));
+                    }
+                },
+            };
+            // work_ref: an optional bounty id left-padded big-endian into the low 8
+            // bytes of the 32-byte word (the colony attest convention); empty = zero.
+            let work_ref_arg = args.get("work_ref").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let mut work_ref = [0u8; 32];
+            if !work_ref_arg.is_empty() {
+                let id = work_ref_arg.trim_start_matches('#').parse::<u64>().map_err(|_| {
+                    crate::error::Error::other(format!(
+                        "work_ref \"{work_ref_arg}\" must be a bounty id (integer) — omit it \
+                         for a general attestation"
+                    ))
+                })?;
+                work_ref[24..32].copy_from_slice(&id.to_be_bytes());
+            }
+            let (signer, fee_payer) = bounty_signers().await?;
+            let tx_hash = crate::app::registry::attest_sponsored(
+                &signer,
+                &fee_payer,
+                subject_token_id,
+                rating as u8,
+                work_ref,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
+            )
+            .await
+            .map_err(|e| crate::error::Error::other(format!("attest failed: {e}")))?;
+            Ok(serde_json::json!({
+                "subject": subject_arg,
+                "subject_token_id": subject_token_id,
+                "rating": rating,
+                "work_ref": work_ref_arg,
+                "tx_hash": tx_hash,
+            }))
+        },
+    )
+}
