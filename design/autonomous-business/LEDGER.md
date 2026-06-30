@@ -4,6 +4,44 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 2 — 2026-06-30T08:55Z
+<!-- tick-window: 2026-06-30T0830Z -->
+
+**Goal:** ship the first *compiling* code slice of `found_company`; harden the loop;
+advance marketing. Three role-agents (coder, marketing, ops) ran in parallel.
+
+**Shipped (verified — re-ran the gates myself):**
+- **CODE (real, compiles):** `company_status` (read-only: members + roles + treasury
+  `$LH` balance), `set_role`, `attest` browser agent tools — composing only existing
+  `registry::*_sponsored` helpers, zero new on-chain surface. Write tools are
+  confirm-gated; registered in both backend branches; `AGENT_TOOLS` + GEN docs updated.
+  NEW `src/app/chat/tools/company.rs`; edits to `mod/guild/bounty/session/confirm_guard/
+  prompt.rs` + `docs_manifest.rs` + `web/{llms.txt,skill.md}`.
+  - PASS `cargo check --no-default-features --features browser-app --target wasm32...`
+  - PASS `cargo test --features wallet no_doc_drift`
+- **OPS:** `LOOP-PROTOCOL.md` (enforceable per-tick checklist) + `loop-secret-scan.sh`
+  (commit-gate scanner). Budget ceilings: 0 on-chain writes / 0 `$LH` / 0 live posts,
+  <=6 agents, $5/tick + $40/day. Idempotency = UTC half-hour `tick-window` stamp (this
+  entry carries one) written last, so a double-fire no-ops but a crash stays re-runnable.
+- **MARKETING:** CONTENT.md accuracy pass (version -> **0.58.0** verified; OpenAI/Gemma
+  locked to SDK-only, never live in-app models per `src/app/model.rs`) + new
+  `DEVTO-ARTICLE.md` (Tier-1 long-form) + `READY-QUEUE.md` (5 publish-safe first-party
+  assets w/ FTC+EU-AI-Act disclosure).
+
+**Findings carried forward:**
+- **Address drift:** root `CLAUDE.md` diamond `0x6c31c01e...` vs `web/llms.txt`
+  `0x8ab4f3a5...` DISAGREE — backlogged (no marketing asset pins an address).
+- Adopted the ops idempotency window-stamp into the ledger format as of this tick.
+
+**Next tick:** `found_company` WRITE half (compose create_guild + role subdomains +
+invites + backlog seed, confirm+allowlist gated); dogfood `company_status` headless;
+fix the diamond-address drift.
+
+**Human-blocked (unchanged):** MTL/legal on transferable `$LH`; sponsor float + owner
+key; build-now-vs-RESET; social credentials.
+
+---
+
 ## Tick 1 — 2026-06-30 (bootstrap)
 
 **Goal:** stand up the autonomous-business workspace + first deliverables across all

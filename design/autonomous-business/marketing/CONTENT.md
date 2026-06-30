@@ -1,12 +1,15 @@
 # localharness — marketing content
 
 > Ready-to-publish drafts. Voice: technical, indie, no fluff. All claims grounded in
-> `web/skill.md` / `web/llms.txt` / `README.md` (crate 0.58.x, Tempo mainnet 4217).
-> Items flagged for human verification are listed at the bottom of this file.
+> `web/skill.md` / `web/llms.txt` / `README.md` (crate **0.58.0**, Tempo mainnet 4217).
+> Accuracy pass 2026-06-30: version, pricing, OpenAI-is-SDK-only, and the live two-model
+> selector all re-verified against source. Items flagged for human verification are at the
+> bottom of this file.
 
 Canonical facts used throughout (don't drift):
 - One Rust crate. `cargo add localharness`. Native (tokio) + `wasm32`. Apache-2.0, Rust 1.85+.
-- Model-agnostic: pluggable backends behind a `Connection` trait — Gemini (default, no flag), Anthropic/Claude (feature), OpenAI (feature), an offline Mock, and an opt-in in-browser Gemma. The **live in-browser app** model selector is Gemini Flash + Claude Opus.
+- Model-agnostic **SDK**: pluggable backends behind a `Connection` trait — Gemini (default, no flag), Anthropic/Claude (`feature = "anthropic"`), OpenAI (`feature = "openai"`, additive), and a deterministic offline Mock. A further `feature = "local"` runs Gemma 3 270M in-browser — **experimental, opt-in (~570MB weights), no live WebGPU run claimed**.
+- **The live in-browser app's model selector is exactly two: Gemini Flash (default) + Claude Opus (premium tier).** OpenAI and Gemma are SDK-only backends — NEVER frame either as a live in-app model (verified in `src/app/model.rs`).
 - Agents live at `<name>.localharness.xyz` — each an ERC-721 identity NFT on **Tempo mainnet (chain 4217)** with an ERC-6551 wallet, OPFS filesystem, on-chain persona, and tool surface.
 - Agents reach each other and **pay per call in `$LH`** over x402. Pricing: 1 `$LH`/message default (Gemini Flash); Claude Opus premium tier 20 `$LH`; fiat on-ramp $1 = 100 `$LH`.
 - `rustlite` = Rust-subset → wasm "cartridge" compiler; cartridges render to a pixel framebuffer, can be multiplayer (`host::mp`, up to 8 peers over WebRTC), and compose recursively (`host::compose`).
@@ -409,25 +412,31 @@ Assumes a launch on Day 1 (Mon, Week 1). One primary asset per day; "—" = no p
 
 ## Claims flagged for human verification
 
-1. **OpenAI backend** — the crate ships an OpenAI Chat Completions backend (feature `openai`), so
-   "Gemini/Claude/OpenAI/Mock" is accurate at the SDK level. BUT internal notes mark OpenAI as
-   "parked" and the **live in-browser app** model selector only offers Gemini Flash + Claude Opus.
-   Copy here only claims OpenAI as an SDK backend, never as a live platform model — confirm that
-   framing is acceptable before publishing.
-2. **Crate version** — drafts avoid pinning a version. Source-of-truth GEN block says **0.58.0**;
-   the root CLAUDE.md header still says 0.51.x (stale). Verify the current crates.io version if any
-   post needs a number.
+1. **OpenAI backend — RESOLVED (verified `src/app/model.rs`).** The crate ships an OpenAI Chat
+   Completions backend (feature `openai`), so "Gemini/Claude/OpenAI/Mock" is accurate *at the SDK
+   level only*. The **live in-browser app** selector is exactly Gemini Flash + Claude Opus — OpenAI is
+   parked and is NOT a live in-app model. All copy frames OpenAI strictly as an SDK backend, and the
+   canonical-facts block now states the rule explicitly. Safe to publish.
+2. **Crate version — VERIFIED 0.58.0.** Confirmed against the source of truth: `Cargo.toml`
+   (`version = "0.58.0"`), `src/docs_manifest.rs` (`env!("CARGO_PKG_VERSION")`), and the `web/llms.txt`
+   GEN block. The root CLAUDE.md header still reads 0.51.x (stale — a known drift, not the source of
+   truth). No published post pins a version number, so this is informational; if a post ever needs
+   one, use 0.58.x.
 3. **"Parties" (PartyFacet)** — deliberately NOT mentioned in any draft: it's built/tested but per
    the spec "NOT yet cut on the live diamond." Bounties, guilds, voting, reputation ARE cut/live and
    are the only economy primitives claimed. Confirm before adding parties anywhere.
-4. **In-browser Gemma (local model)** — omitted from all copy. It ships behind a feature flag but a
-   "live WebGPU run" is noted as pending and the weights download is ~570MB. Don't add "runs an LLM
-   fully in your browser, no key" without confirming a working live run.
+4. **In-browser Gemma (local model) — SOFTENED.** Mentioned only once (canonical facts) and now
+   explicitly marked experimental/opt-in (~570MB, no live WebGPU run claimed). It ships behind
+   `feature = "local"` but a live WebGPU run is pending. Never headline "runs an LLM fully in your
+   browser, no key" until a working live run is confirmed.
 5. **Demo URLs** — `slither.localharness.xyz` and `fractal.localharness.xyz` are cited as live in the
    spec/memory. Load both before each post that links them; multiplayer needs 2+ players to show off.
-6. **Pricing numbers** (1 `$LH`/msg default, 20 `$LH` Opus, $1 = 100 `$LH`) and **chain id 4217 /
-   diamond 0x8ab4f3a5…f3a77** come from the generated docs manifest. Re-check against
-   `localharness.xyz/llms.txt` at publish time in case of a re-cut or repricing.
+6. **Pricing — VERIFIED.** 1 `$LH`/msg default (Gemini Flash), Claude Opus premium 20 `$LH`, fiat
+   $1 = 100 `$LH` — matches `src/docs_manifest.rs::PRICING_SUMMARY` exactly; chain id 4217 confirmed.
+   **No post pins a diamond address** (CLAUDE.md's post-reset table and `llms.txt` currently DISAGREE
+   — `0x6c31c01e…` vs `0x8ab4f3a5…`), so there's nothing to publish-verify there; if ever needed, pull
+   the live address from `localharness.xyz/llms.txt` at publish time. Re-check pricing against
+   `llms.txt` before any post that quotes a number, in case of a re-cut or repricing.
 7. **"24/7, no tab" for published cartridges and scheduled jobs** — true per spec (off-chain app
    store + cron worker). The cron's 1-minute cadence depends on Vercel Pro; cadence claims in copy
    stay vague ("recurring," "no tab"), which is safe.

@@ -3,20 +3,28 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 2 — 2026-06-30)
+
+- ✅ `company_status` (read-only) + `set_role` + `attest` browser tools shipped &
+  wasm/drift-verified on the branch (the read half + the two gap wrappers).
+- ✅ Marketing accuracy pass (0.58.0 verified, OpenAI/Gemma SDK-only) + DEVTO-ARTICLE +
+  READY-QUEUE.
+- ✅ Loop guardrails operationalized (`LOOP-PROTOCOL.md` + `loop-secret-scan.sh`,
+  budgets, window-stamp idempotency).
+
 ## NEXT TICK (highest leverage)
 
-- **[Product][M][H] Ship `found_company` + `company_status` browser tools** — Model A
-  (solo-founder), backlog seeded into SessionRoom KV, composing only existing
-  sponsored helpers. Plus two ~30-LOC gap wrappers (`set_role`, `attest`). Additive,
-  confirm-gated, immediately dogfoodable (re-creates oggoel from one call). Files:
-  NEW `src/app/chat/tools/company.rs` + `roles.rs`; EDIT `guild.rs`, `bounty.rs`,
-  `mod.rs`, `session.rs`, `confirm.rs`, `prompt.rs`, `docs_manifest.rs`, `llms.txt`.
-  *(Build on a branch; do not auto-merge/deploy.)*
-- **[Marketing][S][M] Refine + dedup CONTENT.md drafts** and resolve the flagged
-  accuracy items (version 0.51.x→0.58.0 drift, OpenAI-as-SDK-only framing) so the
-  copy is publish-safe the moment creds land.
-- **[Ops][S][H] Implement the loop's own guardrails** (RISKS.md): per-tick budget
-  ceiling + idempotency key + secret-scan before commit + explicit-path `git add`.
+- **[Product][M][H] `found_company` WRITE half** — the remaining slice: compose
+  `create_guild_sponsored` + role-subdomain/persona setup + `invite_to_guild_sponsored`
+  + a `shared_state_set` backlog seed, returning a manifest that `company_status` reads
+  back. Allowlist + `CONFIRM_GATED` (mints + spends). Branch only; do not merge/deploy.
+- **[QA][S][H] Dogfood `company_status` headless** via the CLI against a known
+  guild/name to prove the read path end-to-end before depending on it.
+- **[Ops][S][M] Fix the diamond-address drift** — `CLAUDE.md` `0x6c31c01e…` vs
+  `llms.txt` `0x8ab4f3a5…`: identify the canonical post-reset address, correct the
+  source-of-truth (`docs_manifest` chain facts), regenerate GEN docs.
+- **[Marketing][S][M] Expand READY-QUEUE** with the Reddit (r/rust) + Show HN drafts as
+  *human-gated* entries (prepared, not auto), and a 2nd dev.to/X asset.
 
 ## Ranked backlog (from STRATEGY.md)
 
