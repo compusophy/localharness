@@ -169,6 +169,17 @@ pub fn encode_accept_guild_invite_calldata(guild_id: u64) -> Vec<u8> {
 /// Create a guild via a sponsored Tempo tx: `createGuild(name)` mints the org
 /// (caller becomes its Admin), returning the tx hash once mined. Read the new
 /// guildId back from `guilds_of(creator)` (its last entry, like `bounties_of`).
+///
+/// `createGuild` mirrors `register()`: it ends with the SAME
+/// `_chargeRegistrationCost()` gate (GuildFacet.sol), pulling
+/// `registrationCost()` `$LH` from the caller via `transferFrom` as the mint's
+/// last step. That pull reverts `InsufficientAllowance` unless the caller has
+/// `approve`d the diamond IN THE SAME tx — so this routes through the escrow
+/// bridge (approve + optional meter→wallet `withdrawCredits` shortfall pull),
+/// EXACTLY like the first-claim register path
+/// (`claim_and_maybe_set_main_sponsored`). The cost is read live (it is 0 / the
+/// gate is unarmed on the canonical diamond today, so no `$LH` moves then); a
+/// 0 cost falls back to the plain call, byte-identical to the old behavior.
 pub async fn create_guild_sponsored(
     sender: &SigningKey,
     fee_payer: &SigningKey,
@@ -185,7 +196,28 @@ pub async fn create_guild_sponsored(
     // scheduleJob (comfortably above 2.87M + sponsorship overhead). Sponsor billed
     // on gas USED, so the headroom is free.
     let gas = 3_500_000 + (name.len() as u128) * 9_000;
-    sponsored_diamond_call(sender, fee_payer, encode_create_guild(name), fee_token, gas).await
+    let create_input = encode_create_guild(name);
+
+    // The registration-cost bridge (mirrors `claim_and_maybe_set_main_sponsored`):
+    // the cost is pulled from the caller's WALLET ($LH balance) by createGuild's
+    // internal `transferFrom`. Read it live (don't hardcode — the knob is owner-
+    // settable); when armed, batch `approve(diamond, cost)` ahead of the mint and
+    // PREPEND `withdrawCredits(shortfall)` to pull any wallet shortfall back out of
+    // the caller's unspent chat-meter credits, all in ONE atomic tx. The whole
+    // batch reverts atomically if neither pot can cover it — no guild without
+    // payment.
+    let cost = registration_cost().await.unwrap_or(0);
+    if cost > 0 {
+        let sender_hex = address_to_hex(&crate::wallet::address(sender));
+        let wallet_bal = token_balance_of(&sender_hex).await.unwrap_or(0);
+        let bridge_wei = cost.saturating_sub(wallet_bal);
+        sponsored_escrow_diamond_call_bridged(
+            sender, fee_payer, cost, create_input, fee_token, gas, bridge_wei,
+        )
+        .await
+    } else {
+        sponsored_diamond_call(sender, fee_payer, create_input, fee_token, gas).await
+    }
 }
 
 /// Invite an address to a guild via a sponsored Tempo tx
