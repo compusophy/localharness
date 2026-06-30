@@ -4,6 +4,36 @@ Append-only progress log. One entry per loop tick. Newest at top.
 
 ---
 
+## Tick 9 — 2026-06-30T12:00Z
+<!-- tick-window: 2026-06-30T1200Z -->
+
+**Goal:** integrate the accounting/hiring cores into the shells; ship a runnable
+example; press kit + outreach. Three agents parallel — non-blocked.
+
+**Shipped (verified — re-ran work_cycle + CLI + example run + wasm + secret-scan):**
+- **CODE — `hiring` is now the canonical ranker:** `work_cycle::assign_next_task`
+  delegates worker selection to `hiring::best_candidate` (behavior-preserving — same
+  rule, ONE impl; all 20 work_cycle tests green unchanged). No public API change.
+- **CODE — `company books` CLI:** read-only — reads the on-chain treasury, builds an
+  `accounting::Ledger` from estimate flags (`--period-cost/--period-revenue/--seed/
+  --calls`), prints net position / runway / breakeven / self-funding / relies-on-seed,
+  clearly labeled "ESTIMATE — only treasury is on-chain". 40 CLI tests (4 new). No writes.
+- **DOCS — `examples/autonomous_company.rs` (RUNNABLE):** a pure end-to-end demo —
+  HR staffs the high-rep coder, work_cycle previews 7 actions (accept→payout→attest→
+  post→assign), accounting prints the HONEST read (net −23, relies_on_seed, "NOT yet
+  self-funding"). `cargo run --example autonomous_company` succeeds.
+- **MARKETING — `PRESS-KIT.md`** (boilerplate + 8 facts + unapproved founder-quote
+  placeholder) + **`OUTREACH-TEMPLATES.md`** (3 cold-email templates + CAN-SPAM/GDPR
+  notes + DO-NOT list).
+
+**Next tick (non-blocked):** wire accounting into a per-cycle report in the planner
+output; an end-to-end CLI "dry-run a full company day" demo command; more marketing
+(blog/SEO); tests/polish. Owner-gated items wait on DECISIONS.md.
+
+**Human-blocked → DECISIONS.md** (unchanged; 8 decisions await answers).
+
+---
+
 ## Tick 8 — 2026-06-30T11:30Z
 <!-- tick-window: 2026-06-30T1130Z -->
 

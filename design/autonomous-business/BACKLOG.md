@@ -3,6 +3,13 @@
 Prioritized cross-role queue. The 30-min loop pulls from **NEXT TICK** first, then
 the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
+## DONE (tick 9 — 2026-06-30)
+
+- ✅ `hiring` is the canonical ranker (assign_next_task delegates; behavior-preserving)
+  + read-only `company books` CLI (accounting preview). 40 CLI tests.
+- ✅ `examples/autonomous_company.rs` — runnable end-to-end demo (compiles + runs).
+- ✅ Marketing: `PRESS-KIT.md` + `OUTREACH-TEMPLATES.md`.
+
 ## DONE (tick 8 — 2026-06-30)
 
 - ✅ Pure `src/accounting.rs` (seed-vs-earned net position, runway, breakeven) + pure
@@ -58,17 +65,15 @@ the ranked backlog. Tags: `[role][effort S/M/L][impact H/M/L]`.
 
 ## NEXT TICK (non-owner-blocked — productive without answers)
 
-- **[Product][M][H] Integrate `hiring`/`accounting` into the shells** — use
-  `hiring::rank_candidates` in `work_cycle_runtime`'s worker selection, and add a read-only
-  `company books <guild>` CLI that builds an `accounting::Ledger` from treasury/period
-  data and prints net position + runway + breakeven (preview only, no writes).
-- **[Marketing][S][M] Press kit + cold-outreach templates** — a one-page press kit
-  (boilerplate, facts, links, screenshots list) + 3 cold-email templates (for the
-  marketing email once it exists); accuracy rules apply.
-- **[Docs][S][M] Runnable SDK example** — a complete `examples/`-style draft (Mock +
-  one real backend + a ClosureTool) extending SDK-QUICKSTART; verify it compiles.
-- *(Owner-gated — testnet dogfood, address relabel, mainnet founding, real social posting,
-  the live Action executor — wait on DECISIONS.md; NOT auto-run.)*
+- **[Product][M][H] `company day` — full dry-run report** — a read-only command that
+  composes `status` + `plan` + `payroll` + `books` into ONE "what would the company do
+  today" preview (the operator's daily glance). Preview only, no writes.
+- **[QA][S][M] CLI integration sweep** — an end-to-end test exercising the whole
+  `company` surface (found preview / status / plan / payroll / books) over mock readers;
+  lock the output formats against regressions.
+- **[Marketing][S][M] SEO/organic landing copy** — an evergreen "what is localharness"
+  page + keyword/positioning notes for organic discovery (the GROWTH AI-discoverability
+  channel); accuracy rules apply.
 - *(Owner-gated — testnet dogfood, address relabel, mainnet founding, real social posting,
   the live Action executor — wait on DECISIONS.md; NOT auto-run.)*
 
