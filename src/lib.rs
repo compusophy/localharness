@@ -171,6 +171,25 @@ pub mod work_cycle;
 /// `registry` call is deferred. Native-testable. See `src/work_cycle_runtime.rs`.
 pub mod work_cycle_runtime;
 
+/// Pure economics decision core for the Accounting (CFO / Treasurer) role of an
+/// autonomous company (`design/autonomous-business/roles/accounting.md`): a
+/// period [`accounting::Ledger`] (treasury + costs + earned revenue + SEED, held
+/// apart) plus pure judgements — [`accounting::net_position`] (signed, seed
+/// EXCLUDED), [`accounting::runway_cycles`], [`accounting::breakeven_price`],
+/// [`accounting::is_solvent`] / [`accounting::is_self_funding`]. Honest about the
+/// inherited "seed-capitalized, not self-funding" constraint. Native-testable,
+/// zero chain deps. See `src/accounting.rs`.
+pub mod accounting;
+
+/// Pure role-fit scoring core for the HR (People Ops / Recruiting) role of an
+/// autonomous company (`design/autonomous-business/roles/hr.md`): score + rank
+/// candidate agents against an open seat ([`hiring::RoleNeed`]) by exact role +
+/// proven reputation ([`hiring::score_candidate`] / [`hiring::rank_candidates`]).
+/// A [`hiring::Candidate`] mirrors a [`work_cycle::WorkerState`] (with a [`From`]
+/// impl) and ranks the same way [`work_cycle::assign_next_task`] allocates, so HR
+/// ranking and work-cycle allocation agree. Native-testable. See `src/hiring.rs`.
+pub mod hiring;
+
 /// SessionRoom op sealing/opening + deterministic per-room key derivation (#22):
 /// AES-256-GCM confidentiality under `K_room` inside a writer-signed,
 /// room-bound `signaling_seal` envelope. Needs `wallet` for k256/keccak.
