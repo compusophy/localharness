@@ -14,6 +14,9 @@
 .env.*
 !.env.example
 
+# Nostr broadcast identity (nsec/privkey = full control of the npub). SECRET.
+.nostr_identity
+
 # Plaintext redeem codes (loaded on-chain as hashes; distribute off-chain)
 redeem-codes.txt
 redeem-codes-*.txt
