@@ -153,6 +153,15 @@ pub mod kv_reduce;
 /// Native-testable, zero chain/P2P deps. See `src/keeper.rs`.
 pub mod keeper;
 
+/// Pure work-cycle decision core for an autonomous company of role-agents
+/// (`design/autonomous-business/`): allocate a funded task to the best-fit
+/// role-agent, judge the delivered result, pay the worker, and attest the
+/// outcome — modeling one claim→work→judge→pay→attest cycle as DATA (every
+/// side effect is an [`work_cycle::Action`] descriptor the caller maps onto a
+/// real `registry` bounty/x402/attest call). Native-testable, zero chain deps.
+/// See `src/work_cycle.rs`.
+pub mod work_cycle;
+
 /// SessionRoom op sealing/opening + deterministic per-room key derivation (#22):
 /// AES-256-GCM confidentiality under `K_room` inside a writer-signed,
 /// room-bound `signaling_seal` envelope. Needs `wallet` for k256/keccak.

@@ -655,4 +655,281 @@ mod tests {
         assert_eq!(parse_amount_flag(Some("2.5"), "--seed-treasury"), Ok(2_500_000_000_000_000_000));
         assert!(parse_amount_flag(Some("nope"), "--prefund-each").is_err());
     }
+
+    // ---- test mirrors of `company_found`'s PURE plan (the broadcast-free path
+    // that runs BEFORE the --confirm gate). Each is built from the SAME public
+    // helpers the real command composes (`company_slug` / `resolve_roles` /
+    // `parse_amount_flag` / `collect_flags`), so a drift in the slug, roster, or
+    // treasury logic reddens these golden tests. NO chain contact. ----
+
+    const LH: u128 = 1_000_000_000_000_000_000; // 1 $LH in wei (18 decimals)
+
+    /// Mirror `company_found`'s `--roles` parse: CSV → trimmed, non-empty tokens.
+    fn split_roles(roles_arg: Option<&str>) -> Vec<String> {
+        roles_arg
+            .map(|s| s.split(',').map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Mirror the role→subdomain map: the exact ordered `<prefix>-<slug>` labels a
+    /// found would mint for `name` + an optional `--roles` value.
+    fn plan_subdomains(name: &str, roles_arg: Option<&str>) -> Vec<String> {
+        let slug = company_slug(name);
+        resolve_roles(&split_roles(roles_arg)).iter().map(|r| format!("{slug}-{}", r.slug)).collect()
+    }
+
+    /// Mirror the treasury math: `seed + prefund_each × N_roles`, saturating. The
+    /// total depends only on the role count and amounts (never the company name).
+    fn plan_total_wei(roles_arg: Option<&str>, seed: Option<&str>, prefund: Option<&str>) -> u128 {
+        let n = resolve_roles(&split_roles(roles_arg)).len() as u128;
+        let seed_wei = parse_amount_flag(seed, "--seed-treasury").unwrap();
+        let prefund_wei = parse_amount_flag(prefund, "--prefund-each").unwrap();
+        seed_wei.saturating_add(prefund_wei.saturating_mul(n))
+    }
+
+    #[test]
+    fn preview_default_roster_maps_to_seven_named_subdomains() {
+        // Golden role→subdomain map for the default 7-role roster.
+        let subs = plan_subdomains("Acme Corp", None);
+        assert_eq!(
+            subs,
+            [
+                "acme-corp-exec",
+                "acme-corp-pm",
+                "acme-corp-coder",
+                "acme-corp-review",
+                "acme-corp-acct",
+                "acme-corp-hr",
+                "acme-corp-mktg",
+            ]
+        );
+        // Every candidate the founder would mint must be a registrable label.
+        for s in &subs {
+            assert!(name_is_valid(s), "candidate '{s}' is not a valid subdomain");
+        }
+    }
+
+    #[test]
+    fn preview_treasury_math_seed_plus_prefund_times_n() {
+        // seed 10 + prefund-each 2 × 7 default roles = 10 + 14 = 24 $LH.
+        assert_eq!(plan_total_wei(None, Some("10"), Some("2")), 24 * LH);
+        // Prefund-only slice scales with the role count (2 × 7 = 14).
+        assert_eq!(plan_total_wei(None, None, Some("2")), 14 * LH);
+        // Seed-only is independent of the role count.
+        assert_eq!(plan_total_wei(None, Some("10"), None), 10 * LH);
+        // Fractional figures compose too: 0.5 seed + 0.25 × 7 = 2.25 $LH.
+        assert_eq!(plan_total_wei(None, Some("0.5"), Some("0.25")), 2_250_000_000_000_000_000);
+    }
+
+    #[test]
+    fn preview_total_is_zero_when_no_funding_flags() {
+        // The fully-sponsored path: no seed, no prefund → "you pay nothing".
+        assert_eq!(plan_total_wei(None, None, None), 0);
+        assert_eq!(plan_total_wei(None, Some("0"), Some("0")), 0);
+    }
+
+    #[test]
+    fn preview_custom_role_count_scales_prefund() {
+        // 3 custom roles, prefund 1 each → 3 $LH (NOT the default-7 × 1).
+        assert_eq!(plan_total_wei(Some("coder,pm,hr"), None, Some("1")), 3 * LH);
+        assert_eq!(plan_subdomains("Acme", Some("coder,pm,hr")), ["acme-coder", "acme-pm", "acme-hr"]);
+    }
+
+    #[test]
+    fn preview_candidates_stay_within_the_subdomain_bound() {
+        // Worst case: a long company name + a long custom role. `company_slug`
+        // caps the prefix at 21 and `slugify_role` caps the slug at 10, so
+        // `<prefix>-<slug>` ≤ 32 chars — inside the 1..=63 label bound, no edge
+        // hyphen.
+        let subs = plan_subdomains(&"megacorp".repeat(8), Some("supercalifragilistic"));
+        assert_eq!(subs.len(), 1);
+        let cand = &subs[0];
+        assert!(cand.len() <= 32, "candidate '{cand}' is {} chars (>32)", cand.len());
+        assert!(name_is_valid(cand), "candidate '{cand}' is not a valid subdomain");
+    }
+
+    #[test]
+    fn malformed_roles_empty_tokens_fall_back_to_default_roster() {
+        // SUBTLE: `--roles ",,,"` / `--roles "   "` / `--roles ""` filter to NO
+        // tokens, and an empty provided list means "use the defaults" — so
+        // garbage-but-empty silently yields the FULL 7-role company rather than
+        // erroring. Preview-only (nothing mints without --confirm), so it's
+        // graceful, not dangerous — but it IS a silent fallback, not validation.
+        assert_eq!(resolve_roles(&split_roles(Some(",,,"))).len(), 7);
+        assert_eq!(resolve_roles(&split_roles(Some("   "))).len(), 7);
+        assert_eq!(resolve_roles(&split_roles(Some(""))).len(), 7);
+    }
+
+    #[test]
+    fn malformed_roles_nonempty_but_unsluggable_yield_no_roles() {
+        // Contrast: tokens that are non-empty but have NO alnum char slugify to ""
+        // and are dropped, leaving an EMPTY roster — which `company_found` rejects
+        // with "no valid roles to staff" (exit 2). The real error path.
+        assert!(resolve_roles(&split_roles(Some("!!!,@@@,---"))).is_empty());
+        assert!(resolve_roles(&args(&["###"])).is_empty());
+    }
+
+    #[test]
+    fn resolve_roles_dedupes_case_and_synonyms() {
+        // Case-insensitive collapse to one subdomain each.
+        assert_eq!(resolve_roles(&args(&["Coder", "CODER", "coder"])).len(), 1);
+        // "executive" (label) and "exec" (slug) are the same role.
+        assert_eq!(resolve_roles(&args(&["executive", "exec"])).len(), 1);
+        // Two DISTINCT unknown roles that slugify identically collapse too.
+        assert_eq!(resolve_roles(&args(&["data science", "data-science"])).len(), 1);
+    }
+
+    #[test]
+    fn parse_amount_flag_rejects_signed_and_garbage() {
+        // Signed, scientific, hex, thousands-separated, unit-suffixed, multi-dot —
+        // all clean errors (never a panic, never a quietly-parsed value).
+        for bad in ["-5", "+5", "1.2.3", "1e3", "nope", "5 lh", "0x10", "1,000"] {
+            assert!(
+                parse_amount_flag(Some(bad), "--seed-treasury").is_err(),
+                "'{bad}' should be rejected"
+            );
+        }
+        // QUIRK (documented, harmless): a lone "." / "0." / ".0" has empty whole +
+        // frac, so it parses to 0 — i.e. read as "skip", NOT an error.
+        assert_eq!(parse_amount_flag(Some("."), "--seed-treasury"), Ok(0));
+        assert_eq!(parse_amount_flag(Some("0."), "--seed-treasury"), Ok(0));
+        assert_eq!(parse_amount_flag(Some(".0"), "--seed-treasury"), Ok(0));
+    }
+
+    #[test]
+    fn parse_amount_flag_skip_and_decimal_forms() {
+        // None / "" / whitespace / "0" all mean "skip" → 0 wei (no spend, no error).
+        assert_eq!(parse_amount_flag(None, "f"), Ok(0));
+        assert_eq!(parse_amount_flag(Some("   "), "f"), Ok(0)); // trims to empty → skip
+        assert_eq!(parse_amount_flag(Some("0"), "f"), Ok(0));
+        assert_eq!(parse_amount_flag(Some("0.0"), "f"), Ok(0)); // non-"0" literal, zero value
+        assert_eq!(parse_amount_flag(Some("  10  "), "f"), Ok(10 * LH)); // surrounding ws trimmed
+        assert_eq!(parse_amount_flag(Some(".5"), "f"), Ok(LH / 2)); // leading-dot fraction
+        assert_eq!(parse_amount_flag(Some("2.5"), "f"), Ok(2_500_000_000_000_000_000));
+    }
+
+    #[test]
+    fn very_long_inputs_are_bounded_not_panicking() {
+        // Long names/roles clamp to the documented caps, never panic/overflow.
+        assert!(company_slug(&"a".repeat(10_000)).len() <= 21);
+        assert!(slugify_role(&"z".repeat(10_000)).len() <= 10);
+        // A 10k-char role still produces ONE valid, bounded candidate.
+        let subs = plan_subdomains("acme", Some(&"q".repeat(10_000)));
+        assert_eq!(subs.len(), 1);
+        assert!(name_is_valid(&subs[0]));
+        // A pathological prefund-each near the u128 ceiling × 7 roles SATURATES
+        // (no overflow panic). 3e20 $LH = 3e38 wei; × 7 saturates to u128::MAX.
+        assert_eq!(plan_total_wei(None, None, Some("300000000000000000000")), u128::MAX);
+    }
+
+    /// Mirror `company_found`'s arg walk (the pure prefix before the confirm gate):
+    /// detect+strip `--confirm`, split value-flags from positionals, name = first
+    /// positional (trimmed, non-empty), mission = the rest joined.
+    struct ParsedFound {
+        confirm: bool,
+        name: Option<String>,
+        mission: String,
+        roles: Option<String>,
+        seed: Option<String>,
+        prefund: Option<String>,
+    }
+
+    fn parse_found(parts: &[&str]) -> Result<ParsedFound, String> {
+        let a = args(parts);
+        let confirm = a.iter().any(|x| x == "--confirm");
+        let a: Vec<String> = a.iter().filter(|x| *x != "--confirm").cloned().collect();
+        let (vals, positional) =
+            collect_flags(&a, ["--roles", "--seed-treasury", "--prefund-each"], FOUND_USAGE)?;
+        let [roles, seed, prefund] = vals;
+        Ok(ParsedFound {
+            confirm,
+            name: positional.first().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+            mission: positional.get(1..).map(|r| r.join(" ")).unwrap_or_default().trim().to_string(),
+            roles,
+            seed,
+            prefund,
+        })
+    }
+
+    #[test]
+    fn confirm_flag_selects_execute_vs_preview_in_any_position() {
+        // Absent → preview (the dry-run default).
+        assert!(!parse_found(&["Acme", "make", "stuff"]).unwrap().confirm);
+        // Present anywhere (first / middle / last) → execute, and it never leaks
+        // into the name/mission.
+        for parts in [
+            ["--confirm", "Acme", "make", "widgets"],
+            ["Acme", "--confirm", "make", "widgets"],
+            ["Acme", "make", "widgets", "--confirm"],
+        ] {
+            let p = parse_found(&parts).unwrap();
+            assert!(p.confirm);
+            assert_eq!(p.name.as_deref(), Some("Acme"));
+            assert_eq!(p.mission, "make widgets");
+        }
+    }
+
+    #[test]
+    fn flag_ordering_is_independent_of_positionals() {
+        // Flags before, between, and after the name+mission all parse identically.
+        let want = |p: ParsedFound| {
+            assert_eq!(p.name.as_deref(), Some("Acme"));
+            assert_eq!(p.mission, "ship it");
+            assert_eq!(p.roles.as_deref(), Some("coder,pm"));
+            assert_eq!(p.seed.as_deref(), Some("10"));
+            assert_eq!(p.prefund.as_deref(), Some("2"));
+        };
+        want(parse_found(&["--roles", "coder,pm", "--seed-treasury", "10", "--prefund-each", "2", "Acme", "ship", "it"]).unwrap());
+        want(parse_found(&["Acme", "ship", "it", "--roles", "coder,pm", "--seed-treasury", "10", "--prefund-each", "2"]).unwrap());
+        want(parse_found(&["Acme", "--seed-treasury", "10", "ship", "--roles", "coder,pm", "it", "--prefund-each", "2"]).unwrap());
+    }
+
+    #[test]
+    fn defaults_apply_when_flags_absent() {
+        let p = parse_found(&["Acme", "do things"]).unwrap();
+        assert!(!p.confirm);
+        assert!(p.roles.is_none() && p.seed.is_none() && p.prefund.is_none());
+        // → 7 default roles, zero spend.
+        assert_eq!(resolve_roles(&split_roles(p.roles.as_deref())).len(), 7);
+        assert_eq!(parse_amount_flag(p.seed.as_deref(), "s").unwrap(), 0);
+        assert_eq!(parse_amount_flag(p.prefund.as_deref(), "p").unwrap(), 0);
+    }
+
+    #[test]
+    fn missing_name_or_mission_is_caught_by_the_parse() {
+        // No positionals at all (only --confirm) → no name (company_found → exit 2).
+        assert!(parse_found(&["--confirm"]).unwrap().name.is_none());
+        // Name but no mission → empty mission (company_found rejects with exit 2).
+        let p = parse_found(&["Acme"]).unwrap();
+        assert_eq!(p.name.as_deref(), Some("Acme"));
+        assert!(p.mission.is_empty());
+        // A whitespace-only name positional is treated as absent.
+        assert!(parse_found(&["   ", "mission"]).unwrap().name.is_none());
+    }
+
+    #[test]
+    fn flag_without_a_value_is_a_clean_error() {
+        // A value-flag at the end with no argument → collect_flags errors (usage);
+        // company_found turns it into exit 2, never a panic.
+        assert!(parse_found(&["Acme", "mission", "--roles"]).is_err());
+        assert!(parse_found(&["Acme", "mission", "--seed-treasury"]).is_err());
+        assert!(parse_found(&["Acme", "mission", "--prefund-each"]).is_err());
+    }
+
+    #[test]
+    fn company_status_target_parse_accepts_ids_rejects_garbage() {
+        // `company_status` reads a numeric target (optional '#'/whitespace) as a
+        // guild id (pure, key-free); anything else routes to name resolution.
+        // Mirror that gate so a malformed id can't be silently read as 0.
+        let as_id = |t: &str| t.trim().trim_start_matches('#').parse::<u64>().ok();
+        assert_eq!(as_id("42"), Some(42));
+        assert_eq!(as_id("  #42 "), Some(42));
+        assert_eq!(as_id("#0"), Some(0));
+        // Malformed → None (→ name path), never a wrong-id read.
+        assert_eq!(as_id("12x"), None);
+        assert_eq!(as_id("acme"), None);
+        assert_eq!(as_id("-1"), None); // u64 has no sign
+        assert_eq!(as_id("99999999999999999999999999"), None); // overflows u64
+        assert_eq!(as_id(""), None);
+    }
 }
