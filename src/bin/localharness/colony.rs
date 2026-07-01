@@ -635,6 +635,14 @@ pub(crate) fn judge_equals_worker(judge: &str, worker: &str) -> bool {
     judge.eq_ignore_ascii_case(worker)
 }
 
+/// Pure: `true` when an explicit `--worker <agent>` names the CALLER itself —
+/// which would let the caller be its own worker and collect its OWN escrowed
+/// reward (self-deal). The auto-pick path already excludes the caller; this
+/// guards the explicit override. Case-INSENSITIVE (subdomain names are).
+pub(crate) fn worker_equals_caller(worker: &str, caller: &str) -> bool {
+    worker.eq_ignore_ascii_case(caller)
+}
+
 /// Resolve the NEUTRAL JUDGE PANEL for `colony run`: scan every locally-keyed
 /// identity ([`identity_key_files`] → bare names), keep only those REGISTERED ON
 /// THE ACTIVE CHAIN, and pick up to `n` DISTINCT neutral agents excluding the
@@ -878,6 +886,16 @@ async fn colony_step_pick(
             }
         }
     };
+    // FIX 4: an explicit `--worker <agent>` must NOT name the CALLER. The auto-pick
+    // path already excludes the caller (self-deal), but the explicit override
+    // bypassed it — a caller could force itself as its own worker and collect its
+    // own escrowed reward. Reject up front, mirroring the FIX-3 judge guard below.
+    if worker_equals_caller(&worker_name, caller_label) {
+        return Err(format!(
+            "--worker '{worker_name}' is the CALLER — a caller can't be its own worker (self-deal). \
+             Pass --worker <other-agent> (NOT the caller), or drop --worker to auto-select a neutral worker."
+        ));
+    }
     // FIX 3: an explicit `--judge <agent>` must NOT name the WORKER. The auto-panel
     // already excludes the worker (+ caller), but the override bypassed that — a
     // caller could force the worker to judge its OWN work (self-inflated rating).
@@ -1981,5 +1999,15 @@ mod tests {
         // A different (neutral) agent is fine.
         assert!(!judge_equals_worker("dex-qa", "vex-qa"));
         assert!(!judge_equals_worker("claude", "vex-qa"));
+    }
+
+    #[test]
+    fn worker_equals_caller_guards_the_explicit_override() {
+        // FIX 4: --worker naming the CALLER is rejected (self-deal); a distinct
+        // agent is fine.
+        assert!(worker_equals_caller("claude", "claude")); // exact self → reject
+        assert!(worker_equals_caller("Claude", "claude")); // case-insensitive
+        assert!(worker_equals_caller("claude", "CLAUDE"));
+        assert!(!worker_equals_caller("vex-qa", "claude"));
     }
 }
