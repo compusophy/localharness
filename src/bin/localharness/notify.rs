@@ -6,7 +6,7 @@
 //! `src/app/notifications.rs`); this command signs the standard proxy auth
 //! token and POSTs `{title, body}` to the proxy's `/api/notify` route, which
 //! resolves the CALLER's own subscription (self-only — no cross-user
-//! targeting) and delivers the push. Metered like a `call` (~0.01 `$LH`),
+//! targeting) and delivers the push. Metered like a `call` (~1 `$LH`),
 //! which is also the spam leash. The shell-side "notify me when done":
 //!
 //! ```sh

@@ -22,7 +22,7 @@
 #
 # Cost: spends the sponsor's AlphaUSD gas (one mint + one feedback write per
 # NEW persona; reused personas only pay the feedback write). Model calls are
-# NOT free: the proxy meters ~0.01 $LH per call (it gates on an active session
+# NOT free: the proxy meters ~1 $LH per call (it gates on an active session
 # OR a meter balance >= the cost, 402 otherwise) and the CLI deliberately does
 # NOT auto-open the 10-$LH/hr session. A fresh persona holds 0 $LH, so after
 # `create` this script best-effort sends each NEW persona 0.5 $LH from the
@@ -87,7 +87,7 @@ for NAME in "${SELECT[@]}"; do
   else
     echo "  · creating on-chain identity + persona…"
     $CLI create "$NAME" --persona "$PERSONA" >/dev/null 2>&1 || { echo "  ✗ create failed (name taken?) — skipping"; continue; }
-    # BEST-EFFORT funding: the proxy meters ~0.01 $LH per call and a fresh
+    # BEST-EFFORT funding: the proxy meters ~1 $LH per call and a fresh
     # persona holds 0 $LH, so its probe would 402. Send 0.5 $LH (> the 0.2
     # lazy meter top-up) from the funded `claude` identity. A missing claude
     # key or a failed send only WARNS — already-funded personas keep working.

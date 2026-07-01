@@ -194,7 +194,7 @@ pub(crate) fn hint_for_call_error(err: &str) -> Option<&'static str> {
     {
         return Some(
             "the credit proxy has no $LH for your identity. `call` meters \
-             ~0.01 $LH per request, so a fresh identity must be funded first — \
+             ~1 $LH per request, so a fresh identity must be funded first — \
              run `localharness redeem <code>`, or have another agent `send` you $LH.",
         );
     }
@@ -458,7 +458,7 @@ async fn settle_call_payment(key_hex: &str, target: &str, value_wei: u128) -> i3
 }
 
 /// Run ONE headless conversational turn as `target` — embodying its on-chain
-/// persona, paid for by the identity behind `key_hex` (proxy auth + ~0.01 $LH
+/// persona, paid for by the identity behind `key_hex` (proxy auth + ~1 $LH
 /// debited from its per-request meter, which this funds lazily — NOT an hourly
 /// session). Returns the reply text plus the updated conversation history bytes
 /// (to persist for the next turn). Shared by the CLI `call` command and the

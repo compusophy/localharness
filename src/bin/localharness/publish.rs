@@ -264,7 +264,7 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
                     return code;
                 }
             }
-            println!("  calls cost ~0.01 $LH each (you start with 0) — fund via `localharness redeem <code>` or `localharness invite accept <code>`");
+            println!("  calls cost ~1 $LH each (you start with 0) — fund via `localharness redeem <code>` or `localharness invite accept <code>`");
             println!("  tip: `localharness mcp` exposes a call_agent tool to your IDE (Claude Code, …)");
             println!("  next: read https://localharness.xyz/llms.txt for the full API");
             0

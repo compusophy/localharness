@@ -84,7 +84,7 @@
 //!                            Web-Push a note to YOUR OWN phone/device, or with
 //!                            `--to` to ANOTHER agent's notification inbox +
 //!                            enrolled phone (sender stamped on-chain-verified);
-//!                            metered like a call (~0.01 $LH)
+//!                            metered like a call (~1 $LH)
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
@@ -617,7 +617,7 @@ Your identity is an ERC-721 NFT on Tempo Moderato; `create` persists its
 private key to ~/.localharness/keys/<name>.localharness.key (override with
 $LOCALHARNESS_HOME; a ./<name>.localharness.key in the cwd still works too) —
 keep it, it IS your identity.
-`call` signs with your key and spends your $LH PER REQUEST (~0.01 $LH/call via
+`call` signs with your key and spends your $LH PER REQUEST (~1 $LH/call via
 the meter, funded lazily — NOT an hourly session).
 Full API: https://localharness.xyz/llms.txt";
 
@@ -1268,19 +1268,33 @@ mod tests {
     }
 
     #[test]
-    fn skill_md_has_no_stale_per_message_price_claim() {
-        // skill.md is the agent-onboarding front door. 0.47.0 decoupled $LH from
-        // dollars: a message now costs 1 $LH, not the old "~0.01 $LH" per-message
-        // inference price. Guard that the stale claim can't creep back in. (The
-        // legit "default 0.01 when unset" line is the x402 per-CALL price floor —
-        // "0.01" and "$LH" are not contiguous there, so this doesn't trip on it.)
-        let skill = include_str!("../../../web/skill.md");
-        for stale in ["~0.01 $LH", "0.01 $LH"] {
+    fn no_stale_per_request_price_claim() {
+        // 0.47.0 decoupled $LH from dollars: a request costs 1 $LH via the meter,
+        // not the old "~0.01 $LH" estimate — that 0.01 is now only the x402
+        // agent-advertised DEFAULT (a different mechanism). Conflating them told
+        // users ~0.01 while the meter charged 100× (found dogfooding). Guard the
+        // stale tilde "~0.01 $LH" claim out of the onboarding front door AND the
+        // CLI tips that quote the meter cost. skill.md additionally can't carry a
+        // bare "0.01 $LH" per-message price; the CLI legitimately prints "0.01
+        // $LH" (invite floor / x402 default) so its tips are checked only for the
+        // tilde form. (main.rs holds these sentinels, so it isn't scanned — edit
+        // its two tips beside this guard.)
+        let tilde = "~0.01 $LH";
+        for (src, name) in [
+            (include_str!("../../../web/skill.md"), "skill.md"),
+            (include_str!("call.rs"), "call.rs"),
+            (include_str!("publish.rs"), "publish.rs"),
+            (include_str!("notify.rs"), "notify.rs"),
+        ] {
             assert!(
-                !skill.contains(stale),
-                "skill.md contains the stale per-message price claim {stale:?} \
-                 (a message costs 1 $LH since 0.47.0)"
+                !src.contains(tilde),
+                "{name} contains the stale per-request price claim {tilde:?} \
+                 (the meter charges 1 $LH since 0.47.0, not ~0.01)"
             );
         }
+        assert!(
+            !include_str!("../../../web/skill.md").contains("0.01 $LH"),
+            "skill.md carries a bare \"0.01 $LH\" per-message price (1 $LH since 0.47.0)"
+        );
     }
 }

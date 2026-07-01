@@ -3,7 +3,7 @@
 //
 // WHY IT EXISTS. Every proxy route is metered in on-chain $LH, so abuse is
 // never FREE — but the meter alone has no notion of RATE: a funded caller can
-// buzz a phone (notify, ~0.01 $LH/push) or fan out broadcasts in a tight loop
+// buzz a phone (notify, ~1 $LH/push) or fan out broadcasts in a tight loop
 // and the only thing that stops them is their balance running out. For the
 // ABUSE-VISIBLE routes (pushes land on a human's phone) we add a cheap
 // requests-per-window cap on top. Model calls (gemini.ts) are deliberately
