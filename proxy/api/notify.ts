@@ -36,11 +36,17 @@
 // lookup (before any debit) → credit gate + meter debit → the push itself
 // (502 on failure).
 //
-// CROSS-AGENT ENROLLMENT CHECK: when a `to:` target has NO device enrolled for
-// Web Push, the note cannot be delivered anywhere (the in-app inbox is fed by
-// push too — web/sw.js), so this returns a clear, structured `enrolled: false`
-// 200 with NO debit instead of a 404 — the sender did nothing wrong and must
-// not be told to retry. The client tool / CLI relay the `message` verbatim.
+// CROSS-AGENT DELIVERY IS ALWAYS POSSIBLE (so the debit is justified): a `to:`
+// note is durably RECORDED in the recipient's on-chain MessageFacet inbox even
+// with NO Web Push device enrolled — it surfaces in their bell at next open
+// (import_onchain_messages; web/sw.js), and a live Web Push is layered on top
+// only when a device IS enrolled. So a cross-agent note PROCEEDS and IS metered
+// (the on-chain record is real delivery), returning `enrolled: <bool>` +
+// `delivered`/`devices`. Only a SELF note with no device is a 404 — its sole
+// channel is the caller's own push, so there is nothing to record. (The debit-
+// before-delivery order means the one thing a debited caller pays for is a rare
+// TOTAL failure where BOTH the on-chain record AND the push fail — a documented
+// tradeoff of the meter-is-the-spam-filter model, not an undeliverable charge.)
 //
 // RATE LIMITS (best-effort, PER-ISOLATE — see api/_ratelimit.ts for why
 // that's accepted; the meter debit stays the global hard backstop):
