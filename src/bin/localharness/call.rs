@@ -84,15 +84,32 @@ pub(crate) fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
         }
     }
     match rest[i..].split_first() {
-        Some((t, msg)) if !msg.is_empty() => Ok(ParsedCall {
-            caller,
-            fresh,
-            model,
-            pay,
-            verify,
-            target: t.clone(),
-            message: msg.join(" "),
-        }),
+        Some((t, msg)) if !msg.is_empty() => {
+            // Guard the silent-swallow footgun: --model/--fresh/--pay/--verify are
+            // LEADING flags (before the target) so they aren't parsed out of the
+            // message text. If one lands AFTER the target it would be swallowed into
+            // the message — silently DROPPING A PAYMENT (`--pay`), a model choice, etc.
+            // (`--as` is position-independent and already pulled out above.) Error
+            // clearly instead of paying nothing.
+            if let Some(f) = msg
+                .iter()
+                .find(|w| matches!(w.as_str(), "--pay" | "--model" | "--verify" | "--fresh"))
+            {
+                return Err(format!(
+                    "`{f}` must come BEFORE the target (e.g. `call {f} … {t} \"message\"`) — \
+                     after the target it is swallowed into the message and ignored.\n{CALL_USAGE}"
+                ));
+            }
+            Ok(ParsedCall {
+                caller,
+                fresh,
+                model,
+                pay,
+                verify,
+                target: t.clone(),
+                message: msg.join(" "),
+            })
+        }
         _ => Err(CALL_USAGE.to_string()),
     }
 }
@@ -936,6 +953,27 @@ mod tests {
             assert_eq!(p.target, "alice");
             assert_eq!(p.message, "hi");
         }
+    }
+
+    #[test]
+    fn parse_call_rejects_a_leading_flag_placed_after_the_target() {
+        // The silent-swallow footgun (found dogfooding --pay): a leading flag placed
+        // AFTER the target would be joined into the message and ignored — silently
+        // dropping a PAYMENT. Error clearly instead of paying nothing.
+        for parts in [
+            vec!["alice", "hi", "--pay", "auto"],
+            vec!["--as", "bob", "alice", "hi", "--pay", "0.01"],
+            vec!["alice", "hi", "--model", "claude-opus"],
+        ] {
+            match parse_call_args(&args(&parts)) {
+                Err(e) => assert!(e.contains("must come BEFORE the target"), "got: {e}"),
+                Ok(_) => panic!("expected an error for a leading flag placed after the target: {parts:?}"),
+            }
+        }
+        // A LEGIT leading --pay still parses (the working path stays intact).
+        let p = parse_call_args(&args(&["--as", "bob", "--pay", "auto", "alice", "hi"])).unwrap();
+        assert_eq!(p.pay.as_deref(), Some("auto"));
+        assert_eq!(p.message, "hi");
     }
 
     #[test]
