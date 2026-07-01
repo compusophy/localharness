@@ -13,6 +13,11 @@ use crate::error::{Error, Result};
 use crate::filesystem::SharedFilesystem;
 use crate::tools::{Tool, ToolContext};
 
+/// Hard cap on the content we'll write in one create_file call — mirrors
+/// view_file's MAX_FILE_BYTES so untrusted/model-driven input can't exhaust
+/// storage.
+const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
+
 pub struct CreateFile {
     fs: SharedFilesystem,
 }
@@ -59,6 +64,13 @@ impl Tool for CreateFile {
         // Never let a tool create/clobber the seed or device-key path.
         if crate::builtins::is_protected_path(&args.path) {
             return Err(crate::builtins::protected_path_error(&args.path));
+        }
+
+        if args.content.len() > MAX_FILE_BYTES {
+            return Err(Error::other(format!(
+                "content is {} bytes, over the {MAX_FILE_BYTES}-byte create_file cap",
+                args.content.len()
+            )));
         }
 
         if self.fs.metadata(&args.path).await?.is_some() {
@@ -118,5 +130,18 @@ mod tests {
             .await;
         assert!(res.is_err());
         let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_content() {
+        let mut p = std::env::temp_dir();
+        p.push(format!("create_file_oversized_{}.txt", uuid::Uuid::new_v4()));
+        let content = "a".repeat(MAX_FILE_BYTES + 1);
+        let tool = CreateFile::new(Arc::new(NativeFilesystem::new()));
+        let res = tool
+            .execute(json!({"path": p.display().to_string(), "content": content}), None)
+            .await;
+        assert!(res.is_err());
+        assert!(std::fs::metadata(&p).is_err(), "oversized file must not be created");
     }
 }
