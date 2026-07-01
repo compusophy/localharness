@@ -159,10 +159,22 @@ fn local_storage() -> Option<web_sys::Storage> {
 
 /// On mount: if the running bundle's CRATE version (`APP_VERSION` — bumped ONLY on
 /// a real release, never a plain web redeploy) differs from the one this device
-/// last recorded, drop a one-time bell note linking the changelog. Decentralized —
-/// no server push, no user roster: every client self-notifies on the version it
-/// loaded. A first-ever visit just records the version (a brand-new device gets no
-/// spurious "updated" note).
+/// last recorded, self-notify the update. Decentralized — no server push, no user
+/// roster: every client self-notifies on the version it loaded (a fully-CLOSED app
+/// can't detect its own version change, so there is nothing a deploy-time server
+/// broadcast could reach that this on-load path doesn't). A first-ever visit just
+/// records the version (a brand-new device gets no spurious "updated" note).
+///
+/// Delivery is TWO surfaces, mirroring the READY-UP broadcast
+/// (`display::do_feed_broadcast`): (1) the in-app header bell (always — no
+/// permission needed), and (2) a REAL OS system notification via the service
+/// worker's `registration.showNotification` — the SAME delivery surface a Web Push
+/// renders through (`web/sw.js` `push` → `showNotification`), so the banner reaches
+/// the user even when this tab is backgrounded / not focused, not just as a silent
+/// inbox entry they must open the bell to find. The OS banner is permission-gated
+/// and NEVER prompts (mount is not a user gesture — a `requestPermission` here
+/// would auto-deny on mobile): it fires only when notifications are ALREADY granted
+/// (the one-time bell tap), otherwise the bell entry stands alone.
 pub(crate) fn notify_version_change() {
     let Some(storage) = local_storage() else { return };
     let current = crate::app::templates::APP_VERSION;
@@ -172,10 +184,19 @@ pub(crate) fn notify_version_change() {
     }
     let _ = storage.set_item("lh_seen_version", current);
     if seen.is_some() {
-        push_to_bell(
-            &format!("localharness v{current} is live"),
-            &format!("A new version shipped — see what changed: {RELEASES_URL}/tag/v{current}"),
-        );
+        let title = format!("localharness v{current} is live");
+        let body = format!("A new version shipped — see what changed: {RELEASES_URL}/tag/v{current}");
+        // In-app bell (always).
+        push_to_bell(&title, &body);
+        // Escalate to an OS banner via the SW when already permitted — never prompt.
+        wasm_bindgen_futures::spawn_local(async move {
+            if matches!(
+                web_sys::Notification::permission(),
+                web_sys::NotificationPermission::Granted
+            ) {
+                let _ = show(&title, &body).await;
+            }
+        });
     }
 }
 
