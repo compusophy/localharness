@@ -56,7 +56,7 @@ impl Tool for ListDirectory {
             .into_iter()
             // Hide the seed/device-key files — the agent has no business seeing
             // them, and not surfacing them shrinks the prompt-injection surface.
-            .filter(|e| !crate::builtins::PROTECTED_FILES.contains(&e.name.as_str()))
+            .filter(|e| !crate::builtins::is_protected_basename(&e.name))
             .map(|e| {
                 let mut obj = json!({
                     "name": e.name,
@@ -115,5 +115,28 @@ mod tests {
             .execute(json!({"path": "/definitely/does/not/exist/abc123"}), None)
             .await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn hides_protected_seed_files() {
+        // The seed/device-key files must never surface to the agent. Route through
+        // the shared is_protected_basename guard (case-insensitive on Windows/macOS)
+        // like every other fs builtin, so `.lh_wallet` stays hidden on every platform.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join(".lh_wallet"), b"seed").unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"hi").unwrap();
+        let tool = ListDirectory::new(Arc::new(NativeFilesystem::new()));
+        let out = tool
+            .execute(json!({"path": dir.path().display().to_string()}), None)
+            .await
+            .unwrap();
+        let names: Vec<&str> = out["entries"]
+            .as_array()
+            .expect("entries should be an array")
+            .iter()
+            .filter_map(|e| e["name"].as_str())
+            .collect();
+        assert!(!names.contains(&".lh_wallet"), "seed file must be hidden: {names:?}");
+        assert!(names.contains(&"a.txt"), "normal file must list: {names:?}");
     }
 }
