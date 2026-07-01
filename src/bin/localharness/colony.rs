@@ -43,10 +43,10 @@ usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent
                          of their ratings is attested. Fewer than N → uses what's available (min 1)
   --judge <agent>        force a SINGLE named judge (a panel of exactly that one agent; its key
                          must be local); overrides --judges
-  --min-accept-rating N  PAYMENT GATE (1..5, default 2): the colony accepts + pays IFF the panel
+  --min-accept-rating N  PAYMENT GATE (1..5, default 3): the colony accepts + pays IFF the panel
                          median is >= N. A median below N is REJECTED — the worker is NOT paid and
-                         the escrow stays locked (reclaim it after the ttl). Default 2 ⇒ a median
-                         of 1 (clear failure / hallucination) is rejected; 2-5 are paid
+                         the escrow stays locked (reclaim it after the ttl). Default 3 ⇒ medians
+                         1-2 are rejected; 3-5 are paid
   --ttl <dur>            bounty expiry (1h/7d/30d, 1h…90d, default 7d)
   The worker MUST be a fleet/owned agent whose key is in your keys dir
   (it signs its own claim + submit). The neutral panel makes the reputation signal
@@ -276,17 +276,18 @@ pub(crate) fn median_rating(ratings: &[u8]) -> u8 {
 /// becomes economically rational by paying ONLY for work the neutral panel rates
 /// AT OR ABOVE the bar (no contract change: a sub-bar result is simply NOT
 /// accepted, so its escrow stays locked and is `reclaimExpired`-recoverable after
-/// the ttl). Rule: `median >= min`. With the default `min = 2`, a median of 1
-/// (the clear-failure / hallucination band) is REJECTED while 2..=5 are paid.
-/// Inputs are clamped to the 1..=5 rating range so a stray 0 can never sneak a
-/// payment past a `min = 1` floor.
+/// the ttl). Rule: `median >= min`. With the default `min = 3`, medians of 1..=2
+/// (clear-failure/hallucination + below-bar work, e.g. non-compiling code a judge
+/// sympathy-grades) are REJECTED while 3..=5 are paid. Inputs are clamped to the
+/// 1..=5 rating range so a stray 0 can never sneak a payment past a `min = 1` floor.
 pub(crate) fn should_accept(median: u8, min: u8) -> bool {
     median.clamp(1, 5) >= min.clamp(1, 5)
 }
 
-/// Default payment-gate threshold for `colony run` (`--min-accept-rating`). A
-/// median of 1 (clear failure / hallucination) is rejected; 2..=5 are paid.
-pub(crate) const COLONY_DEFAULT_MIN_ACCEPT: u8 = 2;
+/// Default payment-gate threshold for `colony run` (`--min-accept-rating`).
+/// Medians 1..=2 are rejected; 3..=5 are paid — raised from 2 so below-bar work
+/// (e.g. non-compiling code a judge sympathy-grades at 2) isn't paid from escrow.
+pub(crate) const COLONY_DEFAULT_MIN_ACCEPT: u8 = 3;
 
 /// Parsed `colony run` arguments. The task is the joined positional remainder
 /// (so an unquoted multi-word task works, matching `bounty post`).
@@ -1223,7 +1224,7 @@ async fn colony_step_judge(
 /// [7/8] the PAYMENT GATE — ACCEPT (pay) the work or REJECT it, per the
 /// already-computed `accept` decision ([`should_accept`]). The colony is
 /// economically rational: it pays ONLY for work the NEUTRAL panel rates at or
-/// above the `--min-accept-rating` bar (default 2). A median BELOW the bar is
+/// above the `--min-accept-rating` bar (default 3). A median BELOW the bar is
 /// REJECTED — the caller does NOT accept, so the worker is NOT paid and the
 /// escrow stays locked, recoverable by the poster via `reclaimExpired`
 /// (`bounty reclaim`) after the ttl. NO contract change: a reject is simply the
@@ -1390,7 +1391,7 @@ async fn colony_report_outcome(
 /// the work AND the judge both reuse `run_agent_turn`. The [6/8] JUDGE step scores
 /// the worker's result 1-5 for genuine + accurate task-fit; [7/8] is the PAYMENT
 /// GATE — the caller accepts + pays ONLY when the panel median is `>=
-/// --min-accept-rating` (default 2), else REJECTS (no payment; the escrow stays
+/// --min-accept-rating` (default 3), else REJECTS (no payment; the escrow stays
 /// locked, reclaimable via `bounty reclaim` after the ttl). [8/8] ATTEST signs the
 /// panel median on-chain (not a hardcoded 5★) on BOTH branches — so reputation
 /// reflects judged quality even for rejected work. A reject is a NORMAL outcome
@@ -1627,11 +1628,11 @@ mod tests {
 
     #[test]
     fn should_accept_gates_payment_on_the_rating_bar() {
-        // Default bar (2): a median of 1 (clear failure / hallucination) is REJECTED;
-        // 2..=5 are PAID. This is the core economic-rationality rule.
-        assert!(!should_accept(1, COLONY_DEFAULT_MIN_ACCEPT)); // median 1 / min 2 → reject
-        assert!(should_accept(2, COLONY_DEFAULT_MIN_ACCEPT)); // median 2 / min 2 → accept
-        assert!(should_accept(3, COLONY_DEFAULT_MIN_ACCEPT));
+        // Default bar (3): medians 1..=2 (clear failure/hallucination + below-bar
+        // work) are REJECTED; 3..=5 are PAID. This is the core economic-rationality rule.
+        assert!(!should_accept(1, COLONY_DEFAULT_MIN_ACCEPT)); // median 1 / min 3 → reject
+        assert!(!should_accept(2, COLONY_DEFAULT_MIN_ACCEPT)); // median 2 / min 3 → reject
+        assert!(should_accept(3, COLONY_DEFAULT_MIN_ACCEPT)); // median 3 / min 3 → accept
         assert!(should_accept(5, COLONY_DEFAULT_MIN_ACCEPT));
         // Boundary is `>=`: equal accepts, one below rejects.
         assert!(should_accept(2, 2)); // median 2 / min 2 → accept
@@ -1660,7 +1661,7 @@ mod tests {
         // Default when omitted.
         let p = parse_colony_run_args(&mk(&["QA task", "--reward", "0.01"])).unwrap();
         assert_eq!(p.min_accept, COLONY_DEFAULT_MIN_ACCEPT);
-        assert_eq!(p.min_accept, 2);
+        assert_eq!(p.min_accept, 3);
         // Explicit, in-range.
         let p =
             parse_colony_run_args(&mk(&["QA task", "--reward", "0.01", "--min-accept-rating", "5"]))
