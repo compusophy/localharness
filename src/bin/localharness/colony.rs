@@ -426,12 +426,16 @@ pub(crate) async fn colony_pick_worker(task: &str, caller: &str) -> Result<(Stri
         if name.eq_ignore_ascii_case(caller) {
             continue; // never auto-pick the caller as its own worker (self-deal).
         }
-        // Read on-chain reputation for this candidate (count, rating sum). A read
-        // failure / unregistered name is treated as "no reputation" (0, 0) so a
-        // transient RPC hiccup can't drop an otherwise-drivable worker.
+        // The candidate must be REGISTERED ON THE ACTIVE CHAIN. A local key whose
+        // name resolves to tokenId 0 HERE is a cross-chain ghost — e.g. a testnet
+        // agent when the cycle is running on mainnet — and picking it would strand
+        // the cycle at CLAIM (it has no identity on this chain to claim with). A
+        // confirmed `Ok(0)` excludes it; an RPC ERROR is transient and must NOT
+        // drop an otherwise-drivable worker, so it stays (unproven 0,0 reputation).
         let (rep_count, rep_sum) = match registry::id_of_name(name).await {
-            Ok(id) if id != 0 => registry::reputation_of(id).await.unwrap_or((0, 0)),
-            _ => (0, 0),
+            Ok(0) => continue, // not registered on this chain — skip the cross-chain ghost.
+            Ok(id) => registry::reputation_of(id).await.unwrap_or((0, 0)),
+            Err(_) => (0, 0), // transient RPC error — keep as unproven, don't drop.
         };
         candidates.push(WorkerCandidate {
             name: name.clone(),
@@ -488,12 +492,20 @@ pub(crate) fn judge_equals_worker(judge: &str, worker: &str) -> bool {
 }
 
 /// Resolve the NEUTRAL JUDGE PANEL for `colony run`: scan every locally-keyed
-/// identity ([`identity_key_files`] → bare names) and pick up to `n` DISTINCT
-/// neutral agents, excluding the `worker` AND the `caller`. Returns the panel
-/// names (each holds a local key, so each funds + signs its own judge turn). On
-/// zero neutral agents this returns an empty Vec; the caller falls back to the
-/// caller-as-judge so the cycle never strands the escrow.
-pub(crate) fn resolve_judge_panel(worker: &str, caller: &str, n: usize) -> Vec<String> {
+/// identity ([`identity_key_files`] → bare names), keep only those REGISTERED ON
+/// THE ACTIVE CHAIN, and pick up to `n` DISTINCT neutral agents excluding the
+/// `worker` AND the `caller`. Returns the panel names (each holds a local key, so
+/// each funds + signs its own judge turn). On zero neutral agents this returns an
+/// empty Vec; the caller falls back to the caller-as-judge so the cycle never
+/// strands the escrow.
+///
+/// The registration filter is the fix for the cross-chain-ghost leak: a local key
+/// whose name resolves to tokenId 0 here is an agent from ANOTHER chain (a testnet
+/// agent on a mainnet run). Before this gate it entered the panel, got a wasted
+/// 0.5 $LH top-up, then failed its turn as "not a registered agent". A confirmed
+/// `Ok(0)` drops the name; an RPC error is transient so the name is KEPT (fail-open
+/// on uncertainty, fail-closed only on a definite "not on this chain").
+pub(crate) async fn resolve_judge_panel(worker: &str, caller: &str, n: usize) -> Vec<String> {
     let local: Vec<String> = identity_key_files()
         .unwrap_or_default()
         .into_iter()
@@ -505,7 +517,16 @@ pub(crate) fn resolve_judge_panel(worker: &str, caller: &str, n: usize) -> Vec<S
                 .map(str::to_string)
         })
         .collect();
-    select_judge_panel(&local, worker, caller, n)
+    // Drop cross-chain ghosts (tokenId 0 on the active chain) BEFORE selecting, so
+    // the panel is built only from agents that can actually run a metered turn here.
+    let mut registered: Vec<String> = Vec::new();
+    for name in local {
+        match registry::id_of_name(&name).await {
+            Ok(0) => {}                  // not registered on this chain — drop it.
+            _ => registered.push(name),  // registered, or a transient error → keep.
+        }
+    }
+    select_judge_panel(&registered, worker, caller, n)
 }
 
 /// `true` if a sponsored-write error looks TRANSIENT (an RPC/transport hiccup,
@@ -908,7 +929,7 @@ async fn colony_step_judge(
     // auto-select up to `judges` neutral local agents (excluding worker + caller).
     let panel: Vec<String> = match judge {
         Some(j) => vec![j.clone()],
-        None => resolve_judge_panel(worker_name, caller_label, judges),
+        None => resolve_judge_panel(worker_name, caller_label, judges).await,
     };
     println!(
         "[6/8] JUDGE — neutral panel scores {worker_name}'s result 1-5 (accuracy-checked) …"
