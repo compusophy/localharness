@@ -236,14 +236,26 @@ pub(crate) async fn link(args: &[String]) -> i32 {
     println!("✓ linked '{name}' to the web identity {addr}");
     println!("  key written to {key_file}");
     // Report the inherited balance so the user sees the funding carried over.
-    let bal = registry::token_balance_of(&addr).await.unwrap_or(0);
-    if bal > 0 {
-        println!("  wallet balance: {} (inherited from the web wallet)", fmt_lh(bal));
-    } else {
-        println!("  the CLI now shares this identity's wallet + $LH");
-    }
+    // A network error must NOT collapse into a fake-zero success — distinguish it.
+    let bal = registry::token_balance_of(&addr).await;
+    println!("{}", link_balance_line(&bal));
     println!("  try: localharness credits --as {name}");
     0
+}
+
+/// The inherited-balance line for a link: a real balance, a genuine zero
+/// (shared wallet, still settling), or a read FAILURE we must not fake-zero.
+pub(crate) fn link_balance_line(bal: &Result<u128, String>) -> String {
+    match bal {
+        Ok(b) if *b > 0 => {
+            format!("  wallet balance: {} (inherited from the web wallet)", fmt_lh(*b))
+        }
+        Ok(_) => "  the CLI now shares this identity's wallet + $LH".to_string(),
+        Err(_) => {
+            "  balance not yet confirmed on-chain; check with `localharness credits --as <name>`"
+                .to_string()
+        }
+    }
 }
 
 /// Read the one-time code from stdin (when `--code` was omitted). The code is
@@ -348,5 +360,14 @@ mod tests {
         let last = bad.len() - 1;
         bad[last] ^= 0x01;
         assert!(decrypt_adopt(&bad, "RIGHT1").is_err());
+    }
+
+    #[test]
+    fn link_balance_line_distinguishes_zero_from_error() {
+        let zero = link_balance_line(&Ok(0));
+        let err = link_balance_line(&Err("net".into()));
+        assert_ne!(zero, err);
+        assert!(err.contains("not yet confirmed"));
+        assert!(link_balance_line(&Ok(5_000_000_000_000_000_000)).contains("wallet balance"));
     }
 }
