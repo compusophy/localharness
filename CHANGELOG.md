@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.9] - 2026-07-01
+
+SDK ergonomics wins from a dedicated `cargo add localharness` consumer-lens review
+(all additive / non-breaking).
+
+### Fixed
+
+- **`#[must_use]` on `ChatResponse` + the config builders.** Dropping a `ChatResponse`
+  silently discarded the turn's streamed output, and a bare `cfg.with_model("x");`
+  statement vanished (the `*AgentConfig` builders return `Self`, not `&mut self`) — both
+  now warn.
+- **The safety-guard error suggested a function that doesn't exist.** It said
+  `policy::allow("tool_name")`, but that's the associated fn `policy::Policy::allow` — so
+  copy-pasting the *unblocking* error message was itself a compile error (`E0425`). Fixed.
+- **Doc drift.** `GeminiAgentConfig::with_filesystem` said "6 fs built-ins"; it's 8
+  everywhere else.
+
 ## [0.60.8] - 2026-07-01
 
 ### Fixed
