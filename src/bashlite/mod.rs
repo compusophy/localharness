@@ -775,6 +775,18 @@ mod tests {
         assert_eq!(err.kind, BashErrorKind::Fuel);
     }
 
+    #[tokio::test]
+    async fn stderr_is_output_capped() {
+        // A loop flooding stderr must trip the OUTPUT cap (Other), not bypass it.
+        // The generous fuel budget makes the byte cap fire before fuel exhaustion.
+        let mut host = TestHost::new(&[]);
+        let err = run_with_fuel(&mut host, "while [ 1 = 1 ]; do cat nope.txt; done", 5_000_000)
+            .await
+            .expect_err("stderr flood must be capped");
+        assert_eq!(err.kind, BashErrorKind::Other);
+        assert!(err.message.contains("output exceeded"));
+    }
+
     // -------- host extension seam: run_builtin override --------
 
     /// A host that adds a custom `greet` command on top of the fs builtins — the

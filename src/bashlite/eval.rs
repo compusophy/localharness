@@ -102,6 +102,17 @@ impl<'h, H: BashHost + ?Sized> Evaluator<'h, H> {
         Ok(())
     }
 
+    fn push_stderr(&mut self, s: &str) -> Flow {
+        if self.stderr.len() + s.len() > MAX_OUTPUT_BYTES {
+            return Err(BashError::other(format!(
+                "output exceeded {} bytes",
+                MAX_OUTPUT_BYTES
+            )));
+        }
+        self.stderr.push_str(s);
+        Ok(())
+    }
+
     async fn exec_block(&mut self, body: &[Stmt]) -> Flow {
         for stmt in body {
             self.exec_stmt(stmt).await?;
@@ -125,7 +136,7 @@ impl<'h, H: BashHost + ?Sized> Evaluator<'h, H> {
                     let out = self.run_pipeline(cmds).await?;
                     self.push_stdout(&out.stdout)?;
                     if !out.stderr.is_empty() {
-                        self.stderr.push_str(&out.stderr);
+                        self.push_stderr(&out.stderr)?;
                     }
                     self.last_status = out.code;
                 }
@@ -137,7 +148,7 @@ impl<'h, H: BashHost + ?Sized> Evaluator<'h, H> {
                     let first = self.run_pipeline(&pipelines[0]).await?;
                     self.push_stdout(&first.stdout)?;
                     if !first.stderr.is_empty() {
-                        self.stderr.push_str(&first.stderr);
+                        self.push_stderr(&first.stderr)?;
                     }
                     let mut code = first.code;
                     for (op, pipe) in ops.iter().zip(&pipelines[1..]) {
@@ -152,7 +163,7 @@ impl<'h, H: BashHost + ?Sized> Evaluator<'h, H> {
                         let out = self.run_pipeline(pipe).await?;
                         self.push_stdout(&out.stdout)?;
                         if !out.stderr.is_empty() {
-                            self.stderr.push_str(&out.stderr);
+                            self.push_stderr(&out.stderr)?;
                         }
                         code = out.code;
                     }
@@ -373,9 +384,13 @@ impl<'h, H: BashHost + ?Sized> Evaluator<'h, H> {
         // Reclaim the fuel the subshell spent + propagate its last status.
         self.fuel = sub.fuel;
         self.last_status = sub.last_status;
+        // Move the captured streams out and drop `sub` so it releases its borrow of
+        // `self.host` before we take `&mut self` to fold stderr up.
+        let sub_stderr = std::mem::take(&mut sub.stderr);
+        let mut captured = std::mem::take(&mut sub.stdout);
+        drop(sub);
         // Fold subshell stderr up so errors aren't lost.
-        self.stderr.push_str(&sub.stderr);
-        let mut captured = sub.stdout;
+        self.push_stderr(&sub_stderr)?;
         while captured.ends_with('\n') {
             captured.pop();
         }
