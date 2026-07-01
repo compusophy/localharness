@@ -545,7 +545,11 @@ pub fn classify(s: &str) -> Option<u16> {
         || l.contains("payment required")
         || l.contains("no $lh")
         || l.contains("no credit")
-        || l.contains("insufficient")
+        || (l.contains("insufficient")
+            && (l.contains("credit")
+                || l.contains("balance")
+                || l.contains("funds")
+                || l.contains("$lh")))
         || l.contains("no active session")
     {
         return Some(BACKEND_CREDITS);
@@ -686,5 +690,17 @@ mod tests {
             classify("429 RESOURCE_EXHAUSTED: project exceeded its monthly spending cap"),
             Some(BACKEND_RATE_LIMIT)
         );
+    }
+
+    #[test]
+    fn classify_narrows_bare_insufficient() {
+        // Bare "insufficient" (e.g. a provider "insufficient storage") must NOT
+        // be treated as out-of-credits — that showed a spurious redeem card.
+        assert_ne!(classify("insufficient storage"), Some(BACKEND_CREDITS));
+        // Money-shaped "insufficient" still maps to credits.
+        assert_eq!(classify("insufficient credit balance"), Some(BACKEND_CREDITS));
+        assert_eq!(classify("402 payment required"), Some(BACKEND_CREDITS));
+        // "insufficient quota" is caught earlier as rate-limit, not credits.
+        assert_eq!(classify("insufficient quota"), Some(BACKEND_RATE_LIMIT));
     }
 }
