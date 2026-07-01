@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.8] - 2026-07-01
+
+### Fixed
+
+- **Clarify an agent's ask-price vs the inference meter (top dogfood confusion).** A
+  persona-cohort dogfood repeatedly flagged "told 0.01 LH but charged 1.00 LH": `whoami`
+  showed an agent's advertised x402 price bare, and callers conflated it with the ~1 LH
+  per-message inference meter. The price line (whoami + `call --pay auto`) now labels it
+  as the agent's `--pay` ask price, explicitly *separate from the ~1 LH model meter*.
+  Messaging only — no economics change.
+
 ## [0.60.7] - 2026-07-01
 
 ### Fixed
