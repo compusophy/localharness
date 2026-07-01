@@ -61,9 +61,15 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let (_, owner) = crate::app::tenant::current_tenant_owner()
                 .await
                 .map_err(crate::error::Error::other)?;
-            // 1) Publish on-chain via setMetadata(persona) — gas scales with length
-            //    (~8.5k/byte; see CLAUDE.md). Same path as create_subdomain's actor
-            //    persona + the admin publish flow.
+            // 1) Save locally FIRST so a chain/relay failure can't lose the self-edit
+            //    (THIS tab adopts it next session regardless; publish can retry) — the
+            //    same #34 save-first rule as record_lesson.
+            crate::app::system_prompt::save(text)
+                .await
+                .map_err(crate::error::Error::other)?;
+            // 2) Best-effort publish on-chain via setMetadata(persona) — gas scales
+            //    with length (~8.5k/byte; see CLAUDE.md). A relay refusal / oversized
+            //    persona / network hiccup must NOT lose the already-saved edit.
             let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
                 .map_err(crate::error::Error::other)?;
             let call = crate::tempo_tx::TempoCall {
@@ -72,24 +78,22 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 input: crate::app::registry::encode_set_persona(token_id, text),
             };
             let gas = crate::app::gas::set_metadata_gas(text.len());
-            let tx_hash = crate::app::events::run_sponsored_tempo_call(
-                &owner,
-                vec![call],
-                gas,
-                "set persona (self-edit)",
-            )
-            .await
-            .map_err(|e| crate::error::Error::other(format!("publish persona failed: {e}")))?;
-            // 2) Also write it locally so THIS tab adopts it next session.
-            crate::app::system_prompt::save(text)
+            match crate::app::events::run_sponsored_tempo_call(&owner, vec![call], gas, "set persona (self-edit)")
                 .await
-                .map_err(crate::error::Error::other)?;
-            Ok(serde_json::json!({
-                "persona_set": true,
-                "length": text.len(),
-                "tx_hash": tx_hash,
-                "note": "takes effect on your next session (reload or restart the turn)",
-            }))
+            {
+                Ok(tx_hash) => Ok(serde_json::json!({
+                    "persona_set": true,
+                    "length": text.len(),
+                    "tx_hash": tx_hash,
+                    "note": "takes effect on your next session (reload or restart the turn)",
+                })),
+                Err(_) => Ok(serde_json::json!({
+                    "persona_set": true,
+                    "length": text.len(),
+                    "tx_hash": serde_json::Value::Null,
+                    "note": "saved locally; on-chain publish deferred (retry later)",
+                })),
+            }
         },
     )
 }
@@ -311,19 +315,24 @@ pub(crate) fn set_lessons_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 input: crate::app::registry::encode_set_lessons(token_id, &replacement),
             };
             let gas = crate::app::gas::set_metadata_gas(replacement.len());
-            let tx_hash = crate::app::events::run_sponsored_tempo_call(
-                &owner,
-                vec![call],
-                gas,
-                "consolidate lessons",
-            )
-            .await
-            .map_err(|e| crate::error::Error::other(format!("publish lessons failed: {e}")))?;
-            Ok(serde_json::json!({
-                "replaced": true,
-                "total_lessons": replacement.lines().count(),
-                "tx_hash": tx_hash,
-            }))
+            // Best-effort: the consolidated blob is already saved to OPFS above, so a
+            // publish failure must NOT hard-error and make the model treat a persisted
+            // consolidation as failed (#34 class).
+            match crate::app::events::run_sponsored_tempo_call(&owner, vec![call], gas, "consolidate lessons")
+                .await
+            {
+                Ok(tx_hash) => Ok(serde_json::json!({
+                    "replaced": true,
+                    "total_lessons": replacement.lines().count(),
+                    "tx_hash": tx_hash,
+                })),
+                Err(_) => Ok(serde_json::json!({
+                    "replaced": true,
+                    "total_lessons": replacement.lines().count(),
+                    "tx_hash": serde_json::Value::Null,
+                    "note": "saved locally; on-chain publish deferred (retry later)",
+                })),
+            }
         },
     )
 }
