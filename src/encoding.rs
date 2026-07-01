@@ -144,6 +144,11 @@ fn hex_nibble(b: u8) -> Result<u8, String> {
     }
 }
 
+/// Max hex-string length accepted by the decoders (16 MiB of hex → 8 MiB of
+/// bytes). Generous enough for legit large on-chain metadata reads while
+/// stopping an untrusted arg from pre-allocating gigabytes.
+const MAX_HEX_LEN: usize = 16 * 1024 * 1024;
+
 /// Encode bytes as a `0x`-prefixed lowercase hex string.
 pub fn bytes_to_hex_str(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(2 + bytes.len() * 2);
@@ -169,6 +174,9 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
 /// empty input (`""` / `0x`) decodes to no bytes.
 pub fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
     let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
+    if trimmed.len() > MAX_HEX_LEN {
+        return Err(format!("hex too long: {} chars (max {})", trimmed.len(), MAX_HEX_LEN));
+    }
     if trimmed.len() % 2 != 0 {
         return Err("hex odd length".into());
     }
@@ -339,6 +347,8 @@ mod tests {
         assert_eq!(hex_to_bytes("0x").unwrap(), Vec::<u8>::new());
         assert!(hex_to_bytes("abc").is_err()); // odd
         assert!(hex_to_bytes("zz").is_err()); // non-hex
+        assert!(hex_to_bytes(&"a".repeat(MAX_HEX_LEN + 2)).is_err());
+        assert!(hex_to_bytes(&"ab".repeat(1024)).is_ok());
 
         // Padded decoder: odd nibble count left-pads instead of rejecting.
         assert_eq!(hex_to_bytes_padded("abc").unwrap(), vec![0x0a, 0xbc]);
