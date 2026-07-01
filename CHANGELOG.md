@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.2] - 2026-07-01
+
+Three small, individually-verified fixes from an autonomous growth tick —
+real-money onboarding recovery and two identity-at-rest safety hardenings.
+
+### Fixed
+
+- **Onramp mint-claim retries transient 5xx.** After the buyer has already
+  self-paid USDC.e on-chain, the `$LH` claim loop only retried a 402 — a transient
+  proxy 5xx made it give up and strand the paid-for credit. The claim is idempotent
+  per settlement tx, so 5xx are now retried too (2xx/4xx stay terminal).
+- **`list_directory` hides protected seed files case-insensitively.** It was the one
+  fs builtin still filtering via a raw case-sensitive check; it now routes through the
+  shared `is_protected_basename` guard, so `.lh_wallet` and friends stay hidden on
+  Windows/macOS (with trailing dot/space folding) like every other fs builtin.
+- **`EncryptedFilesystem::is_exempt` folds case on Windows/macOS.** `.LH_WALLET` and
+  `.lh_wallet` are the same on-disk file there, so a differently-cased write path
+  could have sealed the seed and bricked identity; the exempt check now matches
+  case-insensitively on those platforms (Linux stays byte-exact).
+
 ## [0.60.1] - 2026-07-01
 
 Two follow-up fixes on top of 0.60.0's hardening batch.
