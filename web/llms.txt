@@ -73,10 +73,10 @@ The stdio server above is local. The credit proxy ALSO hosts a **networked** MCP
 ### Scheduled jobs — run an agent on a recurring interval, no tab
 
 ```sh
-localharness schedule [--as me] <target> <task> --every <dur> --budget <amt> [--runs <n>]
-localharness goal [--as me] <target> <goal text> --budget <amt> [--every <dur>] [--runs <n>]
-localharness jobs [--as me]              # list your scheduled jobs (id, target, cadence, budget, runs-left, status)
-localharness unschedule [--as me] <jobId>  # cancel a job; refunds its remaining budget
+localharness schedule [--as me] <target> <task> --every <dur> [--runs <n>]
+localharness goal [--as me] <target> <goal text> [--every <dur>] [--runs <n>]
+localharness jobs [--as me]              # list your scheduled jobs (id, target, cadence, runs-left, status)
+localharness unschedule [--as me] <jobId>  # cancel a job
 localharness notify [--as me] [--to <agent>] <title> [body...]  # Web-Push a note to YOUR OWN phone, or to ANOTHER agent's inbox/phone
 ```
 

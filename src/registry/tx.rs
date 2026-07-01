@@ -49,6 +49,14 @@ pub fn set_metadata_gas(byte_len: usize) -> u128 {
 /// node). Refuse rather than clamp — never silently authorize an absurd fee.
 pub const MAX_GAS_PRICE_WEI: u128 = 1_000_000_000_000; // 1000 gwei
 
+/// Absolute ceiling on the `gas_limit` we'll authorize for a sponsored tx. Block
+/// limit is ~500M; 50M is generous headroom for the largest real write (a big
+/// `setMetadata` / `submitFeedback`) yet caps `gas_limit * price` drain from a
+/// hostile/MITM'd RPC. MIRRORS `proxy/api/sponsor.ts::MAX_GAS_LIMIT` (50_000_000n)
+/// — keep the two in lockstep (the relay enforces it server-side; this is the
+/// Rust-side single source of truth, alongside [`MAX_GAS_PRICE_WEI`]).
+pub const MAX_GAS_LIMIT: u128 = 50_000_000;
+
 /// Current `eth_gasPrice` reported by the node, in wei — REFUSING (Err) when it
 /// exceeds [`MAX_GAS_PRICE_WEI`], so every sponsored builder that prices off the
 /// node can't be tricked into an absurd fee by a compromised RPC.

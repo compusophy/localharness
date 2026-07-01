@@ -1141,7 +1141,13 @@ async fn colony_step_judge(
                     // diverges from the local key exactly when keys go stale
                     // (the rho-qa class): a no-op for an unregistered name, or
                     // 0.5 $LH misdirected to a stranger who re-registered it.
-                    let _ = credits::send_lh(Some(caller_label), &judge_addr, "0.5").await;
+                    // React to a failed top-up (the exit code was discarded before —
+                    // send_lh prints the reason, but the colony ignored it and ran the
+                    // judge anyway). A non-zero code means the judge will likely 402
+                    // out; the shortfall summary below then explains the shrunk panel.
+                    if credits::send_lh(Some(caller_label), &judge_addr, "0.5").await != 0 {
+                        eprintln!("      ⚠ judge '{judge_name}' top-up did not succeed; it may 402 out of the panel.");
+                    }
                 }
             }
             hex
@@ -1161,6 +1167,17 @@ async fn colony_step_judge(
                 println!("      ⚠ judge '{judge_name}' turn failed — excluded from the median.");
             }
         }
+    }
+    // If the panel that actually SCORED is smaller than the one we set out to run
+    // (a judge lacked a local key, failed its top-up, or 402'd/errored its turn),
+    // say so — a silently-shrunk panel weakens the median and was invisible before.
+    let planned = effective_panel.len();
+    let actual = panel_results.len();
+    if actual < planned {
+        println!(
+            "      note: {actual} of {planned} judges scored (the rest lacked a key, failed a \
+             top-up, or errored) — the median rests on {actual}."
+        );
     }
     // Aggregate to the MEDIAN. If EVERY judge turn failed, `median_rating([])`
     // returns the neutral 3 default — the cycle still completes with an honest,
