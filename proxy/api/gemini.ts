@@ -132,7 +132,7 @@ function payloadError(provider: Provider, parsed: unknown): string | null {
  * max_tokens / max_completion_tokens if present, and set max_completion_tokens
  * (the GPT-5 max-output field) when absent so the cap binds there too.
  */
-function capOutputTokens(provider: Provider, body: Record<string, unknown>): boolean {
+export function capOutputTokens(provider: Provider, body: Record<string, unknown>): boolean {
   if (!(MAX_OUTPUT_TOKENS > 0)) return false;
   const cap = MAX_OUTPUT_TOKENS;
   if (provider === 'gemini') {
@@ -166,6 +166,29 @@ function capOutputTokens(provider: Provider, body: Record<string, unknown>): boo
     const cur = body[field];
     if (typeof cur === 'number' && cur > cap) {
       body[field] = cap;
+      changed = true;
+    }
+  }
+  // Anthropic extended thinking requires max_tokens > thinking.budget_tokens.
+  // Capping max_tokens DOWN can violate that and 400 the whole turn (telemetry
+  // #38: "max_tokens must be greater than thinking.budget_tokens" — the client
+  // sends a valid body, the cap drops max_tokens below the budget). Clamp the
+  // budget to stay strictly below the (now-capped) max_tokens; if the cap can't
+  // fit Anthropic's 1024-token minimum budget, drop thinking entirely.
+  if (provider === 'anthropic' && typeof body.max_tokens === 'number') {
+    const thinking =
+      typeof body.thinking === 'object' && body.thinking !== null
+        ? (body.thinking as Record<string, unknown>)
+        : undefined;
+    if (
+      thinking &&
+      thinking.type === 'enabled' &&
+      typeof thinking.budget_tokens === 'number' &&
+      thinking.budget_tokens >= body.max_tokens
+    ) {
+      const room = body.max_tokens - 1;
+      if (room >= 1024) thinking.budget_tokens = room;
+      else delete body.thinking;
       changed = true;
     }
   }

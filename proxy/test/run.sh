@@ -21,4 +21,12 @@ node test/sponsor-handler.mjs
 node test/mpp-onramp.mjs
 node test/auth-parity.mjs
 node test/webpush-dedupe.mjs
+
+# gemini.ts capOutputTokens (telemetry #38): compile its import graph so the real
+# exported function is testable, then assert the thinking-budget invariant.
+./node_modules/.bin/tsc api/gemini.ts \
+  --ignoreConfig --outDir .ttest --target es2022 --module commonjs \
+  --moduleResolution node --skipLibCheck --types node --ignoreDeprecations 6.0 \
+  --esModuleInterop
+node test/cap-output.mjs
 echo "proxy tests passed"
