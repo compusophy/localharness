@@ -4,7 +4,7 @@
 
 <!-- NOTE: facts inside GEN marker pairs are GENERATED from src/docs_manifest.rs by `cargo run --bin gen-docs`. Do not hand-edit them; change the fact in the manifest and regenerate (a drift gate in `cargo test` + the release pre-flight enforce it). -->
 <!-- GEN:version -->
-**version:** 0.60.0 (the crate version; the deployed web bundle matches crates.io when current)
+**version:** 0.60.1 (the crate version; the deployed web bundle matches crates.io when current)
 <!-- /GEN:version -->
 
 ## What this is

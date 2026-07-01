@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.1] - 2026-07-01
+
+Two follow-up fixes on top of 0.60.0's hardening batch.
+
+### Fixed
+
+- **Pricing messaging.** The onboarding tips, CLI help / hints, doc comments and
+  test-fleet scripts quoted "~0.01 `$LH`" per call, but the meter has charged
+  1 `$LH` per message since 0.47.0 — users were shown a price 100× below what
+  they were billed (found dogfooding). Corrected to ~1 `$LH` (0.01 remains only
+  the x402 agent-advertised default, a separate mechanism); the regression guard
+  now scans the CLI tips as well as `skill.md`.
+- **x402 zero-address settlement.** `settle_x402_sponsored` now rejects a `0x0`
+  recipient before building the tx, so a caller can't irrecoverably burn the
+  payer's `$LH` — mirroring the guild-treasury guard and the already-shipped
+  x402 nonce-state zero-address guard.
+
 ## [0.60.0] - 2026-07-01
 
 Security + real-money hardening across the untrusted-input, on-chain, and metering
