@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.6] - 2026-07-01
+
+### Fixed
+
+- **`set_persona` / `set_lessons` on-chain publish is best-effort.** `set_persona`
+  published on-chain *before* saving the edit locally, so a relay/network failure lost
+  the persona self-edit entirely (the same #34 data-loss class fixed for `record_lesson`
+  in 0.60.3, but the sibling self-edit tools were missed). Both now save locally first
+  and degrade to a deferred-publish success instead of hard-erroring.
+- **Colony default `--min-accept-rating` raised 2 → 3.** Running the colony, below-bar
+  work (e.g. non-compiling code a judge sympathy-grades at 2/5) still cleared the
+  default payment gate and got paid from escrow. The default now rejects medians 1–2;
+  operators can still opt into a lenient bar explicitly.
+
 ## [0.60.5] - 2026-07-01
 
 Three skeptic-verified correctness fixes in the less-trafficked cores.
