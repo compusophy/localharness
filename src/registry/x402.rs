@@ -113,6 +113,20 @@ pub(crate) fn encode_settle(
     out
 }
 
+/// Refuse an x402 settlement whose recipient is the zero address. `to` is
+/// bound into the signed EIP-712 authorization, but a caller that constructs a
+/// `0x0` recipient would irrecoverably burn the payer's `$LH` — fail fast,
+/// before spending sponsor gas. Mirrors the guild treasury zero-address guard.
+fn reject_zero_settlement(to: &[u8; 20]) -> Result<(), String> {
+    if *to == [0u8; 20] {
+        return Err(
+            "refusing to settle x402 payment to the zero address (0x0) — funds would be burned"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Submit an x402 settlement (sponsored). `submitter` is the payee /
 /// facilitator (signs the Tempo tx); fees paid by `fee_payer`. Moves
 /// `value_wei` `$LH` from the signed authorization's payer to `to`.
@@ -130,6 +144,7 @@ pub async fn settle_x402_sponsored(
     signature: &[u8; 65],
     fee_token: &str,
 ) -> Result<String, String> {
+    reject_zero_settlement(to)?;
     // ecrecover + one-shot nonce SSTORE + TIP-20 transferFrom. The first
     // payment INTO a fresh TBA is all cold zero→nonzero SSTOREs and reverted
     // at 392k/400k live (2026-06-10); warm-path E2Es masked it. ~275k of the
@@ -355,6 +370,14 @@ mod x402_tests {
         )
         .await;
         assert!(got.is_err());
+    }
+
+    #[test]
+    fn reject_zero_settlement_rejects_zero_addr() {
+        // Settling to 0x0 would burn the payer's $LH — the guard denies it
+        // before any tx is built, mirroring the guild treasury guard.
+        assert!(reject_zero_settlement(&[0u8; 20]).is_err());
+        assert!(reject_zero_settlement(&[1u8; 20]).is_ok());
     }
 
     #[test]
