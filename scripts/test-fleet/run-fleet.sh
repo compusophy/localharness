@@ -24,9 +24,10 @@
 # NEW persona; reused personas only pay the feedback write). Model calls are
 # NOT free: the proxy meters ~1 $LH per call (it gates on an active session
 # OR a meter balance >= the cost, 402 otherwise) and the CLI deliberately does
-# NOT auto-open the 10-$LH/hr session. A fresh persona holds 0 $LH, so after
-# `create` this script best-effort sends each NEW persona 0.5 $LH from the
-# funded `claude` identity (warns + continues if that fails).
+# NOT auto-open the 10-$LH/hr session. A fresh persona holds 0 $LH AND on mainnet
+# `create` itself costs ~1 $LH pulled from the wallet, so this script funds each
+# persona's ADDRESS ~4 $LH from the funded `claude` identity BEFORE create (probe +
+# reflect are ~1 $LH each; warns + continues if the send fails).
 # Needs `node` (for JSON parsing) and a built `localharness`.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -60,6 +61,22 @@ else
   mapfile -t SELECT < <(pj "" names)
 fi
 
+# fund_persona <name> <amount>: fund the local-keyed identity's ADDRESS from claude.
+# `send` by NAME fails for an UNREGISTERED name, so resolve the 0x address from the
+# identity's own `status` (works off the local key even pre-registration) and send to
+# the address. Needed because on mainnet `create` COSTS ~1 $LH pulled from the
+# claimer's wallet, so the persona must hold funds BEFORE create (not after).
+fund_persona() {
+  local name="$1" amt="$2" addr
+  addr="$($CLI status --as "$name" 2>/dev/null | grep -iE 'your wallet' | grep -oiE '0x[0-9a-f]{40}' | head -1)"
+  if [ -z "$addr" ]; then echo "  !! could not resolve $name's address — funding skipped"; return 1; fi
+  if $CLI send --as claude "$addr" "$amt" >/dev/null 2>&1; then
+    echo "  · funded $amt \$LH (from claude → $addr)"; return 0
+  else
+    echo "  !! could not fund $name ($addr) from claude — create/calls may 402"; return 1
+  fi
+}
+
 submitted=0
 for NAME in "${SELECT[@]}"; do
   PERSONA="$(pj "$NAME" persona)"
@@ -71,31 +88,20 @@ for NAME in "${SELECT[@]}"; do
   # 1. create on-chain identity + persona. A LOCAL KEY alone doesn't prove the
   # name is registered (pre-reset keys, released names) — verify on-chain and
   # re-claim when stale; `create` is idempotent and REUSES an existing key.
-  if [ -f "${NAME}.localharness.key" ] || [ -f "${LOCALHARNESS_HOME:-$HOME/.localharness/keys}/${NAME}.localharness.key" ]; then
-    if $CLI whoami "$NAME" 2>/dev/null | grep -q "unregistered"; then
-      echo "  · key exists but '$NAME' is UNREGISTERED — re-claiming with the existing key…"
-      $CLI create "$NAME" --persona "$PERSONA" >/dev/null 2>&1 \
-        || { echo "  ✗ re-claim failed — skipping"; continue; }
-      if $CLI send --as claude "$NAME" 0.5 >/dev/null 2>&1; then
-        echo "  · funded with 0.5 \$LH (from claude)"
-      else
-        echo "  !! could not fund $NAME from claude — probe may 402"
-      fi
-    else
-      echo "  · identity exists (reusing local key)"
-    fi
+  KEYDIR="${LOCALHARNESS_HOME:-$HOME/.localharness/keys}"
+  HAS_KEY=0
+  { [ -f "${NAME}.localharness.key" ] || [ -f "$KEYDIR/${NAME}.localharness.key" ]; } && HAS_KEY=1
+  if [ "$HAS_KEY" = 1 ] && ! $CLI whoami "$NAME" 2>/dev/null | grep -q "unregistered"; then
+    # Registered already — just top up so the probe + reflect (~1 $LH each) don't 402.
+    echo "  · identity registered (reusing local key) — topping up"
+    fund_persona "$NAME" 3
   else
-    echo "  · creating on-chain identity + persona…"
-    $CLI create "$NAME" --persona "$PERSONA" >/dev/null 2>&1 || { echo "  ✗ create failed (name taken?) — skipping"; continue; }
-    # BEST-EFFORT funding: the proxy meters ~1 $LH per call and a fresh
-    # persona holds 0 $LH, so its probe would 402. Send 0.5 $LH (> the 0.2
-    # lazy meter top-up) from the funded `claude` identity. A missing claude
-    # key or a failed send only WARNS — already-funded personas keep working.
-    if $CLI send --as claude "$NAME" 0.5 >/dev/null 2>&1; then
-      echo "  · funded with 0.5 \$LH (from claude)"
-    else
-      echo "  !! could not fund $NAME from claude (missing key / failed send) — probe may 402"
-    fi
+    # Unregistered (or no key) — on mainnet create COSTS ~1 $LH pulled from the wallet,
+    # so FUND FIRST (4 = 1 claim + ~2 probe/reflect + buffer), THEN create + persona.
+    echo "  · claiming '$NAME' on-chain (fund-then-create; persona attached)…"
+    fund_persona "$NAME" 4
+    $CLI create "$NAME" --persona "$PERSONA" >/dev/null 2>&1 \
+      || { echo "  ✗ create failed (unfunded / name taken?) — skipping"; continue; }
   fi
 
   # 2. real interaction with a live agent. On a 402 (existing persona with an
@@ -106,8 +112,8 @@ for NAME in "${SELECT[@]}"; do
   EXPERIENCE="$($CLI call --as "$NAME" --fresh "$TARGET" "$PROBE" 2>&1)"
   RC=$?
   if [ $RC -ne 0 ] && printf '%s' "$EXPERIENCE" | grep -q "402"; then
-    echo "  · probe 402'd (empty meter) — funding 0.5 \$LH from claude + retrying"
-    if $CLI send --as claude "$NAME" 0.5 >/dev/null 2>&1; then
+    echo "  · probe 402'd (empty meter) — topping up 2 \$LH + retrying"
+    if fund_persona "$NAME" 2; then
       EXPERIENCE="$($CLI call --as "$NAME" --fresh "$TARGET" "$PROBE" 2>&1)" \
         || { echo "  ✗ probe failed after funding: $EXPERIENCE"; continue; }
     else
