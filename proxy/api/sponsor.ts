@@ -272,6 +272,40 @@ const GATE_EXEMPT_SELECTORS = new Set([
   ...BOUNTY_LIFECYCLE_SELECTORS,
 ]);
 
+// `setMetadata` is a SELF-EDIT of the caller's OWN identity (persona, x402 price,
+// lessons, small html face) — owner-gated on-chain, moves no value, can't touch the
+// sponsor's fee-token float. A funded agent (any agent that has earned/holds $LH)
+// was locked out of ALL of these on mainnet by the onboarding-only gate — the core
+// self-sovereign-agent surface. It's gas-only, so we exempt it, but ONLY for a
+// SMALL payload: `setMetadata` costs ~7.6k gas/byte, so a size cap keeps a funded
+// caller's per-call gas draw bounded (app CARTRIDGES are off-chain now, so on-chain
+// metadata is small text — persona/price/lessons all fit). A large write stays
+// gated. Bounded further by the rate caps + float breaker + MAX_GAS_LIMIT.
+const SETMETADATA_SELECTOR = selector('setMetadata(uint256,bytes32,bytes)');
+const SETMETA_EXEMPT_MAX_BYTES = 4096;
+
+/** The byte-length of a `setMetadata(uint256,bytes32,bytes)` value, or null if the
+ *  calldata isn't a standard-encoded setMetadata. Layout: selector(4) + tokenId(32)
+ *  + key(32) + offset(32, must be 0x60) + len(32) + value. */
+function setMetadataValueLen(input: Uint8Array): number | null {
+  if (input.length < 132) return null;
+  const off = BigInt('0x' + bytesToHex(input.slice(68, 100)));
+  if (off !== 0x60n) return null; // only the standard single-dynamic-arg encoding
+  return Number(BigInt('0x' + bytesToHex(input.slice(100, 132))));
+}
+
+/** True if a call is exempt from the onboarding-only funded gate: a gate-exempt
+ *  selector, or a SMALL `setMetadata` self-edit on the diamond. */
+function isGateExemptCall(c: TempoCallIntent): boolean {
+  const sel = bytesToHex(c.input.slice(0, 4));
+  if (GATE_EXEMPT_SELECTORS.has(sel)) return true;
+  if (sel === SETMETADATA_SELECTOR && '0x' + bytesToHex(c.to) === DIAMOND) {
+    const len = setMetadataValueLen(c.input);
+    return len !== null && len <= SETMETA_EXEMPT_MAX_BYTES;
+  }
+  return false;
+}
+
 // --- CORS / json -----------------------------------------------------------
 // isAllowedOrigin is the shared _authcore impl (imported above).
 
@@ -517,7 +551,7 @@ export default async function handler(req: Request): Promise<Response> {
   //    settle + $LH transfer — a funded agent can't hold the fee token to pay its
   //    own gas) OR always-free (submitFeedback — feedback must never be locked
   //    behind funding). A mix with any other (onboarding/economy) write still gates.
-  const gateExempt = intent.calls.every((c) => GATE_EXEMPT_SELECTORS.has(bytesToHex(c.input.slice(0, 4))));
+  const gateExempt = intent.calls.every(isGateExemptCall);
   if (!gateExempt) {
     try {
       const bal = await lhBalanceOf(caller);

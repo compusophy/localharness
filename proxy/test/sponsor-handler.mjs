@@ -271,6 +271,43 @@ const token = authToken(senderPriv, senderAddr, ts);
   );
 }
 
+// --- funded caller, SMALL setMetadata self-edit, IS sponsored ----------------
+// persona/price/lessons are owner-gated gas-only self-edits; a funded agent must be
+// able to manage its own identity on mainnet (before: LH_RELAY_FUNDED).
+function setMetadataCalldata(valueLenBytes) {
+  // selector + tokenId(1) + key(0x..) + offset(0x60) + len + padded value
+  const words = word('1') + word('ab'.repeat(32)) + word('60') + word(valueLenBytes.toString(16));
+  const value = 'cd'.repeat(valueLenBytes);
+  const padded = value.padEnd(Math.ceil(valueLenBytes / 32) * 64, '0');
+  return '0x' + sel('setMetadata(uint256,bytes32,bytes)') + words + padded;
+}
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  const cd = setMetadataCalldata(200); // small persona/price payload
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  const j = await res.json();
+  ok(
+    'funded caller SMALL setMetadata is sponsored (self-edit exempt)',
+    res.status === 200,
+    `status=${res.status} code=${j.code} body=${JSON.stringify(j)}`,
+  );
+}
+
+// --- funded caller, LARGE setMetadata, is STILL gated (gas-drain cap) ---------
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  const cd = setMetadataCalldata(5000); // > 4096-byte exemption cap
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  const j = await res.json();
+  ok(
+    'funded caller LARGE setMetadata stays gated (LH_RELAY_FUNDED)',
+    res.status === 403 && j.code === 'LH_RELAY_FUNDED',
+    `status=${res.status} code=${j.code}`,
+  );
+}
+
 // --- transfer on the token IS sponsorable (send_lh moves the caller's $LH) ---
 {
   stubBalance('0');
