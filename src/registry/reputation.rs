@@ -171,9 +171,7 @@ pub async fn has_attested(
         &[addr_word(&attester), u256_be(subject as u128), work_ref],
     )
     .await?;
-    let bytes = hex_to_bytes(&result)?;
-    // A bool return is a single right-aligned word: non-zero low byte = true.
-    Ok(bytes.last().is_some_and(|&b| b != 0))
+    Ok(decode_u256_as_u64(&result)? != 0)
 }
 
 

@@ -251,8 +251,7 @@ pub async fn has_validated(
         &[addr_word(&validator), u256_be(subject as u128), work_ref],
     )
     .await?;
-    let bytes = hex_to_bytes(&result)?;
-    Ok(bytes.last().is_some_and(|&b| b != 0))
+    Ok(decode_u256_as_u64(&result)? != 0)
 }
 
 /// Read `validationCount()` → total validations ever staked (== the highest
@@ -269,6 +268,21 @@ pub async fn validation_count() -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `has_validated` decodes the `hasValidated` read with `decode_u256_as_u64`
+    /// and propagates its `Err` (fail-closed): a malformed / over-long RPC read
+    /// must NOT silently decode as false → "not validated", which would let a
+    /// duplicate-detection guard admit a write that should be rejected. Pins the
+    /// two Err paths (over-long, high-bytes-set), plus the valid decodings.
+    #[test]
+    fn has_validated_decode_is_fail_closed() {
+        assert_eq!(decode_u256_as_u64(&"0".repeat(64)), Ok(0));
+        assert_eq!(decode_u256_as_u64(&format!("{}1", "0".repeat(63))), Ok(1));
+        // Over-long hex must Err (propagated, not swallowed to false).
+        assert!(decode_u256_as_u64(&"0".repeat(65)).is_err());
+        // A set high byte (value beyond u64) must Err, not truncate.
+        assert!(decode_u256_as_u64(&format!("1{}", "0".repeat(63))).is_err());
+    }
 
     #[test]
     fn stake_validation_calldata_layout() {
