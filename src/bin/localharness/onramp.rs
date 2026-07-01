@@ -324,9 +324,12 @@ pub(crate) async fn onramp(args: &[String]) -> i32 {
 }
 
 /// A 402 from the mint claim means the settlement isn't yet confirmed on-chain
-/// (transient) — retry; any other status is terminal.
+/// (transient) — retry. A 5xx is a transient proxy error, and the user has ALREADY
+/// self-paid USDC.e on-chain by this point (the claim is idempotent per
+/// settlement_tx), so retry those too rather than strand the paid-for $LH. Any
+/// 2xx/4xx is terminal.
 fn should_retry_mint_status(status: u16) -> bool {
-    status == 402
+    status == 402 || (500..600).contains(&status)
 }
 
 /// POST without a credential and parse the 402 Payment challenge. A non-402
@@ -554,12 +557,16 @@ mod tests {
     }
 
     #[test]
-    fn should_retry_mint_status_only_on_402() {
+    fn should_retry_mint_status_on_402_and_5xx() {
         // 402 = settlement not yet confirmed → transient, retry.
         assert!(should_retry_mint_status(402));
-        // Success and terminal errors never retry.
+        // Transient proxy 5xx also retry (the claim is idempotent per settlement_tx,
+        // and the USDC.e was already paid — don't strand it on a blip).
+        assert!(should_retry_mint_status(500));
+        assert!(should_retry_mint_status(503));
+        // Success and terminal 4xx never retry.
         assert!(!should_retry_mint_status(200));
-        assert!(!should_retry_mint_status(500));
+        assert!(!should_retry_mint_status(400));
     }
 
     #[test]
