@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.11] - 2026-07-01
+
+### Fixed
+
+- **`call` silently dropped a `--pay` placed after the target.** `--pay` / `--model` /
+  `--verify` / `--fresh` are leading flags (before the target, so they aren't parsed
+  out of the message), but `--as` is position-independent — so a user who naturally
+  wrote `call agent "msg" --pay auto` had the flag *joined into the message text and
+  ignored*, paying the agent **nothing** with no warning. It now errors clearly
+  ("`--pay` must come BEFORE the target"). Found dogfooding the x402 pay-per-call path
+  (which otherwise works: a leading `--pay auto` settles to the agent's TBA on-chain).
+
 ## [0.60.10] - 2026-07-01
 
 ### Fixed
