@@ -59,68 +59,134 @@ usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent
   agent exists the caller acts as a lone fallback judge; if ALL judge turns fail
   the median defaults to a neutral 3★.";
 
-/// Pure: pull the first plausible rustlite snippet out of a free-form worker
+/// Rustlite item keywords a top-level repro line plausibly starts with (compiled
+/// as-is), and statement keywords that must be WRAPPED in `fn main` to form a valid
+/// module. Used by [`is_rustlite_code`] + [`compile_repro`].
+const RL_ITEM_STARTS: &[&str] = &["fn ", "const ", "static ", "struct ", "enum ", "use "];
+const RL_STMT_STARTS: &[&str] = &["let "];
+
+/// `true` if a trimmed line looks like rustlite code: starts with an item/statement
+/// keyword AND carries code punctuation (`=`/`(`/`{`). The punctuation guard keeps
+/// prose like "use the config value" from being mistaken for a repro.
+fn is_rustlite_code(s: &str) -> bool {
+    let t = s.trim();
+    // A leading attribute (e.g. `#[no_mangle]`) is unambiguously code; otherwise
+    // require an item/statement keyword at the start.
+    let starts_code =
+        t.starts_with("#[") || RL_ITEM_STARTS.iter().chain(RL_STMT_STARTS).any(|k| t.starts_with(k));
+    starts_code && (t.contains('=') || t.contains('(') || t.contains('{'))
+}
+
+/// Pure: pull the first plausible rustlite repro out of a free-form worker
 /// `result`, so the judge can be handed GROUND-TRUTH compile evidence instead of
-/// guessing. Prefers a ```-fenced code block whose body contains `fn ` (dropping
-/// an optional `rust`/`rl` language tag), else the first single-backtick span
-/// containing `fn `. Returns `None` when nothing code-like is present (most
-/// non-code tasks) — then no evidence is injected and the judge behaves as before.
-/// Requiring `fn ` keeps prose backticks from being mistaken for a repro.
+/// guessing. Looks (in order) for a ```-fenced code block, a single-backtick span,
+/// then a BARE line — each recognized by [`is_rustlite_code`]. Returns `None` when
+/// nothing code-like is present (most non-code tasks) → no evidence injected, judge
+/// unchanged. The bare-line scan is what catches an UNQUOTED repro like
+/// `const X: i32 = <huge>;` (seen dogfooding — the worker didn't wrap it, so the
+/// first backtick-only version of this extractor silently found nothing).
 pub(crate) fn extract_rustlite_snippet(result: &str) -> Option<String> {
-    // 1. Triple-backtick fenced block whose body contains `fn ` (odd segments are
-    //    inside fences once the text is split on the fence delimiter).
+    // 1. Triple-backtick fenced block (odd segments are inside fences).
     if result.contains("```") {
         for seg in result.split("```").skip(1).step_by(2) {
             // Drop a short leading language tag line (```rust / ```rl) if present.
             let body = match seg.split_once('\n') {
-                Some((first, rest)) if first.trim().len() <= 8 && !first.contains("fn ") => rest,
+                Some((first, rest)) if first.trim().len() <= 8 && !is_rustlite_code(first) => rest,
                 _ => seg,
             };
-            if body.contains("fn ") {
+            if body.lines().any(is_rustlite_code) {
                 return Some(body.trim().to_string());
             }
         }
     }
-    // 2. First single-backtick span containing `fn `.
+    // 2. First single-backtick span that looks like code.
     let mut i = 0;
     while let Some(rel) = result[i..].find('`') {
         let start = i + rel + 1;
         let Some(end_rel) = result[start..].find('`') else { break };
         let span = &result[start..start + end_rel];
-        if span.contains("fn ") {
+        if is_rustlite_code(span) {
             return Some(span.trim().to_string());
         }
         i = start + end_rel + 1;
     }
-    None
+    // 3. First BARE (unquoted) line that looks like code.
+    result.lines().find(|l| is_rustlite_code(l)).map(|l| l.trim().to_string())
+}
+
+/// The three ground-truth outcomes of compiling a repro — the axis a code-bug
+/// judge actually needs: does it CRASH the compiler, get REJECTED cleanly, or
+/// BUILD?
+pub(crate) enum ReproOutcome {
+    Compiles(usize),
+    CleanError(String),
+    Crash,
+}
+
+/// Serializes the process-global panic-hook swap in [`compile_repro`] (cargo runs
+/// tests in parallel, so the swap must not race).
+static REPRO_HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Compile a repro with the real rustlite compiler. A bare statement (`let …`) is
+/// wrapped in `fn main` so it's a valid module; a top-level item compiles as-is. A
+/// panic is CAUGHT so a pathological repro can never bail the colony cycle — and a
+/// genuine panic is itself the finding ([`ReproOutcome::Crash`]).
+pub(crate) fn compile_repro(snippet: &str) -> ReproOutcome {
+    let t = snippet.trim();
+    let is_item = RL_ITEM_STARTS.iter().any(|k| t.starts_with(k));
+    // rustlite needs a `frame`/`render` cartridge entry (else LH0302), so a VALID
+    // repro would otherwise read as a false "rejection". Give every snippet an
+    // entry: keep it as-is if it already defines one; append a trivial entry to a
+    // top-level item; wrap a bare statement inside the entry body.
+    let has_entry = t.contains("fn frame") || t.contains("fn render");
+    let src = if has_entry {
+        t.to_string()
+    } else if is_item {
+        format!("{t}\n#[no_mangle] fn frame(t: i32) -> i32 {{ t }}")
+    } else {
+        format!("#[no_mangle] fn frame(t: i32) -> i32 {{ {t} t }}")
+    };
+    let _guard = REPRO_HOOK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {})); // silence the default print; a panic IS the finding.
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        localharness::rustlite::compile(&src)
+    }));
+    std::panic::set_hook(prev);
+    match r {
+        Ok(Ok(b)) => ReproOutcome::Compiles(b.len()),
+        Ok(Err(e)) => {
+            let code = e.code.map(|c| format!("LH{c:04}")).unwrap_or_else(|| "LH????".into());
+            ReproOutcome::CleanError(format!("{code}: \"{}\"", e.message))
+        }
+        Err(_) => ReproOutcome::Crash,
+    }
 }
 
 /// Compile the worker result's embedded rustlite repro (if any) and format ONE
-/// line of ground-truth evidence for the judge — deterministic, since it runs the
-/// real `rustlite::compile`. `None` when there's no code-like snippet. A clean
-/// coded error (`LHxxxx`) is the compiler's INTENDED handling of invalid input, so
-/// the evidence spells that out — a worker claiming a crash / miscompile / a
-/// specific mechanism the error contradicts is then visibly inaccurate.
+/// line of ground-truth evidence for the judge — deterministic. `None` when
+/// there's no code-like snippet. Distinguishes a REAL crash (which SUPPORTS a
+/// crash-claim) from a clean coded rejection (which REFUTES one) from a clean
+/// build, so the judge can score the accuracy axis instead of guessing.
 pub(crate) fn rustlite_compile_evidence(result: &str) -> Option<String> {
     let snippet = extract_rustlite_snippet(result)?;
-    match localharness::rustlite::compile(&snippet) {
-        Ok(bytes) => Some(format!(
-            "The repro `{snippet}` COMPILES cleanly ({} bytes) with the real rustlite \
-             compiler — no crash, no miscompile.",
-            bytes.len()
-        )),
-        Err(e) => {
-            let code = e.code.map(|c| format!("LH{c:04}")).unwrap_or_else(|| "LH????".into());
-            Some(format!(
-                "The repro `{snippet}` is REJECTED by the real rustlite compiler with a clean \
-                 coded error {code}: \"{}\". A clean coded error is the compiler's INTENDED \
-                 behavior for unsupported/invalid input — it is NOT a crash or a miscompile. If \
-                 the worker claims a crash, a silent miscompile, or a specific mechanism (e.g. a \
-                 `>>` mislex) that this error contradicts, the finding is inaccurate.",
-                e.message
-            ))
-        }
-    }
+    Some(match compile_repro(&snippet) {
+        ReproOutcome::Compiles(n) => format!(
+            "The repro `{snippet}` COMPILES cleanly ({n} bytes) with the real rustlite \
+             compiler — no crash, no miscompile. A worker claiming it crashes or miscompiles is \
+             inaccurate."
+        ),
+        ReproOutcome::CleanError(detail) => format!(
+            "The repro `{snippet}` is REJECTED by the real rustlite compiler with a clean coded \
+             error {detail}. A clean coded error is the compiler's INTENDED handling of \
+             unsupported/invalid input — it is NOT a crash or a miscompile. A worker claiming a \
+             crash, a silent miscompile, or a mechanism this error contradicts is inaccurate."
+        ),
+        ReproOutcome::Crash => format!(
+            "The repro `{snippet}` actually CRASHES (panics) the real rustlite compiler — a \
+             GENUINE crash bug. A worker claiming a crash here is ACCURATE."
+        ),
+    })
 }
 
 /// Build the impartial-judge prompt for the [6/8] JUDGE step. The judge scores
@@ -1629,31 +1695,47 @@ mod tests {
     }
 
     #[test]
-    fn extract_rustlite_snippet_finds_backtick_and_fenced_and_ignores_prose() {
+    fn extract_rustlite_snippet_finds_backtick_fenced_and_bare_and_ignores_prose() {
         // single-backtick span
         let s = extract_rustlite_snippet("Repro:\n`fn main() { let x = 1; }`").unwrap();
         assert_eq!(s, "fn main() { let x = 1; }");
         // fenced block with a language tag
         let s = extract_rustlite_snippet("```rust\nfn frame(t: i32) -> i32 { t }\n```").unwrap();
         assert_eq!(s, "fn frame(t: i32) -> i32 { t }");
-        // prose with backticks but no `fn ` → nothing code-like
+        // BARE (unquoted) line — the case the backtick-only extractor missed live.
+        let s = extract_rustlite_snippet("Bug: crash!\nRepro:\nconst X: i32 = 999;").unwrap();
+        assert_eq!(s, "const X: i32 = 999;");
+        // prose with backticks but no code keyword → nothing code-like
         assert!(extract_rustlite_snippet("see the `config` value and `x`").is_none());
         assert!(extract_rustlite_snippet("just prose, no code at all").is_none());
     }
 
     #[test]
     fn rustlite_compile_evidence_grounds_the_judge() {
-        // The exact phantom-`>>` finding: the repro is REJECTED at the first `<`
-        // (LH0100), which contradicts the worker's claimed `>>`-mislex mechanism.
+        // The phantom-`>>` finding: REJECTED at the first `<` (LH0100), contradicting
+        // the worker's claimed `>>`-mislex mechanism.
         let ev = rustlite_compile_evidence(
             "Bug: naive `>>` lexing. Repro: `fn main() { let x: Option<Option<i32>> = None; }`",
         )
-        .expect("a snippet with `fn ` yields evidence");
+        .expect("a backticked snippet yields evidence");
         assert!(ev.contains("REJECTED"));
         assert!(ev.contains("LH0100"));
+        // The phantom-CRASH finding as a BARE huge-literal const (the live #3 case):
+        // a clean LH0005, NOT a crash — the "compiler panic" claim is refuted.
+        let ev = rustlite_compile_evidence(
+            "Bug: compiler panic on overflow.\nRepro:\nconst X: i32 = 999999999999999999999999999999999;",
+        )
+        .expect("a bare code line yields evidence");
+        assert!(ev.contains("REJECTED"));
+        assert!(ev.contains("LH0005"));
+        assert!(!ev.contains("CRASHES"), "a clean coded error must not be reported as a crash");
         // A genuinely valid cartridge compiles cleanly → positive evidence.
         let ev = rustlite_compile_evidence("`#[no_mangle] fn frame(t: i32) -> i32 { t }`").unwrap();
         assert!(ev.contains("COMPILES cleanly"));
+        // A valid bare statement is wrapped with an entry and compiles cleanly (it
+        // must NOT read as a false rejection for lacking a frame/render export).
+        let ev = rustlite_compile_evidence("Repro:\nlet a: i32 = 5;").unwrap();
+        assert!(ev.contains("COMPILES cleanly"), "got: {ev}");
         // No repro → no evidence (judge behaves as before).
         assert!(rustlite_compile_evidence("no code here").is_none());
         // The evidence actually reaches the judge prompt.
