@@ -135,7 +135,10 @@ pub async fn native_balance(chain: &EvmChain, address: &str) -> Result<u128, Str
         serde_json::json!([address, "latest"]),
     )
     .await?;
-    parse_hex_quantity(v.as_str().unwrap_or("0x0"))
+    parse_hex_quantity(
+        v.as_str()
+            .ok_or_else(|| "eth_getBalance: expected string result".to_string())?,
+    )
 }
 
 /// `balanceOf(address)` of `holder` on the ERC-20 `token` on `chain`, in token
