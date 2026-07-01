@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.5] - 2026-07-01
+
+Three skeptic-verified correctness fixes in the less-trafficked cores.
+
+### Fixed
+
+- **`parse_hex_quantity` accepts an uppercase `0X` prefix.** It was the one hex codec
+  stripping only `0x` (siblings strip both cases), so an RPC or dapp-supplied EIP-1559
+  field with a `0X` prefix errored the whole parse — contradicting its documented
+  "optional `0x` prefix" contract.
+- **`native_balance` errors on a malformed `eth_getBalance` result** instead of
+  coercing a non-string RPC response to a real-looking zero balance — matching the
+  sibling `eth_call` read and the reject-not-truncate convention.
+- **soliditylite CODECOPY wraps its source offset.** The copy loop used unchecked
+  `src + i`; hostile bytecode could set `src` near `usize::MAX` and overflow-panic in
+  debug builds (how `cargo test` and the diff-harness run), breaking the "untrusted
+  bytecode never panics the process" invariant. It now wraps like its CALLDATACOPY
+  sibling (with a regression test).
+
 ## [0.60.4] - 2026-07-01
 
 ### Fixed
