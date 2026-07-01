@@ -84,16 +84,26 @@ pub(crate) async fn onboard(args: &[String]) -> i32 {
         return rc;
     }
 
-    // 3. Report the funded balance + the next step.
-    let bal = registry::token_balance_of(&addr).await.unwrap_or(0);
-    if bal > 0 {
-        println!("✓ onboarded — wallet balance: {}", fmt_lh(bal));
-    } else {
-        println!("✓ onboarded — your first $LH is in your wallet");
-    }
+    // 3. Report the funded balance + the next step. A network error must NOT
+    //    collapse into a fake-zero "your first $LH" success — distinguish it.
+    let bal = registry::token_balance_of(&addr).await;
+    println!("{}", onboard_balance_line(&bal));
     println!("  next: claim a subdomain identity with `localharness create <name>`");
     println!("        (a name costs ~1 $LH from this balance; gas stays sponsored)");
     0
+}
+
+/// The onboarding success line for a balance read: a real balance, a genuine
+/// zero (first-$LH grant still settling), or a read FAILURE we must not fake-zero.
+pub(crate) fn onboard_balance_line(bal: &Result<u128, String>) -> String {
+    match bal {
+        Ok(b) if *b > 0 => format!("✓ onboarded — wallet balance: {}", fmt_lh(*b)),
+        Ok(_) => "✓ onboarded — your first $LH is in your wallet".to_string(),
+        Err(_) => {
+            "✓ onboarded — balance not yet confirmed on-chain; check with `localharness status`"
+                .to_string()
+        }
+    }
 }
 
 /// Ensure a local identity key FILE exists for `--as <name>`, GENERATING +
@@ -120,4 +130,18 @@ fn ensure_identity_key(as_name: Option<&str>) -> Result<(), i32> {
     secure_key_file(&key_file); // 0600 (unix) + keep a cwd-fallback key out of git.
     println!("created a new identity key for '{name}' ({key_file})");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::onboard_balance_line;
+
+    #[test]
+    fn onboard_line_distinguishes_error_from_zero() {
+        assert!(onboard_balance_line(&Ok(0)).contains("your first $LH"));
+        assert!(onboard_balance_line(&Ok(5_000_000_000_000_000_000)).contains("wallet balance"));
+        let err = onboard_balance_line(&Err("net".into()));
+        assert!(err.contains("not yet confirmed"));
+        assert!(!err.contains("your first $LH"));
+    }
 }
