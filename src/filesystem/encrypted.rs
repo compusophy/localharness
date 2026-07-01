@@ -127,7 +127,9 @@ impl EncryptedFilesystem {
 
     /// Whether `path`'s file name is on the never-encrypt list.
     pub fn is_exempt(path: &str) -> bool {
-        EXEMPT_FILES.contains(&file_name(path))
+        // Strip trailing separators first so `.lh_wallet/` still matches.
+        let base = file_name(path.trim_end_matches(['/', '\\']));
+        EXEMPT_FILES.contains(&base)
     }
 
     /// Whether `bytes` carry the sealed-file shape (magic + minimum length).
@@ -402,6 +404,16 @@ mod tests {
             "exemption must match on the file name regardless of directory"
         );
         assert!(!EncryptedFilesystem::is_exempt(".lh_history.json"));
+    }
+
+    /// Trailing path separators must not smuggle an exempt file past the
+    /// name match (else `.lh_wallet/` would get sealed → identity brick).
+    #[test]
+    fn is_exempt_strips_trailing_separators() {
+        assert!(EncryptedFilesystem::is_exempt(".lh_wallet"));
+        assert!(EncryptedFilesystem::is_exempt(".lh_wallet/"));
+        assert!(EncryptedFilesystem::is_exempt("a/b/.lh_owner\\"));
+        assert!(!EncryptedFilesystem::is_exempt("notes.txt"));
     }
 
     /// Rename moves the ciphertext verbatim and it stays decryptable at
