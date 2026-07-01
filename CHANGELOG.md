@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.3] - 2026-07-01
+
+Three skeptic-verified fixes from an autonomous growth tick.
+
+### Fixed
+
+- **`record_lesson` on-chain publish is best-effort (telemetry #34).** The lesson is
+  saved locally first, but a sponsored `setMetadata` failure (e.g. an unfunded wallet
+  can't pay gas) then hard-errored the whole tool call and lost it. It now degrades to
+  a local-only success (`recorded: true`, null `tx_hash`, deferred note) so a chain
+  hiccup never drops an already-saved lesson.
+- **Colony `--worker` self-deal guard.** The auto-pick path excludes the caller as its
+  own worker, but the explicit `--worker` override bypassed that — a caller could force
+  itself as its own worker and collect its own escrowed reward. Rejected up front,
+  mirroring the existing `--judge == worker` guard.
+- **Fail-closed `receiptUsed` read.** The fiat on-ramp mint gate coerced any u256
+  decode failure to `false` ("receipt unused") via `unwrap_or(false)` — a fail-open
+  default; it now propagates the decode error with `?` like its sibling reads.
+
 ## [0.60.2] - 2026-07-01
 
 Three small, individually-verified fixes from an autonomous growth tick —
