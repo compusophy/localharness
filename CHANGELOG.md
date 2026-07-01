@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.4] - 2026-07-01
+
+### Fixed
+
+- **A user pre-tool-call hook now satisfies the safety-policy guard.** The startup
+  safety check enforces "write/custom tools require a policy **or** a user-installed
+  pre-tool-call hook", but it inspected the still-empty `HookRunner` (hooks are
+  registered just *after* the check), so the hook branch was dead — an SDK consumer
+  who wired `with_pre_tool_hook(...)` and no explicit policy was wrongly rejected with
+  "no safety policies are configured". It now inspects the config's `pre_tool_hooks`,
+  restoring the documented contract (with a `start_mock` regression test).
+
 ## [0.60.3] - 2026-07-01
 
 Three skeptic-verified fixes from an autonomous growth tick.
