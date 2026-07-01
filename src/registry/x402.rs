@@ -232,6 +232,9 @@ pub async fn x402_authorization_state(
     nonce: &[u8; 32],
 ) -> Result<bool, String> {
     let from = parse_eth_address(from_hex)?;
+    if from == [0u8; 20] {
+        return Err("x402 authorization state: zero address".to_string());
+    }
     let result = read_view(
         selector("authorizationState(address,bytes32)"),
         &[addr_word(&from), *nonce],
@@ -342,6 +345,17 @@ pub fn parse_mcp_tool_reply(json: &serde_json::Value) -> Result<String, String> 
 #[cfg(test)]
 mod x402_tests {
     use super::*;
+
+    // The zero-address guard returns before any RPC, so this needs no network.
+    #[tokio::test]
+    async fn x402_authorization_state_rejects_zero_address() {
+        let got = x402_authorization_state(
+            "0x0000000000000000000000000000000000000000",
+            &[0u8; 32],
+        )
+        .await;
+        assert!(got.is_err());
+    }
 
     #[test]
     fn x402_domain_matches_live_facet() {
