@@ -44,6 +44,8 @@ pub enum ExecError {
     UnknownOpcode(u8),
     /// The stack underflowed (popped more than was pushed) — a codegen bug.
     StackUnderflow,
+    /// Stack exceeded the EVM 1024-item limit (untrusted bytecode can push unboundedly otherwise).
+    StackOverflow,
     /// A `JUMP`/`JUMPI` targeted an offset that is not a `JUMPDEST` — a codegen bug.
     BadJumpDest(usize),
     /// The execution budget (a loop/runaway guard) was exhausted.
@@ -98,6 +100,10 @@ const STEP_BUDGET: usize = 1_000_000;
 /// (the real EVM prices memory expansion quadratically, so a huge span exhausts
 /// gas — SolidityLite bodies touch only tiny scratch memory, far under this).
 const MAX_MEMORY: usize = 16 * 1024 * 1024;
+
+/// Hard cap on stack depth — the real EVM caps the stack at 1024 items; without it
+/// untrusted bytecode could push unboundedly and OOM the process.
+const MAX_STACK: usize = 1024;
 
 impl Contract {
     /// "Deploy" INIT code EVM-style: run it, and the bytes it `RETURN`s become the
@@ -285,6 +291,9 @@ impl Vm<'_> {
             steps += 1;
             if steps > STEP_BUDGET {
                 return Err(ExecError::OutOfGas);
+            }
+            if self.stack.len() > MAX_STACK {
+                return Err(ExecError::StackOverflow);
             }
             if self.pc >= self.code.len() {
                 // Running off the end is an implicit STOP (empty return).
@@ -658,6 +667,24 @@ mod tests {
         let mut logs = Vec::new();
         let err = run(&code, &[], &CallEnv::default(), &mut storage, &mut logs).unwrap_err();
         assert_eq!(err, ExecError::OutOfGas, "a giant memory offset is a clean OutOfGas, not an OOM abort");
+    }
+
+    /// SECURITY: untrusted bytecode that pushes without popping must hit the
+    /// [`MAX_STACK`] cap ([`ExecError::StackOverflow`]) instead of growing the stack
+    /// unboundedly; a short balanced program still runs clean.
+    #[test]
+    fn deep_pushes_hit_stack_overflow() {
+        use crate::soliditylite::asm::op;
+        let deep: Vec<u8> = std::iter::repeat_n([op::PUSH1, 0x00], 2000).flatten().collect();
+        let mut storage = std::collections::HashMap::new();
+        let mut logs = Vec::new();
+        let err = run(&deep, &[], &CallEnv::default(), &mut storage, &mut logs).unwrap_err();
+        assert_eq!(err, ExecError::StackOverflow, "unbounded pushes are a clean StackOverflow, not an OOM abort");
+        // A handful of PUSH/POP pairs stays far under the cap and runs to a clean STOP.
+        let shallow: Vec<u8> = std::iter::repeat_n([op::PUSH1, 0x00, op::POP], 4).flatten().collect();
+        let mut storage = std::collections::HashMap::new();
+        let mut logs = Vec::new();
+        assert!(run(&shallow, &[], &CallEnv::default(), &mut storage, &mut logs).is_ok());
     }
 
     #[test]
