@@ -63,6 +63,7 @@ use crate::types::{
 /// Backend-agnostic agent configuration (tools, policies, triggers, workspaces).
 #[derive(Default)]
 #[non_exhaustive]
+#[must_use]
 pub struct AgentConfig {
     /// Optional system-level instructions for the model.
     pub system_instructions: Option<SystemInstructions>,
@@ -170,6 +171,7 @@ impl AgentConfig {
 /// Pairs the generic `AgentConfig` (hooks, tools, policies, triggers)
 /// with `GeminiBackendConfig` (model, API key, thinking, etc.).
 #[non_exhaustive]
+#[must_use]
 pub struct GeminiAgentConfig {
     /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,
@@ -294,7 +296,7 @@ impl GeminiAgentConfig {
         self
     }
 
-    /// Plug in a custom [`Filesystem`] impl for the 6 fs built-ins.
+    /// Plug in a custom [`Filesystem`] impl for the 8 fs built-ins.
     /// Without this, native builds use `NativeFilesystem`; wasm builds
     /// have no filesystem and the fs builtins skip registration.
     ///
@@ -396,6 +398,7 @@ impl GeminiAgentConfig {
 /// # }
 /// ```
 #[non_exhaustive]
+#[must_use]
 pub struct MockAgentConfig {
     /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,
@@ -486,6 +489,7 @@ impl MockAgentConfig {
 /// neutral `AgentConfig` are untouched.
 #[cfg(feature = "anthropic")]
 #[non_exhaustive]
+#[must_use]
 pub struct AnthropicAgentConfig {
     /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,
@@ -655,6 +659,7 @@ impl AnthropicAgentConfig {
 /// `start_gemini` and the neutral `AgentConfig` are untouched.
 #[cfg(feature = "openai")]
 #[non_exhaustive]
+#[must_use]
 pub struct OpenAiAgentConfig {
     /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,
@@ -813,6 +818,7 @@ impl OpenAiAgentConfig {
 /// [`Filesystem`]: crate::filesystem::Filesystem
 #[cfg(feature = "local")]
 #[non_exhaustive]
+#[must_use]
 pub struct LocalAgentConfig {
     /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,
@@ -1343,7 +1349,7 @@ impl Agent {
             return Err(Error::config(
                 "write or custom tools are enabled but no safety policies are \
                  configured. Add policy::allow_all() to approve all calls, or \
-                 [policy::deny_all(), policy::allow(\"tool_name\")] to scope.",
+                 [policy::deny_all(), policy::Policy::allow(\"tool_name\")] to scope.",
             ));
         }
         if !active_policies.is_empty() {

@@ -188,6 +188,8 @@ impl Conversation {
 ///
 /// Multi-cursor: each call to [`ChatResponse::chunks`] returns an independent
 /// cursor that replays from chunk zero. The upstream pull happens once.
+#[must_use = "a ChatResponse streams the model's reply; read it with `.text().await`, \
+              `.chunks()`, or `.resolve().await` — dropping it discards the turn's output"]
 pub struct ChatResponse {
     inner: Arc<ChatInner>,
 }
