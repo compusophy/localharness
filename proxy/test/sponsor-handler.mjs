@@ -237,6 +237,40 @@ const token = authToken(senderPriv, senderAddr, ts);
   );
 }
 
+// --- funded caller, postBounty-ONLY intent, IS sponsored (bounty lifecycle) --
+// A colony operator MUST hold $LH to escrow a reward, so it is "funded" by
+// definition; postBounty escrows the caller's OWN $LH (supply-neutral, refundable
+// like createInvite) and can't touch the sponsor float. Before the exemption this
+// returned LH_RELAY_FUNDED and `colony run` couldn't even POST.
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  const cd = '0x' + sel('postBounty(bytes,uint128,uint64)') + word('60') + word('0').repeat(3);
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  const j = await res.json();
+  ok(
+    'funded caller postBounty-only is sponsored (bounty lifecycle exempt)',
+    res.status === 200,
+    `status=${res.status} code=${j.code} body=${JSON.stringify(j)}`,
+  );
+}
+
+// --- funded caller, acceptResult-ONLY intent, IS sponsored (bounty lifecycle) -
+// Releasing the already-escrowed $LH to the worker's TBA — the caller's own funds,
+// no sponsor-float exposure — must relay for a funded caller too.
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  const cd = '0x' + sel('acceptResult(uint256)') + word('1');
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  const j = await res.json();
+  ok(
+    'funded caller acceptResult-only is sponsored (bounty lifecycle exempt)',
+    res.status === 200,
+    `status=${res.status} code=${j.code} body=${JSON.stringify(j)}`,
+  );
+}
+
 // --- transfer on the token IS sponsorable (send_lh moves the caller's $LH) ---
 {
   stubBalance('0');

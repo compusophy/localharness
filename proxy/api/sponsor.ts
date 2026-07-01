@@ -240,10 +240,37 @@ const ALWAYS_FREE_SELECTORS = new Set([
   selector('setPushSub(bytes)'),
 ]);
 
+// The BOUNTY / economy-lifecycle surface — the agent economy's core loop
+// (post → claim → submit → accept → attest) plus its escrow-recovery inverses.
+// Every one either moves the caller's OWN $LH — `postBounty` escrows it and
+// `acceptResult` releases the already-escrowed funds to the worker, both
+// supply-neutral exactly like `createInvite`/`settle`/`transfer` — or is gas-only
+// with no value (`claimBounty`/`submitResult`/`attest`/`cancelBounty`/
+// `reclaimExpired`, like `releaseName`). NONE can touch the sponsor's AlphaUSD
+// fee-token float. A FUNDED agent is the ONLY kind that can run a colony cycle
+// (escrowing a reward REQUIRES holding $LH), so the onboarding-only gate locked
+// the whole economy out at `postBounty` (LH_RELAY_FUNDED — `colony run` couldn't
+// even start). Abuse stays bounded by the rate caps + the sponsor-float breaker,
+// the same bound the existing self-pay/always-free exemptions rely on.
+const BOUNTY_LIFECYCLE_SELECTORS = new Set([
+  selector('postBounty(bytes,uint128,uint64)'),
+  selector('claimBounty(uint256,uint256)'),
+  selector('submitResult(uint256,bytes)'),
+  selector('acceptResult(uint256)'),
+  selector('cancelBounty(uint256)'),
+  selector('reclaimExpired(uint256)'),
+  selector('attest(uint256,uint8,bytes32)'),
+]);
+
 // Everything exempt from the onboarding-only gate below: self-pay (move the
-// caller's OWN $LH) + always-free (feedback). A call batch made up entirely of
-// these is sponsored even for a funded caller.
-const GATE_EXEMPT_SELECTORS = new Set([...SELF_PAY_SELECTORS, ...ALWAYS_FREE_SELECTORS]);
+// caller's OWN $LH) + always-free (feedback) + the bounty/economy lifecycle
+// (escrow the caller's own $LH or gas-only, never the sponsor float). A call
+// batch made up entirely of these is sponsored even for a funded caller.
+const GATE_EXEMPT_SELECTORS = new Set([
+  ...SELF_PAY_SELECTORS,
+  ...ALWAYS_FREE_SELECTORS,
+  ...BOUNTY_LIFECYCLE_SELECTORS,
+]);
 
 // --- CORS / json -----------------------------------------------------------
 // isAllowedOrigin is the shared _authcore impl (imported above).
