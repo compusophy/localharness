@@ -141,7 +141,7 @@ impl Conversation {
                 // producer guards the same write); an empty-but-streamed success
                 // is recovered there via its emitted_text fallback.
                 if step.is_terminal_response()
-                    && !step.content.is_empty()
+                    && !step.content.trim().is_empty()
                     && step.error.is_empty()
                 {
                     s.last_response = Some(step.content.clone());
@@ -305,7 +305,7 @@ impl ChatResponse {
                             }
                             // Don't commit a failed turn's text (empty OR a
                             // half-streamed fragment) as the last response.
-                            if !final_text.is_empty() && step.error.is_empty() {
+                            if !final_text.trim().is_empty() && step.error.is_empty() {
                                 s.last_response = Some(final_text);
                             }
                             break;
@@ -1149,6 +1149,24 @@ mod tests {
             conv.last_response().as_deref(),
             Some("real answer"),
             "an empty terminal must not erase the prior answer",
+        );
+    }
+
+    /// REGRESSION: a WHITESPACE-ONLY terminal (or finish summary) must not
+    /// clobber the last good answer — `trim().is_empty()` guards both commit
+    /// points, matching compaction's convention.
+    #[tokio::test]
+    async fn whitespace_terminal_does_not_clobber_last_response() {
+        let conn = MockConn::new();
+        let conv = Conversation::new(conn.clone());
+        run_turn(&conv, &conn, vec![terminal_step("real answer")]).await;
+        assert_eq!(conv.last_response().as_deref(), Some("real answer"));
+        // A terminal carrying only whitespace must preserve the prior answer.
+        run_turn(&conv, &conn, vec![terminal_step("   \n  ")]).await;
+        assert_eq!(
+            conv.last_response().as_deref(),
+            Some("real answer"),
+            "a whitespace-only terminal must not erase the prior answer",
         );
     }
 
