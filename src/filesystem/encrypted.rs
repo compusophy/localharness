@@ -129,7 +129,17 @@ impl EncryptedFilesystem {
     pub fn is_exempt(path: &str) -> bool {
         // Strip trailing separators first so `.lh_wallet/` still matches.
         let base = file_name(path.trim_end_matches(['/', '\\']));
-        EXEMPT_FILES.contains(&base)
+        // On case-insensitive filesystems (Windows/macOS) `.LH_WALLET` and
+        // `.lh_wallet` are the SAME on-disk file, so a differently-cased write path
+        // would seal the seed and brick identity — match case-insensitively there
+        // (mirrors builtins::is_protected_basename, incl. trailing dot/space fold).
+        // Linux stays byte-exact.
+        if cfg!(any(windows, target_os = "macos")) {
+            let base = base.trim_end_matches(['.', ' ']);
+            EXEMPT_FILES.iter().any(|p| p.eq_ignore_ascii_case(base))
+        } else {
+            EXEMPT_FILES.contains(&base)
+        }
     }
 
     /// Whether `bytes` carry the sealed-file shape (magic + minimum length).
@@ -253,6 +263,19 @@ mod tests {
 
     fn p(dir: &tempfile::TempDir, name: &str) -> String {
         dir.path().join(name).to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn is_exempt_folds_case_on_case_insensitive_fs() {
+        // `.lh_wallet` is always exempt. A differently-cased spelling is the SAME
+        // on-disk file on Windows/macOS (must stay exempt or a mixed-case write
+        // seals the seed = identity brick), but a DISTINCT file on case-sensitive
+        // Linux.
+        assert!(EncryptedFilesystem::is_exempt(".lh_wallet"));
+        assert_eq!(
+            EncryptedFilesystem::is_exempt(".LH_WALLET"),
+            cfg!(any(windows, target_os = "macos"))
+        );
     }
 
     /// Round trip: the wrapper writes ciphertext (magic present, plaintext
