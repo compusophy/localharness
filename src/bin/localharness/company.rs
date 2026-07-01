@@ -27,8 +27,11 @@ use localharness::work_cycle_runtime::{plan_cycle, CyclePlan, Reader};
 pub(crate) const COMPANY_USAGE: &str = "\
 usage: localharness company <found|status|plan|forecast|payroll|books|day> ...
   company found  [--as <me>] <name> <mission...> [--roles a,b,c]
-                 [--seed-treasury <lh>] [--prefund-each <lh>] [--confirm]
+                 [--seed-treasury <lh>] [--prefund-each <lh>] [--pay] [--confirm]
                                         stand up a whole company: an on-chain guild
+                                        (--pay = SELF-PAY gas in the fee token,
+                                        bypassing the relay — for a wallet-funded
+                                        founder the relay won't sponsor)
                                         (org + pooled $LH treasury) + N role subdomains
                                         (executive/pm/coder/reviewer/accounting/hr/
                                         marketing by default), each with an on-chain
@@ -75,7 +78,7 @@ usage: localharness company <found|status|plan|forecast|payroll|books|day> ...
 
 const FOUND_USAGE: &str = "\
 usage: localharness company found [--as <me>] <name> <mission...> [--roles a,b,c] \
-[--seed-treasury <lh>] [--prefund-each <lh>] [--confirm]";
+[--seed-treasury <lh>] [--prefund-each <lh>] [--pay] [--confirm]";
 
 /// A built-in role: job label (matched against a user-supplied role), the
 /// subdomain slug suffix (`<company>-<slug>`), and a SHORT on-chain persona (terse
@@ -290,7 +293,14 @@ fn parse_amount_flag(arg: Option<&str>, flag: &str) -> Result<u128, String> {
 pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 {
     // `--confirm` is a bare flag — strip it before the value-flag walk.
     let confirm = args.iter().any(|a| a == "--confirm");
-    let args: Vec<String> = args.iter().filter(|a| *a != "--confirm").cloned().collect();
+    // `--pay` = SELF-PAY: the founder signs AND pays its own gas in the fee token
+    // (USDC.e on mainnet) instead of routing gas through the keyless relay. Required
+    // when the founder WALLET holds more than the relay's onboarding `$LH` ceiling —
+    // the relay refuses to sponsor its gated legs (`LH_RELAY_FUNDED`), but a root key
+    // holding the fee token can pay its own gas. Also a bare flag.
+    let pay = args.iter().any(|a| a == "--pay");
+    let args: Vec<String> =
+        args.iter().filter(|a| *a != "--confirm" && *a != "--pay").cloned().collect();
     let (vals, positional) =
         match collect_flags(&args, ["--roles", "--seed-treasury", "--prefund-each"], FOUND_USAGE) {
             Ok(v) => v,
@@ -375,11 +385,23 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
         println!(
             "  total $LH from your wallet: {}{}",
             fmt_lh(total_spend),
-            if total_spend == 0 { "  (name mints + personas are sponsored — you pay nothing)" } else { "" }
+            if total_spend == 0 && !pay { "  (name mints + personas are sponsored — you pay nothing)" } else { "" }
         );
+        if pay {
+            println!(
+                "  gas:     SELF-PAID by the founder in the fee token (USDC.e) — bypasses the relay"
+            );
+            println!(
+                "  registration: guild + {} role name(s) each pull registrationCost $LH from your wallet",
+                candidates.len()
+            );
+        }
         println!("  model:   Model A (solo-founder) — all roles share your wallet, the guild's sole Admin");
         println!();
-        println!("Re-run with --confirm to execute.");
+        println!(
+            "Re-run with --confirm{} to execute.",
+            if pay { " --pay" } else { "" }
+        );
         return 0;
     }
 
@@ -397,16 +419,43 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
         }
     }
 
+    // Self-pay pre-flight: every name mint (the guild + each role) pulls
+    // registrationCost `$LH` from the WALLET (not sponsored, not the meter). Verify
+    // the wallet covers the WHOLE roster up front so a short balance STOPS cleanly
+    // here instead of reverting mint-by-mint and burning gas on each attempt.
+    if pay {
+        let cost = registry::registration_cost().await.unwrap_or(0);
+        if cost > 0 {
+            let needed = cost.saturating_mul(1 + candidates.len() as u128);
+            let wallet_bal = registry::token_balance_of(&owner).await.unwrap_or(0);
+            if wallet_bal < needed {
+                eprintln!(
+                    "company found --pay: wallet holds {} but founding a guild + {} role(s) needs \
+                     {} in registration $LH — fund up or trim --roles; nothing was created",
+                    fmt_lh(wallet_bal),
+                    candidates.len(),
+                    fmt_lh(needed),
+                );
+                return 1;
+            }
+            println!(
+                "  self-pay pre-flight: need {} ({}× {}), wallet holds {} ✓",
+                fmt_lh(needed),
+                1 + candidates.len(),
+                fmt_lh(cost),
+                fmt_lh(wallet_bal),
+            );
+        }
+    }
+
     // STEP 1 — create the guild (founder becomes its sole Admin).
     println!("founding '{name}' — creating the on-chain guild …");
-    let create_tx = match registry::create_guild_sponsored(
-        &signer,
-        &sponsor,
-        &name,
-        registry::ALPHA_USD_ADDRESS(),
-    )
-    .await
-    {
+    let create_result = if pay {
+        registry::create_guild_self_paid(&signer, &name, registry::ALPHA_USD_ADDRESS()).await
+    } else {
+        registry::create_guild_sponsored(&signer, &sponsor, &name, registry::ALPHA_USD_ADDRESS()).await
+    };
+    let create_tx = match create_result {
         Ok(tx) => tx,
         Err(e) => {
             eprintln!("create guild failed: {e}");
@@ -461,21 +510,27 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
                 skipped += 1;
                 continue;
             }
-            Ok(None) => match registry::claim_and_maybe_set_main_sponsored(
-                &signer,
-                &sponsor,
-                cand,
-                registry::ALPHA_USD_ADDRESS(),
-            )
-            .await
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("  - {} skipped: register '{cand}' failed: {e}", role.role);
-                    skipped += 1;
-                    continue;
+            Ok(None) => {
+                let claim_result = if pay {
+                    registry::claim_name_self_paid(&signer, cand, registry::ALPHA_USD_ADDRESS()).await
+                } else {
+                    registry::claim_and_maybe_set_main_sponsored(
+                        &signer,
+                        &sponsor,
+                        cand,
+                        registry::ALPHA_USD_ADDRESS(),
+                    )
+                    .await
+                };
+                match claim_result {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("  - {} skipped: register '{cand}' failed: {e}", role.role);
+                        skipped += 1;
+                        continue;
+                    }
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("  - {} skipped: RPC error on '{cand}': {e}", role.role);
                 skipped += 1;
@@ -492,7 +547,7 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
             staffed += 1;
             continue;
         }
-        let persona_set = set_role_persona(&signer, &sponsor, token_id, &role.persona).await;
+        let persona_set = set_role_persona(&signer, &sponsor, pay, token_id, &role.persona).await;
         let prefunded = prefund_each_wei > 0
             && prefund_role_tba(&signer, &sponsor, cand, token_id, prefund_each_wei).await;
         let persona_tag = if persona_set { " [persona]" } else { " [persona FAILED]" };
@@ -527,12 +582,14 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
     0
 }
 
-/// Set a freshly-minted role subdomain's on-chain persona via a sponsored
-/// `setMetadata` (the same slot `persona`/headless `call` read). Best-effort —
-/// returns whether it landed.
+/// Set a freshly-minted role subdomain's on-chain persona via `setMetadata` (the
+/// same slot `persona`/headless `call` read). `pay` = SELF-PAY the gas in the fee
+/// token (bypassing the relay) vs the sponsored path. Best-effort — returns
+/// whether it landed.
 async fn set_role_persona(
     signer: &k256::ecdsa::SigningKey,
     sponsor: &k256::ecdsa::SigningKey,
+    pay: bool,
     token_id: u64,
     persona: &str,
 ) -> bool {
@@ -544,15 +601,22 @@ async fn set_role_persona(
         value_wei: 0,
         input: registry::encode_set_persona(token_id, persona),
     }];
-    registry::submit_tempo_sponsored(
-        signer,
-        sponsor,
-        calls,
-        registry::ALPHA_USD_ADDRESS(),
-        registry::set_metadata_gas(persona.len()),
-    )
-    .await
-    .is_ok()
+    let gas = registry::set_metadata_gas(persona.len());
+    if pay {
+        registry::submit_tempo_self_paid(signer, calls, Some(registry::ALPHA_USD_ADDRESS()), gas)
+            .await
+            .is_ok()
+    } else {
+        registry::submit_tempo_sponsored(
+            signer,
+            sponsor,
+            calls,
+            registry::ALPHA_USD_ADDRESS(),
+            gas,
+        )
+        .await
+        .is_ok()
+    }
 }
 
 /// Prefund a role's token-bound account: deploy its TBA (idempotent) then transfer

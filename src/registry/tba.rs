@@ -704,6 +704,47 @@ pub async fn claim_and_maybe_set_main_sponsored(
     Ok(tx_hash)
 }
 
+/// SELF-PAID twin of [`claim_and_maybe_set_main_sponsored`], MINUS the MAIN leg:
+/// register `name` with the `sender` signing AND paying its own gas in `fee_token`
+/// (a USD-currency TIP-20 it holds, e.g. USDC.e) — NO relay, NO separate fee_payer.
+/// The founding path for a WALLET-FUNDED owner the mainnet keyless relay refuses to
+/// sponsor (`LH_RELAY_FUNDED`). Batches the SAME `approve(diamond, cost)` +
+/// `register(name)` the sponsored path does; the 1-`$LH` `registrationCost()` is
+/// pulled from the sender's WALLET by `register`'s internal `transferFrom`.
+///
+/// Deliberately does NOT set the owner's MAIN — role subdomains registered while
+/// founding a company are owned NAMES, not the owner's primary identity, so we
+/// never auto-promote one of them to `mainOf(owner)`.
+pub async fn claim_name_self_paid(
+    sender: &SigningKey,
+    name: &str,
+    fee_token: &str,
+) -> Result<String, String> {
+    if !crate::subdomain::is_valid_subdomain_label(name) {
+        return Err(format!(
+            "'{name}' is not a routable subdomain label (1-63 chars of a-z, 0-9, \
+             hyphen; no leading/trailing hyphen)"
+        ));
+    }
+    let cost = registration_cost().await.unwrap_or(0);
+    let register_input = hex_to_bytes(&encode_register(name))?;
+    let calls = if cost > 0 {
+        escrow_call_batch(cost, register_input, 0)?
+    } else {
+        vec![crate::tempo_tx::TempoCall {
+            to: parse_eth_address(REGISTRY_ADDRESS())?,
+            value_wei: 0,
+            input: register_input,
+        }]
+    };
+    // 4M covers the batched `approve` (~255k) + AA overhead + the `register` mint
+    // (~1.3M inner on testnet, more on mainnet) with margin — the self-paid twin of
+    // the sponsored 2.2M budget, bumped so the mint isn't left under-gassed on
+    // mainnet after the approve/overhead (same class as the createGuild OOG).
+    // Self-pay bills gas USED, so the headroom is free.
+    submit_tempo_self_paid(sender, calls, Some(fee_token), 4_000_000).await
+}
+
 
 // `tba_signers` (deprecated SignerAdded/SignerRemoved log-scraping — Tempo
 // caps eth_getLogs at 100k blocks) was removed as dead code; `devices_of`

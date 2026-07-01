@@ -220,6 +220,45 @@ pub async fn create_guild_sponsored(
     }
 }
 
+/// SELF-PAID twin of [`create_guild_sponsored`]: the `sender` signs AND pays the
+/// gas itself in `fee_token` (a USD-currency TIP-20 it holds, e.g. USDC.e on
+/// mainnet) — NO relay, NO separate fee_payer. This is the founding path for a
+/// WALLET-FUNDED owner (holding > the relay's onboarding ceiling in `$LH`), which
+/// the mainnet keyless relay's onboarding gate refuses to sponsor
+/// (`LH_RELAY_FUNDED`); a root key holding the fee token pays its own gas instead.
+///
+/// Batches the SAME `approve(diamond, cost)` + `createGuild(name)` the sponsored
+/// path does — the `registrationCost()` `$LH` is pulled from the sender's WALLET
+/// by `createGuild`'s internal `transferFrom`. A 0 cost falls back to the plain
+/// self-paid call. (No meter→wallet bridge here: a self-paying founder holds its
+/// `$LH` in the wallet, not the chat meter.)
+pub async fn create_guild_self_paid(
+    sender: &SigningKey,
+    name: &str,
+    fee_token: &str,
+) -> Result<String, String> {
+    // Gas budget covers the WHOLE self-paid tx: the batched `approve` (~255k on the
+    // $LH token) + the AA executor overhead + the `createGuild` mint. On MAINNET the
+    // mint's DELEGATECALL OOG'd when the tx cap was 3.5M (verified live via
+    // `debug_traceTransaction`: `createGuild` was forwarded only ~3.2M after the
+    // approve/overhead and ran out) — the 3.5M base was tuned on testnet where the
+    // mint is cheaper. Budget 8M so the mint gets its full ~3-4M with margin;
+    // self-pay is billed on gas USED, so the headroom is free.
+    let gas = 8_000_000 + (name.len() as u128) * 9_000;
+    let create_input = encode_create_guild(name);
+    let cost = registration_cost().await.unwrap_or(0);
+    let calls = if cost > 0 {
+        escrow_call_batch(cost, create_input, 0)?
+    } else {
+        vec![crate::tempo_tx::TempoCall {
+            to: parse_eth_address(REGISTRY_ADDRESS())?,
+            value_wei: 0,
+            input: create_input,
+        }]
+    };
+    submit_tempo_self_paid(sender, calls, Some(fee_token), gas).await
+}
+
 /// Invite an address to a guild via a sponsored Tempo tx
 /// (`inviteToGuild(guildId, member)`). The invitee then `acceptGuildInvite`s to
 /// join. Admin/officer-gated on-chain.
