@@ -5,6 +5,53 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.0] - 2026-07-01
+
+Security + real-money hardening across the untrusted-input, on-chain, and metering
+surfaces, with the autonomous-business / colony / marketing layer maturing. A large
+batch of small, individually-verified fixes — most carrying a regression test.
+
+### Security / hardening
+
+- **Untrusted-input bounds.** Cap hex parsing (`MAX_HEX_LEN`), `create_file` /
+  `edit_file` content + read + post-replace output, bashlite stdout / stderr / loaded
+  script size, and the soliditylite interpreter memory + stack (EVM 1024-item parity)
+  — so attacker-supplied input can't OOM the process or tab.
+- **At-rest identity safety.** `EncryptedFilesystem` no longer seals `.lh_wallet` when
+  a rename crosses the EXEMPT boundary, and `is_exempt` handles trailing separators —
+  closing two paths that could brick an identity by encrypting its own seed.
+- **Fail-closed on-chain reads.** The x402 nonce-replay check and
+  `has_validated` / `has_attested` propagate an RPC/decode error instead of silently
+  reading a malformed word as `false` (which defeated the replay + dedup guards).
+- **Guild treasury** rejects a zero-address payout (was able to burn pooled `$LH`).
+
+### Fixed
+
+- **Metering.** The credit proxy keeps `max_tokens > thinking.budget_tokens` when the
+  spend cap caps output (telemetry #38 — a live Anthropic HTTP 400 that crashed
+  turns); `onramp claim_mint` now backs off + retries on the 402 settlement window.
+- **Agent loop.** `dispatch` lifts non-string tool `{error}` values (were silently
+  dropped); `error_codes::classify` no longer mislabels a transport `truncated` error
+  as empty; `turn_flow` treats a content-block stop as terminal before max-tokens;
+  `conversation` won't let whitespace-only text clobber the last answer; compaction
+  dedups its drop-oldest fallback note.
+- **Onboarding.** `onboard` distinguishes a balance-read failure from a real zero
+  balance; empty terminal cards surface the exit code and label a missing argv.
+- **Colony.** Judges score against ground-truth `rustlite::compile` evidence,
+  worker/judge selection is gated to active-chain-registered agents, and repro
+  extraction is broadened (bare lines, attrs, crash axis).
+- **Registry.** Bridge the `$LH` allowance in `create_guild_sponsored`; the relay
+  sponsors the bounty/attest lifecycle and small `setMetadata` self-edits for funded
+  callers; `--pay` self-paid founding routes around the relay funded-gate.
+
+### Added
+
+- **Marketing / self-sovereign reach.** An autonomous Nostr broadcaster + SETI, an
+  ERC-8004 agent-card, and a from-scratch SMTP client for agent email, plus a mainnet
+  founding runbook.
+- **Repo practices.** `rust-code-reviewer` + `rust-api-ergonomics-reviewer` subagents
+  (adapted from anthropics/buffa) and a substantive, sectioned README.
+
 ## [0.59.0] - 2026-06-30
 
 The **autonomous-business** layer: compose an on-chain "company" of role-agents and
