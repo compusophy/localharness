@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.7] - 2026-07-01
+
+### Fixed
+
+- **CLI create funding-wall message showed a double unit.** `fmt_lh` already appends
+  "LH", so the claim-funding error rendered `costs 1.00 LH $LH` — the first thing a
+  fresh, unfunded identity sees. Dropped the redundant " $LH" to match the CLI-wide
+  `fmt_lh` convention. Found dogfooding onboarding on mainnet.
+
 ## [0.60.6] - 2026-07-01
 
 ### Fixed
