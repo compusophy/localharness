@@ -160,19 +160,25 @@ pub(crate) fn record_lesson_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 input: crate::app::registry::encode_set_lessons(token_id, &merged),
             };
             let gas = crate::app::gas::set_metadata_gas(merged.len());
-            let tx_hash = crate::app::events::run_sponsored_tempo_call(
-                &owner,
-                vec![call],
-                gas,
-                "record lesson",
-            )
-            .await
-            .map_err(|e| crate::error::Error::other(format!("publish lessons failed: {e}")))?;
-            Ok(serde_json::json!({
-                "recorded": true,
-                "total_lessons": merged.lines().count(),
-                "tx_hash": tx_hash,
-            }))
+            // Best-effort on-chain mirror: the lesson is ALREADY saved to OPFS
+            // above, so a sponsored-tx failure (e.g. an unfunded wallet can't pay
+            // setMetadata gas) must NOT hard-error and lose it — degrade to a
+            // local-only success the model reads as recorded, publish deferred (#34).
+            match crate::app::events::run_sponsored_tempo_call(&owner, vec![call], gas, "record lesson")
+                .await
+            {
+                Ok(tx_hash) => Ok(serde_json::json!({
+                    "recorded": true,
+                    "total_lessons": merged.lines().count(),
+                    "tx_hash": tx_hash,
+                })),
+                Err(_) => Ok(serde_json::json!({
+                    "recorded": true,
+                    "total_lessons": merged.lines().count(),
+                    "tx_hash": serde_json::Value::Null,
+                    "note": "saved locally; on-chain publish deferred (retry later)",
+                })),
+            }
         },
     )
 }
