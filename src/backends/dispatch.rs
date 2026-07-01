@@ -90,7 +90,11 @@ pub(crate) async fn dispatch_tool_call(
     } else if let Some(runner) = tool_runner {
         match runner.execute(&call.name, call.args.clone()).await {
             Ok(v) => {
-                let err = v.get("error").and_then(|e| e.as_str()).map(String::from);
+                let err = match v.get("error") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(serde_json::Value::String(s)) => Some(s.clone()),
+                    Some(other) => Some(other.to_string()),
+                };
                 (v, err)
             }
             Err(e) => {
@@ -174,5 +178,16 @@ mod tests {
         let runner = Arc::new(ToolRunner::new());
         let r = dispatch_tool_call(Some(&runner), None, &TurnContext::new(), &call("ghost")).await;
         assert!(r.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn non_string_error_values_are_lifted_not_dropped() {
+        let runner = Arc::new(ToolRunner::new());
+        runner.register(tool("obj_err", json!({ "error": {"message": "nope", "code": 404} })));
+        let r = dispatch_tool_call(Some(&runner), None, &TurnContext::new(), &call("obj_err")).await;
+        assert_eq!(r.error, Some(json!({"message": "nope", "code": 404}).to_string()));
+        runner.register(tool("num_err", json!({ "error": 404 })));
+        let r2 = dispatch_tool_call(Some(&runner), None, &TurnContext::new(), &call("num_err")).await;
+        assert_eq!(r2.error.as_deref(), Some("404"));
     }
 }
