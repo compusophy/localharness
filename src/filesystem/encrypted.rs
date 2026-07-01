@@ -214,10 +214,22 @@ impl Filesystem for EncryptedFilesystem {
     }
 
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
-        // Move the raw bytes verbatim — ciphertext is not path-bound, so
-        // a sealed file stays decryptable at its new name with no
-        // decrypt/re-encrypt round-trip.
-        self.inner.rename(from, to).await
+        let from_exempt = Self::is_exempt(from);
+        let to_exempt = Self::is_exempt(to);
+        if from_exempt == to_exempt {
+            // Same at-rest representation (both sealed, or both verbatim) —
+            // ciphertext is not path-bound, so a raw move is correct and needs
+            // no decrypt/re-encrypt round-trip.
+            return self.inner.rename(from, to).await;
+        }
+        // Crossing the exempt boundary changes the required at-rest form. Read
+        // THROUGH this wrapper (decrypts a sealed non-exempt source; passthrough
+        // for a plaintext exempt source) then write THROUGH it (seals a non-exempt
+        // dest; passthrough for an exempt dest), so the destination is stored in
+        // the form its future reads expect. Then drop the source.
+        let plaintext = self.read(from).await?;
+        self.write_atomic(to, &plaintext).await?;
+        self.inner.delete(from).await
     }
 }
 
@@ -405,6 +417,28 @@ mod tests {
 
         assert!(EncryptedFilesystem::looks_sealed(&raw.read(&to).await.unwrap()));
         assert_eq!(enc.read(&to).await.unwrap(), b"movable secret");
+    }
+
+    /// Crossing the EXEMPT boundary re-forms the at-rest bytes: a sealed
+    /// non-exempt file renamed to an exempt name is stored PLAINTEXT, and a
+    /// plaintext exempt file renamed to a non-exempt name is stored SEALED —
+    /// so each destination reads back correctly.
+    #[tokio::test]
+    async fn rename_across_exempt_boundary_reforms_at_rest_bytes() {
+        let (dir, enc, raw) = setup();
+        // sealed non-exempt -> exempt name: dest must be stored as PLAINTEXT.
+        let sealed = p(&dir, ".lh_history.json");
+        let exempt = p(&dir, ".lh_device_key");
+        enc.write_atomic(&sealed, b"secret").await.unwrap();
+        assert!(EncryptedFilesystem::looks_sealed(&raw.read(&sealed).await.unwrap()));
+        enc.rename(&sealed, &exempt).await.unwrap();
+        assert_eq!(raw.read(&exempt).await.unwrap(), b"secret", "exempt dest stored verbatim");
+        assert_eq!(enc.read(&exempt).await.unwrap(), b"secret");
+        // plaintext exempt -> non-exempt name: dest must be SEALED at rest.
+        let back = p(&dir, ".lh_lessons.txt");
+        enc.rename(&exempt, &back).await.unwrap();
+        assert!(EncryptedFilesystem::looks_sealed(&raw.read(&back).await.unwrap()), "non-exempt dest sealed");
+        assert_eq!(enc.read(&back).await.unwrap(), b"secret");
     }
 
     /// Two writes of the same plaintext produce different ciphertexts
