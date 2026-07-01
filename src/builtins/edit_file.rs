@@ -14,6 +14,11 @@ use crate::error::{Error, Result};
 use crate::filesystem::SharedFilesystem;
 use crate::tools::{Tool, ToolContext};
 
+/// Hard cap on both the file we'll read into memory and the post-replace
+/// result we'll write — mirrors view_file's MAX_FILE_BYTES so a model can't
+/// OOM on a huge file or grow one unboundedly via replace_all.
+const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
 pub struct EditFile {
     fs: SharedFilesystem,
 }
@@ -71,6 +76,15 @@ impl Tool for EditFile {
             return Err(crate::builtins::protected_path_error(&args.path));
         }
 
+        if let Some(meta) = self.fs.metadata(&args.path).await? {
+            if meta.size > MAX_FILE_BYTES {
+                return Err(Error::other(format!(
+                    "file is {} bytes, over the {MAX_FILE_BYTES}-byte edit cap — too large to edit",
+                    meta.size
+                )));
+            }
+        }
+
         let bytes = self.fs.read(&args.path).await?;
         let original = String::from_utf8(bytes)
             .map_err(|e| Error::other(format!("read({}): not valid UTF-8: {e}", args.path)))?;
@@ -94,6 +108,12 @@ impl Tool for EditFile {
         } else {
             original.replacen(&args.old_string, &args.new_string, 1)
         };
+        if updated.len() as u64 > MAX_FILE_BYTES {
+            return Err(Error::other(format!(
+                "edit would produce {} bytes, over the {MAX_FILE_BYTES}-byte cap",
+                updated.len()
+            )));
+        }
         let replacements = count;
         self.fs
             .write_atomic(&args.path, updated.as_bytes())
@@ -187,6 +207,29 @@ mod tests {
         assert!(res.is_err());
         // File must be unchanged on validation failure — no partial edit.
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "a b a");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn rejects_output_growth_past_cap() {
+        let mut p = std::env::temp_dir();
+        p.push(format!("edit_file_grow_{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&p, "x").unwrap();
+        let tool = EditFile::new(Arc::new(NativeFilesystem::new()));
+        let res = tool
+            .execute(
+                json!({
+                    "path": p.display().to_string(),
+                    "old_string": "x",
+                    "new_string": "a".repeat((MAX_FILE_BYTES as usize) + 1),
+                    "replace_all": true
+                }),
+                None,
+            )
+            .await;
+        assert!(res.is_err(), "output over cap should error");
+        // File must be unchanged — no oversized write.
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "x");
         let _ = std::fs::remove_file(p);
     }
 
