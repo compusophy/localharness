@@ -206,7 +206,7 @@ pub fn hex_to_bytes_padded(hex: &str) -> Result<Vec<u8>, String> {
 /// Parse a hex quantity (optional `0x` prefix) into a `u128`. Empty input is
 /// zero — JSON-RPC returns `0x` for zero-valued quantities.
 pub fn parse_hex_quantity(hex: &str) -> Result<u128, String> {
-    let trimmed = hex.trim().trim_start_matches("0x");
+    let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
     if trimmed.is_empty() {
         return Ok(0);
     }
@@ -368,6 +368,7 @@ mod tests {
         assert_eq!(parse_hex_quantity(""), Ok(0));
         assert_eq!(parse_hex_quantity("0xff"), Ok(255));
         assert_eq!(parse_hex_quantity(" 0xDE "), Ok(222));
+        assert_eq!(parse_hex_quantity("0XDE"), Ok(222)); // uppercase 0X prefix (RPC/dapp shapes)
         assert!(parse_hex_quantity("0xzz").is_err());
     }
 
