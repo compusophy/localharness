@@ -466,7 +466,8 @@ mod tests {
     use std::path::Path;
 
     /// The managed (generated) docs, relative to the crate root. The top-level
-    /// `README.md` is intentionally excluded — it is hand-written and minimal.
+    /// `README.md` is intentionally excluded — it is hand-written (a substantive
+    /// but guarded front door; see `tests/readme_skill_in_sync.rs`).
     const MANAGED_DOCS: &[&str] = &["web/skill.md", "web/llms.txt"];
 
     fn read_doc(rel: &str) -> String {
@@ -568,7 +569,8 @@ mod tests {
     /// The chain block is derived from `chain.rs` and is MAINNET-ONLY: it carries
     /// mainnet's REAL values (never `ACTIVE`-flipped) and must NOT mention the
     /// testnet AT ALL (user feedback #26 — "remove all the testnet stuff from the
-    /// readme"). The README is a derived copy of this, so the absence is enforced.
+    /// readme"). The README enforces the same absence separately, in
+    /// `tests/readme_skill_in_sync.rs` (it is hand-written, not a derived copy).
     #[test]
     fn chain_block_is_mainnet_only_with_real_values() {
         let block = render_chain();

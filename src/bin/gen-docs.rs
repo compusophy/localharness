@@ -6,10 +6,12 @@
 //! the drift-prone facts (chain addresses, version, pricing, tool list, CLI
 //! list).
 //!
-//! `README.md` is NOT managed here: it is HAND-WRITTEN and MINIMAL (maintainer
-//! feedback — the README is the front door, not the manual; no exhaustive lists,
-//! no GEN noise, no testnet, ~30 lines). Detail lives in docs.rs + `web/llms.txt`.
-//! Do NOT re-couple README to skill.md (that bloats it back to the full doc).
+//! `README.md` is NOT managed here: it is HAND-WRITTEN — a substantive, sectioned
+//! front door (buffa-style: Why / Features / How it works / Quickstart / What it
+//! isn't / Limitations / Stability), but GUARDED by `tests/readme_skill_in_sync.rs`
+//! — zero testnet, no images/screenshots, no GEN machinery, no exhaustive tool/CLI
+//! lists, bounded length. Detail lives in docs.rs + `web/llms.txt`. Do NOT re-couple
+//! README to skill.md (that bloats it back into the full onboarding doc).
 //!
 //! Modes:
 //!   `cargo run --bin gen-docs`            — REWRITE the docs in place (default).

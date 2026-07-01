@@ -1,19 +1,21 @@
-//! README minimalism guard (maintainer feedback — the user was FURIOUS when the
-//! README became a bloated copy of the full docs: "worst readme ive ever seen").
+//! README guard. The README is HAND-WRITTEN and DECOUPLED from gen-docs (no GEN
+//! blocks; not a derived copy of `web/skill.md` — the `#56` "one document"
+//! experiment re-bloated it into the 268-line onboarding doc and kept
+//! reintroducing testnet, both rejected: telemetry #26, "worst readme ive ever
+//! seen").
 //!
-//! The README is the FRONT DOOR, not the manual. It is HAND-WRITTEN and minimal;
-//! it is deliberately NOT coupled to `web/skill.md` (an earlier `#56` "one
-//! document" experiment re-bloated it back to the 268-line onboarding doc and
-//! kept re-introducing testnet, which the maintainer rejected — telemetry #26).
-//!
-//! This asserts the README stays small + clean so a future change can't quietly
-//! turn it back into the full doc: no testnet, no GEN-block machinery, bounded
-//! length. Detail belongs in docs.rs + `web/llms.txt`, not here.
+//! As of 2026-07 the README is a SUBSTANTIVE, sectioned front door (buffa-style:
+//! Why / Features / How it works / Quickstart / What it isn't / Limitations /
+//! Stability) — the maintainer asked for more depth than the earlier ~30-line
+//! stub. It is still GUARDED: zero testnet references, NO images/screenshots
+//! (removed twice as "zombie shit"), NO GEN machinery, and a length ceiling so it
+//! can't balloon back into the full manual. Exhaustive tool/CLI lists still belong
+//! in docs.rs / `web/llms.txt`, never here.
 
 use std::path::Path;
 
 #[test]
-fn readme_stays_minimal_and_testnet_free() {
+fn readme_is_substantive_but_guarded() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let readme_p = root.join("README.md");
     if !readme_p.exists() {
@@ -23,12 +25,13 @@ fn readme_stays_minimal_and_testnet_free() {
     let readme = std::fs::read_to_string(&readme_p).expect("read README.md");
     let lower = readme.to_lowercase();
 
-    // The front door, not the manual: keep it short.
+    // Substantive, but not the full manual — bounded so it can't re-bloat into a
+    // copy of web/skill.md (the #56 "one document" regression).
     let lines = readme.lines().count();
     assert!(
-        lines <= 60,
-        "README.md is {lines} lines — keep it MINIMAL (~30, a front door, not the \
-         manual). Detail goes in docs.rs / web/llms.txt, never the README."
+        lines <= 220,
+        "README.md is {lines} lines — it's the front door, not the manual (cap ~220). \
+         Exhaustive tool/CLI lists go in docs.rs / web/llms.txt, never the README."
     );
 
     // NEVER testnet (telemetry #26 — "remove all the testnet stuff from the readme").
@@ -38,6 +41,12 @@ fn readme_stays_minimal_and_testnet_free() {
             "README.md mentions {needle:?} — the README must have ZERO testnet references."
         );
     }
+
+    // No images / screenshots — a standing maintainer rule (removed twice; text only).
+    assert!(
+        !readme.contains("!["),
+        "README.md must have NO images/screenshots (markdown `![...]`) — text only."
+    );
 
     // No GEN-block machinery — the README is hand-written, not generated.
     assert!(
