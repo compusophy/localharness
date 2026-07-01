@@ -19,12 +19,13 @@ use crate::{load_signer, registry};
 /// `localharness notify [--as <me>] [--to <agent>] <title> [body...]` —
 /// Web-Push a note to the caller's OWN registered device, or with `--to` to
 /// ANOTHER agent's notification inbox + enrolled phone (cross-agent; the
-/// proxy stamps the push with the sender's chain-verified name).
+/// proxy stamps the note with the sender's chain-verified name).
 ///
-/// CROSS-AGENT ENROLLMENT: if the `--to` target has no device enrolled for Web
-/// Push, the proxy returns a clear `enrolled: false` 200 (the sender is not
-/// charged and did nothing wrong) — we relay its `message` verbatim instead of
-/// claiming the note was delivered.
+/// CROSS-AGENT DELIVERY: a `--to` note is ALWAYS recorded in the recipient's
+/// on-chain MessageFacet inbox (real delivery — it surfaces in their bell at
+/// next open) and metered accordingly; an enrolled device just adds a live Web
+/// Push banner on top (`enrolled: true`). So a no-device target is a successful
+/// inbox delivery, not a failure — report that, not "did not reach them".
 pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
     const USAGE: &str = "usage: localharness notify [--as <me>] [--to <agent>] <title> [body...]";
     let (to, rest) = match crate::util::take_value_flag(rest, "--to", USAGE) {
@@ -81,23 +82,26 @@ pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
 
     if status.is_success() {
         match to.as_deref() {
-            // CROSS-AGENT: the proxy returns 200 even when the target has no
-            // device enrolled for Web Push (`enrolled: false`) — the note
-            // cannot reach them, but it is not the sender's failure. Relay the
-            // proxy's clear message verbatim instead of a misleading "sent".
+            // CROSS-AGENT: the proxy ALWAYS records a `to:` note in the recipient's
+            // on-chain MessageFacet inbox (REAL delivery — surfaces in their bell at
+            // next open) and meters it; an enrolled device just layers a live Web Push
+            // banner on top (`enrolled: true`). So a no-device target is a successful
+            // inbox delivery, NOT a failure — report that instead of "did not reach".
             Some(target) => {
+                let recorded = json
+                    .get("recorded")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 let enrolled = json
                     .get("enrolled")
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
-                if enrolled {
-                    println!("notification sent to {target}'s inbox/device.");
+                    .unwrap_or(false);
+                if !recorded {
+                    println!("the note could NOT be recorded to {target}'s inbox (proxy reported no on-chain record).");
+                } else if enrolled {
+                    println!("sent to {target}: recorded in their inbox + pushed to their enrolled device.");
                 } else {
-                    let msg = json
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("the target has not enrolled any device for Web Push, so the note did not reach them");
-                    println!("{msg}");
+                    println!("recorded in {target}'s inbox — they'll see it in their bell at next open (no device enrolled for a live push).");
                 }
             }
             None => println!("notification sent — check your device."),
