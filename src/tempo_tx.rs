@@ -205,12 +205,15 @@ impl TempoTx {
     ///     valid_before, valid_after,
     ///     fee_token,           // ALWAYS the real token
     ///     sender_address,      // 20 bytes (recovered from sender sig)
+    ///     aa_authorization_list, // position 13 (see inline field map)
     ///     key_authorization    // 0x80 when None
     /// ])
     /// ```
     ///
-    /// Notably DIFFERENT from sender_hash: no `aa_authorization_list`
-    /// here (the spec leaves it out of the fee_payer commitment).
+    /// Like sender_hash this DOES include `aa_authorization_list` at
+    /// position 13 — the Tempo spec page omits it but wevm/ox
+    /// `TxEnvelopeTempo` (format `feePayer`) includes it; see the inline
+    /// field map below.
     pub fn fee_payer_hash(&self, sender_address: &[u8; 20]) -> [u8; 32] {
         // Confirmed against wevm/ox `TxEnvelopeTempo.serialize` with
         // `format: 'feePayer'`. Field order:
