@@ -237,7 +237,8 @@ pub async fn x402_authorization_state(
         &[addr_word(&from), *nonce],
     )
     .await?;
-    Ok(decode_u256_as_u64(&result).map(|v| v != 0).unwrap_or(false))
+    let used = decode_u256_as_u64(&result)?;
+    Ok(used != 0)
 }
 
 /// A fresh random 32-byte x402 nonce (CSPRNG via `getrandom`). Each
@@ -508,6 +509,25 @@ mod x402_tests {
         assert_eq!(price_lock_ceiling(0), 0);
         // Saturating: u128::MAX must not panic or wrap below the input.
         assert!(price_lock_ceiling(u128::MAX) >= u128::MAX - 1);
+    }
+
+    /// `x402_authorization_state` decodes the `authorizationState` read with
+    /// `decode_u256_as_u64` and propagates its `Err` (fail-closed): a malformed /
+    /// over-long RPC read must NOT silently decode as 0 → "nonce unused", which
+    /// would let a payee re-serve a replayed settlement. Pins the two Err paths
+    /// (over-long, high-bytes-set) that now surface, plus the valid decodings.
+    #[test]
+    fn authorization_state_decode_is_fail_closed() {
+        // A valid all-zero word → unused (0), any nonzero low word → used.
+        assert_eq!(decode_u256_as_u64(&"0".repeat(64)), Ok(0));
+        assert_eq!(
+            decode_u256_as_u64(&format!("{}1", "0".repeat(63))),
+            Ok(1)
+        );
+        // Over-long hex must Err (propagated, not swallowed to false).
+        assert!(decode_u256_as_u64(&"0".repeat(65)).is_err());
+        // A set high byte (value beyond u64) must Err, not truncate to unused.
+        assert!(decode_u256_as_u64(&format!("1{}", "0".repeat(63))).is_err());
     }
 
     #[test]
