@@ -25,6 +25,11 @@ pub const DEFAULT_FUEL: u64 = 10_000;
 /// truncated into something misleading.
 pub const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 
+/// Hard cap on the SIZE of a script loaded by `run`/`source` (bytes). A composed
+/// script is read fully into memory before parsing, so an unbounded file would be
+/// a trivial memory-exhaustion DoS; oversized scripts are rejected, not truncated.
+pub const MAX_SCRIPT_SIZE: usize = 256 * 1024;
+
 /// The accumulated result of running a whole script.
 #[derive(Debug, Clone, Default)]
 pub struct ScriptResult {
@@ -296,7 +301,15 @@ impl<'h, H: BashHost + ?Sized> Evaluator<'h, H> {
             };
             let path = builtins::resolve(&self.cwd, path_arg);
             let src = match self.host.fs().read(&path).await {
-                Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+                Ok(b) => {
+                    if b.len() > MAX_SCRIPT_SIZE {
+                        return Ok(Output::err(
+                            format!("{name}: {path_arg}: script exceeds {MAX_SCRIPT_SIZE} byte limit"),
+                            1,
+                        ));
+                    }
+                    String::from_utf8_lossy(&b).into_owned()
+                }
                 Err(e) => return Ok(Output::err(format!("{name}: {path_arg}: {e}"), 1)),
             };
             return self.run_nested(&src, path_arg).await;

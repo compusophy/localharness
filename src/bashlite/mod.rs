@@ -62,7 +62,7 @@ pub mod platform;
 /// Bounded, total evaluator.
 pub mod eval;
 
-pub use eval::{Evaluator, ScriptResult, DEFAULT_FUEL, MAX_OUTPUT_BYTES};
+pub use eval::{Evaluator, ScriptResult, DEFAULT_FUEL, MAX_OUTPUT_BYTES, MAX_SCRIPT_SIZE};
 pub use host::{BashHost, Output};
 
 /// Resolve `path` against `cwd` into a normalized sandbox path the way the fs
@@ -764,6 +764,21 @@ mod tests {
         let files = &[("/bad.bl", "if [ 1 -eq 1 ]; then echo a")]; // missing `fi`
         let r = run_ok(files, "run bad.bl\necho after=$?").await;
         assert!(r.stdout.contains("after=2"), "{:?}", r.stdout);
+    }
+
+    #[tokio::test]
+    async fn run_oversized_script_is_rejected_small_one_runs() {
+        // A script bigger than MAX_SCRIPT_SIZE is refused before parse (DoS guard);
+        // a small script under the cap still composes to a clean zero exit.
+        let big = "#".repeat(MAX_SCRIPT_SIZE + 1);
+        let files = &[("/big.bl", big.as_str()), ("/small.bl", "echo ok")];
+        let r = run_ok(files, "run big.bl\necho after=$?").await;
+        assert!(r.stderr.contains("exceeds"), "{:?}", r.stderr);
+        assert!(r.stdout.contains("after=1"), "{:?}", r.stdout);
+
+        let r2 = run_ok(files, "run small.bl").await;
+        assert_eq!(r2.exit_code, 0);
+        assert!(r2.stdout.contains("ok"), "{:?}", r2.stdout);
     }
 
     #[tokio::test]
