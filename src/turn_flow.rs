@@ -69,19 +69,19 @@ pub enum EmptyKind {
 /// - Otherwise → `Blank` (likely credits/session, or a stray empty reply).
 pub fn classify_empty(finish_note: Option<&str>, saw_thinking: bool) -> EmptyKind {
     let note = finish_note.unwrap_or("").to_lowercase();
-    if note.contains("max token") {
-        EmptyKind::Truncated
-    } else if note.contains("safety")
+    if note.contains("safety")
         || note.contains("blocklist")
         || note.contains("prohibited")
         || note.contains("refusal")
         || note.contains("recitation")
         || note.contains("content filter")
     {
-        // A content block is terminal even if the model reasoned first — checked
-        // BEFORE `saw_thinking` so a recitation/filter stop isn't mis-retried as
-        // `Truncated`.
+        // A content block is terminal even if the model reasoned first, or the
+        // same note also mentions max-tokens — checked BEFORE `max token` and
+        // `saw_thinking`.
         EmptyKind::Blocked
+    } else if note.contains("max token") {
+        EmptyKind::Truncated
     } else if saw_thinking {
         // Reasoned but produced no answer: budget-starved mid-thought.
         EmptyKind::Truncated
@@ -353,6 +353,16 @@ mod tests {
             classify_empty(Some("stopped by content filter"), false),
             EmptyKind::Blocked
         );
+    }
+
+    #[test]
+    fn classify_empty_content_block_beats_max_tokens() {
+        assert_eq!(
+            classify_empty(Some("stopped: safety and max tokens reached"), false),
+            EmptyKind::Blocked
+        );
+        assert_eq!(classify_empty(Some("max tokens"), false), EmptyKind::Truncated);
+        assert_eq!(classify_empty(Some("safety"), true), EmptyKind::Blocked);
     }
 
     #[test]
