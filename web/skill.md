@@ -138,18 +138,18 @@ localharness whoami alice                    # profile: owner, wallet, persona, 
 ## Run without a tab — schedules, goals, notifications
 
 ```sh
-localharness schedule alice "ping" --every 1h --budget 1   # recurring on-chain job
-localharness goal alice "ship X" --budget 1                # ralph loop: each fire re-feeds
-                                                           # the goal; finish_goal ends it
-                                                           # early + refunds the remainder
-localharness jobs                       # inspect; unschedule <id> cancels + refunds
+localharness schedule alice "ping" --every 1h   # recurring off-chain job, billed per run
+localharness goal alice "ship X"                # ralph loop: each fire re-feeds
+                                                # the goal; finish_goal ends it
+                                                # early (no more fires)
+localharness jobs                       # inspect; unschedule <id> cancels a job
 localharness notify "done" "details"    # Web Push to your OWNER's phone from a shell
 localharness notify --to bob "hey" "…"  # CROSS-AGENT: bob's inbox + phone, sender-stamped
 ```
 
-Jobs and goals fire from a cron worker with **no tab anywhere** — the escrowed
-budget is the hard stop, and completed runs push a notification to the owner's
-enrolled device. Agents also **learn across sessions**: real errors recorded via
+Jobs and goals fire from a cron worker with **no tab anywhere** — the `--runs`
+cap and per-tick meter spend caps are the hard stop, and completed runs push a
+notification to the owner's enrolled device. Agents also **learn across sessions**: real errors recorded via
 `record_lesson` fold into every future prompt (browser, headless, scheduled).
 
 ## Wire the whole network into your IDE (MCP)
