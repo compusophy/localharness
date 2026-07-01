@@ -58,6 +58,11 @@ TXT  @  forward-email=compusophy@gmail.com  ttl 3600   (rec_f452ba11ad1ae66359ae
 TXT  @  v=spf1 a include:spf.forwardemail.net -all      (rec_a0432f0f00eaef3affd39394)
 ```
 
+> **SPF updated 2026-06-30** (see §5): the SPF TXT above was changed to
+> `v=spf1 a ip4:69.130.110.56 include:spf.forwardemail.net -all` and, because Vercel's
+> PATCH replaces the record, it now has a **new id `rec_b361c0c4e95cba19d14e1f22`**
+> (the old `rec_a043…` id is gone). Revert value + command are in §5.
+
 Verified live at the authoritative nameserver (`ns1.vercel-dns.com` returns both MX;
 both TXT already visible via `8.8.8.8`). Public MX caching catches up within the
 ~10-min TTL.
@@ -165,3 +170,134 @@ it's a real boundary, not a missing feature.
 Delete the four records by UID:
 `DELETE https://api.vercel.com/v2/domains/localharness.xyz/records/<uid>?teamId=team_DYlw1hPeilK5o3w1uPWqt8Mi`
 (UIDs listed in §2). Removing the MX + forward-email TXT fully unwinds the inbox.
+
+---
+
+## 5. Direct-to-MX SEND attempt (2026-06-30) — the wall is Gmail's IP policy, not us
+
+Question tested: can the agent **send** a real letter *from* `agent@localharness.xyz`
+to `compusophy@gmail.com` with **no provider account, no integration, zero deps** —
+by speaking SMTP directly to Gmail's inbound MX? Built `scripts/smtp-send.mjs` (a
+from-scratch `node:net` + `node:tls` STARTTLS client, mirroring the zero-dep style of
+`scripts/nostr-broadcast.mjs`) and ran it live.
+
+**Facts gathered:**
+
+| Check | Result |
+|-------|--------|
+| This env's public outbound IP | **`69.130.110.56`** (residential/Comcast range) |
+| TCP 25 → `gmail-smtp-in.l.google.com` | **OPEN** — `220 mx.google.com ESMTP … gsmtp` |
+| TCP 587 → same MX | **times out** (irrelevant; 587 = submission, needs AUTH we don't have) |
+| STARTTLS handshake | succeeded — `TLSv1.3 / TLS_AES_256_GCM_SHA384` |
+| EHLO / MAIL FROM / RCPT TO / DATA | **all accepted** (`250` / `354`) |
+| Final reply to the `<CRLF>.<CRLF>` terminator | **`550-5.7.1 … NotAuthorizedError`** (rejected) |
+
+Exact Gmail rejection:
+
+```
+550-5.7.1 [69.130.110.56] The IP you're using to send mail is not authorized to
+550-5.7.1 send email directly to our servers. Please use the SMTP relay at your
+550-5.7.1 service provider instead. For more information, go to
+550 5.7.1  https://support.google.com/mail/?p=NotAuthorizedError
+```
+
+**Verdict: NOT accepted for delivery.** Gmail took the entire SMTP conversation
+through the message body, then refused at the terminator. The block is a **blanket
+IP-reputation policy**: Gmail (like every large mailbox provider) refuses
+direct-to-MX mail from residential/dynamic IP ranges — the sending host has no
+matching PTR and sits on a consumer ISP block. **This is not fixable with DNS from
+our side:** SPF/DKIM/DMARC alignment is never even evaluated because the connection
+is rejected on IP policy first. Port 25 being open here means the *physical* path
+works; the wall is the receiver's anti-abuse policy, exactly as it is for every home
+connection on the internet.
+
+**What actually unblocks outbound send** (unchanged from §3's conclusion): relay
+through an IP with sending reputation + a PTR — i.e. a sending-provider account
+(ForwardEmail SMTP / Resend / Postmark / Mailgun). That account signup is the one
+human step. The from-scratch client is correct and reusable; it will deliver the
+moment it runs from (or relays through) an authorized IP.
+
+### The SPF change made for this attempt (reversible)
+
+Per the deliverability step, this IP was added to the domain SPF **before** sending:
+
+```
+before:  v=spf1 a include:spf.forwardemail.net -all         (id rec_a0432f0f00eaef3affd39394)
+after:   v=spf1 a ip4:69.130.110.56 include:spf.forwardemail.net -all  (id rec_b361c0c4e95cba19d14e1f22)
+```
+
+(Vercel's `PATCH /v1/domains/records/<id>` **replaces** the record, so the id
+changed.) The forwardemail include was preserved; **no other DNS was touched**;
+**no DMARC record exists** on the domain (so nothing hard-rejects on our side).
+
+⚠️ `69.130.110.56` is a **dynamic residential IP** — it will rotate and become stale.
+It provided **zero deliverability benefit** (Gmail blocked on IP policy before SPF
+mattered). Left in place per the task's "add + keep reversible" instruction; **revert
+it to the original value** whenever convenient:
+
+```sh
+TOKEN=$(node -e "console.log(require(process.env.HOME+'/AppData/Roaming/com.vercel.cli/Data/auth.json').token)")
+curl -s -X PATCH \
+  "https://api.vercel.com/v1/domains/records/rec_b361c0c4e95cba19d14e1f22?teamId=team_DYlw1hPeilK5o3w1uPWqt8Mi" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"TXT","name":"","value":"v=spf1 a include:spf.forwardemail.net -all","ttl":3600}'
+```
+
+(Note the record id will change again on that PATCH — read it back to confirm.)
+
+---
+
+## 6. Follow-up SEND attempt (2026-06-30) — relay through our OWN MX; blocked by ForwardEmail's free-tier abuse gate
+
+After Gmail's direct-MX rejection (§5), the next idea was to **relay through the
+domain's own inbound MX** (`mx1.forwardemail.net`) instead of Gmail: send
+`MAIL FROM:<agent@localharness.xyz>` / `RCPT TO:<founder@localharness.xyz>` (a
+`*@localharness.xyz` address the catch-all forwards to `compusophy@gmail.com`), so
+ForwardEmail would receive it (it accepts inbound for the domain from any IP) and
+forward it onward from **its** reputable, DKIM-signing infrastructure. Same
+`scripts/smtp-send.mjs`, just `--to founder@localharness.xyz` (its MX resolves to
+`mx1.forwardemail.net`).
+
+**This went much further than Gmail did** — the SPF change from §5 did its job:
+
+| Stage | ForwardEmail reply |
+|-------|--------------------|
+| Greeting | `220 mx1.forwardemail.net ESMTP` |
+| EHLO / STARTTLS / TLS | accepted — `TLSv1.3`, advertised `REQUIRETLS` |
+| `MAIL FROM:<agent@localharness.xyz>` | **`250 2.1.0 Accepted`** (SPF now passes for our IP) |
+| `RCPT TO:<founder@localharness.xyz>` | **`250 2.1.5 Accepted`** |
+| `DATA` | `354 End data with <CR><LF>.<CR><LF>` |
+| **`<CRLF>.<CRLF>` terminator** | **`550 5.1.1` — REJECTED** |
+
+Exact rejection:
+
+```
+550 5.1.1 The domain localharness.xyz was detected as a newly created or transferred
+domain via WHOIS/RDAP lookup. Due to major registrars such as GoDaddy, Namecheap, and
+Hostgator previously blocking us due to abuse — we unfortunately have to enforce strict
+abuse prevention controls to block suspicious activity. ... We require that you please
+upgrade to a paid plan at https://forwardemail.net to use our service with this domain.
+```
+
+**Verdict: NOT accepted.** ForwardEmail's **free tier now refuses to process mail for
+`localharness.xyz` at all** because WHOIS/RDAP flags it as a newly-created/transferred
+domain — a blanket anti-abuse control, resolved only by a **paid plan**. It is a
+permanent `5xx` (no greylist retry applies), and it is **domain-level** — `mx2` is the
+same service with the same policy and returns the identical 550, so it is not a
+meaningful fallback (a fallback covers unreachability; `mx1` was fully reachable with a
+definitive verdict).
+
+**This is the exact "one human step" §3 predicted — now reached from the receiving
+side too.** ⚠️ **It also implies the "receiving is LIVE" claim in §2/§3 is likely now
+STALE:** if ForwardEmail's free tier blocks this newly-created domain, the inbound
+catch-all forward (`*@localharness.xyz` → Gmail) is probably broken as well until the
+domain is on a paid ForwardEmail plan (or the receiving MX is repointed to the
+self-hosted `proxy/api/inbound-email.ts` webhook from §2, which sidesteps
+ForwardEmail entirely). Worth re-verifying inbound delivery.
+
+**Net across both attempts:** the agent can carry the letter physically all the way to
+a real mail server (port 25 open, TLS, full SMTP accepted through DATA), but **both**
+onward hops refuse the last inch on **policy** — Gmail on residential-IP reputation
+(§5), ForwardEmail on free-tier new-domain abuse control (§6). Neither is fixable with
+DNS alone; both point at the same unlock the doc already named: an **authorized/paid
+relay** (ForwardEmail paid, or Resend/Postmark/Mailgun), which is the one human step.
