@@ -553,7 +553,12 @@ pub fn classify(s: &str) -> Option<u16> {
     if l.contains("timed out") || l.contains("timeout") || l.contains("deadline") {
         return Some(BACKEND_TIMEOUT);
     }
-    if l.contains("empty response") || l.contains("truncated") || l.contains("no response") {
+    if l.contains("empty response")
+        || l.contains("response truncated")
+        || l.contains("output truncated")
+        || l.contains("truncated response")
+        || l.contains("no response")
+    {
         return Some(BACKEND_EMPTY);
     }
     if l.contains("500")
@@ -665,6 +670,8 @@ mod tests {
         assert_eq!(classify("402 Payment Required: no $LH"), Some(BACKEND_CREDITS));
         assert_eq!(classify("the request timed out"), Some(BACKEND_TIMEOUT));
         assert_eq!(classify("empty response from model"), Some(BACKEND_EMPTY));
+        assert_eq!(classify("model output truncated at max_tokens"), Some(BACKEND_EMPTY));
+        assert_eq!(classify("the connection was truncated mid-stream"), Some(BACKEND_NETWORK));
         assert_eq!(classify("HTTP 503 internal server error"), Some(BACKEND_SERVER));
         assert_eq!(classify("failed to fetch: network down"), Some(BACKEND_NETWORK));
         assert_eq!(classify("stale or future timestamp"), Some(BACKEND_STALE_AUTH));
