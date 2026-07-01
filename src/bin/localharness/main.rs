@@ -645,6 +645,16 @@ async fn run(args: &[String]) -> i32 {
         util::print_err(&e);
         return 2;
     }
+    // `<command> --help` / `-h` as the FIRST arg after a single-word command (e.g.
+    // `publish --help`) is otherwise swallowed as a positional NAME — the name-first
+    // commands (publish/create/persona/…) would try to CLAIM "--help". Show the command
+    // list instead. Two-word commands (`colony run --help`) have args[1] = the
+    // subcommand, so they keep their own per-command help.
+    if matches!(args.get(1).map(String::as_str), Some("--help") | Some("-h")) {
+        println!("{USAGE}");
+        return 0;
+    }
+
     // Make the active chain VISIBLE — a silent chain selection was the footgun
     // behind on-chain feedback #43 (`discover` returned 39 agents on the CLI's
     // testnet vs 7 on the browser's mainnet, with no way to tell which chain you
