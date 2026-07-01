@@ -59,22 +59,100 @@ usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent
   agent exists the caller acts as a lone fallback judge; if ALL judge turns fail
   the median defaults to a neutral 3★.";
 
+/// Pure: pull the first plausible rustlite snippet out of a free-form worker
+/// `result`, so the judge can be handed GROUND-TRUTH compile evidence instead of
+/// guessing. Prefers a ```-fenced code block whose body contains `fn ` (dropping
+/// an optional `rust`/`rl` language tag), else the first single-backtick span
+/// containing `fn `. Returns `None` when nothing code-like is present (most
+/// non-code tasks) — then no evidence is injected and the judge behaves as before.
+/// Requiring `fn ` keeps prose backticks from being mistaken for a repro.
+pub(crate) fn extract_rustlite_snippet(result: &str) -> Option<String> {
+    // 1. Triple-backtick fenced block whose body contains `fn ` (odd segments are
+    //    inside fences once the text is split on the fence delimiter).
+    if result.contains("```") {
+        for seg in result.split("```").skip(1).step_by(2) {
+            // Drop a short leading language tag line (```rust / ```rl) if present.
+            let body = match seg.split_once('\n') {
+                Some((first, rest)) if first.trim().len() <= 8 && !first.contains("fn ") => rest,
+                _ => seg,
+            };
+            if body.contains("fn ") {
+                return Some(body.trim().to_string());
+            }
+        }
+    }
+    // 2. First single-backtick span containing `fn `.
+    let mut i = 0;
+    while let Some(rel) = result[i..].find('`') {
+        let start = i + rel + 1;
+        let Some(end_rel) = result[start..].find('`') else { break };
+        let span = &result[start..start + end_rel];
+        if span.contains("fn ") {
+            return Some(span.trim().to_string());
+        }
+        i = start + end_rel + 1;
+    }
+    None
+}
+
+/// Compile the worker result's embedded rustlite repro (if any) and format ONE
+/// line of ground-truth evidence for the judge — deterministic, since it runs the
+/// real `rustlite::compile`. `None` when there's no code-like snippet. A clean
+/// coded error (`LHxxxx`) is the compiler's INTENDED handling of invalid input, so
+/// the evidence spells that out — a worker claiming a crash / miscompile / a
+/// specific mechanism the error contradicts is then visibly inaccurate.
+pub(crate) fn rustlite_compile_evidence(result: &str) -> Option<String> {
+    let snippet = extract_rustlite_snippet(result)?;
+    match localharness::rustlite::compile(&snippet) {
+        Ok(bytes) => Some(format!(
+            "The repro `{snippet}` COMPILES cleanly ({} bytes) with the real rustlite \
+             compiler — no crash, no miscompile.",
+            bytes.len()
+        )),
+        Err(e) => {
+            let code = e.code.map(|c| format!("LH{c:04}")).unwrap_or_else(|| "LH????".into());
+            Some(format!(
+                "The repro `{snippet}` is REJECTED by the real rustlite compiler with a clean \
+                 coded error {code}: \"{}\". A clean coded error is the compiler's INTENDED \
+                 behavior for unsupported/invalid input — it is NOT a crash or a miscompile. If \
+                 the worker claims a crash, a silent miscompile, or a specific mechanism (e.g. a \
+                 `>>` mislex) that this error contradicts, the finding is inaccurate.",
+                e.message
+            ))
+        }
+    }
+}
+
 /// Build the impartial-judge prompt for the [6/8] JUDGE step. The judge scores
 /// the worker's `result` against the `task` on a 1-5 scale, explicitly checking
 /// for ACCURACY/hallucination (with the serverless-localharness context baked in
-/// so a "binds a port / control API" style fabrication scores low). The reply's
-/// first line MUST be a single 1-5 digit; the rest is rationale.
+/// so a "binds a port / control API" style fabrication scores low). When the
+/// result embeds a rustlite repro, GROUND-TRUTH compile evidence is injected so
+/// the judge stops rubber-stamping unverifiable compiler lore (the false-5★ seen
+/// dogfooding). The reply's first line MUST be a single 1-5 digit; the rest is
+/// rationale.
 pub(crate) fn colony_judge_prompt(task: &str, result: &str) -> String {
+    let evidence = rustlite_compile_evidence(result)
+        .map(|e| {
+            format!(
+                "\nGROUND-TRUTH COMPILE EVIDENCE (deterministic — from actually running the real \
+                 rustlite compiler on the repro; TRUST THIS over your own intuition about \
+                 compilers):\n{e}\n"
+            )
+        })
+        .unwrap_or_default();
     format!(
         "You are an impartial judge scoring a bounty result.\n\
          TASK: {task}\n\
-         WORKER RESULT: {result}\n\n\
+         WORKER RESULT: {result}\n{evidence}\n\
          Score 1-5 whether the result genuinely AND ACCURATELY addresses the task \
          (5 = excellent, specific, correct; 1 = irrelevant, wrong, or HALLUCINATED). \
          IMPORTANT context for accuracy-checking: localharness is SERVERLESS — it runs \
          on the Tempo chain + the browser + a Vercel edge proxy; there is NO local \
          server/daemon/control-API/port binding. A result that claims to fix or find \
-         such a thing is HALLUCINATED and scores low.\n\n\
+         such a thing is HALLUCINATED and scores low. When COMPILE EVIDENCE is present \
+         above, it is ground truth: a finding whose claimed mechanism the evidence \
+         contradicts is inaccurate and scores low.\n\n\
          Output ONLY a single digit 1-5 on the first line, then one short line of rationale."
     )
 }
@@ -1546,6 +1624,44 @@ mod tests {
         // The accuracy anchor that lets the judge catch the serverless hallucination.
         assert!(p.contains("SERVERLESS"));
         assert!(p.contains("single digit 1-5"));
+        // A non-code result injects NO compile-evidence block.
+        assert!(!p.contains("GROUND-TRUTH COMPILE EVIDENCE"));
+    }
+
+    #[test]
+    fn extract_rustlite_snippet_finds_backtick_and_fenced_and_ignores_prose() {
+        // single-backtick span
+        let s = extract_rustlite_snippet("Repro:\n`fn main() { let x = 1; }`").unwrap();
+        assert_eq!(s, "fn main() { let x = 1; }");
+        // fenced block with a language tag
+        let s = extract_rustlite_snippet("```rust\nfn frame(t: i32) -> i32 { t }\n```").unwrap();
+        assert_eq!(s, "fn frame(t: i32) -> i32 { t }");
+        // prose with backticks but no `fn ` → nothing code-like
+        assert!(extract_rustlite_snippet("see the `config` value and `x`").is_none());
+        assert!(extract_rustlite_snippet("just prose, no code at all").is_none());
+    }
+
+    #[test]
+    fn rustlite_compile_evidence_grounds_the_judge() {
+        // The exact phantom-`>>` finding: the repro is REJECTED at the first `<`
+        // (LH0100), which contradicts the worker's claimed `>>`-mislex mechanism.
+        let ev = rustlite_compile_evidence(
+            "Bug: naive `>>` lexing. Repro: `fn main() { let x: Option<Option<i32>> = None; }`",
+        )
+        .expect("a snippet with `fn ` yields evidence");
+        assert!(ev.contains("REJECTED"));
+        assert!(ev.contains("LH0100"));
+        // A genuinely valid cartridge compiles cleanly → positive evidence.
+        let ev = rustlite_compile_evidence("`#[no_mangle] fn frame(t: i32) -> i32 { t }`").unwrap();
+        assert!(ev.contains("COMPILES cleanly"));
+        // No repro → no evidence (judge behaves as before).
+        assert!(rustlite_compile_evidence("no code here").is_none());
+        // The evidence actually reaches the judge prompt.
+        let p = colony_judge_prompt(
+            "name a rustlite edge case",
+            "Repro: `fn main() { let x: Option<i32> = None; }`",
+        );
+        assert!(p.contains("GROUND-TRUTH COMPILE EVIDENCE"));
     }
 
     #[test]
