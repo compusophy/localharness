@@ -134,7 +134,7 @@ pub async fn fiat_locked_of(account_hex: &str) -> Result<(u128, u64), String> {
 /// `receiptUsed(receiptId)` — true once a receipt has minted (one-shot).
 pub async fn receipt_used(receipt_id: &[u8; 32]) -> Result<bool, String> {
     let result = read_view(selector("receiptUsed(bytes32)"), &[*receipt_id]).await?;
-    Ok(decode_u256_as_u64(&result).map(|v| v != 0).unwrap_or(false))
+    Ok(decode_u256_as_u64(&result)? != 0)
 }
 
 /// `fiatMintWindow()` → (capWei, windowSecs, windowStart, mintedInWindow). The
