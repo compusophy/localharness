@@ -1332,9 +1332,13 @@ impl Agent {
         // a prompt-level honor system. Now ANY custom tool also requires an
         // explicit policy or a pre-tool-call hook, enforced at the ToolRunner.
         let has_custom_tools = !agent_config.tools.is_empty();
+        // Inspect the CONFIG's pre-tool hooks, not `hook_runner` — the hooks are
+        // only registered into the runner below (after this check), so testing the
+        // runner here made the "policy OR user hook" branch dead (always empty) and
+        // wrongly rejected a consumer who supplied a `with_pre_tool_hook` guard.
         if requires_safety_policy(&agent_config.capabilities, has_custom_tools)
             && active_policies.is_empty()
-            && !hook_runner.has_pre_tool_call_decide()
+            && agent_config.pre_tool_hooks.is_empty()
         {
             return Err(Error::config(
                 "write or custom tools are enabled but no safety policies are \
@@ -1656,5 +1660,37 @@ mod safety_guard_tests {
             &caps(BuiltinTool::READ_ONLY.to_vec()),
             false
         ));
+    }
+
+    /// A user-installed pre-tool-call hook satisfies the safety requirement — the
+    /// documented "policy OR hook" contract. Regression: the guard used to inspect
+    /// the still-empty `hook_runner` (hooks are registered AFTER the check), so a
+    /// consumer wiring `with_pre_tool_hook(...)` and no explicit policy was wrongly
+    /// rejected with "no safety policies are configured".
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn a_user_pre_tool_hook_satisfies_the_safety_requirement() {
+        use crate::backends::mock::MockConnection;
+        use crate::tools::ClosureTool;
+
+        let custom_tool = || {
+            ClosureTool::new(
+                "noop",
+                "does nothing",
+                serde_json::json!({"type": "object"}),
+                |_args, _ctx| async move { Ok(serde_json::json!({})) },
+            )
+        };
+
+        // Custom tool, NO policy, NO hook → rejected (the Phase-0b bypass stays closed).
+        let unguarded = MockAgentConfig::new(MockConnection::builder().turn(|t| t.text("hi")).build())
+            .with_tool(custom_tool());
+        assert!(Agent::start_mock(unguarded).await.is_err());
+
+        // SAME config + a user pre-tool-call hook (no explicit policy) → accepted.
+        let with_hook = MockAgentConfig::new(MockConnection::builder().turn(|t| t.text("hi")).build())
+            .with_tool(custom_tool())
+            .with_pre_tool_hook(crate::policy::enforce(vec![crate::policy::allow_all()]));
+        assert!(Agent::start_mock(with_hook).await.is_ok());
     }
 }
