@@ -371,9 +371,17 @@ fn drop_oldest_fallback<A: CompactionModel>(
     }
     let kept: Vec<A::Message> = hist.split_off(split);
     hist.clear();
+    const DROP_NOTE: &str = "[some prior turns dropped without summary]";
     let text = match prior_summary {
         Some(s) if !s.trim().is_empty() => {
-            format!("{COMPACTION_TAG}\n{s}\n[some prior turns dropped without summary]")
+            // `s` came through `extract_prior_summary`, which keeps a note appended
+            // by a PRIOR fallback inside the body. Strip any trailing note(s) first
+            // so consecutive fallbacks don't accumulate duplicates in the fold input.
+            let mut base = s.trim_end();
+            while let Some(stripped) = base.strip_suffix(DROP_NOTE) {
+                base = stripped.trim_end();
+            }
+            format!("{COMPACTION_TAG}\n{base}\n{DROP_NOTE}")
         }
         _ => format!("{COMPACTION_TAG}\n[prior turns dropped]"),
     };
@@ -573,5 +581,31 @@ mod tests {
         let split = pick_split::<MockModel>(&h, 1); // keep_entries=2 → split=4 (a User turn)
         assert_eq!(split, 4);
         assert_eq!(h[split].role, Role::User);
+    }
+
+    #[test]
+    fn drop_oldest_fallback_dedups_the_drop_note() {
+        // Repeated summarization failures must NOT accumulate the fallback note:
+        // `extract_prior_summary` keeps a previously-appended note in the body, so
+        // re-appending on each consecutive fallback would duplicate it.
+        const DROP_NOTE: &str = "[some prior turns dropped without summary]";
+
+        let hist = Mutex::new(vec![m(Role::User), m(Role::Assistant), m(Role::User)]);
+        // A prior summary that ALREADY carries the note (what a prior fallback left).
+        let prior = format!("rolling summary\n{DROP_NOTE}");
+        assert!(drop_oldest_fallback::<MockModel>(&hist, 1, Some(&prior)));
+
+        let head = hist.lock()[0].clone();
+        let text = MockModel::sole_text(&head).unwrap().to_string();
+        assert_eq!(text.matches(DROP_NOTE).count(), 1, "note duplicated: {text}");
+
+        // Feed the extracted body back in (the next consecutive fallback) — the
+        // note count must STILL be exactly one.
+        let body = extract_prior_summary::<MockModel>(Some(&head)).unwrap();
+        let hist2 = Mutex::new(vec![m(Role::User), m(Role::Assistant), m(Role::User)]);
+        assert!(drop_oldest_fallback::<MockModel>(&hist2, 1, Some(&body)));
+        let head2 = hist2.lock()[0].clone();
+        let text2 = MockModel::sole_text(&head2).unwrap();
+        assert_eq!(text2.matches(DROP_NOTE).count(), 1, "note duplicated on re-fold: {text2}");
     }
 }
