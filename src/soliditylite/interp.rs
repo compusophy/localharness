@@ -487,7 +487,7 @@ impl Vm<'_> {
                     let len = word_to_usize(&self.pop()?);
                     self.ensure_mem(dest, len)?;
                     for i in 0..len {
-                        let b = self.code.get(src + i).copied().unwrap_or(0);
+                        let b = self.code.get(src.wrapping_add(i)).copied().unwrap_or(0);
                         self.memory[dest + i] = b;
                     }
                     self.pc += 1;
@@ -667,6 +667,31 @@ mod tests {
         let mut logs = Vec::new();
         let err = run(&code, &[], &CallEnv::default(), &mut storage, &mut logs).unwrap_err();
         assert_eq!(err, ExecError::OutOfGas, "a giant memory offset is a clean OutOfGas, not an OOM abort");
+    }
+
+    /// SECURITY: hostile CODECOPY with a near-usize::MAX source offset must NOT
+    /// panic in debug (`attempt to add with overflow`) — the copy loop wraps and
+    /// zero-fills like its CALLDATACOPY sibling, upholding the "untrusted bytecode
+    /// never panics the process" invariant.
+    #[test]
+    fn codecopy_huge_src_offset_does_not_panic() {
+        use crate::soliditylite::asm::op;
+        // Push order (bottom→top): len, src, dest — CODECOPY pops dest, src, len.
+        let code = [
+            op::PUSH1, 0x20, // len = 32
+            op::PUSH1 + 7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // src = u64::MAX
+            op::PUSH1, 0x00, // dest = 0
+            op::CODECOPY,
+            op::PUSH1, 0x20, // RETURN len = 32
+            op::PUSH1, 0x00, // RETURN off = 0
+            op::RETURN, // returns the 32 zero-filled bytes CODECOPY wrote
+        ];
+        let mut storage = std::collections::HashMap::new();
+        let mut logs = Vec::new();
+        // Before the fix: `src + i` panics with 'attempt to add with overflow' in
+        // debug DURING the copy loop. After: it wraps, zero-fills, and returns clean.
+        let res = run(&code, &[], &CallEnv::default(), &mut storage, &mut logs);
+        assert!(res.is_ok(), "hostile CODECOPY offset must run clean (no panic), got {res:?}");
     }
 
     /// SECURITY: untrusted bytecode that pushes without popping must hit the
