@@ -90,6 +90,15 @@ pub struct LogEntry {
 /// this; an infinite loop would mean a codegen bug, caught as [`ExecError::OutOfGas`]).
 const STEP_BUDGET: usize = 1_000_000;
 
+/// Hard cap on memory growth (16 MiB) — a memory-expansion guard. Untrusted
+/// bytecode can supply an attacker-controlled offset (e.g. `RETURN`/`KECCAK256`/
+/// `LOG`/`CALLDATACOPY` with `off = 0xFFFF_FFFF`); without a ceiling the on-demand
+/// `resize` would try to allocate gigabytes and OOM-abort the whole process. A
+/// required end offset past this cap is a clean [`ExecError::OutOfGas`] instead
+/// (the real EVM prices memory expansion quadratically, so a huge span exhausts
+/// gas — SolidityLite bodies touch only tiny scratch memory, far under this).
+const MAX_MEMORY: usize = 16 * 1024 * 1024;
+
 impl Contract {
     /// "Deploy" INIT code EVM-style: run it, and the bytes it `RETURN`s become the
     /// contract's deployed `code`. This mirrors a CREATE tx, so the harness covers
@@ -228,26 +237,33 @@ impl Vm<'_> {
         self.stack.pop().ok_or(ExecError::StackUnderflow)
     }
 
-    /// Ensure `memory` covers `[off, off+len)`, zero-extending as needed.
-    fn ensure_mem(&mut self, off: usize, len: usize) {
+    /// Ensure `memory` covers `[off, off+len)`, zero-extending as needed. A
+    /// required end offset past [`MAX_MEMORY`] is a clean [`ExecError::OutOfGas`]
+    /// (untrusted bytecode can't OOM-abort the process with a giant offset).
+    fn ensure_mem(&mut self, off: usize, len: usize) -> Result<(), ExecError> {
         let end = off.saturating_add(len);
+        if end > MAX_MEMORY {
+            return Err(ExecError::OutOfGas);
+        }
         if end > self.memory.len() {
             self.memory.resize(end, 0);
         }
+        Ok(())
     }
 
     /// Store a 32-byte word at memory offset `off`.
-    fn mstore(&mut self, off: usize, w: &Word) {
-        self.ensure_mem(off, 32);
+    fn mstore(&mut self, off: usize, w: &Word) -> Result<(), ExecError> {
+        self.ensure_mem(off, 32)?;
         self.memory[off..off + 32].copy_from_slice(w);
+        Ok(())
     }
 
     /// Load a 32-byte word from memory offset `off` (zero-extended past the end).
-    fn mload(&mut self, off: usize) -> Word {
-        self.ensure_mem(off, 32);
+    fn mload(&mut self, off: usize) -> Result<Word, ExecError> {
+        self.ensure_mem(off, 32)?;
         let mut w = [0u8; 32];
         w.copy_from_slice(&self.memory[off..off + 32]);
-        w
+        Ok(w)
     }
 
     /// Read `len` calldata bytes starting at `off`, zero-extended past the end —
@@ -397,7 +413,7 @@ impl Vm<'_> {
                     // KECCAK256(offset, len) over memory.
                     let off = word_to_usize(&self.pop()?);
                     let len = word_to_usize(&self.pop()?);
-                    self.ensure_mem(off, len);
+                    self.ensure_mem(off, len)?;
                     let digest = Keccak256::digest(&self.memory[off..off + len]);
                     let mut w = [0u8; 32];
                     w.copy_from_slice(&digest);
@@ -407,13 +423,13 @@ impl Vm<'_> {
                 op::MSTORE => {
                     let off = word_to_usize(&self.pop()?);
                     let val = self.pop()?;
-                    self.mstore(off, &val);
+                    self.mstore(off, &val)?;
                     self.pc += 1;
                 }
                 op::MLOAD => {
                     // MLOAD(off) — not emitted by codegen but cheap + correct to support.
                     let off = word_to_usize(&self.pop()?);
-                    let w = self.mload(off);
+                    let w = self.mload(off)?;
                     self.stack.push(w);
                     self.pc += 1;
                 }
@@ -460,7 +476,7 @@ impl Vm<'_> {
                     let dest = word_to_usize(&self.pop()?);
                     let src = word_to_usize(&self.pop()?);
                     let len = word_to_usize(&self.pop()?);
-                    self.ensure_mem(dest, len);
+                    self.ensure_mem(dest, len)?;
                     for i in 0..len {
                         let b = self.code.get(src + i).copied().unwrap_or(0);
                         self.memory[dest + i] = b;
@@ -473,7 +489,7 @@ impl Vm<'_> {
                     let dest = word_to_usize(&self.pop()?);
                     let src = word_to_usize(&self.pop()?);
                     let len = word_to_usize(&self.pop()?);
-                    self.ensure_mem(dest, len);
+                    self.ensure_mem(dest, len)?;
                     for i in 0..len {
                         let b = self.calldata.get(src.wrapping_add(i)).copied().unwrap_or(0);
                         self.memory[dest + i] = b;
@@ -499,13 +515,13 @@ impl Vm<'_> {
                 op::RETURN => {
                     let off = word_to_usize(&self.pop()?);
                     let len = word_to_usize(&self.pop()?);
-                    self.ensure_mem(off, len);
+                    self.ensure_mem(off, len)?;
                     return Ok(self.memory[off..off + len].to_vec());
                 }
                 op::REVERT => {
                     let off = word_to_usize(&self.pop()?);
                     let len = word_to_usize(&self.pop()?);
-                    self.ensure_mem(off, len);
+                    self.ensure_mem(off, len)?;
                     return Err(ExecError::Revert(self.memory[off..off + len].to_vec()));
                 }
                 o if (op::LOG0..=op::LOG4).contains(&o) => {
@@ -516,7 +532,7 @@ impl Vm<'_> {
                     for _ in 0..ntopics {
                         topics.push(self.pop()?);
                     }
-                    self.ensure_mem(off, len);
+                    self.ensure_mem(off, len)?;
                     let data = self.memory[off..off + len].to_vec();
                     self.logs.push(LogEntry { topics, data });
                     self.pc += 1;
@@ -623,6 +639,25 @@ mod tests {
         let one = word(1);
         assert_eq!(add256(&max, &one), [0u8; 32], "max + 1 wraps to 0");
         assert_eq!(sub256(&[0u8; 32], &one), max, "0 - 1 wraps to max");
+    }
+
+    /// SECURITY: untrusted bytecode with an attacker-controlled giant memory
+    /// offset (here `RETURN(off = 0xFFFF_FFFF, len = 32)`, ~4 GiB) must fail
+    /// CLEANLY with [`ExecError::OutOfGas`] — the [`MAX_MEMORY`] cap stops the
+    /// on-demand `resize` from allocating gigabytes and OOM-aborting the process.
+    #[test]
+    fn giant_memory_offset_is_out_of_gas_not_oom() {
+        use crate::soliditylite::asm::op;
+        // PUSH4 len(0x20) ‖ PUSH4 off(0xFFFF_FFFF) ‖ RETURN — RETURN pops off then len.
+        let code = [
+            op::PUSH1 + 3, 0x00, 0x00, 0x00, 0x20, // len = 32
+            op::PUSH1 + 3, 0xFF, 0xFF, 0xFF, 0xFF, // off = 0xFFFF_FFFF (~4 GiB)
+            op::RETURN,
+        ];
+        let mut storage = std::collections::HashMap::new();
+        let mut logs = Vec::new();
+        let err = run(&code, &[], &CallEnv::default(), &mut storage, &mut logs).unwrap_err();
+        assert_eq!(err, ExecError::OutOfGas, "a giant memory offset is a clean OutOfGas, not an OOM abort");
     }
 
     #[test]
