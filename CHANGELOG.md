@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.12] - 2026-07-01
+
+### Fixed
+
+- **`notify --to` reported a delivered cross-agent note as a failure.** The proxy
+  always records a `--to` note in the recipient's on-chain inbox (real delivery —
+  it surfaces in their bell) and meters it; `enrolled` only flags whether a live
+  Web-Push *device* exists. But the CLI printed `enrolled:false` as "the note did not
+  reach them" and its docstring claimed "the sender is not charged" — both wrong (the
+  note landed and the sender was billed). It now reports the inbox delivery accurately.
+  Found dogfooding cross-agent notify.
+
 ## [0.60.11] - 2026-07-01
 
 ### Fixed
