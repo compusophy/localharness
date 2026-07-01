@@ -21,8 +21,10 @@
 redeem-codes.txt
 redeem-codes-*.txt
 
-# Claude Code session state
-.claude/
+# Claude Code session state (local), but TRACK shared reviewer/agent definitions
+# (the anthropics/buffa practice — versioned, team-wide subagents).
+.claude/*
+!.claude/agents/
 
 .vercel
 invite-links.txt
