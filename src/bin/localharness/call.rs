@@ -256,7 +256,7 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
         Some("auto") => match registry::id_of_name(&target).await {
             Ok(id) if id != 0 => match registry::x402_ask_price_of(id).await {
                 Ok(wei) => {
-                    println!("--pay auto: '{target}' charges {}/call", fmt_lh(wei));
+                    println!("--pay auto: '{target}' asks {}/call (paid to the agent; the model run also meters ~1 LH)", fmt_lh(wei));
                     Some(wei)
                 }
                 Err(e) => {

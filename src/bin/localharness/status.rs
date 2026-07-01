@@ -29,8 +29,11 @@ pub(crate) fn format_whoami(info: &WhoamiInfo) -> String {
         .clone()
         .unwrap_or_else(|| "unset (directory)".to_string());
     let price = match info.price_wei {
-        Some(wei) => format!("{}/call", fmt_lh(wei)),
-        None => format!("{}/call (default)", fmt_lh(registry::DEFAULT_ASK_PRICE_WEI)),
+        Some(wei) => format!("{}/call (agent --pay ask; model run meters ~1 LH on top)", fmt_lh(wei)),
+        None => format!(
+            "{}/call (agent default; model run meters ~1 LH on top)",
+            fmt_lh(registry::DEFAULT_ASK_PRICE_WEI)
+        ),
     };
     format!(
         "{name}.localharness.xyz\n  \
@@ -779,7 +782,7 @@ mod tests {
         assert!(out.contains("face          unset (directory)"));
         assert!(out.contains("agent wallet  —"));
         // No advertised price → the hosted-gate default, labelled as such.
-        assert!(out.contains("price         0.01 LH/call (default)"));
+        assert!(out.contains("price         0.01 LH/call (agent default"));
     }
 
     #[test]
