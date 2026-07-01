@@ -974,7 +974,7 @@ pub(crate) fn inline_result_card(
 /// last-run stash like the display card's [show]). Renders from the structured
 /// tool result, so it paints identically live and on history replay.
 fn terminal_card(value: &serde_json::Value) -> Markup {
-    let argv = value.get("argv").and_then(|v| v.as_str()).unwrap_or("$");
+    let argv = value.get("argv").and_then(|v| v.as_str()).unwrap_or("(unknown command)");
     let exit = value.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
     let stdout = value.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
     let stderr = value.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
@@ -988,7 +988,8 @@ fn terminal_card(value: &serde_json::Value) -> Markup {
                 button.ghost data-action="toggle-terminal" { "show" }
             }
             @if shown.is_empty() {
-                pre.ic-body.term-muted { "(no output)" }
+                @let body = if exit != 0 { format!("(no output — exit {})", exit) } else { "(no output)".to_string() };
+                pre.ic-body.term-muted { (body) }
             } @else {
                 pre.ic-body { (shown) }
             }
@@ -999,6 +1000,25 @@ fn terminal_card(value: &serde_json::Value) -> Markup {
                 div.ic-more { "output truncated at the sandbox cap" }
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "browser-app"))]
+mod terminal_card_tests {
+    use super::*;
+    #[test]
+    fn empty_output_shows_nonzero_exit() {
+        let v = serde_json::json!({"exit_code":1, "stdout":"", "stderr":""});
+        let html = terminal_card(&v).into_string();
+        assert!(html.contains("exit 1"));
+        assert!(html.contains("no output — exit 1"));
+    }
+    #[test]
+    fn missing_argv_is_labeled() {
+        let v = serde_json::json!({"exit_code":0, "stdout":""});
+        let html = terminal_card(&v).into_string();
+        assert!(html.contains("unknown command"));
+        assert!(!html.contains("▷ $"));
     }
 }
 
