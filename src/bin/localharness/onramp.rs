@@ -292,21 +292,41 @@ pub(crate) async fn onramp(args: &[String]) -> i32 {
     println!("  settled on-chain (tx {settlement_tx})");
 
     // --- step 3: retry with the Payment credential -> verify + mint -----------
+    // The settlement needs 1-2 Tempo blocks to confirm before the proxy can
+    // verify it, so a 402 here is transient — retry a bounded number of times.
     println!("claiming the mint …");
-    match claim_mint(&client, &endpoint, &signer, &settlement_tx, &addr, usdce_units).await {
-        Ok(out) => {
-            print_mint_result(&out);
-            0
-        }
-        Err(e) => {
-            report_call_error("onramp: mint claim failed", &e);
-            eprintln!(
-                "  your USDC.e payment landed on-chain (tx {settlement_tx}); the mint is bound to \
-                 that tx and is idempotent, so you can safely retry the claim once it confirms."
-            );
-            1
+    const MAX_CLAIM_ATTEMPTS: u32 = 5;
+    for attempt in 1..=MAX_CLAIM_ATTEMPTS {
+        match claim_mint(&client, &endpoint, &signer, &settlement_tx, &addr, usdce_units).await {
+            Ok(out) => {
+                print_mint_result(&out);
+                return 0;
+            }
+            Err((status, reason)) => {
+                if should_retry_mint_status(status) && attempt < MAX_CLAIM_ATTEMPTS {
+                    println!(
+                        "  settlement not confirmed yet (usually 1-2 Tempo blocks, ~12s); \
+                         retrying (attempt {attempt}/{MAX_CLAIM_ATTEMPTS}) …"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+                report_call_error("onramp: mint claim failed", &format!("HTTP {status}: {reason}"));
+                eprintln!(
+                    "  your USDC.e payment landed on-chain (tx {settlement_tx}); the mint is bound to \
+                     that tx and is idempotent, so you can safely retry the claim once it confirms."
+                );
+                return 1;
+            }
         }
     }
+    1
+}
+
+/// A 402 from the mint claim means the settlement isn't yet confirmed on-chain
+/// (transient) — retry; any other status is terminal.
+fn should_retry_mint_status(status: u16) -> bool {
+    status == 402
 }
 
 /// POST without a credential and parse the 402 Payment challenge. A non-402
@@ -355,7 +375,7 @@ async fn claim_mint(
     settlement_tx: &str,
     pay_to: &str,
     usdce_units: u128,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, (u16, String)> {
     let token = registry::proxy_auth_token(signer, now_secs(), "mpp");
     let credential = build_payment_credential(settlement_tx, pay_to);
     let lh_amount = usdce_units_to_whole_lh(usdce_units);
@@ -367,18 +387,18 @@ async fn claim_mint(
         .json(&body)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| (0, e.to_string()))?;
     let status = resp.status().as_u16();
     let text = resp.text().await.unwrap_or_default();
     if status == 200 {
-        return serde_json::from_str(&text).map_err(|e| format!("bad 200 body: {e} ({text})"));
+        return serde_json::from_str(&text).map_err(|e| (0, format!("bad 200 body: {e} ({text})")));
     }
     // The proxy returns {minted:false, error:"…"} with a 402 (retry) or 5xx.
     let reason = serde_json::from_str::<serde_json::Value>(&text)
         .ok()
         .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
         .unwrap_or_else(|| text.trim().to_string());
-    Err(format!("HTTP {status}: {reason}"))
+    Err((status, reason))
 }
 
 /// Print the proxy's 200 mint result: the minted $LH + the settlement tx.
@@ -531,6 +551,15 @@ mod tests {
         assert_eq!(usdce_units_to_whole_lh(2_500_000), 200);
         // Sub-USDC.e dust floors to 0 whole $LH (the on-chain amount is authoritative).
         assert_eq!(usdce_units_to_whole_lh(500_000), 0);
+    }
+
+    #[test]
+    fn should_retry_mint_status_only_on_402() {
+        // 402 = settlement not yet confirmed → transient, retry.
+        assert!(should_retry_mint_status(402));
+        // Success and terminal errors never retry.
+        assert!(!should_retry_mint_status(200));
+        assert!(!should_retry_mint_status(500));
     }
 
     #[test]
