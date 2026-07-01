@@ -194,7 +194,7 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
             let balance = registry::token_balance_of(&addr).await.unwrap_or(0);
             if balance < cost {
                 eprintln!(
-                    "claiming a name costs {} $LH — this identity ({addr}) holds {}.",
+                    "claiming a name costs {} — this identity ({addr}) holds {}.",
                     fmt_lh(cost),
                     fmt_lh(balance)
                 );
@@ -206,7 +206,7 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
                 );
                 return 2;
             }
-            println!("claiming costs {} $LH (pulled on-chain from your wallet)", fmt_lh(cost));
+            println!("claiming costs {} (pulled on-chain from your wallet)", fmt_lh(cost));
         }
     }
 
