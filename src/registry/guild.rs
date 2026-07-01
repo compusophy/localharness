@@ -390,6 +390,14 @@ pub async fn fund_guild_sponsored_bridged(
     .await
 }
 
+/// Refuse a treasury payout to the zero address (pooled `$LH` would be burned).
+fn reject_zero_payout(to: &[u8; 20]) -> Result<(), String> {
+    if *to == [0u8; 20] {
+        return Err("refusing to spend guild treasury to the zero address (0x0) — funds would be burned".to_string());
+    }
+    Ok(())
+}
+
 /// Spend from a guild's treasury via a sponsored Tempo tx
 /// (`spendTreasury(guildId, to, amount, memo)`): pays `amount` `$LH` from the
 /// pooled treasury to `to`, with an optional `memo` recorded on-chain.
@@ -404,6 +412,7 @@ pub async fn spend_treasury_sponsored(
     fee_token: &str,
 ) -> Result<String, String> {
     let to = parse_eth_address(to_hex)?;
+    reject_zero_payout(&to)?;
     // treasury-balance debit + the payout `transfer` (cold token balances) + the
     // cold `memo` bytes (~9k/byte) + event. Base mirrors the redeem/payout budget.
     let gas = 2_000_000 + (memo.len() as u128) * 9_000;
@@ -508,6 +517,13 @@ pub async fn guild_count() -> Result<u64, String> {
 #[cfg(test)]
 mod guild_tests {
     use super::*;
+
+    /// A treasury payout to `0x0` is refused (pooled `$LH` would be burned).
+    #[test]
+    fn spend_treasury_rejects_zero_payout() {
+        assert!(super::reject_zero_payout(&[0u8; 20]).is_err());
+        assert!(super::reject_zero_payout(&[1u8; 20]).is_ok());
+    }
 
     /// `createGuild(string)` — dynamic-string layout (offset 0x20 + length +
     /// padded bytes), the exact `register(string)` shape. A wrong offset would
