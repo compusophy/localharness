@@ -29,7 +29,8 @@ pub(crate) const SCHEDULE_USAGE: &str = "usage: localharness schedule [--as <me>
 pub(crate) const GOAL_USAGE: &str = "usage: localharness goal [--as <me>] <target> <goal text> \
                               [--every <dur>] [--runs <n>]\n  \
                               defaults: --every 5m, --runs 100   dur: 60s / 5m / 1h (min 60s).  \
-                              Off-chain, billed per run from your meter.";
+                              Off-chain, billed per run from your meter; the first \
+                              fire lands one full interval after creation.";
 
 /// The hard error when `--budget` is passed to `schedule`/`goal`: those jobs are
 /// OFF-CHAIN now and bill the meter per run, so an upfront `$LH` escrow no longer
