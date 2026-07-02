@@ -56,6 +56,145 @@ use super::tools::validation::{
 };
 use super::{ANTHROPIC_MAX_OUTPUT_TOKENS, GEMINI_MAX_OUTPUT_TOKENS};
 
+/// The FULL closure-tool surface of an in-tab chat session — ONE source of
+/// truth (R4). Every closure-tool backend branch consumes THIS list, so the
+/// tool set can never drift between Gemini and Claude again. (The deliberate
+/// per-backend difference lives in the BUILTINS, not here: `start_subagent` /
+/// `generate_image` are Gemini-client-coupled builtins that don't register on
+/// Anthropic — see the backend comment at the top of `start_session`.)
+/// Order = registration order; the allowlist-gated tools append LAST.
+/// `key`/`base_url` are captured by the closure tools that re-enter the model
+/// (`consult_model`, `spawn_recursive_subagent`).
+fn chat_toolset(
+    set_persona_allowed: bool,
+    found_company_allowed: bool,
+    key: String,
+    base_url: Option<url::Url>,
+) -> Vec<std::sync::Arc<dyn crate::tools::Tool>> {
+    let mut tools = vec![
+        create_subdomain_tool(),
+        create_and_publish_app_tool(),
+        publish_app_to_tool(),
+        batch_create_subdomains_tool(),
+        release_subdomain_tool(),
+        bulk_release_subdomains_tool(),
+        list_subdomains_tool(),
+        discover_agents_tool(),
+        embed_app_tool(),
+        publish_public_face_tool(),
+        send_lh_tool(),
+        batch_send_lh_tool(),
+        check_balances_tool(),
+        query_balance_tool(),
+        evm_chains_tool(),
+        evm_balance_tool(),
+        resolve_ens_tool(),
+        evm_call_tool(),
+        shared_state_set_tool(),
+        shared_state_get_tool(),
+        shared_state_list_tool(),
+        post_bounty_tool(),
+        claim_bounty_tool(),
+        submit_result_tool(),
+        accept_result_tool(),
+        discover_bounties_tool(),
+        form_party_tool(),
+        join_party_tool(),
+        fund_party_tool(),
+        complete_party_tool(),
+        disband_party_tool(),
+        discover_parties_tool(),
+        get_party_tool(),
+        stake_validation_tool(),
+        challenge_validation_tool(),
+        resolve_validation_tool(),
+        reclaim_validation_tool(),
+        get_validation_tool(),
+        create_guild_tool(),
+        invite_to_guild_tool(),
+        fund_guild_tool(),
+        spend_treasury_tool(),
+        list_my_guilds_tool(),
+        set_role_tool(),
+        company_status_tool(),
+        attest_tool(),
+        propose_measure_tool(),
+        cast_vote_tool(),
+        execute_proposal_tool(),
+        list_proposals_tool(),
+        submit_feedback_tool(),
+        notify_tool(),
+        list_notifications_tool(),
+        clear_notifications_tool(),
+        schedule_task_tool(),
+        cancel_task_tool(),
+        record_lesson_tool(),
+        consolidate_lessons_tool(),
+        set_lessons_tool(),
+        create_skill_tool(),
+        list_skills_tool(),
+        delete_skill_tool(),
+        crate::app::self_docs::read_self_docs_tool(),
+        web_fetch_tool(),
+        run_wasm_cli_tool(),
+        execute_script_tool(),
+        dwell_tool(),
+        clear_context_tool(),
+        compact_context_tool(),
+        consult_model_tool(key.clone(), base_url.clone()),
+        spawn_recursive_subagent_tool(key, base_url),
+    ];
+    // Self-edit tool — gated on the allowlist (see `set_persona_allowed`).
+    if set_persona_allowed {
+        tools.push(set_persona_tool());
+    }
+    // Company-founding tool — gated on the allowlist (see `found_company_allowed`).
+    if found_company_allowed {
+        tools.push(found_company_tool());
+    }
+    tools
+}
+
+/// Shared backend-neutral session wiring — the other half of R4's single
+/// source. Every closure-tool backend branch expands THIS (capabilities,
+/// allow-all policy, confirm + dedup hooks, OPFS filesystem, system
+/// instructions, the `chat_toolset` list, credit-proxy base_url, rotating auth
+/// provider), so the wiring cannot drift between backends. Branches keep only
+/// genuine specifics: key/model, max-tokens builder naming, per-backend
+/// thinking/temperature notes, and the strict `history_loads` gate.
+macro_rules! wire_shared_session {
+    ($cfg:expr, $capabilities:expr, $system_instructions:expr, $tools:expr,
+     $base_url:expr, $auth_provider:expr) => {{
+        let mut cfg = $cfg
+            .with_capabilities($capabilities)
+            .with_policies(vec![policy::allow_all()])
+            .with_pre_tool_hook(std::sync::Arc::new(
+                super::confirm_guard::TypedConfirmationGuard,
+            ))
+            .with_pre_tool_hook(std::sync::Arc::new(super::dedup::DuplicateActionGuard))
+            .with_post_tool_hook(std::sync::Arc::new(
+                super::dedup::DuplicateActionGuardCleanup,
+            ))
+            .with_filesystem(crate::app::shared_opfs())
+            .with_system_instructions($system_instructions);
+        for tool in $tools {
+            cfg = cfg.with_tool(tool);
+        }
+        // Credits mode: route through the credit proxy (multi-provider —
+        // Gemini on `/v1beta/*`, Anthropic on `/v1/messages`). BYOK leaves
+        // base_url None → direct to the provider (Gemini only; a Claude model
+        // on BYOK would hit api.anthropic.com with the raw key, so the credit
+        // proxy is the intended Claude path).
+        if let Some(b) = &$base_url {
+            cfg = cfg.with_base_url(b.clone());
+        }
+        if let Some(p) = $auth_provider.clone() {
+            cfg = cfg.with_auth_provider(p);
+        }
+        cfg
+    }};
+}
+
 pub(crate) async fn start_session(
     key: &str,
     base_url: Option<url::Url>,
@@ -306,127 +445,41 @@ pub(crate) async fn start_session(
             ));
         }
     } else if crate::app::model::is_anthropic(&model) {
-        let mut cfg = crate::AnthropicAgentConfig::new(key.to_string())
-            .with_model(model.clone())
-            .with_capabilities(capabilities)
-            .with_policies(vec![policy::allow_all()])
-            .with_pre_tool_hook(std::sync::Arc::new(
-                super::confirm_guard::TypedConfirmationGuard,
-            ))
-            .with_pre_tool_hook(std::sync::Arc::new(super::dedup::DuplicateActionGuard))
-            .with_post_tool_hook(std::sync::Arc::new(
-                super::dedup::DuplicateActionGuardCleanup,
-            ))
-            .with_filesystem(crate::app::shared_opfs())
-            .with_system_instructions(system_instructions)
-            // Parity with the Gemini path: give a hard task room to answer in
-            // one call (the 8192 default is tight for a long reasoning turn).
-            .with_max_tokens(ANTHROPIC_MAX_OUTPUT_TOKENS)
-            // Extended thinking — the Anthropic in-tab path never enabled it,
-            // so Opus (the Rust-coding tier) reasoned with ZERO thinking budget
-            // in the browser, unlike the Gemini path (ThinkingLevel::High). High
-            // for Opus/Sonnet; Medium for the cheaper Haiku tier. On Anthropic
-            // thinking and temperature are mutually exclusive (the loop drops
-            // temperature when thinking is on) — so thinking wins for the coding
-            // tier, and the temperature set below only applies if thinking is off.
-            // The baseline = the router CEILING (`session_ceiling`) so the build
-            // level and the per-turn clamp agree (Medium for Haiku, High else);
-            // the difficulty router downgrades routine turns below it per-turn.
-            .with_thinking(session_ceiling.unwrap_or(ThinkingLevel::High))
-            // Lower sampling temperature for better first-try-valid rustlite /
-            // edits. Anthropic applies this ONLY when thinking is off (mutually
-            // exclusive), so it's effectively a no-op while thinking is on — but
-            // set for parity + any future thinking-off tier.
-            .with_temperature(0.2)
-            .with_tool(create_subdomain_tool())
-            .with_tool(create_and_publish_app_tool())
-            .with_tool(publish_app_to_tool())
-            .with_tool(batch_create_subdomains_tool())
-            .with_tool(release_subdomain_tool())
-            .with_tool(bulk_release_subdomains_tool())
-            .with_tool(list_subdomains_tool())
-            .with_tool(discover_agents_tool())
-            .with_tool(embed_app_tool())
-            .with_tool(publish_public_face_tool())
-            .with_tool(send_lh_tool())
-            .with_tool(batch_send_lh_tool())
-            .with_tool(check_balances_tool())
-            .with_tool(query_balance_tool())
-            .with_tool(evm_chains_tool())
-            .with_tool(evm_balance_tool())
-            .with_tool(resolve_ens_tool())
-            .with_tool(evm_call_tool())
-            .with_tool(shared_state_set_tool())
-            .with_tool(shared_state_get_tool())
-            .with_tool(shared_state_list_tool())
-            .with_tool(post_bounty_tool())
-            .with_tool(claim_bounty_tool())
-            .with_tool(submit_result_tool())
-            .with_tool(accept_result_tool())
-            .with_tool(discover_bounties_tool())
-            .with_tool(form_party_tool())
-            .with_tool(join_party_tool())
-            .with_tool(fund_party_tool())
-            .with_tool(complete_party_tool())
-            .with_tool(disband_party_tool())
-            .with_tool(discover_parties_tool())
-            .with_tool(get_party_tool())
-            .with_tool(stake_validation_tool())
-            .with_tool(challenge_validation_tool())
-            .with_tool(resolve_validation_tool())
-            .with_tool(reclaim_validation_tool())
-            .with_tool(get_validation_tool())
-            .with_tool(create_guild_tool())
-            .with_tool(invite_to_guild_tool())
-            .with_tool(fund_guild_tool())
-            .with_tool(spend_treasury_tool())
-            .with_tool(list_my_guilds_tool())
-            .with_tool(set_role_tool())
-            .with_tool(company_status_tool())
-            .with_tool(attest_tool())
-            .with_tool(propose_measure_tool())
-            .with_tool(cast_vote_tool())
-            .with_tool(execute_proposal_tool())
-            .with_tool(list_proposals_tool())
-            .with_tool(submit_feedback_tool())
-            .with_tool(notify_tool())
-            .with_tool(list_notifications_tool())
-            .with_tool(clear_notifications_tool())
-            .with_tool(schedule_task_tool())
-            .with_tool(cancel_task_tool())
-            .with_tool(record_lesson_tool())
-            .with_tool(consolidate_lessons_tool())
-            .with_tool(set_lessons_tool())
-            .with_tool(create_skill_tool())
-            .with_tool(list_skills_tool())
-            .with_tool(delete_skill_tool())
-            .with_tool(crate::app::self_docs::read_self_docs_tool())
-            .with_tool(web_fetch_tool())
-            .with_tool(run_wasm_cli_tool())
-            .with_tool(execute_script_tool())
-            .with_tool(dwell_tool())
-            .with_tool(clear_context_tool())
-            .with_tool(compact_context_tool())
-            .with_tool(consult_model_tool(captured_key.clone(), base_url.clone()))
-            .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
-        // Self-edit tool — gated on the allowlist (see `set_persona_allowed`).
-        if set_persona_allowed {
-            cfg = cfg.with_tool(set_persona_tool());
-        }
-        // Company-founding tool — gated on the allowlist (see `found_company_allowed`).
-        if found_company_allowed {
-            cfg = cfg.with_tool(found_company_tool());
-        }
-        // Credits mode: route Anthropic through the credit proxy (it serves
-        // `/v1/messages`). BYOK has no direct-Anthropic path here, so this is
-        // a no-op without a proxy base_url and the call would hit
-        // api.anthropic.com with the raw key.
-        if let Some(b) = &base_url {
-            cfg = cfg.with_base_url(b.clone());
-        }
-        if let Some(p) = auth_provider.clone() {
-            cfg = cfg.with_auth_provider(p);
-        }
+        // Shared assembly (R4): tools from `chat_toolset`, wiring from
+        // `wire_shared_session!` — one source for both backends. Only genuine
+        // Anthropic specifics remain below.
+        let mut cfg = wire_shared_session!(
+            crate::AnthropicAgentConfig::new(key.to_string()).with_model(model.clone()),
+            capabilities,
+            system_instructions,
+            chat_toolset(
+                set_persona_allowed,
+                found_company_allowed,
+                captured_key,
+                base_url.clone(),
+            ),
+            base_url,
+            auth_provider
+        )
+        // Parity with the Gemini path: give a hard task room to answer in
+        // one call (the 8192 default is tight for a long reasoning turn).
+        .with_max_tokens(ANTHROPIC_MAX_OUTPUT_TOKENS)
+        // Extended thinking — the Anthropic in-tab path never enabled it,
+        // so Opus (the Rust-coding tier) reasoned with ZERO thinking budget
+        // in the browser, unlike the Gemini path (ThinkingLevel::High). High
+        // for Opus/Sonnet; Medium for the cheaper Haiku tier. On Anthropic
+        // thinking and temperature are mutually exclusive (the loop drops
+        // temperature when thinking is on) — so thinking wins for the coding
+        // tier, and the temperature set below only applies if thinking is off.
+        // The baseline = the router CEILING (`session_ceiling`) so the build
+        // level and the per-turn clamp agree (Medium for Haiku, High else);
+        // the difficulty router downgrades routine turns below it per-turn.
+        .with_thinking(session_ceiling.unwrap_or(ThinkingLevel::High))
+        // Lower sampling temperature for better first-try-valid rustlite /
+        // edits. Anthropic applies this ONLY when thinking is off (mutually
+        // exclusive), so it's effectively a no-op while thinking is on — but
+        // set for parity + any future thinking-off tier.
+        .with_temperature(0.2);
         // The on-disk history is the LAST backend's wire format. Only seed it
         // into Anthropic when it STRICTLY parses as Anthropic history —
         // otherwise (e.g. switching from a Gemini session) start fresh rather
@@ -445,125 +498,41 @@ pub(crate) async fn start_session(
             .await
             .map_err(|e| JsValue::from_str(&format!("start_anthropic: {e}")))?
     } else {
-        let mut cfg = GeminiAgentConfig::new(key.to_string())
-            .with_model(model.clone())
-            .with_capabilities(capabilities)
-            .with_policies(vec![policy::allow_all()])
-            .with_pre_tool_hook(std::sync::Arc::new(
-                super::confirm_guard::TypedConfirmationGuard,
-            ))
-            .with_pre_tool_hook(std::sync::Arc::new(super::dedup::DuplicateActionGuard))
-            .with_post_tool_hook(std::sync::Arc::new(
-                super::dedup::DuplicateActionGuardCleanup,
-            ))
-            .with_filesystem(crate::app::shared_opfs())
-            .with_system_instructions(system_instructions)
-            // Give a hard task room to BOTH reason and answer in one call, and
-            // bound reasoning (visible thinking) so it can't eat the whole
-            // window — the fix for "(empty response)" on long tasks.
-            .with_max_output_tokens(GEMINI_MAX_OUTPUT_TOKENS)
-            // Deep-think for the coding-heavy in-tab path. High = a 16384 thinking
-            // budget, which Gemini draws FROM the 32768 output cap above — leaving
-            // ~16k guaranteed for the final answer / tool calls. So reasoning gets
-            // real room to PLAN + reason about rustlite WITHOUT starving the output
-            // (the "(empty response)" fix holds because budget ≥ 2× thinking). The
-            // visible PLAN-FIRST + compile-in-the-loop discipline below leans on
-            // this headroom. The baseline = the router CEILING (`session_ceiling`,
-            // High for Gemini) so the build level and the per-turn clamp share one
-            // source of truth; the difficulty router downgrades routine turns
-            // below it per-turn (Minimal on a greeting).
-            .with_thinking(session_ceiling.unwrap_or(ThinkingLevel::High))
-            // Lower sampling temperature for better first-try-valid rustlite /
-            // edits. Gemini applies temperature AND thinking independently (both
-            // ride generation_config), so this composes with the High budget.
-            .with_temperature(0.2)
-            .with_tool(create_subdomain_tool())
-            .with_tool(create_and_publish_app_tool())
-            .with_tool(publish_app_to_tool())
-            .with_tool(batch_create_subdomains_tool())
-            .with_tool(release_subdomain_tool())
-            .with_tool(bulk_release_subdomains_tool())
-            .with_tool(list_subdomains_tool())
-            .with_tool(discover_agents_tool())
-            .with_tool(embed_app_tool())
-            .with_tool(publish_public_face_tool())
-            .with_tool(send_lh_tool())
-            .with_tool(batch_send_lh_tool())
-            .with_tool(check_balances_tool())
-            .with_tool(query_balance_tool())
-            .with_tool(evm_chains_tool())
-            .with_tool(evm_balance_tool())
-            .with_tool(resolve_ens_tool())
-            .with_tool(evm_call_tool())
-            .with_tool(shared_state_set_tool())
-            .with_tool(shared_state_get_tool())
-            .with_tool(shared_state_list_tool())
-            .with_tool(post_bounty_tool())
-            .with_tool(claim_bounty_tool())
-            .with_tool(submit_result_tool())
-            .with_tool(accept_result_tool())
-            .with_tool(discover_bounties_tool())
-            .with_tool(form_party_tool())
-            .with_tool(join_party_tool())
-            .with_tool(fund_party_tool())
-            .with_tool(complete_party_tool())
-            .with_tool(disband_party_tool())
-            .with_tool(discover_parties_tool())
-            .with_tool(get_party_tool())
-            .with_tool(stake_validation_tool())
-            .with_tool(challenge_validation_tool())
-            .with_tool(resolve_validation_tool())
-            .with_tool(reclaim_validation_tool())
-            .with_tool(get_validation_tool())
-            .with_tool(create_guild_tool())
-            .with_tool(invite_to_guild_tool())
-            .with_tool(fund_guild_tool())
-            .with_tool(spend_treasury_tool())
-            .with_tool(list_my_guilds_tool())
-            .with_tool(set_role_tool())
-            .with_tool(company_status_tool())
-            .with_tool(attest_tool())
-            .with_tool(propose_measure_tool())
-            .with_tool(cast_vote_tool())
-            .with_tool(execute_proposal_tool())
-            .with_tool(list_proposals_tool())
-            .with_tool(submit_feedback_tool())
-            .with_tool(notify_tool())
-            .with_tool(list_notifications_tool())
-            .with_tool(clear_notifications_tool())
-            .with_tool(schedule_task_tool())
-            .with_tool(cancel_task_tool())
-            .with_tool(record_lesson_tool())
-            .with_tool(consolidate_lessons_tool())
-            .with_tool(set_lessons_tool())
-            .with_tool(create_skill_tool())
-            .with_tool(list_skills_tool())
-            .with_tool(delete_skill_tool())
-            .with_tool(crate::app::self_docs::read_self_docs_tool())
-            .with_tool(web_fetch_tool())
-            .with_tool(run_wasm_cli_tool())
-            .with_tool(execute_script_tool())
-            .with_tool(dwell_tool())
-            .with_tool(clear_context_tool())
-            .with_tool(compact_context_tool())
-            .with_tool(consult_model_tool(captured_key.clone(), base_url.clone()))
-            .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
-        // Self-edit tool — gated on the allowlist (see `set_persona_allowed`).
-        if set_persona_allowed {
-            cfg = cfg.with_tool(set_persona_tool());
-        }
-        // Company-founding tool — gated on the allowlist (see `found_company_allowed`).
-        if found_company_allowed {
-            cfg = cfg.with_tool(found_company_tool());
-        }
-        // Credits mode: route the whole agent through the credit proxy. BYOK
-        // leaves base_url None → direct to generativelanguage.googleapis.com.
-        if let Some(b) = &base_url {
-            cfg = cfg.with_base_url(b.clone());
-        }
-        if let Some(p) = auth_provider.clone() {
-            cfg = cfg.with_auth_provider(p);
-        }
+        // Shared assembly (R4): tools from `chat_toolset`, wiring from
+        // `wire_shared_session!` — one source for both backends. Only genuine
+        // Gemini specifics remain below.
+        let mut cfg = wire_shared_session!(
+            GeminiAgentConfig::new(key.to_string()).with_model(model.clone()),
+            capabilities,
+            system_instructions,
+            chat_toolset(
+                set_persona_allowed,
+                found_company_allowed,
+                captured_key,
+                base_url.clone(),
+            ),
+            base_url,
+            auth_provider
+        )
+        // Give a hard task room to BOTH reason and answer in one call, and
+        // bound reasoning (visible thinking) so it can't eat the whole
+        // window — the fix for "(empty response)" on long tasks.
+        .with_max_output_tokens(GEMINI_MAX_OUTPUT_TOKENS)
+        // Deep-think for the coding-heavy in-tab path. High = a 16384 thinking
+        // budget, which Gemini draws FROM the 32768 output cap above — leaving
+        // ~16k guaranteed for the final answer / tool calls. So reasoning gets
+        // real room to PLAN + reason about rustlite WITHOUT starving the output
+        // (the "(empty response)" fix holds because budget ≥ 2× thinking). The
+        // visible PLAN-FIRST + compile-in-the-loop discipline below leans on
+        // this headroom. The baseline = the router CEILING (`session_ceiling`,
+        // High for Gemini) so the build level and the per-turn clamp share one
+        // source of truth; the difficulty router downgrades routine turns
+        // below it per-turn (Minimal on a greeting).
+        .with_thinking(session_ceiling.unwrap_or(ThinkingLevel::High))
+        // Lower sampling temperature for better first-try-valid rustlite /
+        // edits. Gemini applies temperature AND thinking independently (both
+        // ride generation_config), so this composes with the High budget.
+        .with_temperature(0.2);
         // If a previous session left history on OPFS, restore it into the
         // new connection. Consumed once — subsequent key changes start
         // fresh from the in-memory agent's history. Only seed it when it

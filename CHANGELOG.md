@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `extract_canonical_path`, `resolve_tool_args`, and the `emit_error` free fns collapsed into the
   shared `backends::loop_util` / `LoopState::emit_error`. No behavior change outside the openai
   retry above.
+- Browser chat session assembly dedupe (roadmap R4): the Anthropic and Gemini branches of
+  `app::chat::session::start_session` each hand-registered the same ~70-tool list plus identical
+  capability/policy/hook/filesystem/system-instruction wiring. Both now consume ONE
+  `chat_toolset()` (allowlist-gated `set_persona`/`found_company` included) and ONE
+  `wire_shared_session!` assembly; branches keep only genuine backend specifics (key/model,
+  max-tokens naming, thinking/temperature, history gate). Behavior unchanged; a native source-scan
+  test (`tests/chat_toolset_single_source.rs`) guards the single source.
 
 ## [0.60.20] - 2026-07-02
 
