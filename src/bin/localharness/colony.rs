@@ -620,7 +620,11 @@ pub(crate) fn select_judge_panel(local: &[String], worker: &str, caller: &str, n
             break;
         }
         let s = name.as_str();
-        if s == worker || s == caller || !seen.insert(s) {
+        // Case-INSENSITIVE worker/caller exclusion: subdomain names are
+        // case-insensitive (the sibling judge/worker guards use eq_ignore_ascii_case),
+        // so `--worker Claude` must still exclude the `claude` key from the panel —
+        // otherwise the worker could land on its OWN neutral judge panel.
+        if s.eq_ignore_ascii_case(worker) || s.eq_ignore_ascii_case(caller) || !seen.insert(s) {
             continue; // exclude the worker, the caller, and de-dupe.
         }
         panel.push(name.clone());
@@ -1126,7 +1130,7 @@ async fn colony_step_judge(
     for judge_name in &effective_panel {
         // Each neutral judge funds + signs its own turn; the caller-fallback judge
         // reuses the caller key (so a missing-key judge can't strand the escrow).
-        let judge_key_hex = if judge_name.as_str() == caller_label {
+        let judge_key_hex = if judge_name.eq_ignore_ascii_case(caller_label) {
             caller_key_hex.to_string()
         } else {
             let hex = match resolve_caller_key(Some(judge_name)) {
@@ -1702,6 +1706,22 @@ mod tests {
         // N caps the size even when more neutral agents exist.
         let panel = select_judge_panel(&local, "w", "c", 2);
         assert_eq!(panel.len(), 2);
+    }
+
+    #[test]
+    fn select_judge_panel_excludes_worker_and_caller_case_insensitively() {
+        // Subdomain names are case-insensitive, so a `--worker Claude` / mixed-case
+        // caller must STILL exclude the lowercase `claude` local key — otherwise the
+        // worker could land on its own neutral judge panel (self-inflated rating).
+        let local: Vec<String> = ["claude", "dex-qa", "iris-qa"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let panel = select_judge_panel(&local, "DEX-QA", "Claude", 3);
+        assert_eq!(panel, vec!["iris-qa"]);
+        assert!(!panel
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case("claude") || n.eq_ignore_ascii_case("dex-qa")));
     }
 
     #[test]
