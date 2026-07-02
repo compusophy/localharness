@@ -17,7 +17,7 @@ Status: ☐ open · ◐ in progress · ☑ shipped (note commit)
 
 ---
 
-## R1 ☐ CLAUDE.md stale load-bearing facts + staleness guard (hours)
+## R1 ☑ CLAUDE.md stale load-bearing facts + staleness guard — `2ac8b4d` (2026-07-02)
 
 Source: quality-infrastructure v4. CLAUDE.md is loaded into EVERY agent session and
 is 9 minors stale: line ~19 pins "**0.51.x**" (crate is 0.60.20+); the "Canonical
@@ -35,7 +35,7 @@ contracts/README.md, keeping chain ids/RPCs; (3) rewrite the README-SOP paragrap
 in CLAUDE.md appears verbatim in chain.rs or src/app/sponsor.rs. Mirror edits into
 AGENTS.md (byte-sync test enforces). Risk ~zero.
 
-## R2 ☐ release.ps1 → delegating shim over release.sh (half day)
+## R2 ☑ release.ps1 → delegating shim over release.sh — `e160999` (2026-07-02)
 
 Source: quality-infrastructure v4. release.ps1 is a 224-line hand-port — the exact
 drift class build-web.ps1's own header documents as having silently shipped a
