@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- TurnEngine phase 1 (roadmap R7): the shared streaming turn engine is extracted into
+  `backends::turn_engine` — one copy of the turn-loop scaffold (idle/cancel atomics, pre-turn
+  gate, retry-wrapped stream open, idle-stall arm, MAX_TOOL_ROUNDS, finish-tool + finish_summary,
+  usage folding, terminal step, compaction trigger) behind a static-dispatch `TurnProvider` seam
+  (the `CompactionModel` pattern; wasm-safe by construction). openai is the first backend on it —
+  behavior unchanged; anthropic/gemini migrate in later phases (their loops are untouched).
 - Turn-loop phase A dedupe (roadmap R3): the byte-identical per-backend copies of
   `extract_canonical_path`, `resolve_tool_args`, and the `emit_error` free fns collapsed into the
   shared `backends::loop_util` / `LoopState::emit_error`. No behavior change outside the openai

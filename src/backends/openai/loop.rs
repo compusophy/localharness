@@ -1,53 +1,43 @@
-//! Agent loop for the OpenAI Chat Completions backend.
+//! Agent loop for the OpenAI Chat Completions backend — the first backend on
+//! the shared [`crate::backends::turn_engine`] (R7 phase 1).
 //!
-//! Mirrors `backends/anthropic/loop.rs` in control flow; only the wire shapes
-//! differ. Each `run_turn` drives one user-initiated turn to completion:
-//! optionally many model ↔ tool round-trips, terminating when the model stops
-//! with no tool calls (or calls `finish`).
+//! The turn scaffold (idle/cancel atomics, pre-turn gate, retry-wrapped
+//! stream open, idle-stall arm, MAX_TOOL_ROUNDS, the finish-tool special
+//! case, usage folding, terminal step, compaction trigger) lives in the
+//! engine; this module supplies only the OpenAI-specific wire behavior via
+//! [`OpenAiProvider`]:
 //!
-//! The dispatch loop:
-//!
-//! 1. Build a `ChatRequest` from history + tool declarations.
-//! 2. Stream the response. Accumulate `delta.content` text and INDEX-KEYED
-//!    `delta.tool_calls` fragments — the `id`/`function.name` land on the
-//!    first fragment for an index, and `function.arguments` arrives as STRING
-//!    fragments concatenated per tool-call `index` (the #1 OpenAI gotcha).
-//!    Parse each completed call's args at stream end.
-//! 3. Persist the assistant turn (content + tool_calls) into history.
-//! 4. If no tool calls — emit terminal Step, done.
-//! 5. Else, dispatch each call through hooks → tool_runner. Append ONE `tool`-
-//!    role message PER call (matched by `tool_call_id`) to history.
-//! 6. Loop back to step 1.
+//! - Request shape: full history as `messages` with a leading `system`
+//!   message (OpenAI has no top-level `system` field).
+//! - Stream fold: accumulate `delta.content` text and INDEX-KEYED
+//!   `delta.tool_calls` fragments — the `id`/`function.name` land on the
+//!   first fragment for an index, and `function.arguments` arrives as STRING
+//!   fragments concatenated per tool-call `index` (the #1 OpenAI gotcha).
+//! - Tool results: ONE `tool`-role message PER call, matched by
+//!   `tool_call_id` (unlike gemini/anthropic's batched user turn).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use base64::Engine as _;
 use serde_json::{json, Value};
-use tracing::{debug, warn};
+use tracing::warn;
 use uuid::Uuid;
 
-use crate::backends::dispatch::{dispatch_post_turn, dispatch_tool_call, gate_pre_turn};
-use crate::backends::loop_util::{extract_canonical_path, resolve_tool_args};
+use crate::backends::loop_util::resolve_tool_args;
 use crate::backends::openai::api::SharedClient;
 use crate::backends::openai::wire::{
-    ChatRequest, FinishReason, FunctionCall, FunctionDef, Message, Role, StreamOptions, ToolCall,
-    ToolChoice, ToolDef, WireUsage,
+    ChatChunk, ChatRequest, FinishReason, FunctionCall, FunctionDef, Message, Role, StreamOptions,
+    ToolCall, ToolChoice, ToolDef, WireUsage,
 };
-use crate::backends::gemini::tools::FINISH_TOOL_NAME;
-use crate::backends::stream_timeout::{idle_timeout_ms, next_with_idle_timeout, NextChunk};
+use crate::backends::turn_engine::{
+    self, DispatchedResult, EmitCtx, EngineDeps, ResolvedCall, TurnProvider,
+};
 use crate::content::{Content, Part as ApiPart};
 use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
-use crate::types::{
-    Step, StepStatus, StreamChunk, SystemInstructions, ToolCall as NeutralToolCall, ToolResult,
-    UsageMetadata,
-};
-
-/// Maximum dispatch rounds per turn — cap runaway tool loops.
-const MAX_TOOL_ROUNDS: u32 = 16;
+use crate::types::{StepStatus, SystemInstructions, UsageMetadata};
 
 #[derive(Clone)]
 pub(crate) struct LoopConfig {
@@ -143,376 +133,219 @@ struct ToolCallAccum {
     args_json: String,
 }
 
-pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> Result<()> {
-    deps.state.idle.store(false, Ordering::Release);
-    deps.state.cancel.store(false, Ordering::Release);
+/// One round's stream accumulators (the [`TurnProvider::Accum`]).
+#[derive(Default)]
+pub(crate) struct RoundAccum {
+    /// Per-tool-call-index accumulators. THE OpenAI-specific contract:
+    /// `delta.tool_calls` fragments are keyed by `index`, the id+name land
+    /// on the first fragment for an index, and `function.arguments` arrives
+    /// as string fragments to concatenate across chunks.
+    tool_accum: BTreeMap<u32, ToolCallAccum>,
+    finish_reason: Option<FinishReason>,
+    usage: WireUsage,
+}
 
-    // ONE turn context shared by the pre-turn gate, the per-call tool hooks,
-    // and the post-turn hooks of this turn.
-    let turn_ctx = deps
-        .session_ctx
-        .as_ref()
-        .map(|s| s.child())
-        .unwrap_or_default();
+/// The OpenAI side of the [`TurnProvider`] seam — a zero-sized marker the
+/// engine is monomorphized over (static dispatch; see `turn_engine`).
+pub(crate) struct OpenAiProvider;
 
-    // Pre-turn gate — BEFORE the prompt enters history, so a denied prompt
-    // never pollutes context.
-    if let Some(denied) = gate_pre_turn(deps.hook_runner.as_ref(), &turn_ctx, &prompt).await {
-        deps.state.emit_error(denied.clone());
-        deps.state.idle.store(true, Ordering::Release);
-        deps.state.idle_notify.notify_waiters();
-        return Err(Error::other(denied));
+impl TurnProvider for OpenAiProvider {
+    type Message = Message;
+    type Config = LoopConfig;
+    type Request = ChatRequest;
+    type Event = ChatChunk;
+    type Accum = RoundAccum;
+
+    fn build_request(config: &LoopConfig, history: &[Message]) -> ChatRequest {
+        build_request(config, history)
     }
 
-    {
-        let mut hist = deps.state.history.lock();
-        hist.push(user);
+    fn compaction_threshold(config: &LoopConfig) -> Option<u32> {
+        config.compaction_threshold
     }
-    *deps.state.last_turn_usage.lock() = Some(UsageMetadata::default());
-    *deps.state.last_structured_output.lock() = None;
 
-    let mut rounds = 0u32;
-    let mut last_text = String::new();
-    let mut last_finish: Option<FinishReason> = None;
-    // The model called `finish` this turn — flags the terminal step as Finish.
-    let mut finished_turn = false;
-    // The closing `summary` arg from a `finish` call (Gemini/Anthropic capture
-    // it too) — painted on the terminal step so a tool-only turn still ends
-    // with a reply instead of an empty bubble.
-    let mut finish_summary: Option<String> = None;
-    let trajectory_id = Uuid::new_v4().to_string();
-
-    loop {
-        rounds += 1;
-        if rounds > MAX_TOOL_ROUNDS {
-            warn!(rounds, "exceeded MAX_TOOL_ROUNDS; forcing turn end");
-            break;
+    fn fold_event(
+        acc: &mut RoundAccum,
+        ctx: &mut EmitCtx<'_, Message>,
+        chunk: ChatChunk,
+    ) -> Result<()> {
+        if let Some(u) = chunk.usage {
+            accumulate_wire_usage(&mut acc.usage, &u);
         }
-        if deps.state.cancel.load(Ordering::Acquire) {
-            debug!("turn cancelled before model call");
-            break;
-        }
-
-        let step_index = deps.state.alloc_step_index();
-        let mut accumulated_text = String::new();
-        // Per-tool-call-index accumulators. THE OpenAI-specific contract:
-        // `delta.tool_calls` fragments are keyed by `index`, the id+name land
-        // on the first fragment for an index, and `function.arguments` arrives
-        // as string fragments to concatenate across chunks.
-        let mut tool_accum: BTreeMap<u32, ToolCallAccum> = BTreeMap::new();
-        let mut finish_reason: Option<FinishReason> = None;
-        let mut round_usage = WireUsage::default();
-
-        let request = build_request(&deps.config, &deps.state.history.lock());
-        // Retry the stream OPEN on a transient transport/5xx/timeout (ONE shared
-        // policy+wrapper with the gemini/anthropic + subagent loops; #29 — this
-        // loop shipped WITHOUT the retry the other two had). A mid-stream error
-        // and auth/credits/rate-limit still fail fast.
-        let mut stream = match crate::backends::retry::open_stream_with_retry(|| {
-            deps.client.stream_chat(&request)
-        })
-        .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                deps.state.emit_error(e.to_string());
-                deps.state.idle.store(true, Ordering::Release);
-                deps.state.idle_notify.notify_waiters();
-                return Err(e);
+        for choice in chunk.choices {
+            if let Some(text) = choice.delta.content {
+                ctx.push_text(&text);
             }
-        };
-
-        // Idle-stall guard: a fresh `idle_ms` timer is armed for EACH event so
-        // a steadily streaming response never trips it — only `idle_ms` of
-        // total silence does. On a stall we end the stream with an Err so the
-        // turn returns via the normal error path and the one-turn guard
-        // releases (vs. hanging on a dead socket the cooperative cancel can't
-        // reach).
-        let idle_ms = idle_timeout_ms();
-        loop {
-            let chunk_res = match next_with_idle_timeout(&mut stream, idle_ms).await {
-                NextChunk::Item(item) => item,
-                NextChunk::End => break,
-                NextChunk::IdleTimeout => {
-                    let e = Error::other(format!(
-                        "model stream stalled — no data for {}s",
-                        idle_ms / 1000
-                    ));
-                    deps.state.emit_error(e.to_string());
-                    deps.state.idle.store(true, Ordering::Release);
-                    deps.state.idle_notify.notify_waiters();
-                    return Err(e);
-                }
-            };
-            if deps.state.cancel.load(Ordering::Acquire) {
-                break;
-            }
-            let chunk = match chunk_res {
-                Ok(c) => c,
-                Err(e) => {
-                    deps.state.emit_error(e.to_string());
-                    deps.state.idle.store(true, Ordering::Release);
-                    deps.state.idle_notify.notify_waiters();
-                    return Err(e);
-                }
-            };
-
-            if let Some(u) = chunk.usage {
-                accumulate_wire_usage(&mut round_usage, &u);
-            }
-            for choice in chunk.choices {
-                if let Some(text) = choice.delta.content {
-                    if !text.is_empty() {
-                        accumulated_text.push_str(&text);
-                        deps.state
-                            .emit(Step::text_delta(&trajectory_id, step_index, &text));
+            // Accumulate the index-keyed tool-call fragments.
+            for frag in choice.delta.tool_calls {
+                let a = acc.tool_accum.entry(frag.index).or_default();
+                if let Some(id) = frag.id {
+                    if !id.is_empty() {
+                        a.id = id;
                     }
                 }
-                // Accumulate the index-keyed tool-call fragments.
-                for frag in choice.delta.tool_calls {
-                    let acc = tool_accum.entry(frag.index).or_default();
-                    if let Some(id) = frag.id {
-                        if !id.is_empty() {
-                            acc.id = id;
+                if let Some(f) = frag.function {
+                    if let Some(name) = f.name {
+                        if !name.is_empty() {
+                            a.name = name;
                         }
                     }
-                    if let Some(f) = frag.function {
-                        if let Some(name) = f.name {
-                            if !name.is_empty() {
-                                acc.name = name;
-                            }
-                        }
-                        if let Some(args) = f.arguments {
-                            acc.args_json.push_str(&args);
-                        }
+                    if let Some(args) = f.arguments {
+                        a.args_json.push_str(&args);
                     }
-                }
-                if let Some(fr) = choice.finish_reason {
-                    finish_reason = Some(fr);
                 }
             }
+            if let Some(fr) = choice.finish_reason {
+                acc.finish_reason = Some(fr);
+            }
         }
+        Ok(())
+    }
 
-        // Resolve tool-call accumulators into ordered calls (parse the
-        // concatenated args JSON). An EMPTY/absent fragment is a valid no-arg
-        // call → `{}`. A NON-EMPTY fragment that FAILS to parse (truncated
-        // stream) must NOT silently run with `{}` — carry the parse error so
-        // dispatch surfaces it as a tool error to the model instead.
-        let mut pending_calls: Vec<(String, String, Value, Option<String>)> = Vec::new();
-        for (idx, acc) in tool_accum {
-            if acc.name.is_empty() {
-                // Never silently drop accumulated args (the policy noted above): a
-                // name-less accumulator that still carried args means a truncated or
-                // malformed stream — surface it instead of vanishing the call.
-                if !acc.args_json.trim().is_empty() {
+    /// Resolve tool-call accumulators into ordered calls (parse the
+    /// concatenated args JSON). An EMPTY/absent fragment is a valid no-arg
+    /// call → `{}`. A NON-EMPTY fragment that FAILS to parse (truncated
+    /// stream) must NOT silently run with `{}` — carry the parse error so
+    /// dispatch surfaces it as a tool error to the model instead.
+    fn resolve_pending_calls(acc: &mut RoundAccum) -> Vec<ResolvedCall> {
+        let mut out = Vec::new();
+        for (idx, a) in std::mem::take(&mut acc.tool_accum) {
+            if a.name.is_empty() {
+                // Never silently drop accumulated args: a name-less accumulator
+                // that still carried args means a truncated or malformed stream
+                // — surface it instead of vanishing the call.
+                if !a.args_json.trim().is_empty() {
                     warn!("openai: tool-call fragment index {idx} has args but no name; dropping");
                 }
                 continue;
             }
             // OpenAI does not always supply an id (rare); synthesize one so the
             // tool message can correlate.
-            let id = if acc.id.is_empty() {
+            let id = if a.id.is_empty() {
                 format!("call_{}", Uuid::new_v4().simple())
             } else {
-                acc.id
+                a.id
             };
-            let (args, parse_error) = resolve_tool_args(&acc.name, &acc.args_json);
-            pending_calls.push((id, acc.name, args, parse_error));
+            let (args, parse_error) = resolve_tool_args(&a.name, &a.args_json);
+            out.push(ResolvedCall {
+                id: Some(id),
+                name: a.name,
+                args,
+                parse_error,
+            });
         }
+        out
+    }
 
-        // Build the assistant-turn message and push. An assistant turn that
-        // only calls tools has `content: None`; one with text only has no
-        // tool_calls. Both are valid OpenAI shapes.
-        let assistant_tool_calls: Vec<ToolCall> = pending_calls
+    fn round_usage(acc: &RoundAccum) -> UsageMetadata {
+        acc.usage.clone().into()
+    }
+
+    fn map_finish_reason(acc: &RoundAccum) -> (StepStatus, &'static str) {
+        match acc.finish_reason {
+            Some(FinishReason::ContentFilter) => (StepStatus::Error, "stopped by content filter"),
+            Some(FinishReason::Length) => (StepStatus::Done, "stopped at max tokens"),
+            _ => (StepStatus::Done, ""),
+        }
+    }
+
+    /// Build the assistant-turn message. An assistant turn that only calls
+    /// tools has `content: None`; one with text only has no tool_calls. Both
+    /// are valid OpenAI shapes.
+    fn assemble_assistant_message(
+        _acc: RoundAccum,
+        text: &str,
+        calls: &[ResolvedCall],
+    ) -> Option<Message> {
+        let tool_calls: Vec<ToolCall> = calls
             .iter()
-            .map(|(id, name, args, _e)| ToolCall {
-                id: id.clone(),
+            .map(|c| ToolCall {
+                id: c.id.clone().unwrap_or_default(),
                 kind: "function".to_string(),
                 function: FunctionCall {
-                    name: name.clone(),
+                    name: c.name.clone(),
                     // Re-serialize the parsed args (compact, canonical). For a
                     // parse-error call the args are `{}` (the error is surfaced
                     // separately as the tool result).
-                    arguments: args.to_string(),
+                    arguments: c.args.to_string(),
                 },
             })
             .collect();
-        if !accumulated_text.is_empty() || !assistant_tool_calls.is_empty() {
-            deps.state.history.lock().push(Message {
-                role: Role::Assistant,
-                content: if accumulated_text.is_empty() {
-                    None
-                } else {
-                    Some(accumulated_text.clone())
-                },
-                tool_calls: assistant_tool_calls,
-                tool_call_id: None,
-            });
+        if text.is_empty() && tool_calls.is_empty() {
+            return None;
         }
-
-        // Accumulate usage.
-        let usage: UsageMetadata = round_usage.into();
-        if usage != UsageMetadata::default() {
-            let mut slot = deps.state.last_turn_usage.lock();
-            match slot.as_mut() {
-                Some(acc) => acc.merge_round(&usage),
-                None => *slot = Some(usage),
-            }
-        }
-
-        last_text = accumulated_text;
-        last_finish = finish_reason;
-
-        // No tool calls → turn over.
-        if pending_calls.is_empty() {
-            break;
-        }
-
-        if deps.state.cancel.load(Ordering::Acquire) {
-            debug!("turn cancelled before tool dispatch");
-            // The assistant message carrying these tool_calls is already in
-            // history (pushed above; `pending_calls` is non-empty here — the
-            // empty case broke at the check above). OpenAI 400s the NEXT
-            // request if an assistant `tool_calls` message isn't answered by a
-            // `tool` message per tool_call_id, so balance every pending call
-            // with a cancelled tool_result before bailing — otherwise the
-            // dangling tool_calls turn bricks the conversation.
-            let cancelled: Vec<Message> = pending_calls
-                .into_iter()
-                .map(|(id, _name, _args, _err)| {
-                    Message::tool_result(id, json!({ "error": "cancelled" }).to_string())
-                })
-                .collect();
-            deps.state.history.lock().extend(cancelled);
-            break;
-        }
-
-        // Dispatch every tool call; each result is appended as its OWN
-        // `tool`-role message correlated by `tool_call_id`.
-        let mut result_messages: Vec<Message> = Vec::with_capacity(pending_calls.len());
-        let mut saw_finish = false;
-        for (id, name, args, parse_error) in pending_calls {
-            // Streamed args failed to parse — surface a clear tool error to the
-            // model instead of running the tool with `{}`. Skip execution.
-            if let Some(msg) = parse_error {
-                let post_result = ToolResult {
-                    name: name.clone(),
-                    id: Some(id.clone()),
-                    result: Some(json!({ "error": msg.clone() })),
-                    error: Some(msg.clone()),
-                };
-                deps.state
-                    .emit_chunk_step(StreamChunk::ToolResult(post_result));
-                result_messages.push(Message::tool_result(
-                    id,
-                    json!({ "error": msg }).to_string(),
-                ));
-                continue;
-            }
-            if name == FINISH_TOOL_NAME {
-                if let Some(out) = args.get("output").cloned() {
-                    *deps.state.last_structured_output.lock() = Some(out);
-                }
-                // Capture the closing `summary` (the finish args were otherwise
-                // discarded), so a tool-only turn can still end with a reply.
-                if let Some(sm) = args.get("summary").and_then(|v| v.as_str()) {
-                    if !sm.is_empty() {
-                        finish_summary = Some(sm.to_string());
-                    }
-                }
-                saw_finish = true;
-                result_messages.push(Message::tool_result(id, json!({ "ok": true }).to_string()));
-                continue;
-            }
-
-            let tool_call = NeutralToolCall {
-                name: name.clone(),
-                args: args.clone(),
-                // OpenAI correlates by id — set it (Gemini leaves None).
-                id: Some(id.clone()),
-                canonical_path: extract_canonical_path(&args),
-            };
-            deps.state
-                .emit_chunk_step(StreamChunk::ToolCall(tool_call.clone()));
-
-            // The shared pipeline: pre-hooks → execute → error-lift →
-            // post-hooks. `post_result.id` carries the tool-call id so results
-            // correlate OpenAI-style.
-            let post_result = dispatch_tool_call(
-                deps.tool_runner.as_ref(),
-                deps.hook_runner.as_ref(),
-                &turn_ctx,
-                &tool_call,
-            )
-            .await;
-            let result_value = post_result.result.clone().unwrap_or(Value::Null);
-            deps.state
-                .emit_chunk_step(StreamChunk::ToolResult(post_result.clone()));
-
-            result_messages.push(Message::tool_result(id, tool_result_content(&result_value)));
-        }
-
-        // Push every tool-result message back (each is its own `tool` turn).
-        deps.state.history.lock().extend(result_messages);
-
-        if saw_finish {
-            finished_turn = true;
-            break;
-        }
-        // Otherwise loop and let the model react to the tool results.
+        Some(Message {
+            role: Role::Assistant,
+            content: (!text.is_empty()).then(|| text.to_string()),
+            tool_calls,
+            tool_call_id: None,
+        })
     }
 
-    let usage = deps.state.last_turn_usage.lock().clone().unwrap_or_default();
-    let usage_opt = if usage == UsageMetadata::default() {
-        None
-    } else {
-        Some(usage.clone())
-    };
+    /// Each result is its OWN `tool`-role message correlated by
+    /// `tool_call_id` (unlike gemini/anthropic's single batched user turn).
+    fn tool_result_messages(results: Vec<DispatchedResult>) -> Vec<Message> {
+        results
+            .into_iter()
+            .map(|r| {
+                Message::tool_result(r.call.id.unwrap_or_default(), tool_result_content(&r.value))
+            })
+            .collect()
+    }
 
-    let (status, error_msg): (StepStatus, &str) = match last_finish {
-        Some(FinishReason::ContentFilter) => (StepStatus::Error, "stopped by content filter"),
-        Some(FinishReason::Length) => (StepStatus::Done, "stopped at max tokens"),
-        _ => (StepStatus::Done, ""),
-    };
+    /// REGRESSION guard (L22, mirrors Anthropic #82): OpenAI 400s the NEXT
+    /// request if an assistant `tool_calls` message isn't answered by a
+    /// `tool` message per tool_call_id — balance every pending call with a
+    /// cancelled tool_result so history stays valid.
+    fn on_cancel_with_pending_calls(calls: &[ResolvedCall]) -> Vec<Message> {
+        calls
+            .iter()
+            .map(|c| {
+                Message::tool_result(
+                    c.id.clone().unwrap_or_default(),
+                    json!({ "error": "cancelled" }).to_string(),
+                )
+            })
+            .collect()
+    }
+}
 
-    let structured = deps.state.last_structured_output.lock().clone();
-    let terminal = Step::turn_complete(
-        trajectory_id,
-        deps.state.alloc_step_index(),
-        status,
-        last_text.as_str(),
-        error_msg,
-        finished_turn,
-        structured,
-        usage_opt,
+/// Drive one turn through the shared engine, plugging in the OpenAI client
+/// for the stream open and the compaction fold (the engine stays
+/// client-agnostic — the async edges ride in as closures, exactly like the
+/// compaction engine's `summarize`).
+pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> Result<()> {
+    let TurnDeps {
+        client,
+        config,
+        state,
+        tool_runner,
+        hook_runner,
+        session_ctx,
+    } = deps;
+    let model = config.model.clone();
+    let engine_deps = EngineDeps::<OpenAiProvider> {
+        config,
+        state: state.clone(),
+        tool_runner,
+        hook_runner,
+        session_ctx,
+    };
+    let open_client = client.clone();
+    turn_engine::run_turn::<OpenAiProvider, _, _, _, _, _>(
+        engine_deps,
+        user,
+        prompt,
+        move |req: ChatRequest| {
+            let client = open_client.clone();
+            async move { client.stream_chat(&req).await }
+        },
+        move || async move {
+            crate::backends::openai::compaction::try_compact(&state.history, &client, &model)
+                .await;
+        },
     )
-    .with_finish_summary(finish_summary);
-    deps.state.emit(terminal);
-
-    // Post-turn hooks observe the completed turn's final text.
-    dispatch_post_turn(deps.hook_runner.as_ref(), &turn_ctx, &last_text).await;
-
-    // Compaction: if the turn pushed prompt tokens over the threshold,
-    // summarize the old prefix before the next turn starts.
-    let used = usage.prompt_token_count;
-    if crate::backends::openai::compaction::should_compact(used, deps.config.compaction_threshold) {
-        debug!(
-            used,
-            threshold = ?deps.config.compaction_threshold,
-            "compaction triggered"
-        );
-        crate::backends::openai::compaction::try_compact(
-            &deps.state.history,
-            &deps.client,
-            &deps.config.model,
-        )
-        .await;
-    }
-
-    deps.state.idle.store(true, Ordering::Release);
-    deps.state.idle_notify.notify_waiters();
-    debug!(?last_finish, rounds, "turn complete");
-    Ok(())
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -591,7 +424,7 @@ fn accumulate_wire_usage(acc: &mut WireUsage, other: &WireUsage) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{CustomSystemInstructions, SystemInstructions};
+    use crate::types::{CustomSystemInstructions, Step, StreamChunk, SystemInstructions};
     use tokio::sync::broadcast;
 
     #[test]
@@ -781,6 +614,56 @@ mod tests {
         assert_eq!(args1, json!({}));
     }
 
+    /// The SAME contract exercised through the provider's real seam methods:
+    /// `fold_event` reassembles the fragments and `resolve_pending_calls`
+    /// parses them in order (this is the path the engine actually drives).
+    #[test]
+    fn provider_fold_and_resolve_reassemble_fragments() {
+        use crate::backends::openai::wire::{ChunkChoice, Delta, FunctionDelta, ToolCallDelta};
+
+        let frag = |index: u32, id: Option<&str>, name: Option<&str>, args: &str| ChatChunk {
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta: Delta {
+                    tool_calls: vec![ToolCallDelta {
+                        index,
+                        id: id.map(Into::into),
+                        kind: None,
+                        function: Some(FunctionDelta {
+                            name: name.map(Into::into),
+                            arguments: Some(args.into()),
+                        }),
+                    }],
+                    ..Default::default()
+                },
+                finish_reason: None,
+            }],
+            ..Default::default()
+        };
+
+        let (tx, _rx) = broadcast::channel::<Step>(8);
+        let state = LoopState::new(tx);
+        let mut acc = RoundAccum::default();
+        crate::backends::turn_engine::test_fold_events::<OpenAiProvider>(
+            &state,
+            &mut acc,
+            vec![
+                frag(0, Some("call_a"), Some("view_file"), "{\"path\":"),
+                frag(1, Some("call_b"), Some("list_subdomains"), ""),
+                frag(0, None, None, "\"a.rs\"}"),
+            ],
+        );
+
+        let calls = OpenAiProvider::resolve_pending_calls(&mut acc);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id.as_deref(), Some("call_a"));
+        assert_eq!(calls[0].name, "view_file");
+        assert_eq!(calls[0].args, json!({"path": "a.rs"}));
+        assert!(calls[0].parse_error.is_none());
+        assert_eq!(calls[1].id.as_deref(), Some("call_b"));
+        assert_eq!(calls[1].args, json!({}), "empty args are a valid no-arg call");
+    }
+
     /// A tool call with NO `id` in the stream gets a synthesized one so the
     /// `tool`-role result message can correlate. (Replicates the run_turn
     /// fallback.)
@@ -823,25 +706,29 @@ mod tests {
 
     /// REGRESSION (L22, mirrors Anthropic #82): the assistant message carrying
     /// `tool_calls` is pushed to history BEFORE tools dispatch. If the turn is
-    /// cancelled in that window the loop breaks WITHOUT appending the matching
-    /// `tool`-role result messages — a dangling `tool_calls` turn that 400s the
-    /// NEXT OpenAI request ("must be followed by tool messages responding to
-    /// each tool_call_id"). The cancel branch must balance every pending call
-    /// with a cancelled `tool` message (correlated by id) so history stays valid.
+    /// cancelled in that window the engine must balance every pending call
+    /// with a cancelled `tool` message (correlated by id) so history stays
+    /// valid — OpenAI 400s the NEXT request otherwise ("must be followed by
+    /// tool messages responding to each tool_call_id"). Exercises the
+    /// provider's `on_cancel_with_pending_calls` (the hook the engine calls).
     #[test]
     fn cancelled_turn_balances_pending_tool_calls_with_tool_results() {
-        let pending_calls: Vec<(String, String, Value, Option<String>)> = vec![
-            ("call_a".into(), "view_file".into(), json!({"path": "a.rs"}), None),
-            ("call_b".into(), "list_subdomains".into(), json!({}), None),
+        let pending_calls = vec![
+            ResolvedCall {
+                id: Some("call_a".into()),
+                name: "view_file".into(),
+                args: json!({"path": "a.rs"}),
+                parse_error: None,
+            },
+            ResolvedCall {
+                id: Some("call_b".into()),
+                name: "list_subdomains".into(),
+                args: json!({}),
+                parse_error: None,
+            },
         ];
 
-        // --- assembly copied from run_turn's cancel branch ---
-        let cancelled: Vec<Message> = pending_calls
-            .into_iter()
-            .map(|(id, _name, _args, _err)| {
-                Message::tool_result(id, json!({ "error": "cancelled" }).to_string())
-            })
-            .collect();
+        let cancelled = OpenAiProvider::on_cancel_with_pending_calls(&pending_calls);
 
         // One `tool` message per pending call, ids preserved, content marks cancel.
         assert_eq!(cancelled.len(), 2);

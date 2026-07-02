@@ -9,10 +9,14 @@
 The shared files own the cross-backend behavior — change them ONCE, not in each
 provider: `sse.rs` (SSE frame decoder), `dispatch.rs` (hook-gated tool pipeline),
 `runners.rs`, `compaction.rs` (ONE generic fold engine; per-backend
-`compaction.rs` are THIN adapters), `stream_timeout.rs`, `state.rs`. Per-backend
-dirs (`gemini/ anthropic/ openai/ mock/ mcp/ local/`) hold only the wire-specific
-client + loop. If a fix would be copy-pasted into two backends, it belongs in the
-shared core.
+`compaction.rs` are THIN adapters), `stream_timeout.rs`, `state.rs`, and
+`turn_engine.rs` (R7: ONE generic streaming turn loop behind a static-dispatch
+`TurnProvider` seam — same pattern as `CompactionModel`; async edges ride in as
+closures so it stays wasm-safe. Phase 1: openai rides it; anthropic/gemini
+loops are still standalone copies — a scaffold fix must land in BOTH the engine
+and those two until they migrate). Per-backend dirs (`gemini/ anthropic/ openai/
+mock/ mcp/ local/`) hold only the wire-specific client + loop/provider. If a fix
+would be copy-pasted into two backends, it belongs in the shared core.
 
 ## Gemini (the default path — most quirks)
 - **Model IDs FLIP — verify against the LIVE API, never trust memory.**
