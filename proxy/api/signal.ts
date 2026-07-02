@@ -42,8 +42,11 @@ const ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 // + `slots` (the MESH membership blob) and directed-pair SDP slots
 // `offer-{a}-{b}`/`answer-{a}-{b}` keyed by the two peers' slot indices (mesh:
 // the lower index offers, the higher answers — deterministic, no double-dial).
-const SLOT_RE = /^(offer|answer|join|slots|(?:offer|answer)-[a-z0-9]{1,32}|(?:offer|answer)-\d{1,2}-\d{1,2}|cands-(?:host|offerer|answerer|joiner-[a-z0-9]{1,32}))$/;
-const JOINER_RE = /^[a-z0-9]{1,32}$/;
+const SLOT_RE = /^(offer|answer|join|slots|(?:offer|answer)-[a-z0-9]{8}|(?:offer|answer)-\d{1,2}-\d{1,2}|cands-(?:host|offerer|answerer|joiner-[a-z0-9]{8}))$/;
+// A joiner id is ALWAYS the first 4 bytes of the peer address = exactly 8 hex
+// (display.rs). Pinning the length (was {1,32}) stops one peer from registering
+// many different-length prefixes of its own address to hog the 8-slot mesh roster.
+const JOINER_RE = /^[a-z0-9]{8}$/;
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 const MESH_SLOTS = 8; // fixed mesh capacity (mirrors host::mp MP_PEERS)
 // A mesh slot not refreshed in this long is reclaimable by another peer — MUST
