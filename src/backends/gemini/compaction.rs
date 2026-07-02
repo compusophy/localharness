@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use tracing::warn;
 
 use crate::backends::compaction::{self as engine, CompactionModel};
-#[allow(unused_imports)] // COMPACTION_TAG: used only in cfg(test); should_compact in non-test code
+#[allow(unused_imports)] // both are used only in cfg(test) since R7 phase 3 (the engine owns the should_compact trigger)
 pub use crate::backends::compaction::{should_compact, COMPACTION_TAG};
 use crate::backends::gemini::api::SharedClient;
 use crate::backends::gemini::wire::{

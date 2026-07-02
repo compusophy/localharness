@@ -1,48 +1,50 @@
-//! Agent loop for the Gemini backend.
+//! Agent loop for the Gemini backend — the always-on DEFAULT path, migrated
+//! onto the shared [`crate::backends::turn_engine`] (R7 phase 3, last).
 //!
-//! Each `run_turn` call drives one user-initiated turn to completion:
-//! optionally many model ↔ tool round-trips, terminating when the model
-//! emits no further `functionCall` parts (or calls `finish`).
+//! The turn scaffold (idle/cancel atomics, pre-turn gate, retry-wrapped
+//! stream open, idle-stall arm, MAX_TOOL_ROUNDS, the finish-tool special
+//! case, usage folding, terminal step, compaction trigger) lives in the
+//! engine; this module supplies only the Gemini-specific wire behavior via
+//! [`GeminiProvider`]:
 //!
-//! The dispatch loop:
-//!
-//! 1. Build a `GenerateContentRequest` from history + tool declarations.
-//! 2. Stream the response. Accumulate text, thoughts, and function calls.
-//! 3. Persist the model turn (text + functionCalls) into history.
-//! 4. If no function calls — emit terminal Step, done.
-//! 5. Else, dispatch each call through hooks → tool_runner. Build a
-//!    `user`-role `functionResponse` content and append it to history.
-//! 6. Loop back to step 1.
+//! - Stream fold: Gemini 3.x stamps EVERY part with `thought`, so a normal
+//!   visible-text part arrives as `Thought { thought: false, text: Some(_) }`
+//!   and MUST be folded as text (without that arm the model's output was
+//!   silently dropped from the live stream); `thought: true` parts are
+//!   reasoning deltas. Each `functionCall` part rides with its
+//!   `thoughtSignature`, captured and echoed back VERBATIM into the persisted
+//!   model turn (3.x 400s replayed history missing it — "Function call is
+//!   missing a thought_signature").
+//! - Tool args arrive PARSED (`FunctionCall.args` is a JSON `Value`, not a
+//!   streamed string fragment), so `ResolvedCall.parse_error` is always
+//!   `None` — the engine's malformed-args skip path never fires on this wire.
+//! - Correlation is by NAME (`id: None`): a `functionResponse` carries no
+//!   call id (unlike openai/anthropic).
+//! - Tool results: ONE batched `user`-role `Content` of `functionResponse`
+//!   parts (like anthropic; unlike openai's one message per call).
+//! - Control-flow hooks: engine DEFAULTS — Gemini has no `pause_turn`, and
+//!   its wire tolerates a cancelled turn's dangling `functionCall` (no #82
+//!   balancing needed).
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use base64::Engine as _;
-use serde_json::{json, Value};
-use tracing::{debug, warn};
-use uuid::Uuid;
+use serde_json::Value;
 
-use crate::backends::dispatch::{dispatch_post_turn, dispatch_tool_call, gate_pre_turn};
-use crate::backends::loop_util::extract_canonical_path;
 use crate::backends::gemini::api::SharedClient;
-use crate::backends::gemini::compaction::{self, should_compact};
-use crate::backends::stream_timeout::{idle_timeout_ms, next_with_idle_timeout, NextChunk};
-use crate::backends::gemini::tools::FINISH_TOOL_NAME;
+use crate::backends::gemini::compaction;
 use crate::backends::gemini::wire::{
-    self, ContentRole, FinishReason, FunctionCall, FunctionResponse, GenerateContentRequest,
-    GenerationConfig as WireGenConfig, Part, ThinkingConfig,
+    self, ContentRole, FinishReason, FunctionCall, FunctionResponse, GenerateChunk,
+    GenerateContentRequest, GenerationConfig as WireGenConfig, Part, ThinkingConfig,
+};
+use crate::backends::turn_engine::{
+    self, DispatchedResult, EmitCtx, EngineDeps, ResolvedCall, TurnProvider,
 };
 use crate::content::{Content, Part as ApiPart};
 use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
-use crate::types::{
-    Step, StepStatus, StreamChunk, SystemInstructions, ThinkingLevel, ToolCall, UsageMetadata,
-};
-
-/// Maximum dispatch rounds per turn. The model can loop indefinitely
-/// alternating tool calls; cap to prevent runaway costs.
-const MAX_TOOL_ROUNDS: u32 = 16;
+use crate::types::{StepStatus, SystemInstructions, ThinkingLevel, UsageMetadata};
 
 #[derive(Clone)]
 pub(crate) struct LoopConfig {
@@ -149,369 +151,214 @@ pub(crate) struct TurnDeps {
     pub session_ctx: Option<SessionContext>,
 }
 
-pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Content) -> Result<()> {
-    deps.state.idle.store(false, Ordering::Release);
-    // Fresh turn starts uncancelled — clear any stale stop from before.
-    deps.state.cancel.store(false, Ordering::Release);
+/// One round's stream accumulators (the [`TurnProvider::Accum`]).
+#[derive(Default)]
+pub(crate) struct RoundAccum {
+    /// FunctionCall parts in wire order. Each call rides with its
+    /// `thoughtSignature` (Gemini 3.x stamps functionCall parts and 400s if
+    /// history echoes them back without it) — kept HERE, not just as
+    /// `ResolvedCall`s, so `assemble_assistant_message` can echo every
+    /// signature back verbatim.
+    pending_calls: Vec<(FunctionCall, Option<String>)>,
+    finish_reason: Option<FinishReason>,
+    /// A chunk's `usageMetadata` is cumulative for the round —
+    /// last-writer-wins (matches the pre-engine loop exactly).
+    usage: Option<wire::WireUsage>,
+}
 
-    // ONE turn context shared by the pre-turn gate, the per-call tool hooks,
-    // and the post-turn hooks of this turn.
-    let turn_ctx = deps
-        .session_ctx
-        .as_ref()
-        .map(|s| s.child())
-        .unwrap_or_default();
+/// The Gemini side of the [`TurnProvider`] seam — a zero-sized marker the
+/// engine is monomorphized over (static dispatch; see `turn_engine`).
+pub(crate) struct GeminiProvider;
 
-    // Pre-turn gate — BEFORE the prompt enters history, so a denied prompt
-    // never pollutes context. On deny the model is never called; the
-    // turn_error Step becomes a stream `Err` via `subscribe_step_stream`.
-    if let Some(denied) = gate_pre_turn(deps.hook_runner.as_ref(), &turn_ctx, &prompt).await {
-        deps.state.emit_error(denied.clone());
-        deps.state.idle.store(true, Ordering::Release);
-        deps.state.idle_notify.notify_waiters();
-        return Err(Error::other(denied));
+impl TurnProvider for GeminiProvider {
+    type Message = wire::Content;
+    type Config = LoopConfig;
+    type Request = GenerateContentRequest;
+    type Event = GenerateChunk;
+    type Accum = RoundAccum;
+
+    fn build_request(config: &LoopConfig, history: &[wire::Content]) -> GenerateContentRequest {
+        build_request(config, history)
     }
 
-    {
-        let mut hist = deps.state.history.lock();
-        hist.push(user);
+    fn compaction_threshold(config: &LoopConfig) -> Option<u32> {
+        config.compaction_threshold
     }
-    *deps.state.last_turn_usage.lock() = Some(UsageMetadata::default());
-    *deps.state.last_structured_output.lock() = None;
 
-    let mut rounds = 0u32;
-    let mut last_text = String::new();
-    let mut last_finish: Option<FinishReason> = None;
-    // The model called `finish` this turn — flags the terminal step as
-    // `StepType::Finish` so the in-tab loop stops auto-continuing (and
-    // doesn't paint an empty-response bubble on a pure-finish turn).
-    let mut finished_turn = false;
-    // The `finish` tool's optional `summary` arg — the model's closing message,
-    // threaded onto the terminal step so the UI can paint a final reply on a
-    // turn that otherwise showed only tool activity (the silent-completion fix).
-    let mut finish_summary: Option<String> = None;
-    let trajectory_id = Uuid::new_v4().to_string();
-
-    loop {
-        rounds += 1;
-        if rounds > MAX_TOOL_ROUNDS {
-            warn!(rounds, "exceeded MAX_TOOL_ROUNDS; forcing turn end");
-            break;
-        }
-        // Stop requested before this round's model call — end the turn.
-        if deps.state.cancel.load(Ordering::Acquire) {
-            debug!("turn cancelled before model call");
-            break;
-        }
-
-        let request = build_request(&deps.config, &deps.state.history.lock());
-        // Retry the stream OPEN on a transient transport/5xx/timeout (telemetry #29:
-        // a Gemini HTTP 503 aborted the whole turn). ONE shared policy+wrapper with
-        // the anthropic/openai + subagent loops; auth/credits/rate-limit fail fast,
-        // and a mid-stream failure (below) is never retried.
-        let mut stream = match crate::backends::retry::open_stream_with_retry(|| {
-            deps.client.stream_generate(&deps.config.model, &request)
-        })
-        .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                deps.state.emit_error(e.to_string());
-                deps.state.idle.store(true, Ordering::Release);
-                deps.state.idle_notify.notify_waiters();
-                return Err(e);
-            }
-        };
-
-        let step_index = deps.state.alloc_step_index();
-        let mut accumulated_text = String::new();
-        let mut accumulated_thought = String::new();
-        // Each call rides with its `thoughtSignature` (Gemini 3.x stamps
-        // functionCall parts and 400s if history echoes them back without
-        // it — "Function call is missing a thought_signature").
-        let mut pending_calls: Vec<(FunctionCall, Option<String>)> = Vec::new();
-        let mut finish_reason: Option<FinishReason> = None;
-        let mut last_usage: Option<wire::WireUsage> = None;
-
-        // Idle-stall guard: a fresh `idle_ms` timer is armed for EACH chunk
-        // (re-armed every time data arrives), so a steadily streaming response
-        // never trips it — only `idle_ms` of total silence does. On a stall we
-        // end the stream with an Err so the turn returns via the normal error
-        // path and the one-turn guard releases (vs. hanging on a dead socket
-        // that the cooperative cancel check below can never reach).
-        let idle_ms = idle_timeout_ms();
-        loop {
-            let chunk_res = match next_with_idle_timeout(&mut stream, idle_ms).await {
-                NextChunk::Item(item) => item,
-                NextChunk::End => break,
-                NextChunk::IdleTimeout => {
-                    let e = Error::other(format!(
-                        "model stream stalled — no data for {}s",
-                        idle_ms / 1000
-                    ));
-                    deps.state.emit_error(e.to_string());
-                    deps.state.idle.store(true, Ordering::Release);
-                    deps.state.idle_notify.notify_waiters();
-                    return Err(e);
-                }
-            };
-            // Cooperative stop: drop the rest of this streamed response.
-            if deps.state.cancel.load(Ordering::Acquire) {
-                break;
-            }
-            let chunk = match chunk_res {
-                Ok(c) => c,
-                Err(e) => {
-                    deps.state.emit_error(e.to_string());
-                    deps.state.idle.store(true, Ordering::Release);
-                    deps.state.idle_notify.notify_waiters();
-                    return Err(e);
-                }
-            };
-
-            for cand in chunk.candidates {
-                if let Some(content) = cand.content {
-                    for part in content.parts {
-                        match part {
-                            Part::Text { text } => {
-                                if !text.is_empty() {
-                                    accumulated_text.push_str(&text);
-                                    deps.state
-                                        .emit(Step::text_delta(&trajectory_id, step_index, &text));
-                                }
-                            }
-                            Part::Thought {
-                                thought: true,
-                                text: Some(t),
-                                ..
-                            } => {
-                                if !t.is_empty() {
-                                    accumulated_thought.push_str(&t);
-                                    deps.state.emit(Step::thought_delta(
-                                        &trajectory_id,
-                                        step_index,
-                                        &t,
-                                    ));
-                                }
-                            }
-                            // Gemini 3.x stamps EVERY part with `thought`, so a
-                            // normal visible-text part arrives as
-                            // `Thought { thought: false, text: Some(_) }` (see the
-                            // CLAUDE.md gotcha + `mod.rs::project_history`, which
-                            // already treats this as output text). Without this arm
-                            // the text fell through `_ => {}` and was silently
-                            // DROPPED from the live stream.
-                            Part::Thought {
-                                thought: false,
-                                text: Some(t),
-                                ..
-                            } => {
-                                if !t.is_empty() {
-                                    accumulated_text.push_str(&t);
-                                    deps.state
-                                        .emit(Step::text_delta(&trajectory_id, step_index, &t));
-                                }
-                            }
-                            Part::FunctionCall {
-                                function_call,
-                                thought_signature,
-                            } => {
-                                pending_calls.push((function_call, thought_signature));
-                            }
-                            _ => {}
+    fn fold_event(
+        acc: &mut RoundAccum,
+        ctx: &mut EmitCtx<'_, wire::Content>,
+        chunk: GenerateChunk,
+    ) -> Result<()> {
+        for cand in chunk.candidates {
+            if let Some(content) = cand.content {
+                for part in content.parts {
+                    match part {
+                        Part::Text { text } => ctx.push_text(&text),
+                        Part::Thought {
+                            thought: true,
+                            text: Some(t),
+                            ..
+                        } => ctx.push_thought(&t),
+                        // Gemini 3.x stamps EVERY part with `thought`, so a
+                        // normal visible-text part arrives as
+                        // `Thought { thought: false, text: Some(_) }` (see the
+                        // CLAUDE.md gotcha + `mod.rs::project_history`, which
+                        // already treats this as output text). Without this arm
+                        // the text fell through `_ => {}` and was silently
+                        // DROPPED from the live stream.
+                        Part::Thought {
+                            thought: false,
+                            text: Some(t),
+                            ..
+                        } => ctx.push_text(&t),
+                        Part::FunctionCall {
+                            function_call,
+                            thought_signature,
+                        } => {
+                            acc.pending_calls.push((function_call, thought_signature));
                         }
+                        _ => {}
                     }
                 }
-                if let Some(reason) = cand.finish_reason {
-                    finish_reason = Some(reason);
-                }
             }
-            if let Some(u) = chunk.usage_metadata {
-                last_usage = Some(u);
+            if let Some(reason) = cand.finish_reason {
+                acc.finish_reason = Some(reason);
             }
         }
-
-        // Build the model-turn content (text + functionCalls) and push to history.
-        let mut model_parts: Vec<Part> = Vec::new();
-        if !accumulated_text.is_empty() {
-            model_parts.push(Part::Text {
-                text: accumulated_text.clone(),
-            });
+        if let Some(u) = chunk.usage_metadata {
+            acc.usage = Some(u);
         }
-        for (call, signature) in &pending_calls {
-            model_parts.push(Part::FunctionCall {
-                function_call: call.clone(),
-                thought_signature: signature.clone(),
-            });
-        }
-        if !model_parts.is_empty() {
-            deps.state.history.lock().push(wire::Content {
-                role: ContentRole::Model,
-                parts: model_parts,
-            });
-        }
+        Ok(())
+    }
 
-        // Accumulate usage.
-        if let Some(u) = last_usage {
-            let usage: UsageMetadata = u.into();
-            let mut slot = deps.state.last_turn_usage.lock();
-            match slot.as_mut() {
-                Some(acc) => acc.merge_round(&usage),
-                None => *slot = Some(usage),
-            }
-        }
-
-        last_text = accumulated_text;
-        last_finish = finish_reason;
-
-        // If the model didn't call any tools, the turn is over.
-        if pending_calls.is_empty() {
-            break;
-        }
-
-        // Stop requested while streaming — end now instead of executing the
-        // tools the model asked for (the whole point of stop is to NOT run
-        // more work / burn more tokens).
-        if deps.state.cancel.load(Ordering::Acquire) {
-            debug!("turn cancelled before tool dispatch");
-            break;
-        }
-
-        // Dispatch every function call. The loop continues afterwards
-        // unless `finish` was called (or we've hit the cap).
-        let mut response_parts: Vec<Part> = Vec::with_capacity(pending_calls.len());
-        let mut saw_finish = false;
-        for (call, _signature) in pending_calls {
-            // `finish` is special: capture structured_output, mark the
-            // turn complete, but still produce a function_response so
-            // the model history is well-formed.
-            if call.name == FINISH_TOOL_NAME {
-                if let Some(out) = call.args.get("output").cloned() {
-                    *deps.state.last_structured_output.lock() = Some(out);
-                }
-                // Capture the closing `summary` (the full finish args were
-                // discarded before — only `output` was kept), so a tool-only
-                // turn can still end with a final reply.
-                if let Some(sm) = call.args.get("summary").and_then(|v| v.as_str()) {
-                    if !sm.is_empty() {
-                        finish_summary = Some(sm.to_string());
-                    }
-                }
-                saw_finish = true;
-                response_parts.push(Part::FunctionResponse {
-                    function_response: FunctionResponse {
-                        name: call.name.clone(),
-                        response: json!({ "ok": true }),
-                    },
-                });
-                continue;
-            }
-
-            let tool_call = ToolCall {
+    /// Gemini's tool args arrive PARSED (`FunctionCall.args` is a JSON
+    /// `Value`), so `parse_error` is always `None` — the engine's
+    /// malformed-args skip path never fires on this wire. `id` is `None`:
+    /// Gemini correlates results by NAME (a `functionResponse` carries no
+    /// call id). The accumulator is NOT drained — the originals (with their
+    /// signatures) are still needed by `assemble_assistant_message`.
+    fn resolve_pending_calls(acc: &mut RoundAccum) -> Vec<ResolvedCall> {
+        acc.pending_calls
+            .iter()
+            .map(|(call, _signature)| ResolvedCall {
+                id: None,
                 name: call.name.clone(),
                 args: call.args.clone(),
-                id: None,
-                canonical_path: extract_canonical_path(&call.args),
-            };
-            deps.state.emit_chunk_step(StreamChunk::ToolCall(tool_call.clone()));
+                parse_error: None,
+            })
+            .collect()
+    }
 
-            // The shared pipeline: pre-hooks → execute → error-lift →
-            // post-hooks. The wire side always gets a JSON value (Gemini
-            // needs to see errors as part of the conversation); the typed
-            // ToolResult gets `error: Some(msg)` whenever execution didn't
-            // produce a real result, so consumers (UI, hooks) branch cleanly.
-            let post_result = dispatch_tool_call(
-                deps.tool_runner.as_ref(),
-                deps.hook_runner.as_ref(),
-                &turn_ctx,
-                &tool_call,
-            )
-            .await;
-            let result_value = post_result.result.clone().unwrap_or(Value::Null);
-            // Surface the result on the stream so UIs can flip the
-            // tool block from "running" to ok/err. Until 0.7.1 this
-            // emit was missing — the result panel stayed empty.
-            deps.state
-                .emit_chunk_step(StreamChunk::ToolResult(post_result.clone()));
+    fn round_usage(acc: &RoundAccum) -> UsageMetadata {
+        acc.usage.clone().map(Into::into).unwrap_or_default()
+    }
 
-            response_parts.push(Part::FunctionResponse {
-                function_response: FunctionResponse {
-                    name: call.name,
-                    response: result_value,
-                },
+    fn map_finish_reason(acc: &RoundAccum) -> (StepStatus, &'static str) {
+        match acc.finish_reason {
+            Some(FinishReason::Safety) => (StepStatus::Error, "stopped by safety policy"),
+            Some(FinishReason::Blocklist) => (StepStatus::Error, "stopped by blocklist"),
+            Some(FinishReason::ProhibitedContent) => {
+                (StepStatus::Error, "stopped by prohibited-content filter")
+            }
+            Some(FinishReason::Recitation) => (StepStatus::Done, "stopped to avoid recitation"),
+            Some(FinishReason::MaxTokens) => (StepStatus::Done, "stopped at max tokens"),
+            Some(FinishReason::MalformedFunctionCall) => {
+                (StepStatus::Error, "malformed function call")
+            }
+            _ => (StepStatus::Done, ""),
+        }
+    }
+
+    /// Build the model-turn content (text + functionCalls). Every
+    /// functionCall part echoes its captured `thoughtSignature` VERBATIM —
+    /// 3.x rejects replayed history missing it.
+    fn assemble_assistant_message(
+        acc: RoundAccum,
+        text: &str,
+        _calls: &[ResolvedCall],
+    ) -> Option<wire::Content> {
+        let mut parts: Vec<Part> = Vec::new();
+        if !text.is_empty() {
+            parts.push(Part::Text {
+                text: text.to_string(),
             });
         }
+        for (call, signature) in acc.pending_calls {
+            parts.push(Part::FunctionCall {
+                function_call: call,
+                thought_signature: signature,
+            });
+        }
+        (!parts.is_empty()).then_some(wire::Content {
+            role: ContentRole::Model,
+            parts,
+        })
+    }
 
-        // Push the function_response back into history as a user turn.
-        deps.state.history.lock().push(wire::Content {
+    /// ONE batched `user`-role content of `functionResponse` parts, matched
+    /// by NAME (like anthropic's batched turn; unlike openai's one message
+    /// per call).
+    fn tool_result_messages(results: Vec<DispatchedResult>) -> Vec<wire::Content> {
+        if results.is_empty() {
+            return Vec::new();
+        }
+        let parts: Vec<Part> = results
+            .into_iter()
+            .map(|r| Part::FunctionResponse {
+                function_response: FunctionResponse {
+                    name: r.call.name,
+                    response: r.value,
+                },
+            })
+            .collect();
+        vec![wire::Content {
             role: ContentRole::User,
-            parts: response_parts,
-        });
-
-        if saw_finish {
-            finished_turn = true;
-            break;
-        }
-        // Otherwise: loop and let the model react to the tool results.
+            parts,
+        }]
     }
+}
 
-    // Final usage snapshot is already in last_turn_usage.
-    let usage = deps.state.last_turn_usage.lock().clone().unwrap_or_default();
-    let usage_opt = if usage == UsageMetadata::default() {
-        None
-    } else {
-        Some(usage.clone())
+/// Drive one turn through the shared engine, plugging in the Gemini client
+/// for the stream open and the compaction fold (the engine stays
+/// client-agnostic — the async edges ride in as closures, exactly like the
+/// compaction engine's `summarize`).
+pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Content) -> Result<()> {
+    let TurnDeps {
+        client,
+        config,
+        state,
+        tool_runner,
+        hook_runner,
+        session_ctx,
+    } = deps;
+    // The per-turn model (send() may have applied the difficulty-router
+    // override to this clone) — Gemini's model rides the URL path, not the
+    // request body, so the open closure needs it alongside the request.
+    let model = config.model.clone();
+    let engine_deps = EngineDeps::<GeminiProvider> {
+        config,
+        state: state.clone(),
+        tool_runner,
+        hook_runner,
+        session_ctx,
     };
-
-    let (status, error_msg): (StepStatus, &str) = match last_finish {
-        Some(FinishReason::Safety) => (StepStatus::Error, "stopped by safety policy"),
-        Some(FinishReason::Blocklist) => (StepStatus::Error, "stopped by blocklist"),
-        Some(FinishReason::ProhibitedContent) => {
-            (StepStatus::Error, "stopped by prohibited-content filter")
-        }
-        Some(FinishReason::Recitation) => (StepStatus::Done, "stopped to avoid recitation"),
-        Some(FinishReason::MaxTokens) => (StepStatus::Done, "stopped at max tokens"),
-        Some(FinishReason::MalformedFunctionCall) => {
-            (StepStatus::Error, "malformed function call")
-        }
-        _ => (StepStatus::Done, ""),
-    };
-
-    let structured = deps.state.last_structured_output.lock().clone();
-    let terminal = Step::turn_complete(
-        trajectory_id,
-        deps.state.alloc_step_index(),
-        status,
-        last_text.as_str(),
-        error_msg,
-        finished_turn,
-        structured,
-        usage_opt,
+    let open_client = client.clone();
+    let open_model = model.clone();
+    turn_engine::run_turn::<GeminiProvider, _, _, _, _, _>(
+        engine_deps,
+        user,
+        prompt,
+        move |req: GenerateContentRequest| {
+            let client = open_client.clone();
+            let model = open_model.clone();
+            async move { client.stream_generate(&model, &req).await }
+        },
+        move || async move {
+            compaction::try_compact(&state.history, &client, &model).await;
+        },
     )
-    .with_finish_summary(finish_summary);
-    deps.state.emit(terminal);
-
-    // Post-turn hooks observe the completed turn's final text — fired after
-    // the terminal step, never on denied or errored turns.
-    dispatch_post_turn(deps.hook_runner.as_ref(), &turn_ctx, &last_text).await;
-
-    // Compaction: if the turn pushed total tokens over the configured
-    // threshold, summarize the old prefix of history before the next
-    // turn starts. Never errors out — see compaction.rs for fallback.
-    let used = usage.prompt_token_count;
-    if should_compact(used, deps.config.compaction_threshold) {
-        debug!(
-            used,
-            threshold = ?deps.config.compaction_threshold,
-            "compaction triggered"
-        );
-        compaction::try_compact(&deps.state.history, &deps.client, &deps.config.model).await;
-    }
-
-    deps.state.idle.store(true, Ordering::Release);
-    deps.state.idle_notify.notify_waiters();
-    debug!(?last_finish, rounds, "turn complete");
-    Ok(())
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -574,8 +421,11 @@ fn thinking_level_to_config(level: ThinkingLevel) -> ThinkingConfig {
 mod tests {
     use super::*;
     use crate::backends::gemini::api::GeminiClient;
+    use crate::backends::gemini::wire::Candidate;
     use crate::hooks::TurnContext;
-    use crate::types::{HookResult, StepSource};
+    use crate::types::{HookResult, Step, StepSource, StreamChunk};
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
     use tokio::sync::broadcast;
 
     struct DenyAllTurns;
@@ -670,5 +520,151 @@ mod tests {
             "inline-dispatched tool-call step must be Done; Active makes \
              spawn_tool_dispatcher re-execute the tool",
         );
+    }
+
+    /// THE Gemini-specific fold contract, exercised through the provider's
+    /// real seam (the path the engine drives): `thought:false` text parts
+    /// fold as VISIBLE text (the silently-dropped-output fix),
+    /// `thought:true` parts as reasoning; each functionCall's
+    /// `thoughtSignature` is captured; args arrive parsed (`parse_error`
+    /// always None, id None — Gemini correlates by name); usage is
+    /// last-writer-wins per round.
+    #[test]
+    fn provider_fold_handles_thought_stamped_parts_and_signature_capture() {
+        let chunk = |parts: Vec<Part>| GenerateChunk {
+            candidates: vec![Candidate {
+                content: Some(wire::Content {
+                    role: ContentRole::Model,
+                    parts,
+                }),
+                finish_reason: None,
+                index: None,
+            }],
+            ..Default::default()
+        };
+
+        let (tx, mut rx) = broadcast::channel::<Step>(16);
+        let state = LoopState::new(tx);
+        let mut acc = RoundAccum::default();
+        turn_engine::test_fold_events::<GeminiProvider>(
+            &state,
+            &mut acc,
+            vec![
+                // Reasoning (thought: true) — a thought delta, NOT visible text.
+                chunk(vec![Part::Thought {
+                    thought: true,
+                    text: Some("reasoning".into()),
+                    thought_signature: None,
+                }]),
+                // The 3.x stamp: visible text arrives as thought:false.
+                chunk(vec![Part::Thought {
+                    thought: false,
+                    text: Some("visible".into()),
+                    thought_signature: None,
+                }]),
+                // A functionCall stamped with its thoughtSignature.
+                chunk(vec![Part::FunctionCall {
+                    function_call: FunctionCall {
+                        name: "view_file".into(),
+                        args: json!({"path": "a.rs"}),
+                    },
+                    thought_signature: Some("AbC123=".into()),
+                }]),
+                // Terminal usage + finish reason.
+                GenerateChunk {
+                    candidates: vec![Candidate {
+                        content: None,
+                        finish_reason: Some(FinishReason::ToolUse),
+                        index: None,
+                    }],
+                    usage_metadata: Some(wire::WireUsage {
+                        prompt_token_count: Some(10),
+                        candidates_token_count: Some(5),
+                        total_token_count: Some(15),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ],
+        );
+
+        // thought:false text streamed as a TEXT delta; thought:true as thought.
+        let mut text_deltas = String::new();
+        let mut thought_deltas = String::new();
+        while let Ok(s) = rx.try_recv() {
+            text_deltas.push_str(&s.content_delta);
+            thought_deltas.push_str(&s.thinking_delta);
+        }
+        assert_eq!(text_deltas, "visible", "thought:false parts are VISIBLE text");
+        assert_eq!(thought_deltas, "reasoning");
+
+        let calls = GeminiProvider::resolve_pending_calls(&mut acc);
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].id.is_none(), "Gemini correlates by name, not id");
+        assert_eq!(calls[0].name, "view_file");
+        assert_eq!(calls[0].args, json!({"path": "a.rs"}), "args arrive parsed");
+        assert!(calls[0].parse_error.is_none(), "parse_error is always None");
+
+        assert_eq!(acc.finish_reason, Some(FinishReason::ToolUse));
+        let usage = GeminiProvider::round_usage(&acc);
+        assert_eq!(usage.total_token_count, Some(15));
+
+        // The persisted model turn echoes the signature VERBATIM (text first).
+        let msg = GeminiProvider::assemble_assistant_message(acc, "visible", &calls)
+            .expect("model turn assembled");
+        assert_eq!(msg.role, ContentRole::Model);
+        assert!(matches!(&msg.parts[0], Part::Text { text } if text == "visible"));
+        match &msg.parts[1] {
+            Part::FunctionCall {
+                function_call,
+                thought_signature,
+            } => {
+                assert_eq!(function_call.name, "view_file");
+                assert_eq!(
+                    thought_signature.as_deref(),
+                    Some("AbC123="),
+                    "thoughtSignature must be echoed verbatim or 3.x 400s the replay"
+                );
+            }
+            other => panic!("expected FunctionCall part, got {other:?}"),
+        }
+    }
+
+    /// The engine hands every dispatched result back for wire-shaping: ONE
+    /// batched user turn of functionResponse parts, correlated by NAME (a
+    /// functionResponse carries no call id). A thought-only round (no text,
+    /// no calls) persists NO model turn.
+    #[test]
+    fn tool_results_batch_into_one_user_turn_and_empty_round_persists_nothing() {
+        let mk = |name: &str, value: Value| DispatchedResult {
+            call: ResolvedCall {
+                id: None,
+                name: name.into(),
+                args: json!({}),
+                parse_error: None,
+            },
+            value,
+            is_error: false,
+        };
+        let msgs = GeminiProvider::tool_result_messages(vec![
+            mk("view_file", json!({"contents": "fn main() {}"})),
+            mk("finish", json!({"ok": true})),
+        ]);
+        assert_eq!(msgs.len(), 1, "one batched user turn");
+        assert_eq!(msgs[0].role, ContentRole::User);
+        assert_eq!(msgs[0].parts.len(), 2);
+        match &msgs[0].parts[0] {
+            Part::FunctionResponse { function_response } => {
+                assert_eq!(function_response.name, "view_file");
+                assert_eq!(function_response.response["contents"], "fn main() {}");
+            }
+            other => panic!("expected FunctionResponse, got {other:?}"),
+        }
+
+        // Nothing streamed → no model turn pushed (the old loop's
+        // `!model_parts.is_empty()` guard).
+        let msg =
+            GeminiProvider::assemble_assistant_message(RoundAccum::default(), "", &[]);
+        assert!(msg.is_none());
     }
 }

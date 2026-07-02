@@ -1,4 +1,4 @@
-//! The generic streaming TURN ENGINE (roadmap R7, phase 1) — ONE copy of the
+//! The generic streaming TURN ENGINE (roadmap R7) — ONE copy of the
 //! turn-loop scaffold the streaming backends (gemini / anthropic / openai)
 //! each re-implemented ~600 lines of.
 //!
@@ -29,10 +29,10 @@
 //!   L22 tool-result balancing so a cancelled turn never leaves a dangling
 //!   tool call that 400s the next request.
 //!
-//! Phase 1 migrated the openai loop; phase 2 migrated anthropic (proving
-//! BOTH control-flow hooks: `pause_turn` resume + the #82 cancel balancing).
-//! gemini follows in phase 3 (its loop is untouched — the seam above was
-//! designed against all three).
+//! R7 is COMPLETE: phase 1 migrated openai, phase 2 anthropic (proving BOTH
+//! control-flow hooks: `pause_turn` resume + the #82 cancel balancing), and
+//! phase 3 gemini (the always-on default path). All three streaming backends
+//! ride this one loop — a scaffold fix lands HERE, once.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -79,15 +79,16 @@ pub(crate) struct DispatchedResult {
     pub call: ResolvedCall,
     pub value: Value,
     /// Read by the anthropic provider (typed `tool_result.is_error`) —
-    /// openai's wire has no error typing on tool messages, so this is dead
-    /// on an openai-only build.
+    /// the gemini/openai wires have no error typing on tool messages, so
+    /// this is dead unless `anthropic` is enabled.
     #[allow(dead_code)]
     pub is_error: bool,
 }
 
 /// What to do when a round's stream ends (see [`TurnProvider::on_stream_end`]).
 /// `Resume`/`ProceedAndEndTurn` are constructed by the anthropic provider's
-/// `pause_turn` handling and the engine tests (dead on an openai-only build).
+/// `pause_turn` handling and the engine tests — gemini/openai use the default
+/// `Proceed`, so those variants are dead unless `anthropic` is enabled.
 #[allow(dead_code)]
 pub(crate) enum StreamEnd {
     /// The normal path: resolve calls, persist the assistant turn, dispatch.
@@ -123,9 +124,8 @@ impl<M> EmitCtx<'_, M> {
 
     /// Emit a thinking delta step (the provider keeps any thinking it must
     /// echo back — e.g. anthropic signed blocks — in its own accumulator).
-    /// Consumed by the anthropic provider (gemini follows in R7 phase 3;
-    /// dead on an openai-only build).
-    #[allow(dead_code)]
+    /// Consumed by the gemini (`thought: true` parts) and anthropic
+    /// (`thinking_delta`) providers.
     pub fn push_thought(&mut self, t: &str) {
         if !t.is_empty() {
             self.state

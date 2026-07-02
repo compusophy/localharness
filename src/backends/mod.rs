@@ -65,8 +65,9 @@ pub(crate) mod dispatch;
 
 /// Small helpers shared by the streaming-backend turn loops (canonical-path
 /// resolution, the malformed-args convention). Unconditional: the always-on
-/// gemini loop uses `extract_canonical_path`; `resolve_tool_args` gates
-/// internally on `any(feature = "anthropic", feature = "openai")`.
+/// turn engine uses `extract_canonical_path`; `resolve_tool_args` gates
+/// internally on `any(test, feature = "anthropic", feature = "openai")` —
+/// its consumers (gemini's args arrive parsed and never need it).
 pub(crate) mod loop_util;
 
 /// The generic context-compaction fold engine (rolling summary + recent
@@ -75,13 +76,12 @@ pub(crate) mod loop_util;
 /// ([`compaction::CompactionModel`]) and its summarization request.
 pub(crate) mod compaction;
 
-/// The generic streaming TURN ENGINE (R7): ONE copy of the turn-loop
-/// scaffold behind a static-dispatch [`turn_engine::TurnProvider`] seam (the
-/// `CompactionModel` pattern; async edges ride in as closures — wasm-safe by
-/// construction). Phases 1–2: the openai + anthropic loops ride it (both
-/// control-flow hooks proven); gemini migrates in phase 3 — widen this cfg
-/// to unconditional then.
-#[cfg(any(feature = "openai", feature = "anthropic"))]
+/// The generic streaming TURN ENGINE (R7, complete): ONE copy of the
+/// turn-loop scaffold behind a static-dispatch [`turn_engine::TurnProvider`]
+/// seam (the `CompactionModel` pattern; async edges ride in as closures —
+/// wasm-safe by construction). ALL THREE streaming loops ride it —
+/// gemini (always-on default), anthropic, openai — so it's unconditional;
+/// a scaffold fix lands here ONCE.
 pub(crate) mod turn_engine;
 
 pub mod gemini;

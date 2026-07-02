@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **TurnEngine phase 3: the Gemini backend now rides the shared `backends::turn_engine`
+  (roadmap R7 COMPLETE).** ONE turn loop remains for all three streaming backends
+  (gemini / anthropic / openai); `gemini/loop.rs` shrinks to a thin `GeminiProvider`
+  (the 3.x `thought`-stamped text fold, `thoughtSignature` capture + verbatim echo,
+  by-name tool-result batching, Gemini finish-reason map — behavior unchanged). A turn-loop
+  scaffold fix now lands ONCE, in the engine.
+
 ## [0.61.0] - 2026-07-02
 
 ### Breaking
