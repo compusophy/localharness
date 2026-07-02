@@ -1265,30 +1265,10 @@ pub(crate) fn discover_agents_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// (`chat::confirm_guard`): the owner types a single-use code before any
 /// transfer executes. Amount must parse to > 0.
 pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "recipient": {
-                "type": "string",
-                "description": "Who receives the $LH: either a raw 0x… 20-byte \
-                    address, or a subdomain name like \"alice\" (the funds go to \
-                    that subdomain's on-chain OWNER address)."
-            },
-            "amount": {
-                "type": "string",
-                "description": "Amount of $LH to send, as a decimal string \
-                    (e.g. \"5\", \"1.5\", \"0.01\"). Must be greater than 0."
-            },
-            "confirmation": {
-                "type": "string",
-                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
-                    first call — it returns a challenge code shown to the owner. Relay \
-                    it, wait for the owner to TYPE the code in chat, then retry with it. \
-                    Never invent it; only the platform issues it."
-            }
-        },
-        "required": ["recipient", "amount"]
-    });
+    // Schema + typed extraction come from ONE hoisted table
+    // (`crate::tool_params::SendLhParams`), byte-identity-tested natively —
+    // this wasm-gated file is outside every default check.
+    let schema = crate::tool_params::SendLhParams::schema();
     ClosureTool::new(
         "send_lh",
         "Transfer real $LH credits from the owner's wallet to a recipient. \
@@ -1303,18 +1283,11 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         |args: serde_json::Value, _ctx| async move {
             use crate::encoding::parse_token_amount;
 
-            let recipient_arg = args
-                .get("recipient")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let amount_arg = args
-                .get("amount")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            // Lenient extraction (missing/wrong-typed → defaults), semantics
+            // identical to the old inline `.get().and_then().unwrap_or()` chains.
+            let params = crate::tool_params::SendLhParams::lenient(&args);
+            let recipient_arg = params.recipient.trim().to_string();
+            let amount_arg = params.amount.trim().to_string();
 
             // Amount: parse to 18-decimal wei (same units as the act panel /
             // per-turn payment), reject zero / garbage.
@@ -1332,9 +1305,9 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
             // this body runs; this guards a path that forgot the hook (send_lh moves
             // real $LH — same posture as release_subdomain).
-            let confirmed = args
-                .get("confirmation")
-                .and_then(|v| v.as_str())
+            let confirmed = params
+                .confirmation
+                .as_deref()
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {

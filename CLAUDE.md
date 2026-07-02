@@ -69,6 +69,9 @@ src/                  library crate
 │                     from app::chat so its loop-guard tests run natively)
 ├── turn_stage.rs     pure stage state machine for the pending-turn "paying →
 │                     thinking → streaming" line (painted by app/chat/stage.rs)
+├── tool_params.rs    `tool_params!`: ONE table → typed args struct + Gemini-safe
+│                     input_schema (opt-in per tool; byte-identity-tested; migrated
+│                     chat tools hoist tables here so cargo test covers them)
 ├── builtins/         backend-NEUTRAL builtin tools (8 fs, ask_question, finish,
 │                     start_subagent, generate_image, call_agent, ...) + the
 │                     schema-lint guards (see src/builtins/CLAUDE.md)

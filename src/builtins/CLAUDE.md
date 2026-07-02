@@ -12,7 +12,10 @@ Gemini rejects union-type / JSON-Schema-meta fields. Every builtin's `input_sche
 - Nested objects/arrays + `minimum`/`maximum` ARE fine.
 Two schema-lint GUARD TESTS enforce this (`builtin_tool_schemas_have_no_union_types`
 + the sibling guard). Run `cargo test` after touching any schema — a red guard here
-means a brick, not a nitpick.
+means a brick, not a nitpick. Prefer declaring args via `crate::tool_params!`
+(see `src/tool_params.rs` — one table generates struct + schema, and its grammar
+CANNOT express the brick shapes); migration is opt-in, keep a frozen byte-identity
+test when you migrate (pattern: `delete_file.rs`/`view_file.rs`).
 
 ## Which tools run where
 - **8 fs builtins** (`list_directory view_file find_file search_directory create_file

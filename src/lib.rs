@@ -233,6 +233,14 @@ pub mod turn_flow;
 /// same hoisting pattern as `turn_flow`). See `src/turn_stage.rs`.
 pub mod turn_stage;
 
+/// Single-table tool parameters: the `tool_params!` macro generates BOTH the
+/// typed args struct AND the Gemini-safe wire `input_schema` from ONE table
+/// (schema↔parse drift impossible by construction; zero deps, wasm-clean).
+/// Migrated wasm-gated chat tools hoist their tables here (the `turn_flow`
+/// pattern) so plain `cargo test` byte-checks their schemas. Opt-in per tool.
+/// See `src/tool_params.rs`.
+pub mod tool_params;
+
 /// Pure DIFFICULTY ROUTER core (native-testable): classifies each chat turn
 /// into a [`difficulty::TurnTier`] (Light / Standard / Heavy) and maps it to a
 /// model preference + [`types::ThinkingLevel`], so the in-tab agent can route
@@ -367,3 +375,10 @@ pub use types::{
     StepType, StreamChunk, SystemInstructions, ThinkingLevel, ToolCall, ToolResult,
     TranscriptEntry, TranscriptRole, TriggerDelivery, UsageMetadata,
 };
+
+// NOT public API: re-exports the `tool_params!` macro expansion depends on, so
+// the macro works in downstream crates without them naming serde_json.
+#[doc(hidden)]
+pub mod __private {
+    pub use serde_json;
+}

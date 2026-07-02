@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
@@ -23,9 +22,12 @@ impl DeleteFile {
     }
 }
 
-#[derive(Deserialize)]
-struct Args {
-    path: String,
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    struct Args: serde {
+        path: req_str = "File or directory to delete.",
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -42,13 +44,7 @@ impl Tool for DeleteFile {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "File or directory to delete." }
-            },
-            "required": ["path"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
@@ -75,6 +71,27 @@ impl Tool for DeleteFile {
         }
         self.fs.delete(&args.path).await?;
         Ok(json!({ "ok": true, "path": args.path }))
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File or directory to delete." }
+            },
+            "required": ["path"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
     }
 }
 

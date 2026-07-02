@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
@@ -30,13 +29,16 @@ impl ViewFile {
     }
 }
 
-#[derive(Deserialize)]
-struct Args {
-    path: String,
-    #[serde(default)]
-    start_line: Option<u32>,
-    #[serde(default)]
-    end_line: Option<u32>,
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    /// Parse semantics are unchanged: serde — required `path` errors on
+    /// missing, the `Option` fields default to `None`.
+    struct Args: serde {
+        path: req_str = "Absolute or relative file path.",
+        start_line: opt_u32 min 1 = "1-indexed first line to return.",
+        end_line: opt_u32 min 1 = "1-indexed last line to return (inclusive).",
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -52,15 +54,7 @@ impl Tool for ViewFile {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path":       { "type": "string", "description": "Absolute or relative file path." },
-                "start_line": { "type": "integer", "minimum": 1, "description": "1-indexed first line to return." },
-                "end_line":   { "type": "integer", "minimum": 1, "description": "1-indexed last line to return (inclusive)." }
-            },
-            "required": ["path"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
@@ -147,6 +141,29 @@ impl Tool for ViewFile {
             "truncated": truncated,
             "content": content,
         }))
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "path":       { "type": "string", "description": "Absolute or relative file path." },
+                "start_line": { "type": "integer", "minimum": 1, "description": "1-indexed first line to return." },
+                "end_line":   { "type": "integer", "minimum": 1, "description": "1-indexed last line to return (inclusive)." }
+            },
+            "required": ["path"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
     }
 }
 
