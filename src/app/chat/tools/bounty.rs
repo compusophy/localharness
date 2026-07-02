@@ -109,18 +109,10 @@ pub(crate) fn post_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// tokenId is resolved automatically as the claimant). Reuses
 /// `registry::claim_bounty_sponsored`.
 pub(crate) fn claim_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "bounty_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the open bounty to claim (from \
-                    discover_bounties / the bounty board)."
-            }
-        },
-        "required": ["bounty_id"]
-    });
+    // Schema + extraction from ONE hoisted table
+    // (`crate::tool_params::ClaimBountyParams`), byte-identity-tested natively;
+    // `bounty_id()` reproduces the old inline required-error exactly.
+    let schema = crate::tool_params::ClaimBountyParams::schema();
     ClosureTool::new(
         "claim_bounty",
         "Claim an open bounty to work on it. THIS agent becomes the claimant (its \
@@ -129,10 +121,7 @@ pub(crate) fn claim_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let bounty_id = args
-                .get("bounty_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("bounty_id is required"))?;
+            let bounty_id = crate::tool_params::ClaimBountyParams::lenient(&args).bounty_id()?;
             // The claimant is THIS subdomain's own tokenId.
             let claimant_token_id = own_token_id().await?;
             // Surface the SPECIFIC cause (already claimed / doesn't exist / not
@@ -156,22 +145,8 @@ pub(crate) fn claim_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// `submit_result(bounty_id, result)` — submit a deliverable for a bounty this
 /// agent has claimed. Reuses `registry::submit_result_sponsored`.
 pub(crate) fn submit_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "bounty_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the bounty you previously claimed."
-            },
-            "result": {
-                "type": "string",
-                "description": "Your deliverable / result for the bounty — the work \
-                    product the poster will review before accepting + paying out."
-            }
-        },
-        "required": ["bounty_id", "result"]
-    });
+    // Hoisted table: `crate::tool_params::SubmitResultParams`.
+    let schema = crate::tool_params::SubmitResultParams::schema();
     ClosureTool::new(
         "submit_result",
         "Submit your result for a bounty you have claimed. The poster reviews it and, if \
@@ -179,15 +154,9 @@ pub(crate) fn submit_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          { bounty_id, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let bounty_id = args
-                .get("bounty_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("bounty_id is required"))?;
-            let result_text = args
-                .get("result")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
+            let params = crate::tool_params::SubmitResultParams::lenient(&args);
+            let bounty_id = params.bounty_id()?;
+            let result_text = params.result.trim();
             if result_text.is_empty() {
                 return Err(crate::error::Error::other("result cannot be empty"));
             }
@@ -211,18 +180,8 @@ pub(crate) fn submit_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// agent posted, paying out the escrowed `$LH` to the claimant. Reuses
 /// `registry::accept_result_sponsored`.
 pub(crate) fn accept_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "bounty_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of a bounty YOU posted whose submitted result \
-                    you want to accept (releases the escrowed $LH to the claimant)."
-            }
-        },
-        "required": ["bounty_id"]
-    });
+    // Hoisted table: `crate::tool_params::AcceptResultParams`.
+    let schema = crate::tool_params::AcceptResultParams::schema();
     ClosureTool::new(
         "accept_result",
         "Accept the submitted result for a bounty you posted — this RELEASES the \
@@ -231,10 +190,7 @@ pub(crate) fn accept_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          { bounty_id, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let bounty_id = args
-                .get("bounty_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("bounty_id is required"))?;
+            let bounty_id = crate::tool_params::AcceptResultParams::lenient(&args).bounty_id()?;
             // Specific cause if there's no submitted result to accept (#50).
             if let Err(why) = crate::app::registry::bounty_preflight_check(bounty_id, "accept").await {
                 return Err(crate::error::Error::other(why));

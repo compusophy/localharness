@@ -21,38 +21,10 @@ const PROPOSAL_DEFAULT_PERIOD_HOURS: f64 = 48.0;
 /// (an address or a subdomain name's owner), votable for `period_hours`. Reuses
 /// `registry::propose_sponsored`.
 pub(crate) fn propose_measure_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "guild_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the guild whose treasury the proposal would spend from."
-            },
-            "to": {
-                "type": "string",
-                "description": "Spend recipient if the proposal passes — a raw 0x… \
-                    address OR a subdomain name (resolved to that name's on-chain owner)."
-            },
-            "amount_lh": {
-                "type": "string",
-                "description": "Amount of $LH the proposal would pay out from the \
-                    treasury, as a decimal string (\"5\", \"1.5\"). Must be > 0."
-            },
-            "memo": {
-                "type": "string",
-                "description": "OPTIONAL description of what the spend is for — recorded \
-                    on-chain so voters know what they're approving."
-            },
-            "period_hours": {
-                "type": "string",
-                "description": "OPTIONAL voting window in hours (decimal). Omit for the \
-                    48h default. Members can vote until the deadline; only then can a \
-                    passing proposal be executed."
-            }
-        },
-        "required": ["guild_id", "to", "amount_lh"]
-    });
+    // Schema + lenient extraction from ONE hoisted table
+    // (`crate::tool_params::ProposeMeasureParams`), byte-identity-tested
+    // natively; `guild_id()` reproduces the old inline required-error exactly.
+    let schema = crate::tool_params::ProposeMeasureParams::schema();
     ClosureTool::new(
         "propose_measure",
         "Open a DAO governance proposal to spend $LH from a guild's pooled treasury: \
@@ -62,20 +34,13 @@ pub(crate) fn propose_measure_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          amount_lh, period_hours, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let guild_id = args
-                .get("guild_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("guild_id is required"))?;
-            let to_arg = args.get("to").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let params = crate::tool_params::ProposeMeasureParams::lenient(&args);
+            let guild_id = params.guild_id()?;
+            let to_arg = params.to.trim().to_string();
             if to_arg.is_empty() {
                 return Err(crate::error::Error::other("to cannot be empty"));
             }
-            let amount_arg = args
-                .get("amount_lh")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let amount_arg = params.amount_lh.trim().to_string();
             let amount_wei = crate::encoding::parse_token_amount(&amount_arg).ok_or_else(|| {
                 crate::error::Error::other(format!(
                     "could not parse amount_lh \"{amount_arg}\" — pass a decimal $LH \
@@ -85,9 +50,9 @@ pub(crate) fn propose_measure_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if amount_wei == 0 {
                 return Err(crate::error::Error::other("amount_lh must be greater than 0"));
             }
-            let memo = args.get("memo").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let memo = params.memo.as_deref().unwrap_or("").trim();
             // Period hours → seconds. Default 48h.
-            let period_hours: f64 = match args.get("period_hours").and_then(|v| v.as_str()) {
+            let period_hours: f64 = match params.period_hours.as_deref() {
                 Some(s) if !s.trim().is_empty() => s
                     .trim()
                     .parse::<f64>()
@@ -180,18 +145,8 @@ pub(crate) fn cast_vote_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// `execute_proposal(proposal_id)` — execute a passed proposal after its deadline,
 /// paying out the treasury spend. Reuses `registry::execute_proposal_sponsored`.
 pub(crate) fn execute_proposal_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "proposal_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of a passed proposal whose voting deadline has \
-                    elapsed (executing it pays out the treasury spend)."
-            }
-        },
-        "required": ["proposal_id"]
-    });
+    // Hoisted table: `crate::tool_params::ExecuteProposalParams`.
+    let schema = crate::tool_params::ExecuteProposalParams::schema();
     ClosureTool::new(
         "execute_proposal",
         "Execute a guild governance proposal that PASSED, after its voting deadline has \
@@ -200,10 +155,8 @@ pub(crate) fn execute_proposal_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
          deadline hasn't elapsed. Moves value. Returns { proposal_id, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let proposal_id = args
-                .get("proposal_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("proposal_id is required"))?;
+            let proposal_id =
+                crate::tool_params::ExecuteProposalParams::lenient(&args).proposal_id()?;
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::execute_proposal_sponsored(&signer, proposal_id)
             .await
@@ -220,17 +173,8 @@ pub(crate) fn execute_proposal_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
 /// with its recipient, amount, status, deadline, and for/against tally. Reuses
 /// `registry::{proposals_of, get_proposal, tally_of}`.
 pub(crate) fn list_proposals_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "guild_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the guild whose proposals to list."
-            }
-        },
-        "required": ["guild_id"]
-    });
+    // Hoisted table: `crate::tool_params::ListProposalsParams`.
+    let schema = crate::tool_params::ListProposalsParams::schema();
     ClosureTool::new(
         "list_proposals",
         "List a guild's governance proposals — each with its id, spend recipient, $LH \
@@ -240,10 +184,7 @@ pub(crate) fn list_proposals_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          amount_lh, status, deadline, votes_for, votes_against } ], count }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let guild_id = args
-                .get("guild_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("guild_id is required"))?;
+            let guild_id = crate::tool_params::ListProposalsParams::lenient(&args).guild_id()?;
             let ids = crate::app::registry::proposals_of(guild_id, 0, 256)
                 .await
                 .map_err(crate::error::Error::other)?;

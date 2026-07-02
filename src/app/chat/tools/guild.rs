@@ -17,16 +17,9 @@ use super::bounty::bounty_signer;
 /// `registry::create_guild_sponsored`; reads the new id back from
 /// `guilds_of(caller)`'s last entry.
 pub(crate) fn create_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Display name for the guild (a short label for the org)."
-            }
-        },
-        "required": ["name"]
-    });
+    // Schema + lenient extraction from ONE hoisted table
+    // (`crate::tool_params::CreateGuildParams`), byte-identity-tested natively.
+    let schema = crate::tool_params::CreateGuildParams::schema();
     ClosureTool::new(
         "create_guild",
         "Found an on-chain GUILD: a durable org with members, roles, and a pooled $LH \
@@ -35,7 +28,8 @@ pub(crate) fn create_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let params = crate::tool_params::CreateGuildParams::lenient(&args);
+            let name = params.name.trim();
             if name.is_empty() {
                 return Err(crate::error::Error::other("name cannot be empty"));
             }
@@ -75,22 +69,9 @@ pub(crate) fn create_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// (its on-chain owner) into a guild the caller administers. Admin-gated
 /// on-chain. Reuses `registry::invite_to_guild_sponsored`.
 pub(crate) fn invite_to_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "guild_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the guild you administer."
-            },
-            "member": {
-                "type": "string",
-                "description": "Who to invite — a raw 0x… address OR a subdomain name \
-                    (resolved to that name's on-chain owner)."
-            }
-        },
-        "required": ["guild_id", "member"]
-    });
+    // Hoisted table: `crate::tool_params::InviteToGuildParams`; `guild_id()`
+    // reproduces the old inline required-error exactly.
+    let schema = crate::tool_params::InviteToGuildParams::schema();
     ClosureTool::new(
         "invite_to_guild",
         "Invite an address or subdomain name (its on-chain owner) into a guild you \
@@ -98,16 +79,9 @@ pub(crate) fn invite_to_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          can invite). Returns { guild_id, member, resolved_member, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let guild_id = args
-                .get("guild_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("guild_id is required"))?;
-            let member_arg = args
-                .get("member")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let params = crate::tool_params::InviteToGuildParams::lenient(&args);
+            let guild_id = params.guild_id()?;
+            let member_arg = params.member.trim().to_string();
             let member_hex = resolve_account(&member_arg).await?;
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::invite_to_guild_sponsored(&signer, guild_id, &member_hex)
@@ -126,23 +100,8 @@ pub(crate) fn invite_to_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// `fund_guild(guild_id, amount_lh)` — contribute `$LH` from the caller's wallet
 /// into a guild's shared treasury. Reuses `registry::fund_guild_sponsored`.
 pub(crate) fn fund_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "guild_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the guild to fund."
-            },
-            "amount_lh": {
-                "type": "string",
-                "description": "Amount of $LH to contribute, as a decimal string \
-                    (\"5\", \"1.5\"). Pulled from YOUR wallet into the shared treasury. \
-                    Must be > 0."
-            }
-        },
-        "required": ["guild_id", "amount_lh"]
-    });
+    // Hoisted table: `crate::tool_params::FundGuildParams`.
+    let schema = crate::tool_params::FundGuildParams::schema();
     ClosureTool::new(
         "fund_guild",
         "Contribute $LH from your wallet into a guild's pooled treasury. Anyone can \
@@ -150,16 +109,9 @@ pub(crate) fn fund_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          with the owner before calling. Returns { guild_id, amount_lh, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let guild_id = args
-                .get("guild_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("guild_id is required"))?;
-            let amount_arg = args
-                .get("amount_lh")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let params = crate::tool_params::FundGuildParams::lenient(&args);
+            let guild_id = params.guild_id()?;
+            let amount_arg = params.amount_lh.trim().to_string();
             let amount_wei = crate::encoding::parse_token_amount(&amount_arg).ok_or_else(|| {
                 crate::error::Error::other(format!(
                     "could not parse amount_lh \"{amount_arg}\" — pass a decimal $LH \
@@ -194,37 +146,9 @@ pub(crate) fn fund_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// pooled treasury. Admin-gated ON-CHAIN. Reuses
 /// `registry::spend_treasury_sponsored`.
 pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "guild_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the guild whose treasury to spend from."
-            },
-            "to": {
-                "type": "string",
-                "description": "Recipient — a raw 0x… address OR a subdomain name \
-                    (resolved to that name's on-chain owner)."
-            },
-            "amount_lh": {
-                "type": "string",
-                "description": "Amount of $LH to pay out, as a decimal string. Must be > 0."
-            },
-            "memo": {
-                "type": "string",
-                "description": "OPTIONAL note recorded with the payment (what it's for)."
-            },
-            "confirmation": {
-                "type": "string",
-                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
-                    first call — it returns a challenge code shown to the owner. Relay \
-                    it, wait for the owner to TYPE the code in chat, then retry with it. \
-                    Never invent it; only the platform issues it."
-            }
-        },
-        "required": ["guild_id", "to", "amount_lh"]
-    });
+    // Hoisted table: `crate::tool_params::SpendTreasuryParams`. The body keeps
+    // its own parse/positivity + belt-and-suspenders confirmation checks.
+    let schema = crate::tool_params::SpendTreasuryParams::schema();
     ClosureTool::new(
         "spend_treasury",
         "Pay $LH OUT of a guild's pooled treasury to an address or subdomain name, with \
@@ -236,23 +160,11 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          { guild_id, to, resolved_to, amount_lh, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let guild_id = args
-                .get("guild_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("guild_id is required"))?;
-            let to_arg = args
-                .get("to")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let amount_arg = args
-                .get("amount_lh")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let memo = args.get("memo").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let params = crate::tool_params::SpendTreasuryParams::lenient(&args);
+            let guild_id = params.guild_id()?;
+            let to_arg = params.to.trim().to_string();
+            let amount_arg = params.amount_lh.trim().to_string();
+            let memo = params.memo.as_deref().unwrap_or("").trim();
             let amount_wei = crate::encoding::parse_token_amount(&amount_arg).ok_or_else(|| {
                 crate::error::Error::other(format!(
                     "could not parse amount_lh \"{amount_arg}\" — pass a decimal $LH \
@@ -265,9 +177,9 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
             // this body runs; this guards a path that forgot the hook (spend_treasury
             // moves guild $LH — same posture as send_lh / release_subdomain).
-            let confirmed = args
-                .get("confirmation")
-                .and_then(|v| v.as_str())
+            let confirmed = params
+                .confirmation
+                .as_deref()
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {

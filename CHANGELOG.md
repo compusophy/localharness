@@ -25,11 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   post_bounty, set_persona, record_lesson, notify) migrated in lenient mode with
   their tables HOISTED to `src/tool_params.rs` like send_lh — so plain `cargo
   test` byte-checks these wasm-gated (`browser-app`) schemas natively for the
-  first time. Skipped pending new kinds: claim_bounty / submit_result /
-  accept_result (required u64 that errors on missing — no lenient kind conflates
-  that with a real id 0), attest (`maximum` + int-or-string rating coercion),
-  discover_bounties (its literal `"required": []` can't byte-match the macro's
-  omit-when-empty), the array/batch tools, and the no-arg tools.
+  first time. PLUS a SECOND chat-tools wave riding a new `req_u64` kind — the
+  lenient-mode REQUIRED integer: stored as `Option<u64>`, read via a generated
+  `fn <field>() -> Result<u64>` accessor that errors the tools' historical
+  `"<field> is required"` on missing/wrong type instead of defaulting (id 0
+  stays a real id — the reason the bounty trio was skipped last wave). That
+  unlocks 12 more lenient migrations: claim_bounty, submit_result,
+  accept_result, create_guild, invite_to_guild, fund_guild, spend_treasury,
+  propose_measure, execute_proposal, list_proposals, web_fetch,
+  submit_feedback — same hoisted-table + frozen byte-identity + lenient-parity
+  contract. Still skipped pending kinds: attest / dwell (`maximum` +
+  coercion), set_role / cast_vote / schedule_task / consult_model (`enum`;
+  cast_vote also needs a required-bool-that-errors), discover_bounties /
+  list_my_guilds (literal `"required": []` can't byte-match the macro's
+  omit-when-empty), run_wasm_cli + the array/batch tools, and the no-arg
+  tools; fitting stragglers (set_lessons, create_skill, delete_skill,
+  cancel_task, execute_script, spawn_recursive_subagent) queue for a later
+  batch.
 
 - **`registry::*_sponsored` wrappers no longer take `fee_payer`/`fee_token`**
   (BREAKING on the semver-exempt `registry::` surface). Every call site passed

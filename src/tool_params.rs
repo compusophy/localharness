@@ -34,9 +34,15 @@
 //! a kind is added — the escape hatch is "don't migrate yet", never "bend the
 //! table".
 //!
-//! Field kinds: `req_str`, `opt_str`, `req_u32`, `opt_u32`, `opt_bool`,
-//! each optionally followed by `min N` (JSON-Schema `minimum`). `req_*` kinds
-//! land in the schema's `required` array in declaration order.
+//! Field kinds: `req_str`, `opt_str`, `req_u32`, `req_u64`, `opt_u32`,
+//! `opt_bool`, each optionally followed by `min N` (JSON-Schema `minimum`).
+//! `req_*` kinds land in the schema's `required` array in declaration order.
+//! `req_u64` is the LENIENT-mode required integer: stored as `Option<u64>`
+//! and read via a generated `fn <field>() -> Result<u64>` accessor that
+//! errors `"<field> is required"` on a missing or non-integer value instead
+//! of defaulting — a real id 0 must never be conflated with "missing" (the
+//! bounty/guild/proposal id semantics). In serde tables use plain required
+//! kinds; serde's own missing-field error already covers them.
 //!
 //! ```rust
 //! localharness::tool_params! {
@@ -60,17 +66,20 @@ macro_rules! tool_params {
     (@ty req_str) => { ::std::string::String };
     (@ty opt_str) => { ::core::option::Option<::std::string::String> };
     (@ty req_u32) => { u32 };
+    (@ty req_u64) => { ::core::option::Option<u64> };
     (@ty opt_u32) => { ::core::option::Option<u32> };
     (@ty opt_bool) => { ::core::option::Option<bool> };
     // ---------- internal: JSON-Schema "type" per kind ----------
     (@json_ty req_str) => { "string" };
     (@json_ty opt_str) => { "string" };
     (@json_ty req_u32) => { "integer" };
+    (@json_ty req_u64) => { "integer" };
     (@json_ty opt_u32) => { "integer" };
     (@json_ty opt_bool) => { "boolean" };
     // ---------- internal: required flag per kind ----------
     (@required req_str) => { true };
     (@required req_u32) => { true };
+    (@required req_u64) => { true };
     (@required opt_str) => { false };
     (@required opt_u32) => { false };
     (@required opt_bool) => { false };
@@ -89,6 +98,9 @@ macro_rules! tool_params {
             .and_then(|n| u32::try_from(n).ok())
             .unwrap_or(0)
     };
+    (@lenient req_u64, $args:expr, $name:expr) => {
+        $args.get($name).and_then(|v| v.as_u64())
+    };
     (@lenient opt_u32, $args:expr, $name:expr) => {
         $args
             .get($name)
@@ -98,6 +110,22 @@ macro_rules! tool_params {
     (@lenient opt_bool, $args:expr, $name:expr) => {
         $args.get($name).and_then(|v| v.as_bool())
     };
+    // ---------- internal: per-field REQUIRED accessor. `req_u64` generates a
+    // method (field-named — methods and fields share no namespace) that errors
+    // on missing/non-integer instead of defaulting, reproducing the historical
+    // `.as_u64().ok_or_else(..)` chat-tool arm verbatim (id 0 stays a real id).
+    // Every other kind generates nothing. ----------
+    (@req_accessor $vis:vis, req_u64, $field:ident) => {
+        /// Required integer, lenient-extracted: `Ok` when present and
+        /// integer-typed (0 is a REAL value), else the tools' historical
+        /// `"<field> is required"` error — never a silent default.
+        $vis fn $field(&self) -> ::core::result::Result<u64, $crate::error::Error> {
+            self.$field.ok_or_else(|| {
+                $crate::error::Error::other(concat!(stringify!($field), " is required"))
+            })
+        }
+    };
+    (@req_accessor $vis:vis, $other:ident, $field:ident) => {};
     // ---------- internal: the shared `schema()` body ----------
     (@schema $vis:vis, $( $field:ident : $kind:ident $(min $min:literal)? = $desc:literal ),+) => {
         /// Wire `input_schema`, generated from the SAME table as the struct
@@ -146,6 +174,7 @@ macro_rules! tool_params {
         }
         impl $name {
             $crate::tool_params!(@schema $vis, $( $field : $kind $(min $min)? = $desc ),+);
+            $( $crate::tool_params!(@req_accessor $vis, $kind, $field); )+
         }
     };
     // ---------- `: lenient` mode (the chat tools' existing parse semantics) ----------
@@ -161,11 +190,14 @@ macro_rules! tool_params {
         }
         impl $name {
             $crate::tool_params!(@schema $vis, $( $field : $kind $(min $min)? = $desc ),+);
+            $( $crate::tool_params!(@req_accessor $vis, $kind, $field); )+
 
             /// Lenient extraction: a missing or wrong-typed field falls back
             /// to its default (`""` / `None` / `0`) instead of erroring — the
             /// browser chat tools' historical `.get().and_then().unwrap_or()`
             /// semantics, preserved exactly (validation stays in the tool body).
+            /// `req_u64` fields extract to `None` here; the error fires at
+            /// their generated accessor, matching the old inline `ok_or_else`.
             $vis fn lenient(args: &$crate::__private::serde_json::Value) -> Self {
                 Self {
                     $( $field: $crate::tool_params!(@lenient $kind, args, stringify!($field)), )+
@@ -369,6 +401,131 @@ crate::tool_params! {
     }
 }
 
+crate::tool_params! {
+    /// Args for the browser `claim_bounty` tool (`src/app/chat/tools/bounty.rs`)
+    /// — claim an open bounty as THIS agent. `bounty_id` uses the `req_u64`
+    /// required-accessor (id 0 is real; missing/wrong-type errors).
+    pub struct ClaimBountyParams: lenient {
+        bounty_id: req_u64 min 0 = "The id of the open bounty to claim (from \
+                    discover_bounties / the bounty board).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `submit_result` tool (`src/app/chat/tools/bounty.rs`).
+    pub struct SubmitResultParams: lenient {
+        bounty_id: req_u64 min 0 = "The id of the bounty you previously claimed.",
+        result: req_str = "Your deliverable / result for the bounty — the work \
+                    product the poster will review before accepting + paying out.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `accept_result` tool (`src/app/chat/tools/bounty.rs`)
+    /// — releases escrow, so the preflight/signing body stays unchanged.
+    pub struct AcceptResultParams: lenient {
+        bounty_id: req_u64 min 0 = "The id of a bounty YOU posted whose submitted result \
+                    you want to accept (releases the escrowed $LH to the claimant).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `create_guild` tool (`src/app/chat/tools/guild.rs`).
+    pub struct CreateGuildParams: lenient {
+        name: req_str = "Display name for the guild (a short label for the org).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `invite_to_guild` tool (`src/app/chat/tools/guild.rs`).
+    pub struct InviteToGuildParams: lenient {
+        guild_id: req_u64 min 0 = "The id of the guild you administer.",
+        member: req_str = "Who to invite — a raw 0x… address OR a subdomain name \
+                    (resolved to that name's on-chain owner).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `fund_guild` tool (`src/app/chat/tools/guild.rs`).
+    pub struct FundGuildParams: lenient {
+        guild_id: req_u64 min 0 = "The id of the guild to fund.",
+        amount_lh: req_str = "Amount of $LH to contribute, as a decimal string \
+                    (\"5\", \"1.5\"). Pulled from YOUR wallet into the shared treasury. \
+                    Must be > 0.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `spend_treasury` tool (`src/app/chat/tools/guild.rs`)
+    /// — pays $LH OUT of a guild treasury, confirm-gated.
+    pub struct SpendTreasuryParams: lenient {
+        guild_id: req_u64 min 0 = "The id of the guild whose treasury to spend from.",
+        to: req_str = "Recipient — a raw 0x… address OR a subdomain name \
+                    (resolved to that name's on-chain owner).",
+        amount_lh: req_str = "Amount of $LH to pay out, as a decimal string. Must be > 0.",
+        memo: opt_str = "OPTIONAL note recorded with the payment (what it's for).",
+        confirmation: opt_str = "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. Relay \
+                    it, wait for the owner to TYPE the code in chat, then retry with it. \
+                    Never invent it; only the platform issues it.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `propose_measure` tool
+    /// (`src/app/chat/tools/governance.rs`).
+    pub struct ProposeMeasureParams: lenient {
+        guild_id: req_u64 min 0 = "The id of the guild whose treasury the proposal would spend from.",
+        to: req_str = "Spend recipient if the proposal passes — a raw 0x… \
+                    address OR a subdomain name (resolved to that name's on-chain owner).",
+        amount_lh: req_str = "Amount of $LH the proposal would pay out from the \
+                    treasury, as a decimal string (\"5\", \"1.5\"). Must be > 0.",
+        memo: opt_str = "OPTIONAL description of what the spend is for — recorded \
+                    on-chain so voters know what they're approving.",
+        period_hours: opt_str = "OPTIONAL voting window in hours (decimal). Omit for the \
+                    48h default. Members can vote until the deadline; only then can a \
+                    passing proposal be executed.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `execute_proposal` tool
+    /// (`src/app/chat/tools/governance.rs`).
+    pub struct ExecuteProposalParams: lenient {
+        proposal_id: req_u64 min 0 = "The id of a passed proposal whose voting deadline has \
+                    elapsed (executing it pays out the treasury spend).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `list_proposals` tool
+    /// (`src/app/chat/tools/governance.rs`) — read-only.
+    pub struct ListProposalsParams: lenient {
+        guild_id: req_u64 min 0 = "The id of the guild whose proposals to list.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `web_fetch` tool (`src/app/chat/tools/misc.rs`)
+    /// — proxy-metered external HTTPS fetch.
+    pub struct WebFetchParams: lenient {
+        url: req_str = "Absolute https:// URL to fetch — a docs page, \
+                    GitHub README (use raw.githubusercontent.com for raw \
+                    content), or JSON API endpoint. http://, private/internal \
+                    hosts, and raw-IP targets are rejected.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `submit_feedback` tool (`src/app/chat/tools/misc.rs`).
+    pub struct SubmitFeedbackParams: lenient {
+        text: req_str = "The feedback text. Filed off-chain with full \
+                    conversation + device/settings context. (If the owner enabled \
+                    on-chain mirroring, the SHORT note is also written on-chain, where \
+                    a 2048-byte cap applies — summarize rather than pasting a long report.)",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,9 +601,61 @@ mod tests {
             ("SetPersonaParams", SetPersonaParams::schema()),
             ("RecordLessonParams", RecordLessonParams::schema()),
             ("NotifyParams", NotifyParams::schema()),
+            ("ClaimBountyParams", ClaimBountyParams::schema()),
+            ("SubmitResultParams", SubmitResultParams::schema()),
+            ("AcceptResultParams", AcceptResultParams::schema()),
+            ("CreateGuildParams", CreateGuildParams::schema()),
+            ("InviteToGuildParams", InviteToGuildParams::schema()),
+            ("FundGuildParams", FundGuildParams::schema()),
+            ("SpendTreasuryParams", SpendTreasuryParams::schema()),
+            ("ProposeMeasureParams", ProposeMeasureParams::schema()),
+            ("ExecuteProposalParams", ExecuteProposalParams::schema()),
+            ("ListProposalsParams", ListProposalsParams::schema()),
+            ("WebFetchParams", WebFetchParams::schema()),
+            ("SubmitFeedbackParams", SubmitFeedbackParams::schema()),
         ] {
             assert_gemini_safe(&schema, name);
         }
+    }
+
+    crate::tool_params! {
+        /// Exercises the lenient-mode REQUIRED integer kind (`req_u64`).
+        struct ReqIntLenient: lenient {
+            id: req_u64 min 0 = "A required integer id.",
+            note: opt_str = "An optional string.",
+        }
+    }
+
+    /// `req_u64`: the required-accessor ERRORS on missing/invalid with the
+    /// chat tools' exact historical message, while 0 and u64::MAX stay REAL
+    /// values — the tick-20 skip reason (default-0 conflated missing with a
+    /// real id 0) is what this kind exists to fix.
+    #[test]
+    fn req_u64_errors_on_missing_or_invalid_instead_of_defaulting() {
+        // Missing → the historical `<field> is required` error, verbatim.
+        let p = ReqIntLenient::lenient(&json!({}));
+        assert_eq!(p.id().unwrap_err().to_string(), "id is required");
+        // Wrong-typed (string / bool / float / negative) → same error, exactly
+        // like the old inline `.and_then(|v| v.as_u64())` failing.
+        assert!(ReqIntLenient::lenient(&json!({"id": "7"})).id().is_err());
+        assert!(ReqIntLenient::lenient(&json!({"id": true})).id().is_err());
+        assert!(ReqIntLenient::lenient(&json!({"id": 1.5})).id().is_err());
+        assert!(ReqIntLenient::lenient(&json!({"id": -1})).id().is_err());
+        // 0 is a REAL id — must round-trip, never read as "missing".
+        assert_eq!(ReqIntLenient::lenient(&json!({"id": 0})).id().unwrap(), 0);
+        // Sibling optional fields keep their lenient defaults alongside it.
+        let p = ReqIntLenient::lenient(&json!({"id": 3, "note": "n"}));
+        assert_eq!((p.id().unwrap(), p.note.as_deref()), (3, Some("n")));
+        // Full u64 range (the old arm never narrowed to u32).
+        assert_eq!(
+            ReqIntLenient::lenient(&json!({"id": u64::MAX})).id().unwrap(),
+            u64::MAX
+        );
+        // Schema side: integer + `minimum` carried + in `required`.
+        let s = ReqIntLenient::schema();
+        assert_eq!(s["properties"]["id"]["type"], "integer");
+        assert_eq!(s["properties"]["id"]["minimum"], 0);
+        assert_eq!(s["required"], json!(["id"]));
     }
 
     /// The generated schema covers every kind: correct JSON types, `minimum`
@@ -882,5 +1091,266 @@ mod tests {
             Some("krafto".to_string())
         );
         assert!(p.vibrate.unwrap_or(false));
+    }
+
+    /// BYTE-IDENTITY for the SECOND chat-tools wave (the `req_u64` unlock):
+    /// each generated schema serializes byte-for-byte equal to the hand-written
+    /// literal it replaced in `src/app/chat/tools/{bounty,guild,governance,misc}.rs`
+    /// (frozen verbatim below) — the same migration contract as wave 1.
+    #[test]
+    fn chat_tool_wave2_schemas_are_byte_identical_to_the_frozen_originals() {
+        let cases: [(&str, Value, Value); 12] = [
+            ("claim_bounty", ClaimBountyParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "bounty_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the open bounty to claim (from \
+                            discover_bounties / the bounty board)."
+                    }
+                },
+                "required": ["bounty_id"]
+            })),
+            ("submit_result", SubmitResultParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "bounty_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the bounty you previously claimed."
+                    },
+                    "result": {
+                        "type": "string",
+                        "description": "Your deliverable / result for the bounty — the work \
+                            product the poster will review before accepting + paying out."
+                    }
+                },
+                "required": ["bounty_id", "result"]
+            })),
+            ("accept_result", AcceptResultParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "bounty_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of a bounty YOU posted whose submitted result \
+                            you want to accept (releases the escrowed $LH to the claimant)."
+                    }
+                },
+                "required": ["bounty_id"]
+            })),
+            ("create_guild", CreateGuildParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Display name for the guild (a short label for the org)."
+                    }
+                },
+                "required": ["name"]
+            })),
+            ("invite_to_guild", InviteToGuildParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "guild_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the guild you administer."
+                    },
+                    "member": {
+                        "type": "string",
+                        "description": "Who to invite — a raw 0x… address OR a subdomain name \
+                            (resolved to that name's on-chain owner)."
+                    }
+                },
+                "required": ["guild_id", "member"]
+            })),
+            ("fund_guild", FundGuildParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "guild_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the guild to fund."
+                    },
+                    "amount_lh": {
+                        "type": "string",
+                        "description": "Amount of $LH to contribute, as a decimal string \
+                            (\"5\", \"1.5\"). Pulled from YOUR wallet into the shared treasury. \
+                            Must be > 0."
+                    }
+                },
+                "required": ["guild_id", "amount_lh"]
+            })),
+            ("spend_treasury", SpendTreasuryParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "guild_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the guild whose treasury to spend from."
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "Recipient — a raw 0x… address OR a subdomain name \
+                            (resolved to that name's on-chain owner)."
+                    },
+                    "amount_lh": {
+                        "type": "string",
+                        "description": "Amount of $LH to pay out, as a decimal string. Must be > 0."
+                    },
+                    "memo": {
+                        "type": "string",
+                        "description": "OPTIONAL note recorded with the payment (what it's for)."
+                    },
+                    "confirmation": {
+                        "type": "string",
+                        "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                            first call — it returns a challenge code shown to the owner. Relay \
+                            it, wait for the owner to TYPE the code in chat, then retry with it. \
+                            Never invent it; only the platform issues it."
+                    }
+                },
+                "required": ["guild_id", "to", "amount_lh"]
+            })),
+            ("propose_measure", ProposeMeasureParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "guild_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the guild whose treasury the proposal would spend from."
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "Spend recipient if the proposal passes — a raw 0x… \
+                            address OR a subdomain name (resolved to that name's on-chain owner)."
+                    },
+                    "amount_lh": {
+                        "type": "string",
+                        "description": "Amount of $LH the proposal would pay out from the \
+                            treasury, as a decimal string (\"5\", \"1.5\"). Must be > 0."
+                    },
+                    "memo": {
+                        "type": "string",
+                        "description": "OPTIONAL description of what the spend is for — recorded \
+                            on-chain so voters know what they're approving."
+                    },
+                    "period_hours": {
+                        "type": "string",
+                        "description": "OPTIONAL voting window in hours (decimal). Omit for the \
+                            48h default. Members can vote until the deadline; only then can a \
+                            passing proposal be executed."
+                    }
+                },
+                "required": ["guild_id", "to", "amount_lh"]
+            })),
+            ("execute_proposal", ExecuteProposalParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "proposal_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of a passed proposal whose voting deadline has \
+                            elapsed (executing it pays out the treasury spend)."
+                    }
+                },
+                "required": ["proposal_id"]
+            })),
+            ("list_proposals", ListProposalsParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "guild_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the guild whose proposals to list."
+                    }
+                },
+                "required": ["guild_id"]
+            })),
+            ("web_fetch", WebFetchParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute https:// URL to fetch — a docs page, \
+                            GitHub README (use raw.githubusercontent.com for raw \
+                            content), or JSON API endpoint. http://, private/internal \
+                            hosts, and raw-IP targets are rejected."
+                    }
+                },
+                "required": ["url"]
+            })),
+            ("submit_feedback", SubmitFeedbackParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The feedback text. Filed off-chain with full \
+                            conversation + device/settings context. (If the owner enabled \
+                            on-chain mirroring, the SHORT note is also written on-chain, where \
+                            a 2048-byte cap applies — summarize rather than pasting a long report.)"
+                    }
+                },
+                "required": ["text"]
+            })),
+        ];
+        for (name, generated, frozen) in cases {
+            assert_eq!(generated.to_string(), frozen.to_string(), "schema drift: {name}");
+        }
+    }
+
+    /// Lenient parity for wave 2: the extraction (plus the `req_u64` accessor)
+    /// feeds each tool's unchanged body validation the same values — and the
+    /// same errors, with the same messages — the old inline chains produced.
+    #[test]
+    fn chat_tool_wave2_lenient_matches_the_old_inline_extraction() {
+        // Bounty trio: missing/wrong-typed bounty_id errors with the tools'
+        // EXACT historical message; 0 stays a real id (the tick-20 skip reason).
+        let p = ClaimBountyParams::lenient(&json!({}));
+        assert_eq!(p.bounty_id().unwrap_err().to_string(), "bounty_id is required");
+        assert_eq!(ClaimBountyParams::lenient(&json!({"bounty_id": 0})).bounty_id().unwrap(), 0);
+        let p = SubmitResultParams::lenient(&json!({"bounty_id": "3", "result": " r "}));
+        assert!(p.bounty_id().is_err()); // string id fails, as `.as_u64()` did
+        assert_eq!(p.result, " r "); // body trims, exactly as before
+        let p = SubmitResultParams::lenient(&json!({"bounty_id": 7}));
+        assert_eq!((p.bounty_id().unwrap(), p.result.as_str()), (7, ""));
+        assert_eq!(
+            AcceptResultParams::lenient(&json!({})).bounty_id().unwrap_err().to_string(),
+            "bounty_id is required"
+        );
+
+        // Guild tools: ids share the accessor; strings/optionals keep the
+        // historical defaults the bodies re-validate.
+        assert_eq!(CreateGuildParams::lenient(&json!({"name": 9})).name, "");
+        let p = InviteToGuildParams::lenient(&json!({"member": " Alice "}));
+        assert_eq!(p.guild_id().unwrap_err().to_string(), "guild_id is required");
+        assert_eq!(p.member, " Alice "); // body trims
+        let p = FundGuildParams::lenient(&json!({"guild_id": 2, "amount_lh": " 1.5 "}));
+        assert_eq!((p.guild_id().unwrap(), p.amount_lh.trim()), (2, "1.5"));
+        let p = SpendTreasuryParams::lenient(&json!({"guild_id": 1, "to": "bob", "amount_lh": "2"}));
+        assert_eq!(p.memo.as_deref().unwrap_or(""), "");
+        // old: .map(|s| !s.trim().is_empty()).unwrap_or(false) → still false
+        assert!(!p.confirmation.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false));
+
+        // Governance: period_hours blank → the body's 48h default arm.
+        let p = ProposeMeasureParams::lenient(&json!({"guild_id": 4, "period_hours": "  "}));
+        assert_eq!(p.guild_id().unwrap(), 4);
+        assert!(!matches!(p.period_hours.as_deref(), Some(s) if !s.trim().is_empty()));
+        assert_eq!(
+            ExecuteProposalParams::lenient(&json!({"proposal_id": true}))
+                .proposal_id()
+                .unwrap_err()
+                .to_string(),
+            "proposal_id is required"
+        );
+        assert_eq!(ListProposalsParams::lenient(&json!({"guild_id": 11})).guild_id().unwrap(), 11);
+
+        // misc: "" defaults keep the bodies' empty-check error paths reachable.
+        assert_eq!(WebFetchParams::lenient(&json!({})).url, "");
+        assert_eq!(WebFetchParams::lenient(&json!({"url": " https://x "})).url.trim(), "https://x");
+        assert_eq!(SubmitFeedbackParams::lenient(&json!({"text": 1})).text, "");
+        assert_eq!(SubmitFeedbackParams::lenient(&json!({"text": " ok "})).text.trim(), "ok");
     }
 }

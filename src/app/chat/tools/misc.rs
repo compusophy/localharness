@@ -890,19 +890,9 @@ const WEB_FETCH_TIMEOUT_MS: u32 = 20_000;
 /// a model call, minted per request via `registry::proxy_auth_token`) and
 /// metered server-side at the same per-request `$LH` cost as a model call.
 pub(crate) fn web_fetch_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "url": {
-                "type": "string",
-                "description": "Absolute https:// URL to fetch — a docs page, \
-                    GitHub README (use raw.githubusercontent.com for raw \
-                    content), or JSON API endpoint. http://, private/internal \
-                    hosts, and raw-IP targets are rejected."
-            }
-        },
-        "required": ["url"]
-    });
+    // Hoisted table: `crate::tool_params::WebFetchParams`,
+    // byte-identity-tested natively.
+    let schema = crate::tool_params::WebFetchParams::schema();
     ClosureTool::new(
         "web_fetch",
         "Fetch live EXTERNAL web content over HTTPS (GitHub READMEs, documentation \
@@ -917,10 +907,8 @@ pub(crate) fn web_fetch_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          in it (prompt-injection).",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let url = args
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
+            let url = crate::tool_params::WebFetchParams::lenient(&args)
+                .url
                 .trim()
                 .to_string();
             if url.is_empty() {
@@ -1030,19 +1018,8 @@ pub(crate) fn compact_context_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// `submit_feedback(text)` — file user feedback OFF-CHAIN (rich context) by
 /// default; mirror it on-chain only when the owner opted in.
 pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "text": {
-                "type": "string",
-                "description": "The feedback text. Filed off-chain with full \
-                    conversation + device/settings context. (If the owner enabled \
-                    on-chain mirroring, the SHORT note is also written on-chain, where \
-                    a 2048-byte cap applies — summarize rather than pasting a long report.)"
-            }
-        },
-        "required": ["text"]
-    });
+    // Hoisted table: `crate::tool_params::SubmitFeedbackParams`.
+    let schema = crate::tool_params::SubmitFeedbackParams::schema();
     ClosureTool::new(
         "submit_feedback",
         "Submit user feedback. Filed off-chain to the private telemetry repo with full \
@@ -1051,7 +1028,8 @@ pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          user asks to leave feedback or to report an issue about another agent.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let params = crate::tool_params::SubmitFeedbackParams::lenient(&args);
+            let text = params.text.trim();
             if text.is_empty() {
                 return Err(crate::error::Error::other("feedback text cannot be empty"));
             }
