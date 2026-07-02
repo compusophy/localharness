@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.19] - 2026-07-02
+
+### Fixed
+
+- **CLI `create` claimed the name mint was free when it charges ~1 LH.** The success line said
+  "(free — the name mint is sponsored, you paid nothing)" while `register` pulls
+  `registrationCost()` (~1 LH) from the wallet via transferFrom — contradicting the "claiming
+  costs 1.00 LH" line right above it, and the seed of the recurring "told free, charged 1 LH"
+  onboarding confusion. Verified live (a fresh create went 5.00 → 4.00 LH). It now says the
+  mint's *gas* is sponsored but the name fee comes from your `$LH`.
+- **SSE frames with invalid UTF-8 were silently dropped.** `extract_data_payload` did
+  `from_utf8(frame).unwrap_or("")`, so a frame carrying invalid UTF-8 (a multi-byte char split
+  across a network chunk, or backend corruption) was emptied — losing that frame's `data:`
+  payload and truncating the stream. It now uses `from_utf8_lossy` (keeps the frame, replaces
+  only the bad bytes).
+
+### Docs
+
+- Fixed a stale `COST_PER_REQUEST_WEI` comment in the proxy (said "Default 0.01 $LH" while the
+  code + adjacent lines are 1 $LH).
+
 ## [0.60.18] - 2026-07-02
 
 ### Added
