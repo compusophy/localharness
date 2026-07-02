@@ -1615,7 +1615,7 @@ mod worker {
     }
 
     /// An 8-hex-char joiner id from the ephemeral wallet address (first 4 bytes) —
-    /// matches the relay's JOINER_RE (`[a-z0-9]{1,32}`).
+    /// matches the relay's JOINER_RE (`[a-z0-9]{8}`).
     fn joiner_id_from(addr: &[u8; 20]) -> String {
         let mut s = String::with_capacity(8);
         for b in &addr[0..4] {

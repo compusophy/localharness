@@ -163,7 +163,9 @@ async fn submit_claim(name: &str, create_if_missing: bool) -> Result<String, Str
                 .await
                 .unwrap_or(0);
             if wallet + meter < cost {
-                let deficit_lh = (cost - wallet - meter) / 1_000_000_000_000_000_000u128;
+                // Round UP: a fractional shortfall (e.g. 0.5 LH short) must show
+                // "need 1 more LH", not floor-divide to a confusing "need 0 more".
+                let deficit_lh = (cost - wallet - meter).div_ceil(1_000_000_000_000_000_000u128);
                 return Err(format!("__NEED_LH__{deficit_lh}"));
             }
         }
