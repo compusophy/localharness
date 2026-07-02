@@ -16,6 +16,16 @@ use crate::tools::{Tool, ToolContext};
 
 pub struct RenderHtml;
 
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    /// Lenient mode reproduces the historical `.get().and_then(as_str)
+    /// .unwrap_or("")` extraction exactly — validation stays in the body.
+    struct Args: lenient {
+        source: req_str = "the HTML document to render",
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Tool for RenderHtml {
@@ -36,27 +46,18 @@ impl Tool for RenderHtml {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "source": {
-                    "type": "string",
-                    "description": "the HTML document to render"
-                }
-            },
-            "required": ["source"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
-        let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+        let Args { source } = Args::lenient(&args);
         if source.is_empty() {
             return Ok(json!({ "error": "source is required" }));
         }
 
         #[cfg(all(target_arch = "wasm32", feature = "browser-app"))]
         {
-            match crate::app::display::render_html(source) {
+            match crate::app::display::render_html(&source) {
                 Ok(()) => Ok(json!({ "status": "rendered on display" })),
                 Err(err) => Ok(json!({
                     "error": "render failed",
@@ -72,5 +73,29 @@ impl Tool for RenderHtml {
                 "note": "the visual display requires the browser app"
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "the HTML document to render"
+                }
+            },
+            "required": ["source"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
     }
 }

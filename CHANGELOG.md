@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`tool_params!` single-table tool args: 11 more builtins migrated** (on top of the
+  delete_file / view_file / send_lh prototypes that landed with the macro). ONE
+  declaration now generates both the typed args struct and the Gemini-safe wire
+  `input_schema` for list_directory, find_file, search_directory, create_file,
+  edit_file, rename_file, generate_image, start_subagent (serde mode) and
+  call_agent, render_html, run_cartridge (lenient mode). Every migration keeps a
+  FROZEN copy of its original hand-written schema with a byte-identity test —
+  wire schemas and parse/validation behavior unchanged. Still hand-written (need
+  kinds the table doesn't have): ask_question / configure_agent / compile_rustlite
+  (array fields), finish (type-less `output`), run_command (`maximum`),
+  current_time (no args).
+
 - **`registry::*_sponsored` wrappers no longer take `fee_payer`/`fee_token`**
   (BREAKING on the semver-exempt `registry::` surface). Every call site passed
   the identical pair — the committed testnet sponsor key (an unused placeholder

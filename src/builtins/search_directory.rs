@@ -5,7 +5,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use globset::{Glob, GlobMatcher};
 use regex::RegexBuilder;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
@@ -27,14 +26,15 @@ impl SearchDirectory {
     }
 }
 
-#[derive(Deserialize)]
-struct Args {
-    path: String,
-    pattern: String,
-    #[serde(default)]
-    file_glob: Option<String>,
-    #[serde(default)]
-    case_sensitive: Option<bool>,
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    struct Args: serde {
+        path: req_str = "Directory to search under.",
+        pattern: req_str = "Regex (RE2-style) matched against each line.",
+        file_glob: opt_str = "Optional glob (e.g. \"*.rs\") to restrict files.",
+        case_sensitive: opt_bool = "Defaults to false.",
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -51,16 +51,7 @@ impl Tool for SearchDirectory {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path":          { "type": "string", "description": "Directory to search under." },
-                "pattern":       { "type": "string", "description": "Regex (RE2-style) matched against each line." },
-                "file_glob":     { "type": "string", "description": "Optional glob (e.g. \"*.rs\") to restrict files." },
-                "case_sensitive":{ "type": "boolean", "description": "Defaults to false." }
-            },
-            "required": ["path", "pattern"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
@@ -138,6 +129,30 @@ impl Tool for SearchDirectory {
             "count": count,
             "truncated": truncated,
         }))
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "path":          { "type": "string", "description": "Directory to search under." },
+                "pattern":       { "type": "string", "description": "Regex (RE2-style) matched against each line." },
+                "file_glob":     { "type": "string", "description": "Optional glob (e.g. \"*.rs\") to restrict files." },
+                "case_sensitive":{ "type": "boolean", "description": "Defaults to false." }
+            },
+            "required": ["path", "pattern"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
     }
 }
 

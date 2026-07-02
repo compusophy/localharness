@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::Engine as _;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::backends::gemini::api::SharedClient;
@@ -37,9 +36,12 @@ impl GenerateImage {
     }
 }
 
-#[derive(Deserialize)]
-struct Args {
-    prompt: String,
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    struct Args: serde {
+        prompt: req_str = "Description of the image to generate.",
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -55,13 +57,7 @@ impl Tool for GenerateImage {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "prompt": { "type": "string", "description": "Description of the image to generate." }
-            },
-            "required": ["prompt"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
@@ -96,5 +92,26 @@ impl Tool for GenerateImage {
         Err(Error::other(
             "image model response carried no inlineData part",
         ))
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string", "description": "Description of the image to generate." }
+            },
+            "required": ["prompt"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
     }
 }

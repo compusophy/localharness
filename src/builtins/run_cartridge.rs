@@ -15,6 +15,16 @@ use crate::tools::{Tool, ToolContext};
 
 pub struct RunCartridge;
 
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    /// Lenient mode reproduces the historical `.get().and_then(as_str)
+    /// .unwrap_or("")` extraction exactly — validation stays in the body.
+    struct Args: lenient {
+        source: req_str = "rustlite source code for the cartridge",
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Tool for RunCartridge {
@@ -64,31 +74,22 @@ impl Tool for RunCartridge {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "source": {
-                    "type": "string",
-                    "description": "rustlite source code for the cartridge"
-                }
-            },
-            "required": ["source"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
-        let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+        let Args { source } = Args::lenient(&args);
         if source.is_empty() {
             return Ok(json!({ "error": "source is required" }));
         }
 
-        let wasm_bytes = match crate::rustlite::compile(source) {
+        let wasm_bytes = match crate::rustlite::compile(&source) {
             Ok(bytes) => bytes,
             Err(err) => {
                 // Same structured report as compile_rustlite: LH0xxx code,
                 // line/col locator, caret snippet, fix hint (issue #7 — this
                 // branch used to return only the bare message).
-                return Ok(crate::builtins::compile_failure_report(&err, source));
+                return Ok(crate::builtins::compile_failure_report(&err, &source));
             }
         };
 
@@ -138,5 +139,29 @@ impl Tool for RunCartridge {
                 "note": "the visual display requires the browser app"
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "rustlite source code for the cartridge"
+                }
+            },
+            "required": ["source"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
     }
 }

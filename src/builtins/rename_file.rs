@@ -7,7 +7,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
@@ -24,10 +23,13 @@ impl RenameFile {
     }
 }
 
-#[derive(Deserialize)]
-struct Args {
-    from: String,
-    to: String,
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    struct Args: serde {
+        from: req_str = "Current path.",
+        to: req_str = "New path.",
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -45,14 +47,7 @@ impl Tool for RenameFile {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "from": { "type": "string", "description": "Current path." },
-                "to":   { "type": "string", "description": "New path." }
-            },
-            "required": ["from", "to"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
@@ -96,6 +91,28 @@ impl Tool for RenameFile {
         }
         self.fs.rename(&args.from, &args.to).await?;
         Ok(json!({ "ok": true, "from": args.from, "to": args.to }))
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "from": { "type": "string", "description": "Current path." },
+                "to":   { "type": "string", "description": "New path." }
+            },
+            "required": ["from", "to"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
     }
 }
 

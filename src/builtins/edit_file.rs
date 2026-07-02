@@ -7,7 +7,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
@@ -29,13 +28,18 @@ impl EditFile {
     }
 }
 
-#[derive(Deserialize)]
-struct Args {
-    path: String,
-    old_string: String,
-    new_string: String,
-    #[serde(default)]
-    replace_all: bool,
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    /// `replace_all` was a `#[serde(default)] bool`; `opt_bool` +
+    /// `unwrap_or(false)` keeps missing/true/false identical (an explicit
+    /// JSON `null` now also falls back to false instead of erroring).
+    struct Args: serde {
+        path: req_str = "File to edit.",
+        old_string: req_str = "Substring to replace; must be unique unless replace_all=true.",
+        new_string: req_str = "Replacement.",
+        replace_all: opt_bool = "Replace every occurrence; default false.",
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -52,21 +56,13 @@ impl Tool for EditFile {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path":        { "type": "string", "description": "File to edit." },
-                "old_string":  { "type": "string", "description": "Substring to replace; must be unique unless replace_all=true." },
-                "new_string":  { "type": "string", "description": "Replacement." },
-                "replace_all": { "type": "boolean", "description": "Replace every occurrence; default false." }
-            },
-            "required": ["path", "old_string", "new_string"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
             .map_err(|e| Error::other(format!("edit_file args: {e}")))?;
+        let replace_all = args.replace_all.unwrap_or(false);
 
         if args.old_string.is_empty() {
             return Err(Error::other("old_string must not be empty"));
@@ -96,14 +92,14 @@ impl Tool for EditFile {
                 args.path
             )));
         }
-        if count > 1 && !args.replace_all {
+        if count > 1 && !replace_all {
             return Err(Error::other(format!(
                 "old_string found {count} times in {} (need exactly 1, or set replace_all=true)",
                 args.path
             )));
         }
 
-        let updated = if args.replace_all {
+        let updated = if replace_all {
             original.replace(&args.old_string, &args.new_string)
         } else {
             original.replacen(&args.old_string, &args.new_string, 1)
@@ -124,6 +120,30 @@ impl Tool for EditFile {
             "path": args.path,
             "replacements": replacements,
         }))
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "path":        { "type": "string", "description": "File to edit." },
+                "old_string":  { "type": "string", "description": "Substring to replace; must be unique unless replace_all=true." },
+                "new_string":  { "type": "string", "description": "Replacement." },
+                "replace_all": { "type": "boolean", "description": "Replace every occurrence; default false." }
+            },
+            "required": ["path", "old_string", "new_string"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
     }
 }
 

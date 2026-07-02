@@ -23,6 +23,17 @@ pub const NO_SESSION_ERR: &str = "no agent session active";
 
 pub struct CallAgent;
 
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    /// Lenient mode reproduces the historical `.get().and_then(as_str)
+    /// .unwrap_or("")` extraction exactly — validation stays in the body.
+    struct Args: lenient {
+        name: req_str = "The subdomain name of the agent to call (e.g. 'alice')",
+        message: req_str = "The message to send to the agent",
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Tool for CallAgent {
@@ -40,33 +51,11 @@ impl Tool for CallAgent {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "The subdomain name of the agent to call (e.g. 'alice')"
-                },
-                "message": {
-                    "type": "string",
-                    "description": "The message to send to the agent"
-                }
-            },
-            "required": ["name", "message"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
-        let name = args
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let message = args
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let Args { name, message } = Args::lenient(&args);
 
         if name.is_empty() || message.is_empty() {
             return Ok(json!({ "error": "name and message are required" }));
@@ -461,4 +450,45 @@ async fn call_agent_impl(name: &str, message: &str) -> std::result::Result<Strin
         .borrow()
         .clone()
         .unwrap_or_else(|| Err("timeout waiting for agent response".into()))
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The subdomain name of the agent to call (e.g. 'alice')"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The message to send to the agent"
+                }
+            },
+            "required": ["name", "message"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
+    }
+
+    /// The lenient extraction matches the old inline chains: missing or
+    /// wrong-typed fields fall back to "" (the body's is_empty validation
+    /// then fires, exactly as before).
+    #[test]
+    fn lenient_matches_the_old_inline_extraction() {
+        let p = Args::lenient(&json!({}));
+        assert_eq!((p.name.as_str(), p.message.as_str()), ("", ""));
+        let p = Args::lenient(&json!({"name": 7, "message": ["x"]}));
+        assert_eq!((p.name.as_str(), p.message.as_str()), ("", ""));
+        let p = Args::lenient(&json!({"name": "alice", "message": "hi"}));
+        assert_eq!((p.name.as_str(), p.message.as_str()), ("alice", "hi"));
+    }
 }

@@ -26,7 +26,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::stream::StreamExt;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::backends::dispatch::dispatch_tool_call;
@@ -159,10 +158,14 @@ impl StartSubagent {
     }
 }
 
-#[derive(Deserialize)]
-struct Args {
-    system_instructions: String,
-    prompt: String,
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    struct Args: serde {
+        system_instructions: req_str = "System instructions for the subagent's persona / role \
+                    (e.g. \"you are a focused worker that does X and returns just the result\").",
+        prompt: req_str = "The task / user message to send to the subagent.",
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -186,14 +189,7 @@ impl Tool for StartSubagent {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "system_instructions": { "type": "string", "description": "System instructions for the subagent's persona / role (e.g. \"you are a focused worker that does X and returns just the result\")." },
-                "prompt": { "type": "string", "description": "The task / user message to send to the subagent." }
-            },
-            "required": ["system_instructions", "prompt"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
@@ -370,6 +366,28 @@ impl Tool for StartSubagent {
             "finished": finished,
             "finish_reason": format!("{:?}", finish_reason.unwrap_or(FinishReason::Stop)),
         }))
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "system_instructions": { "type": "string", "description": "System instructions for the subagent's persona / role (e.g. \"you are a focused worker that does X and returns just the result\")." },
+                "prompt": { "type": "string", "description": "The task / user message to send to the subagent." }
+            },
+            "required": ["system_instructions", "prompt"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
     }
 }
 

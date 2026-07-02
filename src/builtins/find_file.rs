@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use globset::{Glob, GlobMatcher};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
@@ -24,12 +23,16 @@ impl FindFile {
     }
 }
 
-#[derive(Deserialize)]
-struct Args {
-    path: String,
-    pattern: String,
-    #[serde(default)]
-    max_depth: Option<usize>,
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    /// `max_depth` was `Option<usize>` — `opt_u32` (the schema already said
+    /// `minimum: 1`) covers every sane depth; the walk call converts.
+    struct Args: serde {
+        path: req_str = "Directory to search under.",
+        pattern: req_str = "Glob pattern matched against file names.",
+        max_depth: opt_u32 min 1 = "Optional recursion depth cap.",
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -45,15 +48,7 @@ impl Tool for FindFile {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path":      { "type": "string", "description": "Directory to search under." },
-                "pattern":   { "type": "string", "description": "Glob pattern matched against file names." },
-                "max_depth": { "type": "integer", "minimum": 1, "description": "Optional recursion depth cap." }
-            },
-            "required": ["path", "pattern"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
@@ -63,7 +58,10 @@ impl Tool for FindFile {
             .map_err(|e| Error::other(format!("invalid glob '{}': {e}", args.pattern)))?
             .compile_matcher();
 
-        let entries = self.fs.walk(&args.path, args.max_depth).await?;
+        let entries = self
+            .fs
+            .walk(&args.path, args.max_depth.map(|d| d as usize))
+            .await?;
 
         let mut matches: Vec<String> = Vec::new();
         let mut truncated = false;
@@ -94,6 +92,29 @@ impl Tool for FindFile {
             "count": count,
             "truncated": truncated,
         }))
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "path":      { "type": "string", "description": "Directory to search under." },
+                "pattern":   { "type": "string", "description": "Glob pattern matched against file names." },
+                "max_depth": { "type": "integer", "minimum": 1, "description": "Optional recursion depth cap." }
+            },
+            "required": ["path", "pattern"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
     }
 }
 
