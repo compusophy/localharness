@@ -168,7 +168,11 @@ impl Stream for SseFrameStream {
 /// comments) are ignored.
 fn extract_data_payload(frame: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(frame.len());
-    let text = std::str::from_utf8(frame).unwrap_or("");
+    // LOSSY, not `unwrap_or("")`: invalid UTF-8 (a multi-byte char split across a
+    // network chunk, or backend corruption) must not silently DROP the whole SSE
+    // frame's `data:` payload (truncating the stream). Replace only the bad bytes
+    // (U+FFFD) and keep the rest. `Cow<str>` derefs to `str` for `.split`.
+    let text = String::from_utf8_lossy(frame);
     for line in text.split('\n') {
         let line = line.trim_end_matches('\r');
         if let Some(rest) = line.strip_prefix("data:") {
