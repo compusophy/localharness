@@ -134,9 +134,12 @@ impl Lexer<'_> {
                             }
                             Some(b'\\') => {
                                 // In double quotes, backslash only escapes a few
-                                // chars; otherwise it's literal (POSIX).
+                                // chars; otherwise it's literal (POSIX). `\<newline>`
+                                // is still a line splice inside quotes (as it is
+                                // unquoted, line 164), so consume both.
                                 self.pos += 1;
                                 match self.peek() {
+                                    Some(b'\n') => self.pos += 1,
                                     Some(c @ (b'"' | b'\\' | b'$' | b'`')) => {
                                         lit.push(c as char);
                                         self.pos += 1;
