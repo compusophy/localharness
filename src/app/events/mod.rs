@@ -24,6 +24,7 @@ mod admin;
 mod claim;
 mod credits;
 mod devices;
+mod identity;
 mod key_sync;
 mod layout;
 mod public_face;
@@ -857,22 +858,7 @@ fn dispatch(action: Action) {
                 super::opfs::save_file(&name).await;
             });
         }
-        Action::ApexClaim => {
-            // Silent no-op on invalid input — the create button is
-            // disabled by `on_apex_input` when length is out of range,
-            // so this branch only ever fires for valid names. Per
-            // [[feedback-no-explanatory-validation]].
-            let raw = dom::input_by_id("apex-input")
-                .map(|i| i.value())
-                .unwrap_or_default();
-            let cleaned = super::tenant::sanitize(&raw);
-            if cleaned.len() < 3 || cleaned.len() > 32 {
-                return;
-            }
-            wasm_bindgen_futures::spawn_local(async move {
-                claim::run_apex_claim(cleaned, false).await;
-            });
-        }
+        Action::ApexClaim => claim::apex_claim_pressed(),
         Action::CreateNewClaim(name) => {
             let cleaned = super::tenant::sanitize(&name);
             if cleaned.len() < 3 || cleaned.len() > 32 {
@@ -882,277 +868,16 @@ fn dispatch(action: Action) {
                 claim::run_apex_claim(cleaned, true).await;
             });
         }
-        Action::ClaimOnChain => {
-            // Tenant-side first-claim: ensure apex wallet exists (without
-            // overwriting an existing one — that would nuke other NFTs),
-            // run the on-chain register tx via the signer iframe, then
-            // set the local OPFS marker + re-paint as owner. This kills
-            // the previous "bounce to apex first" interstitial.
-            let Some(name) = super::tenant::current_name() else {
-                return;
-            };
-            // Guard the routable-label invariant BEFORE spending sponsored gas
-            // (juno-qa): an unroutable name (>63 chars / bad chars) would mint a
-            // zombie the DNS gateway can't serve. The chat-tool + apex-form
-            // paths already validate; this tenant-side claim was the gap.
-            if !crate::subdomain::is_valid_subdomain_label(&name) {
-                dom::swap_inner(
-                    "claim-msg",
-                    &dom::msg_span(dom::Msg::Error, "invalid name"),
-                );
-                return;
-            }
-            dom::swap_inner(
-                "claim-msg",
-                "<span style=\"color:var(--muted)\">ensuring identity at apex…</span>",
-            );
-            wasm_bindgen_futures::spawn_local(async move {
-                if let Err(err) = super::verify::create_wallet_via_iframe(false).await {
-                    dom::swap_inner(
-                        "claim-msg",
-                        &dom::msg_span(dom::Msg::Error, &format!("identity setup failed: {err}")),
-                    );
-                    return;
-                }
-                dom::swap_inner(
-                    "claim-msg",
-                    "<span style=\"color:var(--muted)\">claiming on-chain…</span>",
-                );
-                match super::verify::claim_name_via_iframe(&name).await {
-                    Ok((owner_addr, _tx)) => {
-                        // Remember the just-registered owner address as the
-                        // local first-paint hint (the chain stays authority).
-                        let _ = super::owner::remember(&owner_addr).await;
-                        super::paint_tenant(
-                            super::tenant::Host::Tenant(name.clone()),
-                            name,
-                        )
-                        .await;
-                    }
-                    Err(err) => {
-                        dom::swap_inner(
-                            "claim-msg",
-                            &dom::msg_span(dom::Msg::Error, &format!("claim failed: {err}")),
-                        );
-                    }
-                }
-            });
-        }
-        Action::RevealSeed => {
-            // Local-first (local-seed-per-origin, see `verify::local_master`):
-            // when THIS origin holds the seed — apex always, a subdomain
-            // after `seed_pull` — read the mnemonic straight off the cached
-            // `APP.wallet`. The signer-iframe round-trip is only the
-            // fallback for a seedless tenant origin: its `lh-reveal-seed`
-            // handler is apex-origin-only and the iframe is partitioned
-            // (dead) on mobile, so it must never be the primary path.
-            let phrase = super::APP.with(|cell| {
-                cell.borrow()
-                    .wallet
-                    .as_ref()
-                    .map(|w| w.mnemonic.to_string())
-            });
-            if let Some(p) = phrase {
-                dom::swap_inner(
-                    "seed-reveal",
-                    &super::templates::seed_phrase(&p).into_string(),
-                );
-            } else if !matches!(super::tenant::current(), super::tenant::Host::Apex) {
-                dom::swap_inner(
-                    "seed-reveal",
-                    "<span style=\"color:var(--muted)\">fetching…</span>",
-                );
-                wasm_bindgen_futures::spawn_local(async move {
-                    match super::verify::reveal_seed_via_iframe().await {
-                        Ok(phrase) => dom::swap_inner(
-                            "seed-reveal",
-                            &super::templates::seed_phrase(&phrase).into_string(),
-                        ),
-                        Err(err) => dom::swap_inner(
-                            "seed-reveal",
-                            &maud::html! {
-                                span style="color:var(--error)" { "reveal failed: " (err) }
-                                button type="button" data-action="reveal-seed" class="ghost" { "retry" }
-                            }
-                            .into_string(),
-                        ),
-                    }
-                });
-            }
-        }
+        Action::ClaimOnChain => claim::claim_on_chain_pressed(),
+        Action::RevealSeed => identity::reveal_seed_pressed(),
         Action::HideSeed => {
             dom::swap_inner(
                 "seed-reveal",
                 r#"<button type="button" data-action="reveal-seed">I have a pen and paper — reveal</button>"#,
             );
         }
-        Action::OnboardCreate => {
-            // Consolidated front door: the visitor picked a name AND hit CREATE.
-            // 1) Validate + STASH the name (the checkout card replaces the input,
-            //    so it must survive the async flow); the live check already keeps
-            //    the button disabled for invalid/taken names, so this is a guard.
-            // 2) Generate the keypair IN MEMORY ONLY (persisted on confirmed
-            //    payment, not here — the owner's rule + the iOS borrow-panic fix).
-            // 3) Run the $2 checkout. Once paid, `credits::persist_seed_and_claim`
-            //    claims the stashed name and redirects into the agent's chat — no
-            //    second step, no shown-once seed page.
-            let raw = dom::input_by_id("apex-input")
-                .map(|i| i.value())
-                .unwrap_or_default();
-            let cleaned = super::tenant::sanitize(&raw);
-            if cleaned.len() < 3 || cleaned.len() > 32 {
-                return;
-            }
-            let Some(flow_guard) = onboard_flow_begin() else {
-                return;
-            };
-            set_onboard_name(&cleaned);
-            // INSTANT FEEDBACK: swap the form for the inline checkout card before
-            // any await ($2 = 200 $LH at $1 = 100 $LH). The card carries the Stripe
-            // mount ids; the spawned work below fills it.
-            dom::swap_outer(
-                "apex-onboard",
-                &templates::onboard_checkout().into_string(),
-            );
-            wasm_bindgen_futures::spawn_local(async move {
-                let _flow_guard = flow_guard;
-                match super::wallet_store::generate_in_memory().await {
-                    Err(err) => {
-                        // Restore the form (with the typed name preserved) so the
-                        // user can retry; drop the stale stash.
-                        let _ = take_onboard_name();
-                        dom::swap_outer(
-                            "apex-onboard",
-                            &crate::landing::create_wallet_cta().into_string(),
-                        );
-                        if let Some(input) = dom::input_by_id("apex-input") {
-                            input.set_value(&cleaned);
-                            claim::on_apex_input();
-                        }
-                        dom::swap_inner(
-                            "onboard-msg",
-                            &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
-                        );
-                    }
-                    Ok(_) => {
-                        // Identity in memory → drive the $2 checkout into the inline
-                        // card (mints 200 $LH); on a confirmed mint the poll persists
-                        // the seed, claims the stashed name, and redirects to chat.
-                        credits::buy_lh_pressed(true);
-                    }
-                }
-            });
-        }
-        Action::CreateIdentity => {
-            // Apex: generate locally + bootstrap-fund + re-paint.
-            // Tenant: route through the apex signer iframe so the wallet
-            // lands at apex OPFS, then re-paint tenant chrome so
-            // verification picks up the new owner.
-            // SINGLE-FLIGHT: ignore re-presses while a flow runs.
-            let Some(flow_guard) = onboard_flow_begin() else {
-                return;
-            };
-            dom::swap_inner(
-                "identity-msg",
-                "<span style=\"color:var(--muted)\">generating identity…</span>",
-            );
-            // Volatile-storage (incognito) warning is surfaced AFTER the seed
-            // write completes (see `warn_if_storage_volatile` calls below), NOT
-            // concurrently: racing `storage_is_volatile()`'s `navigator.storage`
-            // round-trip against `create_and_persist`'s first OPFS write
-            // interleaved two tasks on the single-thread executor and tripped the
-            // iOS "RefCell already borrowed" panic at the seed write. The warning
-            // is about BACKING UP a freshly-minted seed, so showing it once the
-            // seed exists is equally timely.
-            match super::tenant::current() {
-                super::tenant::Host::Apex => {
-                    wasm_bindgen_futures::spawn_local(async move {
-                        let _flow_guard = flow_guard;
-                        // Bounded: a wedged storage write must surface as an
-                        // error, not an eternal "generating identity…" (the
-                        // iPhone stuck-create report).
-                        match super::net::with_timeout(
-                            15_000,
-                            super::wallet_store::create_and_persist(),
-                        )
-                        .await
-                        {
-                            Err(_) => {
-                                dom::swap_inner(
-                                    "identity-msg",
-                                    &dom::msg_span(
-                                        dom::Msg::Error,
-                                        "create timed out — reload and try again",
-                                    ),
-                                );
-                                return;
-                            }
-                            Ok(Err(err)) => {
-                                dom::swap_inner(
-                                    "identity-msg",
-                                    &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
-                                );
-                                return;
-                            }
-                            Ok(Ok(_)) => {}
-                        }
-                        // Seed is now safely persisted — only NOW probe storage
-                        // durability (sequentially, never racing the write) and
-                        // surface the incognito back-up warning if volatile.
-                        warn_if_storage_volatile().await;
-                        // Progress BEFORE the repaint: paint_apex does on-chain
-                        // reads that can be slow on mobile — the identity is
-                        // already safe at this point and the user should know.
-                        dom::swap_inner(
-                            "identity-msg",
-                            "<span style=\"color:var(--muted)\">identity created — loading…</span>",
-                        );
-                        // Run the repaint on a FRESH executor tick, not inline.
-                        // `paint_apex` itself `spawn_local`s several sub-tasks and
-                        // awaits OPFS/RPC; awaiting it from inside THIS onboarding
-                        // task deepens the wasm-bindgen single-thread executor's
-                        // poll chain, and on iOS WebKit's microtask timing that
-                        // re-enters `Task::run` for an already-borrowed task → the
-                        // "RefCell already borrowed" panic. Deferring lets this
-                        // task fully return (releasing the executor borrow) before
-                        // the heavy paint runs. The flow guard rides along so a
-                        // re-press is still blocked until the surface is up.
-                        defer_onboard_repaint(_flow_guard, async {
-                            super::paint_apex(super::tenant::Host::Apex).await;
-                        });
-                    });
-                }
-                host => {
-                    wasm_bindgen_futures::spawn_local(async move {
-                        let flow_guard = flow_guard;
-                        match super::verify::create_wallet_via_iframe(false).await {
-                            Ok(_addr) => {
-                                // Seed persisted — probe durability now, never
-                                // racing the write (the iOS borrow-panic class).
-                                warn_if_storage_volatile().await;
-                                if let super::tenant::Host::Tenant(name) = &host {
-                                    // Defer the repaint to a fresh executor tick —
-                                    // same iOS re-entrant-`Task::run` hazard as the
-                                    // apex branch above (paint_tenant spawns + awaits
-                                    // OPFS/RPC). The guard rides along.
-                                    let host = host.clone();
-                                    let name = name.clone();
-                                    defer_onboard_repaint(flow_guard, async move {
-                                        super::paint_tenant(host, name).await;
-                                    });
-                                }
-                            }
-                            Err(err) => {
-                                dom::swap_inner(
-                                    "identity-msg",
-                                    &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
-                                );
-                            }
-                        }
-                    });
-                }
-            }
-        }
+        Action::OnboardCreate => identity::onboard_create_pressed(),
+        Action::CreateIdentity => identity::create_identity_pressed(),
         Action::ShowImport => {
             // Reveal the import textarea in place of the secondary
             // button — the ImportSeed action handler picks it up from
@@ -1165,79 +890,10 @@ fn dispatch(action: Action) {
                 let _ = textarea.focus();
             }
         }
-        Action::ImportSeed => {
-            let phrase = dom::textarea_by_id("import-seed")
-                .map(|t| t.value())
-                .unwrap_or_default();
-            if phrase.split_whitespace().count() != 12 {
-                dom::swap_inner(
-                    "seed-msg",
-                    "<span style=\"color:var(--error)\">expected exactly 12 words</span>",
-                );
-                return;
-            }
-            // Apex: write directly to apex OPFS, re-paint apex.
-            // Tenant: write THIS origin's OPFS directly too — a tenant
-            // import intentionally affects only this origin (that IS the
-            // local-seed-per-origin model; other origins adopt the seed
-            // via the apex QR `?adopt=1` flow or `seed_pull`). The old
-            // signer-iframe route always failed here: the iframe's
-            // `lh-import-seed` handler is apex-origin-only and the iframe
-            // itself is partitioned (dead) on mobile.
-            match super::tenant::current() {
-                super::tenant::Host::Apex => {
-                    wasm_bindgen_futures::spawn_local(async move {
-                        match super::wallet_store::import(&phrase).await {
-                            Ok(_) => {
-                                super::paint_apex(super::tenant::Host::Apex).await;
-                            }
-                            Err(err) => {
-                                dom::swap_inner(
-                                    "seed-msg",
-                                    &dom::msg_span(dom::Msg::Error, &format!("import failed: {err}")),
-                                );
-                            }
-                        }
-                    });
-                }
-                host => {
-                    wasm_bindgen_futures::spawn_local(async move {
-                        match super::wallet_store::import(&phrase).await {
-                            Ok(wallet) => {
-                                super::APP
-                                    .with(|cell| cell.borrow_mut().wallet = Some(wallet));
-                                if let super::tenant::Host::Tenant(name) = &host {
-                                    super::paint_tenant(host.clone(), name.clone()).await;
-                                }
-                            }
-                            Err(err) => {
-                                dom::swap_inner(
-                                    "seed-msg",
-                                    &dom::msg_span(dom::Msg::Error, &format!("import failed: {err}")),
-                                );
-                            }
-                        }
-                    });
-                }
-            }
-        }
+        Action::ImportSeed => identity::import_seed_pressed(),
         Action::OpfsDelete(name) => {
-            // Direct delete — no per-row confirm. Mistakes can be
-            // recovered by re-creating the file; the wipe button is
-            // the heavyweight "everything" confirm flow.
             wasm_bindgen_futures::spawn_local(async move {
-                let fs = super::shared_opfs();
-                if let Err(err) = fs.delete(&name).await {
-                    web_sys::console::warn_1(&JsValue::from_str(&format!(
-                        "delete({name}): {err}"
-                    )));
-                }
-                // Deleting the conversation history wipes the on-screen
-                // transcript instantly — no page refresh. (on-chain feedback)
-                if name == ".lh_history.json" {
-                    dom::swap_inner("transcript", "");
-                }
-                super::opfs::refresh().await;
+                super::opfs::delete_entry(&name).await;
             });
         }
         Action::OpfsWipe => {

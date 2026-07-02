@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Internal module hygiene: the long inline dispatch arms in `src/app/events/mod.rs`
+  (identity/seed onboarding, claim, OPFS delete) moved verbatim into domain modules
+  (new `events/identity.rs`, plus `events/claim.rs` / `opfs.rs`), leaving one-line
+  delegations — no behavior change.
+
 - **HTTP errors now carry their status code structurally (additive — no breaking
   change).** New `Error::HttpStatus { status, message }` variant (the enum is
   `#[non_exhaustive]`, so adding it is semver-safe) with `Error::http_status(status,

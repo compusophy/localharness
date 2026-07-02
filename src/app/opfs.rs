@@ -226,6 +226,25 @@ fn resolve_path(name: &str) -> (String, String) {
     (path, display)
 }
 
+/// Delete one entry, then refresh the panel. Called from the `opfs-delete`
+/// action. Direct delete — no per-row confirm. Mistakes can be recovered by
+/// re-creating the file; the wipe button is the heavyweight "everything"
+/// confirm flow.
+pub(crate) async fn delete_entry(name: &str) {
+    let fs = super::shared_opfs();
+    if let Err(err) = fs.delete(name).await {
+        web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "delete({name}): {err}"
+        )));
+    }
+    // Deleting the conversation history wipes the on-screen
+    // transcript instantly — no page refresh. (on-chain feedback)
+    if name == ".lh_history.json" {
+        dom::swap_inner("transcript", "");
+    }
+    refresh().await;
+}
+
 /// Walk the OPFS root and delete every top-level entry. Then refresh
 /// the panel back to root. Called from the `opfs-wipe` action.
 pub(crate) async fn wipe() {

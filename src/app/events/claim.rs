@@ -229,6 +229,84 @@ pub(super) async fn run_apex_claim(name: String, create_if_missing: bool) {
     }
 }
 
+/// [`Action::ApexClaim`](super::Action::ApexClaim).
+///
+/// Silent no-op on invalid input — the create button is
+/// disabled by `on_apex_input` when length is out of range,
+/// so this branch only ever fires for valid names. Per
+/// [[feedback-no-explanatory-validation]].
+pub(super) fn apex_claim_pressed() {
+    let raw = dom::input_by_id("apex-input")
+        .map(|i| i.value())
+        .unwrap_or_default();
+    let cleaned = crate::app::tenant::sanitize(&raw);
+    if cleaned.len() < 3 || cleaned.len() > 32 {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        run_apex_claim(cleaned, false).await;
+    });
+}
+
+/// [`Action::ClaimOnChain`](super::Action::ClaimOnChain).
+///
+/// Tenant-side first-claim: ensure apex wallet exists (without
+/// overwriting an existing one — that would nuke other NFTs),
+/// run the on-chain register tx via the signer iframe, then
+/// set the local OPFS marker + re-paint as owner. This kills
+/// the previous "bounce to apex first" interstitial.
+pub(super) fn claim_on_chain_pressed() {
+    let Some(name) = crate::app::tenant::current_name() else {
+        return;
+    };
+    // Guard the routable-label invariant BEFORE spending sponsored gas
+    // (juno-qa): an unroutable name (>63 chars / bad chars) would mint a
+    // zombie the DNS gateway can't serve. The chat-tool + apex-form
+    // paths already validate; this tenant-side claim was the gap.
+    if !crate::subdomain::is_valid_subdomain_label(&name) {
+        dom::swap_inner(
+            "claim-msg",
+            &dom::msg_span(dom::Msg::Error, "invalid name"),
+        );
+        return;
+    }
+    dom::swap_inner(
+        "claim-msg",
+        "<span style=\"color:var(--muted)\">ensuring identity at apex…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(err) = crate::app::verify::create_wallet_via_iframe(false).await {
+            dom::swap_inner(
+                "claim-msg",
+                &dom::msg_span(dom::Msg::Error, &format!("identity setup failed: {err}")),
+            );
+            return;
+        }
+        dom::swap_inner(
+            "claim-msg",
+            "<span style=\"color:var(--muted)\">claiming on-chain…</span>",
+        );
+        match crate::app::verify::claim_name_via_iframe(&name).await {
+            Ok((owner_addr, _tx)) => {
+                // Remember the just-registered owner address as the
+                // local first-paint hint (the chain stays authority).
+                let _ = crate::app::owner::remember(&owner_addr).await;
+                crate::app::paint_tenant(
+                    crate::app::tenant::Host::Tenant(name.clone()),
+                    name,
+                )
+                .await;
+            }
+            Err(err) => {
+                dom::swap_inner(
+                    "claim-msg",
+                    &dom::msg_span(dom::Msg::Error, &format!("claim failed: {err}")),
+                );
+            }
+        }
+    });
+}
+
 /// Post-payment onboarding claim: the wallet is persisted + funded, so claim the
 /// name the visitor chose on the front door and drop them into its chat. Shows a
 /// brief "creating…" interstitial (the checkout card was just unmounted). On

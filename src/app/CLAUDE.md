@@ -84,7 +84,8 @@ Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
 ## Files (orientation)
 `mod.rs` mount/routing · `templates.rs` ALL maud HTML · `dom.rs` swap shims ·
 `events/` the delegated listeners + `Action` enum + per-domain handlers
-(`admin.rs` owns the overlays) · `chat/` the turn loop + stage painter (session.rs
+(`admin.rs` owns the overlays; `identity.rs` the onboarding/seed flows —
+dispatch arms stay one-line delegations) · `chat/` the turn loop + stage painter (session.rs
 assembles the tool surface ONCE — `chat_toolset()` + `wire_shared_session!` feed
 every backend branch; add new chat tools there, never per-backend; source guard
 `tests/chat_toolset_single_source.rs`) ·

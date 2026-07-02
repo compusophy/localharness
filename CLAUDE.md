@@ -128,7 +128,7 @@ src/app/ (browser IDE):
   mod.rs(mount routing) templates.rs(all maud HTML) dom.rs(web-sys swaps)
   events/(Action enum + parse + the ONE delegated click/keydown/submit/input
     listener set + dispatch in mod.rs; handler bodies per domain: claim admin
-    credits schedule devices subdomains key_sync public_face layout
+    credits identity schedule devices subdomains key_sync public_face layout
     (bounty/guild/governance/tba panels removed 0.47.0 — chat tools now)) chat/(
     turn loop in mod.rs; session.rs prompt.rs
     access.rs tools/{platform,bounty,guild,governance,misc})
