@@ -635,6 +635,19 @@ pub(crate) async fn run_agent_turn(
         Ok(None) => default_persona(target),
         Err(e) => return Err(format!("RPC error reading persona: {e}")),
     };
+    // Ground the agent in the ACTUAL runtime chain. Unlike the browser session
+    // (which injects the RUNTIME_SUMMARY digest), the headless `call`/`abtest`
+    // system prompt was persona-only, so asked what chain it runs on an agent
+    // would HALLUCINATE (fleet repro: it answered "Arbitrum"). Derived from the
+    // active ChainConfig so it's correct on BOTH mainnet and testnet — never
+    // hardcode a chain here (that mismatch is the recurring footgun).
+    let chain = registry::chain::active();
+    system = format!(
+        "You run on the localharness platform — a self-sovereign agent platform — on \
+         {} (EVM chain id {}). Its credit token is $LH and all payments and state \
+         settle on this chain; never claim to run on any other blockchain.\n\n{system}",
+        chain.name, chain.chain_id
+    );
     // Fold in the target's self-recorded lessons so a headless call embodies
     // the same learned behavior as its in-tab sessions. Best-effort: an RPC
     // failure degrades to no lessons rather than failing the call.
