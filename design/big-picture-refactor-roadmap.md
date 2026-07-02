@@ -65,7 +65,7 @@ backends/retry.rs so it cannot drift again (behavior change for openai: changelo
 it). Dedupe the copied resolve_tool_args test suites. Gate: existing per-backend
 loop tests unmodified.
 
-## R4 ☐ chat_toolset(): one tool-assembly for all backends (1–2 days)
+## R4 ☑ chat_toolset(): one tool-assembly for all backends — `877c1d8` (2026-07-02)
 
 Source: app-browser-ide v5. src/app/chat/session.rs registers the identical ~70-tool
 list twice (Anthropic branch 341-411, Gemini branch 480-550 — 146 `.with_tool()`
