@@ -2291,6 +2291,12 @@ mod worker {
             .filter(|&n| n > 0)
             .unwrap_or(FB_H);
         let clamped = Uint8ClampedArray::new(&buffer);
+        // Bound the transferred buffer before allocating: the worker clamps dims to
+        // [16,1024] (<= 1024*1024*4 = 4 MiB), so anything larger is a worker bug or a
+        // compromised cartridge — drop the frame rather than OOM-panic the whole tab.
+        if clamped.length() as usize > 4 * 1024 * 1024 {
+            return;
+        }
         // ImageData wants a &Clamped<&[u8]>; copy the transferred buffer out.
         let mut bytes = vec![0u8; clamped.length() as usize];
         clamped.copy_to(&mut bytes[..]);
