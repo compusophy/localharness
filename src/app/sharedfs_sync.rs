@@ -178,7 +178,16 @@ async fn process_message(msg: SyncMsg, tx: &Tx) {
             // for the conflict name is processed.
             for (from, to) in &plan.rename_local {
                 if let Ok(Some(plain)) = shared_fs::apex_read(from).await {
-                    let _ = shared_fs::apex_write(to, &plain).await;
+                    if let Err(e) = shared_fs::apex_write(to, &plain).await {
+                        // Preserving our LOSING edit failed (OPFS full / I/O). ABORT
+                        // this sync round BEFORE requesting the winners below — else the
+                        // incoming winner overwrites our local file with no backup =
+                        // permanent data loss (the #85 silent-drop this replaces).
+                        web_sys::console::error_1(&JsValue::from_str(&format!(
+                            "sharedfs: could not preserve losing edit '{to}' ({e}); aborting sync round to avoid data loss"
+                        )));
+                        return;
+                    }
                 }
             }
 
@@ -195,7 +204,13 @@ async fn process_message(msg: SyncMsg, tx: &Tx) {
             }
         }
         SyncMsg::File { name, data } => {
-            let _ = shared_fs::apex_write(&name, &data).await;
+            if let Err(e) = shared_fs::apex_write(&name, &data).await {
+                // A received file failed to land (OPFS full / seal error). Surface it
+                // instead of silently claiming the pull succeeded (→ silent out-of-sync).
+                web_sys::console::error_1(&JsValue::from_str(&format!(
+                    "sharedfs: failed to write received file '{name}' ({e})"
+                )));
+            }
         }
     }
 }
