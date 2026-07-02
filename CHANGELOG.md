@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.13] - 2026-07-01
+
+### Fixed
+
+- **Headless `call`/`abtest` agents hallucinated their own chain.** The persona-only
+  system prompt carried no runtime grounding (unlike the in-browser session), so asked
+  what chain it runs on an agent answered "Arbitrum". A one-line grounding derived from
+  the active `ChainConfig` (Tempo mainnet, chain 4217) now precedes the persona —
+  correct on both mainnet and testnet. Found by live dogfooding.
+- **A denied confirmation could be erased by a later approval in the same turn.** With
+  multiple confirm-gated tools in one turn, an approved tool overwrote the
+  "awaiting-confirmation" flag that an earlier *denied* one had set, so the loop
+  auto-continued past the blocked call (re-issuing it, burning credits). The flag is now
+  set-only within a turn and cleared on the next.
+- **A mixed-case `--worker`/caller could judge its own colony work.** `select_judge_panel`
+  and the judge==caller check compared identity names case-sensitively, so `--worker Claude`
+  did not exclude the `claude` key — letting the worker onto its own neutral panel
+  (self-inflated rating). Now case-insensitive, matching the sibling guards (regression
+  tested).
+- **Platform (proxy, deployed separately): concurrent metered calls 502'd on nonce
+  collision.** Concurrent debits for the same meter key each auto-fetched the same
+  pending nonce and collided — one landed, the rest were rejected "nonce too low". The
+  proxy now passes an explicit pending nonce and retries only on a nonce-too-low
+  rejection (which never lands, so it can't double-debit).
+
+### Docs
+
+- Fixed broken `classify` intra-doc links in `error_codes` (`cargo doc` warning-free).
+
 ## [0.60.12] - 2026-07-01
 
 ### Fixed
