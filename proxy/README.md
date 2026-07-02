@@ -32,8 +32,8 @@ vercel env add GEMINI_API_KEY production        # the platform Gemini key
 vercel env add ANTHROPIC_API_KEY production     # optional; enables claude-* via /v1/messages
 vercel env add OPENAI_API_KEY production        # optional; enables gpt-* via /v1/chat/completions
 vercel env add PROXY_METER_KEY production       # meter EOA priv key (per-request mode)
-vercel env add COST_PER_REQUEST_WEI production  # optional; default 0.01 LH (1e16)
-vercel env add MAX_COST_PER_REQUEST_WEI production  # optional; per-call debit ceiling, default 1 LH (1e18)
+vercel env add COST_PER_REQUEST_WEI production  # optional; default 1 LH (1e18)
+vercel env add MAX_COST_PER_REQUEST_WEI production  # optional; per-call debit ceiling, default 100 LH (1e20)
 ```
 
 ## MPP on-ramp (`/mpp/onramp`) — USDC.e → $LH for autonomous agents
