@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The mock backend now drives the real `TurnEngine` — loop tests exercise shipped
+  code.** `MockConnection` is no longer a parallel re-implementation of the turn
+  loop: a `MockProvider` feeds the scripted step sequence to the shared
+  `backends::turn_engine` as its "model stream", splitting each scripted turn into
+  engine rounds at the tool-call boundary (text after a tool call streams as the
+  model's next-round reply, like a live backend). Consumer-visible behavior is
+  unchanged — same replies, tool dispatch, hooks, deny semantics, and usage — and
+  a scripted `finish` call now also carries its summary + structured output on the
+  terminal step (previously dropped).
 - **TurnEngine phase 3: the Gemini backend now rides the shared `backends::turn_engine`
   (roadmap R7 COMPLETE).** ONE turn loop remains for all three streaming backends
   (gemini / anthropic / openai); `gemini/loop.rs` shrinks to a thin `GeminiProvider`

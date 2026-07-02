@@ -49,7 +49,10 @@ Browser fetch surfaces Gemini SSE with `\r\n\r\n`. `GeminiSseStream::take_frame`
 
 ## Mock / MCP / local
 - `mock/`: deterministic offline backend (`Agent::start_mock`), wasm-clean — use it
-  for native tests of the agent loop without a network.
+  for native tests of the agent loop without a network. It RIDES the shared
+  `turn_engine` (a `MockProvider` whose "stream" is the scripted step sequence;
+  scripted turns split into engine rounds at tool-call boundaries), so mock-driven
+  loop tests exercise the SHIPPED turn loop, not a parallel one.
 - `mcp/`: stdio MCP client — `feature=native` only (no wasm).
 - `local/`: in-browser Gemma 3 270M via Burn wgpu — `feature=local`, HEAVY (~570MB),
   OFF the default bundle. getrandom-0.4 needs the wasm_js backend; burn-store DIRECT

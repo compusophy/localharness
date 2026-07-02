@@ -7,14 +7,20 @@
 //! the crate's own tests) can unit-test an [`Agent`](crate::Agent)'s behavior
 //! (the tool loop, hooks, policies, triggers) deterministically and offline.
 //!
-//! It is a faithful drop-in for a real backend: each scripted turn emits the
-//! exact same [`Step`](crate::Step) shapes the live Gemini/Anthropic loops do —
-//! streamed text-delta steps ([`StepStatus::Active`](crate::StepStatus),
-//! `content_delta`), tool-call steps ([`StepType::ToolCall`](crate::StepType))
-//! with inline tool dispatch through the injected [`ToolRunner`](crate::ToolRunner)
-//! (running the same hooks + policies), and a turn-terminal step
-//! ([`StepStatus::Done`](crate::StepStatus), `is_complete_response: true`). Each
-//! `agent.chat(...)` / `Connection::send` consumes the next scripted turn.
+//! It is NOT a parallel re-implementation of the turn loop: the mock drives
+//! the REAL shared turn engine (`backends::turn_engine` — the same loop the
+//! live Gemini/Anthropic/OpenAI backends ride) through a [`TurnProvider`]
+//! whose "model stream" is the scripted step sequence. A scripted turn splits
+//! into engine ROUNDS at the real model boundary — a round ends after its
+//! tool calls; text scripted after a tool call streams as the model's
+//! next-round reply to the tool results. So each `agent.chat(...)` exercises
+//! the exact shipped scaffold: streamed text-delta steps
+//! ([`StepStatus::Active`](crate::StepStatus), `content_delta`), tool-call
+//! steps ([`StepType::ToolCall`](crate::StepType)) dispatched inline through
+//! the injected [`ToolRunner`](crate::ToolRunner) (running the same hooks +
+//! policies), the `finish`-tool special case, and a turn-terminal step
+//! ([`StepStatus::Done`](crate::StepStatus), `is_complete_response: true`).
+//! Each `agent.chat(...)` / `Connection::send` consumes the next scripted turn.
 //!
 //! Always available (no feature flag): the mock pulls no dependencies the core
 //! crate doesn't already use, and compiles on `wasm32` exactly like the live
@@ -62,21 +68,27 @@
 //! # }
 //! ```
 
+use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use tokio::sync::{broadcast, Notify};
+use parking_lot::Mutex;
+use tokio::sync::broadcast;
+use tracing::debug;
 
 // Re-exported here so consumers can `use localharness::backends::mock::{
 // MockAgentConfig, MockConnection}` in one line. The config itself lives in
 // `agent.rs` next to the other per-backend agent configs.
 pub use crate::agent::MockAgentConfig;
 
+use crate::backends::turn_engine::{
+    self, DispatchedResult, EmitCtx, EngineDeps, ResolvedCall, TurnProvider,
+};
 use crate::connections::{Connection, ConnectionStrategy, StepStream};
 use crate::content::Content;
-use crate::error::Result;
-use crate::types::{Step, StepStatus, ToolCall, ToolResult, UsageMetadata};
+use crate::error::{Error, Result};
+use crate::types::{Step, StepStatus, ToolResult, UsageMetadata};
 
 const STEP_BROADCAST_CAPACITY: usize = 256;
 
@@ -87,12 +99,12 @@ const STEP_BROADCAST_CAPACITY: usize = 256;
 /// One scripted action the mock replays within a turn, in order.
 #[derive(Debug, Clone)]
 enum ScriptAction {
-    /// Stream a conversational text delta (a `content_delta` step). The
-    /// terminal step's `content` is the concatenation of every `Text`.
+    /// Stream a conversational text delta (a `content_delta` step).
     Text(String),
-    /// Request a tool call. When a [`ToolRunner`](crate::ToolRunner) is injected (the Agent path)
-    /// the mock dispatches it inline through hooks + policies, exactly like the
-    /// live backends; otherwise it only surfaces the call on the step stream.
+    /// Request a tool call. The engine dispatches it inline through hooks +
+    /// policies + the injected [`ToolRunner`](crate::ToolRunner), exactly like
+    /// the live backends; without a runner the dispatch surfaces the shared
+    /// "no tool runner registered" error result (also like the live backends).
     ToolCall {
         name: String,
         args: serde_json::Value,
@@ -118,16 +130,18 @@ impl ScriptedTurn {
     }
 
     /// Append a streamed text delta. Multiple `text` calls concatenate into
-    /// the turn-terminal step's `content` (mirrors a streaming model emitting
-    /// deltas that sum to the final message).
+    /// the reply a consumer reads via `ChatResponse::text()` (mirrors a
+    /// streaming model emitting deltas that sum to the final message).
     pub fn text(mut self, text: impl Into<String>) -> Self {
         self.actions.push(ScriptAction::Text(text.into()));
         self
     }
 
     /// Append a tool call the model "requests" at this point in the turn.
-    /// `args` is the JSON the tool receives. With a [`ToolRunner`](crate::ToolRunner) injected,
-    /// the mock executes it inline through the agent's hooks + policies.
+    /// `args` is the JSON the tool receives; with a [`ToolRunner`](crate::ToolRunner)
+    /// injected, it executes inline through the agent's hooks + policies.
+    /// Text appended AFTER a tool call streams in the model's next engine
+    /// round (its reply to the tool results), exactly like a live backend.
     pub fn tool_call(mut self, name: impl Into<String>, args: serde_json::Value) -> Self {
         self.actions.push(ScriptAction::ToolCall {
             name: name.into(),
@@ -142,17 +156,6 @@ impl ScriptedTurn {
     pub fn with_usage(mut self, usage: UsageMetadata) -> Self {
         self.usage = Some(usage);
         self
-    }
-
-    /// The concatenated text content of the turn (the terminal step's body).
-    fn content(&self) -> String {
-        let mut out = String::new();
-        for a in &self.actions {
-            if let ScriptAction::Text(t) = a {
-                out.push_str(t);
-            }
-        }
-        out
     }
 }
 
@@ -263,10 +266,7 @@ impl ConnectionStrategy for MockConnectionStrategy {
         let inner = Arc::new(MockInner {
             turns: self.turns.clone(),
             next_turn: AtomicUsize::new(0),
-            step_index: AtomicUsize::new(0),
-            steps: steps_tx,
-            idle: AtomicBool::new(true),
-            idle_notify: Notify::new(),
+            state: Arc::new(MockLoopState::new(steps_tx)),
             conversation_id: self.conversation_id.clone().into(),
             runners: self.runners.clone(),
         });
@@ -275,11 +275,147 @@ impl ConnectionStrategy for MockConnectionStrategy {
 }
 
 // =============================================================================
+// The mock side of the TurnProvider seam
+// =============================================================================
+
+/// The mock's wire-history entry: a readable tag (`"user:.."`,
+/// `"assistant:{text}:{call count}"`, `"tool:{name}:{value}"`). History is
+/// engine bookkeeping only — the mock's turns are scripted, not derived from
+/// it, and it exposes no history API (`set_history_bytes` is a no-op).
+type MockMsg = String;
+
+/// Per-connection mutable state — the shared generic container the live
+/// backends use, specialised to the mock's history tags.
+type MockLoopState = crate::backends::state::LoopState<MockMsg>;
+
+/// One scripted "stream event" fed to the engine — a [`ScriptAction`] plus
+/// the turn's usage report (folded into the round accumulator so the terminal
+/// step carries it, like a live wire's usage chunk).
+#[derive(Clone)]
+enum MockEvent {
+    Text(String),
+    Call { name: String, args: serde_json::Value },
+    Usage(UsageMetadata),
+}
+
+/// One round's accumulator: the tool calls "streamed" this round + usage.
+#[derive(Default)]
+struct MockAccum {
+    calls: Vec<(String, serde_json::Value)>,
+    usage: Option<UsageMetadata>,
+}
+
+/// The mock side of the [`TurnProvider`] seam — the engine is monomorphized
+/// over it exactly as over the live providers, so mock-driven tests exercise
+/// the shipped turn loop.
+struct MockProvider;
+
+impl TurnProvider for MockProvider {
+    type Message = MockMsg;
+    type Config = ();
+    type Request = ();
+    type Event = MockEvent;
+    type Accum = MockAccum;
+
+    fn build_request(_config: &(), _history: &[MockMsg]) {}
+
+    fn compaction_threshold(_config: &()) -> Option<u32> {
+        None
+    }
+
+    fn fold_event(
+        acc: &mut MockAccum,
+        ctx: &mut EmitCtx<'_, MockMsg>,
+        ev: MockEvent,
+    ) -> Result<()> {
+        match ev {
+            MockEvent::Text(t) => ctx.push_text(&t),
+            MockEvent::Call { name, args } => acc.calls.push((name, args)),
+            MockEvent::Usage(u) => acc.usage = Some(u),
+        }
+        Ok(())
+    }
+
+    /// Scripted args are already-parsed `Value`s — never a parse error, and
+    /// no wire correlation id (like Gemini, the mock correlates by name).
+    fn resolve_pending_calls(acc: &mut MockAccum) -> Vec<ResolvedCall> {
+        std::mem::take(&mut acc.calls)
+            .into_iter()
+            .map(|(name, args)| ResolvedCall {
+                id: None,
+                name,
+                args,
+                parse_error: None,
+            })
+            .collect()
+    }
+
+    fn round_usage(acc: &MockAccum) -> UsageMetadata {
+        acc.usage.clone().unwrap_or_default()
+    }
+
+    fn map_finish_reason(_acc: &MockAccum) -> (StepStatus, &'static str) {
+        (StepStatus::Done, "")
+    }
+
+    fn assemble_assistant_message(
+        _acc: MockAccum,
+        text: &str,
+        calls: &[ResolvedCall],
+    ) -> Option<MockMsg> {
+        (!text.is_empty() || !calls.is_empty())
+            .then(|| format!("assistant:{text}:{}", calls.len()))
+    }
+
+    fn tool_result_messages(results: Vec<DispatchedResult>) -> Vec<MockMsg> {
+        results
+            .into_iter()
+            .map(|r| format!("tool:{}:{}", r.call.name, r.value))
+            .collect()
+    }
+}
+
+/// Split one scripted turn into engine ROUNDS at the real model boundary: a
+/// streamed round ends after its tool calls, so text scripted AFTER a tool
+/// call becomes the model's next-round reply to the tool results (a live
+/// model can't keep talking in the same response after requesting tools).
+/// The turn's usage report rides the first round (merged once — the engine
+/// folds per-round usage into the terminal step's total).
+fn split_rounds(turn: ScriptedTurn) -> VecDeque<Vec<MockEvent>> {
+    let mut rounds: VecDeque<Vec<MockEvent>> = VecDeque::new();
+    let mut cur: Vec<MockEvent> = Vec::new();
+    let mut prev_was_call = false;
+    for action in turn.actions {
+        match action {
+            ScriptAction::Text(t) => {
+                if prev_was_call {
+                    rounds.push_back(std::mem::take(&mut cur));
+                    prev_was_call = false;
+                }
+                cur.push(MockEvent::Text(t));
+            }
+            ScriptAction::ToolCall { name, args } => {
+                cur.push(MockEvent::Call { name, args });
+                prev_was_call = true;
+            }
+        }
+    }
+    rounds.push_back(cur);
+    if let Some(u) = turn.usage {
+        if let Some(first) = rounds.front_mut() {
+            first.insert(0, MockEvent::Usage(u));
+        }
+    }
+    rounds
+}
+
+// =============================================================================
 // Connection
 // =============================================================================
 
 /// A live, scripted session implementing [`Connection`]. Replays one
-/// [`ScriptedTurn`] per [`Connection::send`] / `agent.chat(...)`.
+/// [`ScriptedTurn`] per [`Connection::send`] / `agent.chat(...)` — through
+/// the REAL shared turn engine.
 ///
 /// Construct it via the [builder](MockConnection::builder); the
 /// [`MockConnectionStrategy`] it produces is what [`Agent::start_mock`]
@@ -296,10 +432,7 @@ pub struct MockConnection {
 struct MockInner {
     turns: Arc<Vec<ScriptedTurn>>,
     next_turn: AtomicUsize,
-    step_index: AtomicUsize,
-    steps: broadcast::Sender<Step>,
-    idle: AtomicBool,
-    idle_notify: Notify,
+    state: Arc<MockLoopState>,
     conversation_id: Arc<str>,
     runners: MockRunners,
 }
@@ -312,147 +445,52 @@ impl MockConnection {
 }
 
 impl MockInner {
-    fn alloc_step_index(&self) -> u32 {
-        self.step_index.fetch_add(1, Ordering::Relaxed) as u32
-    }
-
-    fn emit(&self, step: Step) {
-        let _ = self.steps.send(step);
-    }
-
-    /// Replay one scripted turn: gate the prompt through the pre-turn hooks,
-    /// stream the turn's text deltas, dispatch its tool calls inline through
-    /// hooks + policies + the tool runner (when injected), then emit the
-    /// turn-terminal step and fire the post-turn hooks. Faithful to the live
-    /// `run_turn` shape: streamed `Active` deltas + a single `Done` terminal
-    /// carrying the full `content` (and, if scripted, the turn's usage).
+    /// Drive one turn through the shared engine, the scripted rounds standing
+    /// in for the model stream (`open` pops the next round). The rounds are
+    /// materialized LAZILY on the first stream open: the engine gates pre-turn
+    /// hooks BEFORE opening, so a denied prompt consumes NO scripted turn.
     async fn run_turn(&self, prompt: Content) {
-        // ONE turn context shared by the pre-turn gate, the per-call tool
-        // hooks, and the post-turn hooks of this turn.
-        let turn_ctx = self
-            .runners
-            .session_ctx
-            .as_ref()
-            .map(|s| s.child())
-            .unwrap_or_default();
-
-        // Pre-turn gate — like the live backends, a denied prompt never runs
-        // the "model": the next scripted turn is NOT consumed, and the deny
-        // surfaces as a turn_error Step (→ stream `Err` for `chat()`/`text()`).
-        if let Some(denied) = crate::backends::dispatch::gate_pre_turn(
-            self.runners.hook_runner.as_ref(),
-            &turn_ctx,
-            &prompt,
-        )
-        .await
-        {
-            self.emit(Step::turn_error(self.alloc_step_index(), denied));
-            return;
-        }
-
-        // Consume the next scripted turn AFTER the gate. Past the end of the
-        // script, every send is an empty terminal turn (a model with nothing
-        // left to say) — so an over-sending test terminates cleanly.
-        let idx = self.next_turn.fetch_add(1, Ordering::Relaxed);
-        let turn = self.turns.get(idx).cloned().unwrap_or_default();
-
-        self.idle.store(false, Ordering::Release);
-        let traj = uuid::Uuid::new_v4().to_string();
-
-        for action in &turn.actions {
-            match action {
-                ScriptAction::Text(delta) => {
-                    self.emit(Step::text_delta(&traj, self.alloc_step_index(), delta));
+        let deps = EngineDeps::<MockProvider> {
+            config: (),
+            state: self.state.clone(),
+            tool_runner: self.runners.tool_runner.clone(),
+            hook_runner: self.runners.hook_runner.clone(),
+            session_ctx: self.runners.session_ctx.clone(),
+        };
+        let user = format!("user:{}", prompt.as_text().unwrap_or_default());
+        let rounds: Mutex<Option<VecDeque<Vec<MockEvent>>>> = Mutex::new(None);
+        let res = turn_engine::run_turn::<MockProvider, _, _, _, _, _>(
+            deps,
+            user,
+            prompt,
+            |_req| {
+                // Consume the next scripted turn on the FIRST open of this
+                // turn; each later open (a new round after tool dispatch)
+                // pops the next round. Past the end of the script — or past
+                // the turn's last round — the "model" streams nothing, so an
+                // over-sending test terminates cleanly.
+                let evs = rounds
+                    .lock()
+                    .get_or_insert_with(|| {
+                        let idx = self.next_turn.fetch_add(1, Ordering::Relaxed);
+                        split_rounds(self.turns.get(idx).cloned().unwrap_or_default())
+                    })
+                    .pop_front()
+                    .unwrap_or_default();
+                async move {
+                    Ok(futures_util::stream::iter(
+                        evs.into_iter().map(Ok::<_, Error>),
+                    ))
                 }
-                ScriptAction::ToolCall { name, args } => {
-                    let tool_call = ToolCall {
-                        name: name.clone(),
-                        args: args.clone(),
-                        id: None,
-                        canonical_path: None,
-                    };
-                    // Surface the call on the stream (UIs flip the tool block to
-                    // "running"), exactly like the live loop's tool-call step.
-                    // `Done` (not `Active`) is deliberate: the mock ALREADY
-                    // dispatches this tool call inline (matching the live
-                    // backends), so the step exists only for OBSERVABILITY —
-                    // `ChatResponse::tool_calls()` reads `tool_calls` regardless
-                    // of status. The Agent's `spawn_tool_dispatcher` SKIPS
-                    // `Done` steps, so this step does NOT trigger a redundant
-                    // second dispatch. (It is non-terminal —
-                    // `is_complete_response: Some(false)` and
-                    // `target: Environment` — so it never ends the
-                    // `ChatResponse`.)
-                    self.emit(Step::tool_call(
-                        self.alloc_step_index(),
-                        tool_call.clone(),
-                        StepStatus::Done,
-                    ));
-
-                    // Dispatch inline through hooks + policies + the runner when
-                    // the Agent injected them. This is what makes a scripted
-                    // tool-call flow actually RUN the tool offline — like the
-                    // live backends, the result feeds the conversation rather
-                    // than being re-broadcast as its own step.
-                    if self.runners.tool_runner.is_some() {
-                        let _result = self.dispatch_tool(&turn_ctx, &tool_call).await;
-                    }
-                }
-            }
-        }
-
-        let content = turn.content();
-        // A scripted `finish` tool call flags the terminal step as
-        // `StepType::Finish` (mirrors the live backends' `saw_finish`).
-        let finished_turn = turn.actions.iter().any(|a| {
-            matches!(a, ScriptAction::ToolCall { name, .. }
-                if name == crate::builtins::FINISH_TOOL_NAME)
-        });
-        self.emit(Step::turn_complete(
-            traj,
-            self.alloc_step_index(),
-            StepStatus::Done,
-            content.as_str(),
-            "",
-            finished_turn,
-            None,
-            turn.usage,
-        ));
-
-        // Post-turn hooks observe the completed turn's final text — fired
-        // after the terminal step, never on denied turns (the gate above
-        // returned early). Same placement as the live backends.
-        crate::backends::dispatch::dispatch_post_turn(
-            self.runners.hook_runner.as_ref(),
-            &turn_ctx,
-            &content,
+            },
+            || async {},
         )
         .await;
-
-        self.idle.store(true, Ordering::Release);
-        self.idle_notify.notify_waiters();
-    }
-
-    /// Run a scripted tool call through the injected hooks + policies + tool
-    /// runner — the SAME shared pipeline the live backends use
-    /// ([`crate::backends::dispatch::dispatch_tool_call`]) — and return the
-    /// typed result. A denied call (policy / pre-tool-call hook) yields an
-    /// error result without executing the tool; an `Ok` value carrying
-    /// `{"error": ...}` is lifted into `ToolResult::error` exactly like the
-    /// live backends. `turn_ctx` is the turn's shared hook context, so
-    /// per-call operation contexts hang off the turn like the live loops.
-    async fn dispatch_tool(
-        &self,
-        turn_ctx: &crate::hooks::TurnContext,
-        call: &ToolCall,
-    ) -> ToolResult {
-        crate::backends::dispatch::dispatch_tool_call(
-            self.runners.tool_runner.as_ref(),
-            self.runners.hook_runner.as_ref(),
-            turn_ctx,
-            call,
-        )
-        .await
+        // A deny / turn failure already surfaced as a turn_error Step (which
+        // `subscribe_step_stream` turns into a stream `Err`).
+        if let Err(e) = res {
+            debug!(error = %e, "mock turn ended with error");
+        }
     }
 }
 
@@ -460,7 +498,7 @@ impl MockInner {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Connection for MockConnection {
     fn is_idle(&self) -> bool {
-        self.inner.idle.load(Ordering::Acquire)
+        self.inner.state.idle.load(Ordering::Acquire)
     }
 
     fn conversation_id(&self) -> &str {
@@ -470,8 +508,8 @@ impl Connection for MockConnection {
     async fn send(&self, content: Content) -> Result<()> {
         // Spawn the turn so `send` returns once dispatched (the live backends
         // do the same), letting streaming consumers subscribe before steps
-        // land. `run_turn` gates the prompt through the pre-turn hooks and
-        // only consumes the next scripted turn when the gate allows.
+        // land. The engine gates the prompt through the pre-turn hooks and
+        // the mock only consumes the next scripted turn when the gate allows.
         let inner = self.inner.clone();
         crate::runtime::spawn(async move {
             inner.run_turn(content).await;
@@ -484,15 +522,15 @@ impl Connection for MockConnection {
     }
 
     async fn send_tool_results(&self, _results: Vec<ToolResult>) -> Result<()> {
-        // The mock dispatches scripted tool calls inline (like the Gemini
-        // backend), so out-of-band results are a no-op.
+        // The engine dispatches scripted tool calls inline (like the live
+        // backends), so out-of-band results are a no-op.
         Ok(())
     }
 
     fn subscribe_steps(&self) -> StepStream {
         // Turn-failure Steps surface as stream `Err` (uniform across
         // backends) — see `backends::subscribe_step_stream`.
-        crate::backends::subscribe_step_stream(self.inner.steps.subscribe(), "mock")
+        crate::backends::subscribe_step_stream(self.inner.state.steps.subscribe(), "mock")
     }
 
     async fn wait_for_idle(&self) -> Result<()> {
@@ -500,13 +538,13 @@ impl Connection for MockConnection {
             if self.is_idle() {
                 return Ok(());
             }
-            self.inner.idle_notify.notified().await;
+            self.inner.state.idle_notify.notified().await;
         }
     }
 
     async fn shutdown(&self) -> Result<()> {
-        self.inner.idle.store(true, Ordering::Release);
-        self.inner.idle_notify.notify_waiters();
+        self.inner.state.idle.store(true, Ordering::Release);
+        self.inner.state.idle_notify.notify_waiters();
         Ok(())
     }
 
@@ -720,5 +758,79 @@ mod tests {
             "10 + 20, each turn counted once",
         );
         agent.shutdown().await.unwrap();
+    }
+
+    /// Round-splitting fidelity: text scripted AFTER a tool call streams as
+    /// the model's NEXT engine round (the live backends' shape), and the
+    /// consumer-visible reply is unchanged — `text()` concatenates the
+    /// deltas across rounds; the tool still runs exactly once.
+    #[tokio::test]
+    async fn text_after_tool_call_rides_a_second_engine_round() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_c = count.clone();
+        let tool = ClosureTool::new(
+            "ping",
+            "Ping",
+            json!({"type": "object"}),
+            move |_args, _ctx| {
+                let count_c = count_c.clone();
+                async move {
+                    count_c.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"ok": true}))
+                }
+            },
+        );
+        let backend = MockConnection::builder()
+            .turn(|t| t.text("a").tool_call("ping", json!({})).text("b"))
+            .build();
+        let agent = Agent::start_mock(
+            MockAgentConfig::new(backend)
+                .with_tool(tool)
+                .with_policies(vec![policy::allow_all()]),
+        )
+        .await
+        .unwrap();
+
+        let reply = agent.chat("go").await.unwrap().text().await.unwrap();
+        assert_eq!(reply, "ab", "deltas from both rounds concatenate");
+        assert_eq!(count.load(Ordering::SeqCst), 1, "the tool ran exactly once");
+        agent.shutdown().await.unwrap();
+    }
+
+    /// A scripted `finish` call rides the ENGINE's finish special-case now:
+    /// the terminal step is `Finish` and carries the summary + structured
+    /// output (the old parallel mock loop dropped both).
+    #[tokio::test]
+    async fn scripted_finish_captures_summary_and_structured_output() {
+        use crate::types::StepType;
+        use futures_util::StreamExt;
+
+        let strategy = MockConnection::builder()
+            .turn(|t| {
+                t.text("working").tool_call(
+                    crate::builtins::FINISH_TOOL_NAME,
+                    json!({"summary": "all done", "output": {"x": 1}}),
+                )
+            })
+            .build();
+        let conn = strategy.connect().await.expect("connects");
+        let mut steps = conn.subscribe_steps();
+        conn.send(Content::text("go")).await.expect("send dispatches");
+
+        loop {
+            let step = steps
+                .next()
+                .await
+                .expect("steps flow")
+                .expect("no turn error");
+            if step.is_complete_response == Some(true) {
+                assert_eq!(step.kind, StepType::Finish);
+                assert_eq!(step.finish_summary.as_deref(), Some("all done"));
+                assert_eq!(step.structured_output, Some(json!({"x": 1})));
+                assert_eq!(step.content, "working");
+                break;
+            }
+        }
+        conn.shutdown().await.expect("clean shutdown");
     }
 }
