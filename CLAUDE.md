@@ -90,7 +90,9 @@ src/                  library crate
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
 │                     call_agent (feature "wallet")
 ├── tempo_tx.rs       Tempo Transaction (tx 0x76) encoder; see Tempo section
-├── raster.rs compose.rs sharedfs_reconcile.rs signaling_seal.rs kv_reduce.rs
+├── raster.rs html_fb.rs(pure HTML→framebuffer rasterizer, hoisted from
+│                     app::display) compose.rs sharedfs_reconcile.rs
+│                     signaling_seal.rs kv_reduce.rs
 │                     kv_room.rs lessons.rs confirm.rs cut_guard.rs(static
 │                     facet-cut safety lint, reserved selectors) keeper.rs(pure
 │                     decentralized-scheduler keeper decision core) qr.rs(inline
@@ -132,10 +134,11 @@ src/app/ (browser IDE):
     access.rs tools/{platform,bounty,guild,governance,misc})
   history.rs(OPFS conversation + tool-call replay) opfs.rs(file browser/editor
     MODAL off the ADMIN panel — #71 killed the header [files] button)
-  display.rs(framebuffer: runs wasm cartridges off-main-thread in a Web Worker +
-    rasterizes HTML; main-thread WATCHDOG kills hung workers — the brick fix;
-    surface = a fullscreen dismissable OVERLAY, not a tab/panel; host_agent
-    bridge: notify + feed + broadcast_compose + viewer_is_owner/has_identity)
+  display/(framebuffer: runs wasm cartridges off-main-thread in a Web Worker +
+    rasterizes HTML via crate::html_fb; main-thread WATCHDOG kills hung workers
+    — the brick fix; surface = a fullscreen dismissable OVERLAY, not a
+    tab/panel; worker.rs lifecycle+router, surface.rs mount/pointer/embed/
+    composer UI, bridge/{feed,compose,http,mp,chat,audio}.rs per capability)
   gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
   notifications.rs(notify tool: local + `to:` cross-agent; sub under
     keccak256("localharness.push_sub"); bell inbox persists to OPFS via sw.js

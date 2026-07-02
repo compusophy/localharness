@@ -44,6 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `wire_shared_session!` assembly; branches keep only genuine backend specifics (key/model,
   max-tokens naming, thinking/temperature, history gate). Behavior unchanged; a native source-scan
   test (`tests/chat_toolset_single_source.rs`) guards the single source.
+- display.rs module split (roadmap R5): the 2,933-line `app::display` is now `app/display/`
+  — `worker.rs` (spawn/watchdog/run-outcome lifecycle + the onmessage router), `surface.rs`
+  (canvas mount, overlay chrome, pointer state, embed-card plumbing, broadcast-composer UI), and
+  `bridge/{feed,compose,http,mp,chat,audio}.rs` (one module per host capability, thread_local
+  state module-private per bridge). The pure HTML→framebuffer rasterizer is hoisted to a new
+  crate-root `html_fb` module (beside `raster`) and gains its first native unit tests. Mechanical
+  move — no behavior change; `display::` call sites and the cartridge-worker protocol untouched.
 
 ## [0.60.20] - 2026-07-02
 

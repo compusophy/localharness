@@ -88,4 +88,10 @@ Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
 assembles the tool surface ONCE — `chat_toolset()` + `wire_shared_session!` feed
 every backend branch; add new chat tools there, never per-backend; source guard
 `tests/chat_toolset_single_source.rs`) ·
-`notifications.rs` bell + push (per-device `dev` dedup) · `display.rs` framebuffer.
+`notifications.rs` bell + push (per-device `dev` dedup) · `display/` framebuffer
+(`mod.rs` run/launch surface + re-exports; `worker.rs` spawn/watchdog/RUN_GEN/
+RUN_OUTCOME + the onmessage router; `surface.rs` canvas mount + overlay chrome +
+pointer state + embed-card plumbing + broadcast-composer UI; `bridge/` one module
+per host capability — feed/compose/http/mp/chat/audio — thread_local state
+module-private per bridge). The pure HTML→framebuffer rasterizer is hoisted to
+`crate::html_fb` (native-tested).

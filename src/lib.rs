@@ -121,6 +121,11 @@ pub mod soliditylite;
 /// foundation; native-testable, used by `app::display`). See `src/raster.rs`.
 pub mod raster;
 
+/// Pure HTML → framebuffer rasterizer (block-level text subset over the
+/// [`raster`] bitmap font; native-testable, zero web-sys). Hoisted out of
+/// `app::display` (roadmap R5). See `src/html_fb.rs`.
+pub mod html_fb;
+
 /// Compositor scheduling for `host::compose` — the deferred-mutation module
 /// table (native-testable control flow). See `src/compose.rs`.
 pub mod compose;
