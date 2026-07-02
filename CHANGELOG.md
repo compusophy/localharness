@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.15] - 2026-07-01
+
+### Fixed
+
+- **A cartridge could OOM-crash the browser tab.** The display framebuffer copied the
+  worker's transferred buffer into a `Vec` sized by the buffer length with no cap, so a
+  worker bug or a compromised cartridge sending an oversized buffer would panic the whole
+  tab on allocation. Bounded to the worker's 4 MiB max (1024×1024×4); oversized frames are
+  dropped.
+- **P2P shared-folder sync could silently lose data.** Two `apex_write` results were
+  discarded — if preserving your *losing* edit as a conflict copy failed (OPFS full / I/O),
+  the sync still pulled the peer's winner and overwrote your file with no backup. It now
+  aborts the sync round on that failure (preventing the overwrite) and surfaces a
+  received-file write failure instead of reporting a phantom successful pull.
+- **`validation reclaim`/`draw` burned sponsor gas on the wrong state.** Neither checked
+  the validation's on-chain state first, so a wrong-state poke wasted sponsored gas on an
+  opaque revert. They now preflight (`reclaim` needs OPEN, `draw` needs CHALLENGED) with a
+  clear message; a transient RPC read falls through so it never blocks a valid poke.
+- **`party` accepted member id 0.** The numeric-id path took `0` (never a valid tokenId)
+  while the name path rejected it — `formParty` would then revert cryptically on-chain. It's
+  now rejected up front.
+
 ## [0.60.14] - 2026-07-01
 
 ### Fixed
