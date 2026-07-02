@@ -30,7 +30,7 @@
 //!     fee_payer_signature,     // 0x80 if no sponsor; else rlp([v,r,s])
 //!     aa_authorization_list,   // empty list for our usage
 //!     key_authorization,       // truly optional — omitted if None
-//!     sender_signature         // rlp([v, r, s])
+//!     sender_signature         // flat 65 bytes r||s||v (v=0/1), RLP byte string
 //! ])
 //! ```
 //!
