@@ -1022,21 +1022,17 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
-        Some("whoami") | Some("lookup") => {
-            let rest = &args[1..];
-            let (json, name) = if rest.first().map(String::as_str) == Some("--json") {
-                (true, rest.get(1))
-            } else {
-                (false, rest.first())
-            };
-            match name {
-                Some(n) => whoami(n, json).await,
-                None => {
-                    eprintln!("usage: localharness whoami [--json] <name>");
-                    2
-                }
+        Some("whoami") | Some("lookup") => match parse_whoami_args(&args[1..]) {
+            Ok((json, Some(n))) => whoami(&n, json).await,
+            Ok((_, None)) => {
+                eprintln!("{WHOAMI_USAGE}");
+                2
             }
-        }
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
         Some("status") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => {
                 // An optional positional <name> inspects any agent (pure read);
@@ -1053,15 +1049,32 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
-        Some("discover") => {
-            let q = args[1..].join(" ");
-            if q.trim().is_empty() {
-                eprintln!("usage: localharness discover <query>   (e.g. \"solidity auditor\")");
-                2
-            } else {
-                discover(&q).await
+        Some("discover") => match util::take_as_flag(&args[1..]) {
+            // `--as` is accepted-and-ignored (discover is identity-free); any other
+            // `--flag` is a usage error, NOT part of the query (it used to be joined
+            // in, so `discover "x" --as claude` searched for "x --as claude").
+            Ok((_, rest)) => {
+                if let Some(flag) = rest.iter().find(|a| a.starts_with("--")) {
+                    eprintln!("discover: unknown flag '{flag}'");
+                    eprintln!("usage: localharness discover <query>   (e.g. \"solidity auditor\")");
+                    2
+                } else {
+                    let q = rest.join(" ");
+                    if q.trim().is_empty() {
+                        eprintln!(
+                            "usage: localharness discover <query>   (e.g. \"solidity auditor\")"
+                        );
+                        2
+                    } else {
+                        discover(&q).await
+                    }
+                }
             }
-        }
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
         Some("version") | Some("--version") | Some("-V") => {
             println!("localharness {}", env!("CARGO_PKG_VERSION"));
             0

@@ -610,7 +610,15 @@ async fn try_build_x402_payment(
     );
     // eprintln (NOT println): `run_agent_turn` is shared with the MCP server,
     // whose stdout IS the JSON-RPC channel — a stray stdout line corrupts it.
-    eprintln!("x402: paying {} per call to the platform meter", fmt_lh(cost));
+    // Say truthfully where the money comes from: this x402 authorization is
+    // settled via `X402Facet.settle` — a transferFrom pulling from the caller's
+    // WALLET to the platform payee. The chat METER is NOT debited on this path
+    // (dogfood: the old "to the platform meter" wording sent users checking an
+    // unchanged meter while their wallet dropped).
+    eprintln!(
+        "x402: paying {} per call from your WALLET (x402 settle to the platform payee; the meter is untouched)",
+        fmt_lh(cost)
+    );
     Some((X402_PAYMENT_HEADER.to_string(), auth.to_string()))
 }
 

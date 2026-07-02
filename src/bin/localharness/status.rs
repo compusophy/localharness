@@ -1,5 +1,43 @@
 use crate::{bytes_to_hex_str, fmt_interval, fmt_lh, job_is_terminal, load_signer, load_signer_and_sponsor, registry, resolve_caller_label, truncate_words, wallet};
 
+pub(crate) const WHOAMI_USAGE: &str = "usage: localharness whoami [--json] [--as] <name>";
+
+/// Parse `whoami`/`lookup` args. Pure so it's unit-testable: `--json` anywhere,
+/// `--as <name>` as an alias for the positional name (dogfood bug: `whoami --as
+/// claude` looked up the LITERAL string "--as" on-chain and reported "--as is
+/// unregistered"), and any OTHER `--flag` errs with usage instead of being sent
+/// to the registry as a name. Returns `(json, name)`.
+pub(crate) fn parse_whoami_args(rest: &[String]) -> Result<(bool, Option<String>), String> {
+    fn set_name(slot: &mut Option<String>, n: String) -> Result<(), String> {
+        if slot.is_some() {
+            return Err(format!("whoami: more than one name given\n{WHOAMI_USAGE}"));
+        }
+        *slot = Some(n);
+        Ok(())
+    }
+    let mut json = false;
+    let mut name: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--json" => json = true,
+            "--as" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or_else(|| format!("whoami: --as requires a name\n{WHOAMI_USAGE}"))?;
+                set_name(&mut name, v.clone())?;
+                i += 1;
+            }
+            flag if flag.starts_with("--") => {
+                return Err(format!("whoami: unknown flag '{flag}'\n{WHOAMI_USAGE}"));
+            }
+            positional => set_name(&mut name, positional.to_string())?,
+        }
+        i += 1;
+    }
+    Ok((json, name))
+}
+
 /// The on-chain facts `whoami` resolves for a name.
 pub(crate) struct WhoamiInfo {
     name: String,
@@ -11,6 +49,10 @@ pub(crate) struct WhoamiInfo {
     /// Advertised per-call price (wei); `None` = never set (callers pay
     /// the platform default through the hosted gate).
     price_wei: Option<u128>,
+    /// Owner's `$LH` balances (wallet + per-call meter), the same reads
+    /// `credits` shows; `None` = the balance read failed (degrade, don't sink).
+    wallet_lh: Option<u128>,
+    meter_lh: Option<u128>,
 }
 
 /// Render a `WhoamiInfo` as the terminal report. Pure (no I/O) so the layout
@@ -35,16 +77,21 @@ pub(crate) fn format_whoami(info: &WhoamiInfo) -> String {
             fmt_lh(registry::DEFAULT_ASK_PRICE_WEI)
         ),
     };
+    let fmt_bal = |b: Option<u128>| b.map(fmt_lh).unwrap_or_else(|| "—".to_string());
     format!(
         "{name}.localharness.xyz\n  \
          owner         {owner}\n  \
          tokenId       {id}\n  \
          agent wallet  {wallet}\n  \
+         $LH wallet    {lh_wallet}\n  \
+         $LH meter     {lh_meter}   <- per-call billing debits this\n  \
          persona       {persona}\n  \
          face          {face}\n  \
          price         {price}",
         name = info.name,
         id = info.token_id,
+        lh_wallet = fmt_bal(info.wallet_lh),
+        lh_meter = fmt_bal(info.meter_lh),
     )
 }
 
@@ -61,6 +108,8 @@ pub(crate) fn format_whoami_json(info: &WhoamiInfo) -> String {
         "face": info.public_face,
         "priceWei": info.price_wei.map(|w| w.to_string()),
         "defaultPriceWei": registry::DEFAULT_ASK_PRICE_WEI.to_string(),
+        "walletLhWei": info.wallet_lh.map(|w| w.to_string()),
+        "meterLhWei": info.meter_lh.map(|w| w.to_string()),
     });
     serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
 }
@@ -79,8 +128,15 @@ pub(crate) async fn resolve_whoami(name: &str) -> Result<WhoamiInfo, String> {
             has_persona: false,
             public_face: None,
             price_wei: None,
+            wallet_lh: None,
+            meter_lh: None,
         });
     }
+    // The owner's $LH balances — the SAME reads (and the same address: the
+    // owner EOA the proxy meters) that `credits` prints. Degrade on failure.
+    let owner_addr = owner.clone().unwrap_or_default();
+    let wallet_lh = registry::token_balance_of(&owner_addr).await.ok();
+    let meter_lh = registry::credit_balance_of(&owner_addr).await.ok();
     let token_id = registry::id_of_name(name).await.unwrap_or(0);
     let tba = registry::tba_of_name(name).await.ok().flatten();
     let (has_persona, public_face, price_wei) = if token_id != 0 {
@@ -104,6 +160,8 @@ pub(crate) async fn resolve_whoami(name: &str) -> Result<WhoamiInfo, String> {
         has_persona,
         public_face,
         price_wei,
+        wallet_lh,
+        meter_lh,
     })
 }
 
@@ -731,6 +789,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_whoami_args_accepts_as_alias_and_rejects_unknown_flags() {
+        // Plain positional, with/without --json (either side).
+        assert_eq!(parse_whoami_args(&args(&["claude"])), Ok((false, Some("claude".into()))));
+        assert_eq!(
+            parse_whoami_args(&args(&["--json", "claude"])),
+            Ok((true, Some("claude".into())))
+        );
+        assert_eq!(
+            parse_whoami_args(&args(&["claude", "--json"])),
+            Ok((true, Some("claude".into())))
+        );
+        // The dogfood bug: `whoami --as claude` looked up the LITERAL "--as"
+        // on-chain ("--as is unregistered"). It's now a name alias.
+        assert_eq!(
+            parse_whoami_args(&args(&["--as", "claude"])),
+            Ok((false, Some("claude".into())))
+        );
+        assert_eq!(
+            parse_whoami_args(&args(&["--json", "--as", "claude"])),
+            Ok((true, Some("claude".into())))
+        );
+        // No name at all → dispatcher prints usage (not an error string here).
+        assert_eq!(parse_whoami_args(&args(&[])), Ok((false, None)));
+        // ANY other --flag errs with usage instead of an on-chain name lookup.
+        assert!(parse_whoami_args(&args(&["--verbose", "claude"])).is_err());
+        assert!(parse_whoami_args(&args(&["claude", "--nope"])).is_err());
+        // Dangling --as / duplicate names are errors too.
+        assert!(parse_whoami_args(&args(&["--as"])).is_err());
+        assert!(parse_whoami_args(&args(&["a", "b"])).is_err());
+        assert!(parse_whoami_args(&args(&["--as", "a", "b"])).is_err());
+    }
+
+    #[test]
     fn format_whoami_unregistered_is_one_line() {
         let info = WhoamiInfo {
             name: "ghost".into(),
@@ -740,6 +831,8 @@ mod tests {
             has_persona: false,
             public_face: None,
             price_wei: None,
+            wallet_lh: None,
+            meter_lh: None,
         };
         assert_eq!(format_whoami(&info), "ghost is unregistered");
     }
@@ -754,6 +847,8 @@ mod tests {
             has_persona: true,
             public_face: Some("app".into()),
             price_wei: Some(100_000_000_000_000_000),
+            wallet_lh: Some(2_500_000_000_000_000_000),
+            meter_lh: Some(500_000_000_000_000_000),
         };
         let out = format_whoami(&info);
         assert!(out.starts_with("claude.localharness.xyz\n"));
@@ -761,6 +856,9 @@ mod tests {
         assert!(out.contains("tokenId       8"));
         assert!(out.contains("agent wallet  0xdef"));
         assert!(!out.contains("token-bound account"), "jargon should be gone");
+        // The $LH balances, same fmt_lh rendering `credits` uses.
+        assert!(out.contains("$LH wallet    2.50 LH"));
+        assert!(out.contains("$LH meter     0.50 LH   <- per-call billing debits this"));
         assert!(out.contains("persona       published"));
         assert!(out.contains("face          app"));
         assert!(out.contains("price         0.10 LH/call"));
@@ -776,11 +874,16 @@ mod tests {
             has_persona: false,
             public_face: None,
             price_wei: None,
+            wallet_lh: None,
+            meter_lh: None,
         };
         let out = format_whoami(&info);
         assert!(out.contains("persona       none"));
         assert!(out.contains("face          unset (directory)"));
         assert!(out.contains("agent wallet  —"));
+        // A failed balance read degrades to "—", never sinks the lookup.
+        assert!(out.contains("$LH wallet    —"));
+        assert!(out.contains("$LH meter     —"));
         // No advertised price → the hosted-gate default, labelled as such.
         assert!(out.contains("price         0.01 LH/call (agent default"));
     }
@@ -795,6 +898,8 @@ mod tests {
             has_persona: true,
             public_face: Some("app".into()),
             price_wei: Some(100_000_000_000_000_000),
+            wallet_lh: Some(2_500_000_000_000_000_000),
+            meter_lh: Some(500_000_000_000_000_000),
         };
         let v: serde_json::Value = serde_json::from_str(&format_whoami_json(&info)).unwrap();
         assert_eq!(v["name"], "claude");
@@ -804,6 +909,8 @@ mod tests {
         assert_eq!(v["wallet"], "0xdef");
         assert_eq!(v["persona"], true);
         assert_eq!(v["face"], "app");
+        assert_eq!(v["walletLhWei"], "2500000000000000000");
+        assert_eq!(v["meterLhWei"], "500000000000000000");
     }
 
     #[test]
@@ -816,12 +923,16 @@ mod tests {
             has_persona: false,
             public_face: None,
             price_wei: None,
+            wallet_lh: None,
+            meter_lh: None,
         };
         let v: serde_json::Value = serde_json::from_str(&format_whoami_json(&info)).unwrap();
         assert_eq!(v["registered"], false);
         assert!(v["owner"].is_null());
         assert!(v["wallet"].is_null());
         assert!(v["face"].is_null());
+        assert!(v["walletLhWei"].is_null());
+        assert!(v["meterLhWei"].is_null());
         assert_eq!(v["persona"], false);
     }
 

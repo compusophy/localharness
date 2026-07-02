@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retry-wrapped open is hoisted into the shared `backends::retry::open_stream_with_retry` and used
   by all three loops, so the policy can't drift per-backend again. (Auth/credits/rate-limit still
   fail fast; a mid-stream failure is never retried.)
+- **CLI: `whoami --as <name>` no longer looks up the literal string `--as` on-chain.** `--as <name>`
+  is accepted as an alias for the positional name, and any other unrecognized `--flag` errs with
+  usage instead of being sent to the registry as a name.
+- **CLI: the `call` x402 line said "paying … to the platform meter" while the debit actually came
+  from the WALLET** (`X402Facet.settle` pulls via `transferFrom`; the meter is untouched). The
+  message now states the wallet as the source. Message-only — billing behavior unchanged.
+- **CLI: `discover` no longer folds flags into the search query.** `discover "writing help" --as
+  claude` used to search for the literal string `writing help --as claude`; `--as` is now accepted
+  and ignored (discover is identity-free) and any other `--flag` errs with usage.
+
+### Added
+
+- **CLI: `whoami` now shows the owner's `$LH` balances** (wallet + per-call meter — the same reads
+  `credits` prints) in both the text and `--json` output.
 
 ### Changed
 
