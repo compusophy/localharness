@@ -228,7 +228,12 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
 
     match registry::owner_of_name(name).await {
         Ok(Some(owner)) if owner.eq_ignore_ascii_case(&addr) => {
-            println!("✓ you are live at https://{name}.localharness.xyz/  (free — the name mint is sponsored, you paid nothing)");
+            // GAS is sponsored (no native token needed), but the name FEE
+            // (registrationCost, ~1 LH) IS pulled from the wallet — verified live
+            // (a fresh create went 5.00 -> 4.00 LH). Don't claim "you paid nothing":
+            // that contradicted the "claiming costs …" line above and was the seed of
+            // the recurring "told free, charged 1 LH" onboarding confusion.
+            println!("✓ you are live at https://{name}.localharness.xyz/  (mint gas sponsored — you needed no native token; the name fee came from your $LH)");
             println!("  tx:  {tx}");
             println!("  key: {key_file}  (keep this — it is your identity)");
             if gitignored {
