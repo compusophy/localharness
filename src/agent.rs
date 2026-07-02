@@ -24,21 +24,17 @@ use futures_util::stream::StreamExt;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use crate::backends::gemini::{
-    GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy, GeminiRunners,
-};
+use crate::backends::gemini::{GeminiBackendConfig, GeminiConnectionStrategy, GeminiRunners};
 use crate::backends::mock::{MockConnectionStrategy, MockRunners};
 #[cfg(feature = "anthropic")]
 use crate::backends::anthropic::{
-    AnthropicBackendConfig, AnthropicConnection, AnthropicConnectionStrategy, AnthropicRunners,
+    AnthropicBackendConfig, AnthropicConnectionStrategy, AnthropicRunners,
 };
 #[cfg(feature = "openai")]
-use crate::backends::openai::{
-    OpenAiBackendConfig, OpenAiConnection, OpenAiConnectionStrategy, OpenAiRunners,
-};
+use crate::backends::openai::{OpenAiBackendConfig, OpenAiConnectionStrategy, OpenAiRunners};
 #[cfg(feature = "local")]
 use crate::backends::local::connection::{
-    LocalBackendConfig, LocalConnection, LocalConnectionStrategy, LocalRunners,
+    LocalBackendConfig, LocalConnectionStrategy, LocalRunners,
 };
 use crate::connections::{Connection, ConnectionStrategy};
 use crate::content::Content;
@@ -166,6 +162,80 @@ impl AgentConfig {
     }
 }
 
+/// Generates the [`AgentConfig`]-forwarding builder methods that are VERBATIM
+/// identical across the per-backend config structs (each owns a
+/// `pub agent: AgentConfig` field). The base set (capabilities / tool /
+/// policies / pre- and post-tool hooks) is always emitted; `workspace`,
+/// `trigger`, and `mcp` are opted into per config so each struct keeps exactly
+/// the surface it had. Backend-specific builders (`with_model`,
+/// `with_system_instructions`, `resume`, …) stay hand-written — they encode
+/// real divergence.
+macro_rules! forward_agent_config_builders {
+    ($($extra:ident),* $(,)?) => {
+        /// Configure which built-in tools are enabled.
+        pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
+            self.agent = self.agent.with_capabilities(cap);
+            self
+        }
+
+        /// Register a custom tool.
+        pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
+            self.agent = self.agent.with_tool(tool);
+            self
+        }
+
+        /// Set the safety policies for tool execution.
+        pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
+            self.agent = self.agent.with_policies(policies);
+            self
+        }
+
+        /// Register a custom pre-tool-call decide hook (see
+        /// [`AgentConfig::with_pre_tool_hook`]).
+        pub fn with_pre_tool_hook(
+            mut self,
+            hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
+        ) -> Self {
+            self.agent = self.agent.with_pre_tool_hook(hook);
+            self
+        }
+
+        /// Register a custom post-tool-call inspect hook (see
+        /// [`AgentConfig::with_post_tool_hook`]).
+        pub fn with_post_tool_hook(
+            mut self,
+            hook: Arc<dyn crate::hooks::PostToolCallHook>,
+        ) -> Self {
+            self.agent = self.agent.with_post_tool_hook(hook);
+            self
+        }
+
+        $(forward_agent_config_builders!(@extra $extra);)*
+    };
+    (@extra workspace) => {
+        /// Add a workspace root for path-containment enforcement.
+        pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
+            self.agent = self.agent.with_workspace(ws);
+            self
+        }
+    };
+    (@extra trigger) => {
+        /// Register a background trigger.
+        pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
+            self.agent = self.agent.with_trigger(trigger);
+            self
+        }
+    };
+    (@extra mcp) => {
+        /// Add an MCP server to connect at startup (native only).
+        #[cfg(feature = "native")]
+        pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
+            self.agent = self.agent.with_mcp_server(server);
+            self
+        }
+    };
+}
+
 /// Configuration for the Rust-native Gemini backend.
 ///
 /// Pairs the generic `AgentConfig` (hooks, tools, policies, triggers)
@@ -265,12 +335,6 @@ impl GeminiAgentConfig {
         self
     }
 
-    /// Configure which built-in tools are enabled.
-    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
-        self.agent = self.agent.with_capabilities(cap);
-        self
-    }
-
     /// Route requests through an alternate base URL (e.g. the
     /// localharness credit proxy) instead of Google's endpoint. In
     /// credits mode the api key carries the proxy auth token.
@@ -306,56 +370,7 @@ impl GeminiAgentConfig {
         self
     }
 
-    /// Register a custom tool.
-    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
-        self.agent = self.agent.with_tool(tool);
-        self
-    }
-
-    /// Set the safety policies for tool execution.
-    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
-        self.agent = self.agent.with_policies(policies);
-        self
-    }
-
-    /// Register a custom pre-tool-call decide hook (see
-    /// [`AgentConfig::with_pre_tool_hook`]).
-    pub fn with_pre_tool_hook(
-        mut self,
-        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
-    ) -> Self {
-        self.agent = self.agent.with_pre_tool_hook(hook);
-        self
-    }
-
-    /// Register a custom post-tool-call inspect hook (see
-    /// [`AgentConfig::with_post_tool_hook`]).
-    pub fn with_post_tool_hook(
-        mut self,
-        hook: Arc<dyn crate::hooks::PostToolCallHook>,
-    ) -> Self {
-        self.agent = self.agent.with_post_tool_hook(hook);
-        self
-    }
-
-    /// Add a workspace root for path-containment enforcement.
-    pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
-        self.agent = self.agent.with_workspace(ws);
-        self
-    }
-
-    /// Register a background trigger.
-    pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
-        self.agent = self.agent.with_trigger(trigger);
-        self
-    }
-
-    /// Add an MCP server to connect at startup (native only).
-    #[cfg(feature = "native")]
-    pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
-        self.agent = self.agent.with_mcp_server(server);
-        self
-    }
+    forward_agent_config_builders!(workspace, trigger, mcp);
 
     /// Resume an existing conversation by its ID.
     pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
@@ -425,56 +440,7 @@ impl MockAgentConfig {
         self
     }
 
-    /// Configure which built-in tools are enabled.
-    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
-        self.agent = self.agent.with_capabilities(cap);
-        self
-    }
-
-    /// Register a custom tool. Scripted `tool_call`s dispatch through it.
-    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
-        self.agent = self.agent.with_tool(tool);
-        self
-    }
-
-    /// Set the safety policies for tool execution. Scripted tool calls run
-    /// through these exactly as the live backends do.
-    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
-        self.agent = self.agent.with_policies(policies);
-        self
-    }
-
-    /// Register a custom pre-tool-call decide hook (see
-    /// [`AgentConfig::with_pre_tool_hook`]).
-    pub fn with_pre_tool_hook(
-        mut self,
-        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
-    ) -> Self {
-        self.agent = self.agent.with_pre_tool_hook(hook);
-        self
-    }
-
-    /// Register a custom post-tool-call inspect hook (see
-    /// [`AgentConfig::with_post_tool_hook`]).
-    pub fn with_post_tool_hook(
-        mut self,
-        hook: Arc<dyn crate::hooks::PostToolCallHook>,
-    ) -> Self {
-        self.agent = self.agent.with_post_tool_hook(hook);
-        self
-    }
-
-    /// Add a workspace root for path-containment enforcement.
-    pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
-        self.agent = self.agent.with_workspace(ws);
-        self
-    }
-
-    /// Register a background trigger.
-    pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
-        self.agent = self.agent.with_trigger(trigger);
-        self
-    }
+    forward_agent_config_builders!(workspace, trigger);
 }
 
 // =============================================================================
@@ -581,62 +547,7 @@ impl AnthropicAgentConfig {
         self
     }
 
-    /// Configure which built-in tools are enabled.
-    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
-        self.agent = self.agent.with_capabilities(cap);
-        self
-    }
-
-    /// Register a custom tool.
-    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
-        self.agent = self.agent.with_tool(tool);
-        self
-    }
-
-    /// Set the safety policies for tool execution.
-    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
-        self.agent = self.agent.with_policies(policies);
-        self
-    }
-
-    /// Register a custom pre-tool-call decide hook (see
-    /// [`AgentConfig::with_pre_tool_hook`]).
-    pub fn with_pre_tool_hook(
-        mut self,
-        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
-    ) -> Self {
-        self.agent = self.agent.with_pre_tool_hook(hook);
-        self
-    }
-
-    /// Register a custom post-tool-call inspect hook (see
-    /// [`AgentConfig::with_post_tool_hook`]).
-    pub fn with_post_tool_hook(
-        mut self,
-        hook: Arc<dyn crate::hooks::PostToolCallHook>,
-    ) -> Self {
-        self.agent = self.agent.with_post_tool_hook(hook);
-        self
-    }
-
-    /// Add a workspace root for path-containment enforcement.
-    pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
-        self.agent = self.agent.with_workspace(ws);
-        self
-    }
-
-    /// Register a background trigger.
-    pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
-        self.agent = self.agent.with_trigger(trigger);
-        self
-    }
-
-    /// Add an MCP server to connect at startup (native only).
-    #[cfg(feature = "native")]
-    pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
-        self.agent = self.agent.with_mcp_server(server);
-        self
-    }
+    forward_agent_config_builders!(workspace, trigger, mcp);
 
     /// Resume an existing conversation by its ID.
     pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
@@ -738,62 +649,7 @@ impl OpenAiAgentConfig {
         self
     }
 
-    /// Configure which built-in tools are enabled.
-    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
-        self.agent = self.agent.with_capabilities(cap);
-        self
-    }
-
-    /// Register a custom tool.
-    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
-        self.agent = self.agent.with_tool(tool);
-        self
-    }
-
-    /// Set the safety policies for tool execution.
-    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
-        self.agent = self.agent.with_policies(policies);
-        self
-    }
-
-    /// Register a custom pre-tool-call decide hook (see
-    /// [`AgentConfig::with_pre_tool_hook`]).
-    pub fn with_pre_tool_hook(
-        mut self,
-        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
-    ) -> Self {
-        self.agent = self.agent.with_pre_tool_hook(hook);
-        self
-    }
-
-    /// Register a custom post-tool-call inspect hook (see
-    /// [`AgentConfig::with_post_tool_hook`]).
-    pub fn with_post_tool_hook(
-        mut self,
-        hook: Arc<dyn crate::hooks::PostToolCallHook>,
-    ) -> Self {
-        self.agent = self.agent.with_post_tool_hook(hook);
-        self
-    }
-
-    /// Add a workspace root for path-containment enforcement.
-    pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
-        self.agent = self.agent.with_workspace(ws);
-        self
-    }
-
-    /// Register a background trigger.
-    pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
-        self.agent = self.agent.with_trigger(trigger);
-        self
-    }
-
-    /// Add an MCP server to connect at startup (native only).
-    #[cfg(feature = "native")]
-    pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
-        self.agent = self.agent.with_mcp_server(server);
-        self
-    }
+    forward_agent_config_builders!(workspace, trigger, mcp);
 
     /// Resume an existing conversation by its ID.
     pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
@@ -867,44 +723,9 @@ impl LocalAgentConfig {
         self
     }
 
-    /// Configure which built-in tools are enabled.
-    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
-        self.agent = self.agent.with_capabilities(cap);
-        self.local = self.local.with_capabilities(self.agent.capabilities.clone());
-        self
-    }
-
-    /// Register a custom tool.
-    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
-        self.agent = self.agent.with_tool(tool);
-        self
-    }
-
-    /// Set the safety policies for tool execution.
-    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
-        self.agent = self.agent.with_policies(policies);
-        self
-    }
-
-    /// Register a custom pre-tool-call decide hook (see
-    /// [`AgentConfig::with_pre_tool_hook`]).
-    pub fn with_pre_tool_hook(
-        mut self,
-        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
-    ) -> Self {
-        self.agent = self.agent.with_pre_tool_hook(hook);
-        self
-    }
-
-    /// Register a custom post-tool-call inspect hook (see
-    /// [`AgentConfig::with_post_tool_hook`]).
-    pub fn with_post_tool_hook(
-        mut self,
-        hook: Arc<dyn crate::hooks::PostToolCallHook>,
-    ) -> Self {
-        self.agent = self.agent.with_post_tool_hook(hook);
-        self
-    }
+    // NOTE: `with_capabilities` used to ALSO copy into `self.local` here; the
+    // backend copy now happens once at the `Agent::start_local` bootstrap.
+    forward_agent_config_builders!();
 
     /// Resume an existing conversation by its ID.
     pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
@@ -942,26 +763,10 @@ impl LocalAgentConfig {
 /// ```
 pub struct Agent {
     conversation: Conversation,
+    /// The live backend session. The session surface (`history_bytes`,
+    /// `compact`, `transcript`, per-turn overrides, …) rides the
+    /// [`Connection`] trait, so no typed per-backend handle is needed.
     connection: Arc<dyn Connection>,
-    /// Typed handle to the Gemini connection when `start_gemini` was
-    /// used. Lets backend-specific APIs like `history_bytes()` work
-    /// without forcing the Connection trait to carry every backend's
-    /// per-protocol surface.
-    gemini_connection: Option<Arc<GeminiConnection>>,
-    /// Typed handle to the Anthropic connection when `start_anthropic` was
-    /// used. Parallels `gemini_connection` so `history_bytes()` / `compact()`
-    /// / `transcript()` work for either backend. Additive (feature-gated).
-    #[cfg(feature = "anthropic")]
-    anthropic_connection: Option<Arc<AnthropicConnection>>,
-    /// Typed handle to the OpenAI connection when `start_openai` was used.
-    /// Parallels `anthropic_connection`. Additive (feature-gated).
-    #[cfg(feature = "openai")]
-    openai_connection: Option<Arc<OpenAiConnection>>,
-    /// Typed handle to the local (in-browser Gemma) connection when
-    /// `start_local` was used. Parallels `anthropic_connection`. Additive
-    /// (feature-gated).
-    #[cfg(feature = "local")]
-    local_connection: Option<Arc<LocalConnection>>,
     hook_runner: Arc<HookRunner>,
     tool_runner: Arc<ToolRunner>,
     trigger_runner: Option<Arc<TriggerRunner>>,
@@ -976,36 +781,22 @@ pub struct Agent {
 impl Agent {
     /// Start an `Agent` backed by the Rust-native Gemini runtime.
     pub async fn start_gemini(mut config: GeminiAgentConfig) -> Result<Self> {
-        config.agent.capabilities.validate()?;
-        Self::wire_response_schema(&mut config.agent);
+        Self::bootstrap(&mut config.agent, Some(&mut config.gemini.capabilities))?;
         // The Gemini strategy is bound to the agent's runners so that
         // function-call dispatch can run through hooks + policies +
         // tool_runner without round-tripping through `send_tool_results`.
-        let mut gemini_config = config.gemini;
-        // Make sure the backend's CapabilitiesConfig matches the agent's
-        // (so register_builtins enables the right set).
-        gemini_config.capabilities = config.agent.capabilities.clone();
+        let gemini_config = config.gemini;
         let initial_history = config.initial_history.take();
-        // Capture the typed Arc<GeminiConnection> through a shared slot
-        // the strategy fills during connect(). Lets us call
-        // backend-specific methods (history snapshot, etc.) without
-        // bloating the Connection trait.
-        let capture: Arc<parking_lot::Mutex<Option<Arc<GeminiConnection>>>> =
-            Arc::new(parking_lot::Mutex::new(None));
-        let capture_for_factory = capture.clone();
-        let mut agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
-            GeminiConnectionStrategy::new(gemini_config)
-                .with_runners(GeminiRunners {
-                    tool_runner: Some(tools),
-                    hook_runner: Some(hooks),
-                    session_ctx: Some(ctx),
-                })
-                .with_typed_capture(capture_for_factory)
+        let agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
+            GeminiConnectionStrategy::new(gemini_config).with_runners(GeminiRunners {
+                tool_runner: Some(tools),
+                hook_runner: Some(hooks),
+                session_ctx: Some(ctx),
+            })
         })
         .await?;
-        agent.gemini_connection = capture.lock().take();
-        if let (Some(bytes), Some(gc)) = (initial_history, agent.gemini_connection.as_ref()) {
-            gc.set_history_bytes(&bytes)?;
+        if let Some(bytes) = initial_history {
+            agent.connection.set_history_bytes(&bytes)?;
         }
         Ok(agent)
     }
@@ -1039,8 +830,7 @@ impl Agent {
     /// # }
     /// ```
     pub async fn start_mock(mut config: MockAgentConfig) -> Result<Self> {
-        config.agent.capabilities.validate()?;
-        Self::wire_response_schema(&mut config.agent);
+        Self::bootstrap(&mut config.agent, None)?;
         let mock = config.mock;
         Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
             mock.with_runners(MockRunners {
@@ -1058,29 +848,19 @@ impl Agent {
     /// to `api.anthropic.com`.
     #[cfg(feature = "anthropic")]
     pub async fn start_anthropic(mut config: AnthropicAgentConfig) -> Result<Self> {
-        config.agent.capabilities.validate()?;
-        Self::wire_response_schema(&mut config.agent);
-        let mut anthropic_config = config.anthropic;
-        // Keep the backend's CapabilitiesConfig in sync with the agent's so
-        // register_builtins enables the right set.
-        anthropic_config.capabilities = config.agent.capabilities.clone();
+        Self::bootstrap(&mut config.agent, Some(&mut config.anthropic.capabilities))?;
+        let anthropic_config = config.anthropic;
         let initial_history = config.initial_history.take();
-        let capture: Arc<parking_lot::Mutex<Option<Arc<AnthropicConnection>>>> =
-            Arc::new(parking_lot::Mutex::new(None));
-        let capture_for_factory = capture.clone();
-        let mut agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
-            AnthropicConnectionStrategy::new(anthropic_config)
-                .with_runners(AnthropicRunners {
-                    tool_runner: Some(tools),
-                    hook_runner: Some(hooks),
-                    session_ctx: Some(ctx),
-                })
-                .with_typed_capture(capture_for_factory)
+        let agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
+            AnthropicConnectionStrategy::new(anthropic_config).with_runners(AnthropicRunners {
+                tool_runner: Some(tools),
+                hook_runner: Some(hooks),
+                session_ctx: Some(ctx),
+            })
         })
         .await?;
-        agent.anthropic_connection = capture.lock().take();
-        if let (Some(bytes), Some(ac)) = (initial_history, agent.anthropic_connection.as_ref()) {
-            ac.set_history_bytes(&bytes)?;
+        if let Some(bytes) = initial_history {
+            agent.connection.set_history_bytes(&bytes)?;
         }
         Ok(agent)
     }
@@ -1091,29 +871,19 @@ impl Agent {
     /// `api.openai.com`; `with_base_url` routes through the credit proxy.
     #[cfg(feature = "openai")]
     pub async fn start_openai(mut config: OpenAiAgentConfig) -> Result<Self> {
-        config.agent.capabilities.validate()?;
-        Self::wire_response_schema(&mut config.agent);
-        let mut openai_config = config.openai;
-        // Keep the backend's CapabilitiesConfig in sync with the agent's so
-        // register_builtins enables the right set.
-        openai_config.capabilities = config.agent.capabilities.clone();
+        Self::bootstrap(&mut config.agent, Some(&mut config.openai.capabilities))?;
+        let openai_config = config.openai;
         let initial_history = config.initial_history.take();
-        let capture: Arc<parking_lot::Mutex<Option<Arc<OpenAiConnection>>>> =
-            Arc::new(parking_lot::Mutex::new(None));
-        let capture_for_factory = capture.clone();
-        let mut agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
-            OpenAiConnectionStrategy::new(openai_config)
-                .with_runners(OpenAiRunners {
-                    tool_runner: Some(tools),
-                    hook_runner: Some(hooks),
-                    session_ctx: Some(ctx),
-                })
-                .with_typed_capture(capture_for_factory)
+        let agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
+            OpenAiConnectionStrategy::new(openai_config).with_runners(OpenAiRunners {
+                tool_runner: Some(tools),
+                hook_runner: Some(hooks),
+                session_ctx: Some(ctx),
+            })
         })
         .await?;
-        agent.openai_connection = capture.lock().take();
-        if let (Some(bytes), Some(oc)) = (initial_history, agent.openai_connection.as_ref()) {
-            oc.set_history_bytes(&bytes)?;
+        if let Some(bytes) = initial_history {
+            agent.connection.set_history_bytes(&bytes)?;
         }
         Ok(agent)
     }
@@ -1124,30 +894,53 @@ impl Agent {
     /// supplied filesystem (OPFS in the browser).
     #[cfg(feature = "local")]
     pub async fn start_local(mut config: LocalAgentConfig) -> Result<Self> {
-        config.agent.capabilities.validate()?;
-        Self::wire_response_schema(&mut config.agent);
-        let mut local_config = config.local;
-        // Keep the backend's CapabilitiesConfig in sync with the agent's.
-        local_config.capabilities = config.agent.capabilities.clone();
+        Self::bootstrap(&mut config.agent, Some(&mut config.local.capabilities))?;
+        let local_config = config.local;
         let initial_history = config.initial_history.take();
-        let capture: Arc<parking_lot::Mutex<Option<Arc<LocalConnection>>>> =
-            Arc::new(parking_lot::Mutex::new(None));
-        let capture_for_factory = capture.clone();
-        let mut agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
-            LocalConnectionStrategy::new(local_config)
-                .with_runners(LocalRunners {
-                    tool_runner: Some(tools),
-                    hook_runner: Some(hooks),
-                    session_ctx: Some(ctx),
-                })
-                .with_typed_capture(capture_for_factory)
+        let agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
+            LocalConnectionStrategy::new(local_config).with_runners(LocalRunners {
+                tool_runner: Some(tools),
+                hook_runner: Some(hooks),
+                session_ctx: Some(ctx),
+            })
         })
         .await?;
-        agent.local_connection = capture.lock().take();
-        if let (Some(bytes), Some(lc)) = (initial_history, agent.local_connection.as_ref()) {
-            lc.set_history_bytes(&bytes)?;
+        if let Some(bytes) = initial_history {
+            agent.connection.set_history_bytes(&bytes)?;
         }
         Ok(agent)
+    }
+
+    /// Start an `Agent` on a caller-supplied [`ConnectionStrategy`] — the
+    /// public entry point for custom backends behind the L3 seam. The
+    /// strategy's [`connect`](ConnectionStrategy::connect) opens the session;
+    /// tool calls the backend surfaces out-of-band (non-`Done` tool-call
+    /// steps) are executed by the agent's dispatcher through the same hooks +
+    /// policies + tool runner the built-in backends use, with results pushed
+    /// back via [`Connection::send_tool_results`]. Backends that dispatch
+    /// tools inline (like the shipped ones) simply emit `Done` steps.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use localharness::{Agent, AgentConfig};
+    /// use localharness::backends::mock::MockConnection;
+    ///
+    /// # async fn run() -> localharness::Result<()> {
+    /// // Any ConnectionStrategy works — here the offline mock backend's.
+    /// let strategy = MockConnection::builder().turn(|t| t.text("hi")).build();
+    /// let agent = Agent::start_with_strategy(AgentConfig::new(), strategy).await?;
+    /// assert_eq!(agent.chat("hello").await?.text().await?, "hi");
+    /// agent.shutdown().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn start_with_strategy<S>(mut config: AgentConfig, strategy: S) -> Result<Self>
+    where
+        S: ConnectionStrategy + 'static,
+    {
+        Self::bootstrap(&mut config, None)?;
+        Self::start_with_factory(config, move |_hooks, _tools, _ctx| strategy).await
     }
 
     /// Token usage accumulated across every turn in this agent's
@@ -1164,27 +957,12 @@ impl Agent {
         self.conversation.cancel_turn();
     }
 
-    /// Opaque snapshot of the current conversation history (Gemini or, with
-    /// the `anthropic` feature, the Anthropic backend). Returns `None` for
-    /// backends without a typed session handle. Round-trips through the
-    /// matching `with_history_bytes` for session resume.
+    /// Opaque snapshot of the current conversation history. Returns
+    /// `Ok(None)` for backends that keep no snapshottable history (mock).
+    /// Round-trips through the matching `with_history_bytes` for session
+    /// resume. Delegates to [`Connection::history_bytes`].
     pub fn history_bytes(&self) -> Result<Option<Vec<u8>>> {
-        if let Some(gc) = self.gemini_connection.as_ref() {
-            return gc.history_bytes().map(Some);
-        }
-        #[cfg(feature = "anthropic")]
-        if let Some(ac) = self.anthropic_connection.as_ref() {
-            return ac.history_bytes().map(Some);
-        }
-        #[cfg(feature = "openai")]
-        if let Some(oc) = self.openai_connection.as_ref() {
-            return oc.history_bytes().map(Some);
-        }
-        #[cfg(feature = "local")]
-        if let Some(lc) = self.local_connection.as_ref() {
-            return lc.history_bytes().map(Some);
-        }
-        Ok(None)
+        self.connection.history_bytes()
     }
 
     /// Set (or clear, with `None`) a PER-TURN thinking-budget override for the
@@ -1198,14 +976,9 @@ impl Agent {
     ///
     /// This overrides only the thinking BUDGET; per-turn MODEL selection is the
     /// separate [`set_model_override`](Self::set_model_override) seam.
+    /// Delegates to [`Connection::set_thinking_override`].
     pub fn set_thinking_override(&self, level: Option<crate::types::ThinkingLevel>) {
-        if let Some(gc) = self.gemini_connection.as_ref() {
-            gc.set_thinking_override(level);
-        }
-        #[cfg(feature = "anthropic")]
-        if let Some(ac) = self.anthropic_connection.as_ref() {
-            ac.set_thinking_override(level);
-        }
+        self.connection.set_thinking_override(level);
     }
 
     /// Set (or clear, with `None`) a PER-TURN MODEL override for the NEXT turn —
@@ -1223,88 +996,37 @@ impl Agent {
     /// SAFETY: the caller MUST pass a model id in the SAME provider family as
     /// the session's model (a Gemini session must not get a `claude-*` id and
     /// vice-versa) — cross-backend switching would corrupt the wire history.
-    /// [`crate::difficulty::route_model`] enforces this.
+    /// [`crate::difficulty::route_model`] enforces this. Delegates to
+    /// [`Connection::set_model_override`].
     pub fn set_model_override(&self, model: Option<String>) {
-        if let Some(gc) = self.gemini_connection.as_ref() {
-            gc.set_model_override(model.clone());
-        }
-        #[cfg(feature = "anthropic")]
-        if let Some(ac) = self.anthropic_connection.as_ref() {
-            ac.set_model_override(model);
-        }
+        self.connection.set_model_override(model);
     }
 
     /// Manually trigger context compaction. Summarises older history
     /// entries and replaces them with a single synthetic turn, freeing
     /// context-window budget. Returns `true` if compaction changed the
-    /// history, `false` if it was too short or not applicable.
-    /// Returns `false` for backends without a typed session handle.
+    /// history, `false` if it was too short or not applicable (mock/local).
+    /// Delegates to [`Connection::compact`].
     pub async fn compact(&self) -> bool {
-        if let Some(gc) = self.gemini_connection.as_ref() {
-            return gc.compact().await;
-        }
-        #[cfg(feature = "anthropic")]
-        if let Some(ac) = self.anthropic_connection.as_ref() {
-            return ac.compact().await;
-        }
-        #[cfg(feature = "openai")]
-        if let Some(oc) = self.openai_connection.as_ref() {
-            return oc.compact().await;
-        }
-        #[cfg(feature = "local")]
-        if let Some(lc) = self.local_connection.as_ref() {
-            return lc.compact().await;
-        }
-        false
+        self.connection.compact().await
     }
 
     /// Wipe the conversation history, returning the agent to a fresh, empty
     /// context — the in-tab `clear_context` tool / a "clear the chat"
-    /// request. Synchronous (clearing a `Vec` needs no network). No-op for
-    /// backends without a typed session handle.
+    /// request. Synchronous (clearing a `Vec` needs no network). Delegates
+    /// to [`Connection::clear_history`].
     pub fn clear_history(&self) {
-        // Exactly one backend connection is ever set, so each arm's `if let`
-        // fires only for the active backend — no early `return` needed (and a
-        // `return` is `needless_return` once the other arms are cfg'd out).
-        if let Some(gc) = self.gemini_connection.as_ref() {
-            gc.clear_history();
-        }
-        #[cfg(feature = "anthropic")]
-        if let Some(ac) = self.anthropic_connection.as_ref() {
-            ac.clear_history();
-        }
-        #[cfg(feature = "openai")]
-        if let Some(oc) = self.openai_connection.as_ref() {
-            oc.clear_history();
-        }
-        #[cfg(feature = "local")]
-        if let Some(lc) = self.local_connection.as_ref() {
-            lc.clear_history();
-        }
+        self.connection.clear_history();
     }
 
     /// Human-readable transcript of the current session, including tool-call
     /// activity — see [`TranscriptEntry`] for the shape. Returns an empty
-    /// vec for backends without a typed session handle.
+    /// vec for backends without history (mock). Delegates to
+    /// [`Connection::transcript`].
     ///
     /// [`TranscriptEntry`]: crate::types::TranscriptEntry
     pub fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
-        if let Some(gc) = self.gemini_connection.as_ref() {
-            return gc.transcript();
-        }
-        #[cfg(feature = "anthropic")]
-        if let Some(ac) = self.anthropic_connection.as_ref() {
-            return ac.transcript();
-        }
-        #[cfg(feature = "openai")]
-        if let Some(oc) = self.openai_connection.as_ref() {
-            return oc.transcript();
-        }
-        #[cfg(feature = "local")]
-        if let Some(lc) = self.local_connection.as_ref() {
-            return lc.transcript();
-        }
-        Vec::new()
+        self.connection.transcript()
     }
 
     /// Internal: shared bootstrap. The `factory` closure receives the
@@ -1422,13 +1144,6 @@ impl Agent {
         Ok(Self {
             conversation,
             connection,
-            gemini_connection: None,
-            #[cfg(feature = "anthropic")]
-            anthropic_connection: None,
-            #[cfg(feature = "openai")]
-            openai_connection: None,
-            #[cfg(feature = "local")]
-            local_connection: None,
             hook_runner,
             tool_runner,
             trigger_runner,
@@ -1441,10 +1156,24 @@ impl Agent {
         })
     }
 
-    fn wire_response_schema(config: &mut AgentConfig) {
-        if let Some(schema) = config.response_schema.take() {
-            config.capabilities.finish_tool_schema_json = Some(schema);
+    /// Shared per-start bootstrap: validate the capability config, wire the
+    /// response schema into the `finish` tool, and — the ONE copy point —
+    /// sync the backend's `CapabilitiesConfig` from the agent's so
+    /// `register_builtins` enables the right set (the four per-start
+    /// hand-copies used to drift; `LocalAgentConfig::with_capabilities` even
+    /// double-copied at build time).
+    fn bootstrap(
+        agent: &mut AgentConfig,
+        backend_capabilities: Option<&mut CapabilitiesConfig>,
+    ) -> Result<()> {
+        agent.capabilities.validate()?;
+        if let Some(schema) = agent.response_schema.take() {
+            agent.capabilities.finish_tool_schema_json = Some(schema);
         }
+        if let Some(caps) = backend_capabilities {
+            *caps = agent.capabilities.clone();
+        }
+        Ok(())
     }
 
     /// The underlying conversation session.

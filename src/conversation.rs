@@ -946,6 +946,9 @@ mod tests {
         async fn send_tool_results(&self, _results: Vec<ToolResult>) -> Result<()> {
             Ok(())
         }
+        fn set_history_bytes(&self, _bytes: &[u8]) -> Result<()> {
+            Ok(())
+        }
         fn subscribe_steps(&self) -> StepStream {
             let rx = self.steps_tx.subscribe();
             Box::pin(

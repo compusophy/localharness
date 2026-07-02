@@ -317,6 +317,9 @@ mod tests {
         async fn send_tool_results(&self, _results: Vec<ToolResult>) -> Result<()> {
             Ok(())
         }
+        fn set_history_bytes(&self, _bytes: &[u8]) -> Result<()> {
+            Ok(())
+        }
         fn subscribe_steps(&self) -> crate::connections::StepStream {
             Box::pin(futures_util::stream::empty())
         }

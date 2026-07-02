@@ -5,9 +5,9 @@
 //!
 //! Mirrors `backends/anthropic/mod.rs` 1:1 in structure — a
 //! [`LocalConnectionStrategy`] factory, a [`LocalConnection`] holding
-//! `Arc<LoopState>`, a `with_typed_capture` slot for `Agent::start_local`, a
-//! broadcast step channel, and the `clear_history` / `compact` / `history_bytes`
-//! / `transcript` surface. The differences from the network backends:
+//! `Arc<LoopState>`, a broadcast step channel, and the `clear_history` /
+//! `compact` / `history_bytes` / `transcript` session surface (on the
+//! [`Connection`] trait). The differences from the network backends:
 //!
 //! * **No HTTP.** There is no client and no streaming loop. A turn is a bounded
 //!   generate → parse-tool → dispatch → feed-result → re-loop driven by
@@ -353,7 +353,6 @@ pub type LocalRunners = crate::backends::BackendRunners;
 pub struct LocalConnectionStrategy {
     config: LocalBackendConfig,
     runners: LocalRunners,
-    typed_capture: Option<Arc<parking_lot::Mutex<Option<Arc<LocalConnection>>>>>,
 }
 
 impl LocalConnectionStrategy {
@@ -362,23 +361,12 @@ impl LocalConnectionStrategy {
         Self {
             config,
             runners: LocalRunners::default(),
-            typed_capture: None,
         }
     }
 
     /// Inject the runners the Agent owns (parity with the other backends).
     pub fn with_runners(mut self, runners: LocalRunners) -> Self {
         self.runners = runners;
-        self
-    }
-
-    /// Provide a slot for `connect()` to write the typed connection into, so
-    /// `Agent::start_local` can keep a typed handle for backend-specific APIs.
-    pub fn with_typed_capture(
-        mut self,
-        slot: Arc<parking_lot::Mutex<Option<Arc<LocalConnection>>>>,
-    ) -> Self {
-        self.typed_capture = Some(slot);
         self
     }
 }
@@ -432,9 +420,6 @@ impl ConnectionStrategy for LocalConnectionStrategy {
             hook_runner: self.runners.hook_runner.clone(),
             session_ctx: self.runners.session_ctx.clone(),
         });
-        if let Some(slot) = &self.typed_capture {
-            *slot.lock() = Some(typed.clone());
-        }
         Ok(typed)
     }
 }
@@ -460,63 +445,15 @@ pub struct LocalConnection {
 }
 
 impl LocalConnection {
-    /// Snapshot the in-memory history as opaque JSON bytes. Round-trips through
-    /// [`set_history_bytes`](Self::set_history_bytes).
-    pub fn history_bytes(&self) -> Result<Vec<u8>> {
-        let snapshot = self.state.history.lock().clone();
-        serde_json::to_vec(&snapshot).map_err(|e| Error::other(format!("history_bytes: {e}")))
-    }
-
-    /// Replace the entire history with one previously returned by
-    /// `history_bytes`.
-    pub fn set_history_bytes(&self, bytes: &[u8]) -> Result<()> {
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        let restored: Vec<Turn> = serde_json::from_slice(bytes)
-            .map_err(|e| Error::other(format!("set_history_bytes: {e}")))?;
-        *self.state.history.lock() = restored;
-        Ok(())
-    }
-
-    /// Manually trigger context compaction. For the local in-memory backend
-    /// there is no remote summariser, so this is a no-op that returns `false`
-    /// (history unchanged). Present for parity with the network backends.
-    pub async fn compact(&self) -> bool {
-        false
-    }
-
-    /// Wipe the conversation history, returning the connection to an empty
-    /// context. Synchronous (no network). Backs [`crate::Agent::clear_history`].
-    pub fn clear_history(&self) {
-        self.state.history.lock().clear();
-        self.state.next_step_index.store(0, Ordering::Relaxed);
-    }
-
-    /// Project the in-memory history into a flat `(role, text)` transcript. The
-    /// local backend has no tool-call activity, so every entry's `tool_calls`
-    /// is empty.
-    pub fn transcript(&self) -> Vec<TranscriptEntry> {
-        self.state
-            .history
-            .lock()
-            .iter()
-            .map(|t| TranscriptEntry {
-                role: match t.role {
-                    TurnRole::User => TranscriptRole::User,
-                    TurnRole::Model => TranscriptRole::Assistant,
-                },
-                text: t.text.clone(),
-                tool_calls: Vec::new(),
-            })
-            .collect()
-    }
-
     /// True when the weights have been loaded (the user completed the download).
     pub fn is_model_loaded(&self) -> bool {
         self.engine.is_some()
     }
 }
+
+// The session surface (history snapshot/restore, compaction, transcript)
+// lives on the `Connection` trait impl below — R6 moved it off the inherent
+// impl so `Agent` needs no typed backend handle.
 
 /// Decode opaque history bytes from [`LocalConnection::history_bytes`] into a
 /// flat transcript without a live connection.
@@ -747,6 +684,56 @@ impl Connection for LocalConnection {
         self.state.idle_notify.notify_waiters();
         Ok(())
     }
+
+    /// Snapshot the in-memory history as opaque JSON bytes. Round-trips through
+    /// `set_history_bytes`.
+    fn history_bytes(&self) -> Result<Option<Vec<u8>>> {
+        let snapshot = self.state.history.lock().clone();
+        serde_json::to_vec(&snapshot)
+            .map(Some)
+            .map_err(|e| Error::other(format!("history_bytes: {e}")))
+    }
+
+    /// Replace the entire history with one previously returned by
+    /// `history_bytes`.
+    fn set_history_bytes(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let restored: Vec<Turn> = serde_json::from_slice(bytes)
+            .map_err(|e| Error::other(format!("set_history_bytes: {e}")))?;
+        *self.state.history.lock() = restored;
+        Ok(())
+    }
+
+    // compact: trait default (`false`) — the local in-memory backend has no
+    // remote summariser, so compaction is a no-op with the history unchanged.
+
+    /// Wipe the conversation history, returning the connection to an empty
+    /// context. Synchronous (no network). Backs [`crate::Agent::clear_history`].
+    fn clear_history(&self) {
+        self.state.history.lock().clear();
+        self.state.next_step_index.store(0, Ordering::Relaxed);
+    }
+
+    /// Project the in-memory history into a flat `(role, text)` transcript. The
+    /// local backend has no tool-call activity, so every entry's `tool_calls`
+    /// is empty.
+    fn transcript(&self) -> Vec<TranscriptEntry> {
+        self.state
+            .history
+            .lock()
+            .iter()
+            .map(|t| TranscriptEntry {
+                role: match t.role {
+                    TurnRole::User => TranscriptRole::User,
+                    TurnRole::Model => TranscriptRole::Assistant,
+                },
+                text: t.text.clone(),
+                tool_calls: Vec::new(),
+            })
+            .collect()
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -796,7 +783,7 @@ mod tests {
             hook_runner: None,
             session_ctx: None,
         };
-        let bytes = conn.history_bytes().unwrap();
+        let bytes = conn.history_bytes().unwrap().expect("local keeps history");
         let entries = decode_transcript_bytes(&bytes).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].role, TranscriptRole::User);

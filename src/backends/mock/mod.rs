@@ -509,6 +509,13 @@ impl Connection for MockConnection {
         self.inner.idle_notify.notify_waiters();
         Ok(())
     }
+
+    /// Deliberate no-op: the mock's turns are scripted, not derived from
+    /// history, so there is nothing to restore into. (`history_bytes` keeps
+    /// the trait default `Ok(None)` — no snapshot either.)
+    fn set_history_bytes(&self, _bytes: &[u8]) -> Result<()> {
+        Ok(())
+    }
 }
 
 // =============================================================================

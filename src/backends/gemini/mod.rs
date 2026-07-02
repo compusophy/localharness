@@ -199,11 +199,6 @@ pub type GeminiRunners = crate::backends::BackendRunners;
 pub struct GeminiConnectionStrategy {
     config: GeminiBackendConfig,
     runners: GeminiRunners,
-    /// Optional out-slot: if set, `connect()` stashes a clone of the
-    /// typed `Arc<GeminiConnection>` here before upcasting to the
-    /// trait object. `Agent::start_gemini` uses this to keep a typed
-    /// handle for backend-specific APIs (e.g. history snapshot).
-    typed_capture: Option<Arc<parking_lot::Mutex<Option<Arc<GeminiConnection>>>>>,
 }
 
 
@@ -213,7 +208,6 @@ impl GeminiConnectionStrategy {
         Self {
             config,
             runners: GeminiRunners::default(),
-            typed_capture: None,
         }
     }
 
@@ -225,23 +219,10 @@ impl GeminiConnectionStrategy {
         self
     }
 
-    /// Provide a slot for `connect()` to write the typed connection into.
-    /// Used by `Agent::start_gemini` to retain a `&GeminiConnection` for
-    /// methods like `history_bytes()` that aren't on the `Connection` trait.
-    pub fn with_typed_capture(
-        mut self,
-        slot: Arc<parking_lot::Mutex<Option<Arc<GeminiConnection>>>>,
-    ) -> Self {
-        self.typed_capture = Some(slot);
-        self
-    }
-}
-
-
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl ConnectionStrategy for GeminiConnectionStrategy {
-    async fn connect(&self) -> Result<Arc<dyn Connection>> {
+    /// Typed-connection variant of [`ConnectionStrategy::connect`] — the
+    /// trait impl upcasts this result. Kept for callers (unit tests) that
+    /// need the concrete type's internals.
+    async fn connect_typed(&self) -> Result<Arc<GeminiConnection>> {
         if self.config.api_key.trim().is_empty() {
             return Err(Error::config("GeminiBackendConfig.api_key is empty"));
         }
@@ -326,10 +307,16 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
             thinking_override: parking_lot::Mutex::new(None),
             model_override: parking_lot::Mutex::new(None),
         });
-        if let Some(slot) = &self.typed_capture {
-            *slot.lock() = Some(typed.clone());
-        }
         Ok(typed)
+    }
+}
+
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl ConnectionStrategy for GeminiConnectionStrategy {
+    async fn connect(&self) -> Result<Arc<dyn Connection>> {
+        Ok(self.connect_typed().await?)
     }
 }
 
@@ -390,88 +377,9 @@ pub struct GeminiConnection {
     model_override: parking_lot::Mutex<Option<String>>,
 }
 
-impl GeminiConnection {
-    /// Snapshot the current conversation history as opaque bytes.
-    /// Round-trips through `set_history_bytes`; the on-disk format is
-    /// not part of the public API and may change between minor versions.
-    pub fn history_bytes(&self) -> Result<Vec<u8>> {
-        crate::backends::state::history::encode(&self.state.history.lock())
-    }
-
-    /// Set (or clear, with `None`) the PER-TURN thinking override — the
-    /// difficulty-router seam. Applies to the NEXT turn's model call only; the
-    /// session's configured thinking is restored after. `None` (the default)
-    /// means "use the configured level". Cheap to call between turns; does NOT
-    /// rebuild the connection or touch history.
-    pub fn set_thinking_override(&self, level: Option<ThinkingLevel>) {
-        *self.thinking_override.lock() = level;
-    }
-
-    /// Set (or clear, with `None`) the PER-TURN model override — the
-    /// difficulty-router model seam (#7), parallel to
-    /// [`set_thinking_override`](Self::set_thinking_override). Applies to the
-    /// NEXT turn only; the configured model is restored after. `None` (the
-    /// default) is a no-op. The caller MUST pass a same-backend id no more
-    /// capable than the session's selected model — switching backends is unsafe
-    /// (different wire format + history shape) and must never be done here.
-    /// Cheap: does NOT rebuild the connection or touch history; the proxy routes
-    /// every model to the same endpoint, so only the request's model field
-    /// changes.
-    pub fn set_model_override(&self, model: Option<String>) {
-        *self.model_override.lock() = model;
-    }
-
-    /// Replace the entire conversation history with one previously
-    /// returned by `history_bytes`. Use this on connection start to
-    /// resume a saved session; calling it mid-turn is undefined.
-    pub fn set_history_bytes(&self, bytes: &[u8]) -> Result<()> {
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        let restored: Vec<wire::Content> = crate::backends::state::history::decode(bytes)?;
-        *self.state.history.lock() = restored;
-        Ok(())
-    }
-
-    /// Manually trigger context compaction. Summarises older history
-    /// entries and replaces them with a single synthetic turn, freeing
-    /// context-window budget. Returns `true` if compaction changed the
-    /// history, `false` if it was too short or the summarisation was a
-    /// no-op. Never errors — failures are logged and silently skipped.
-    pub async fn compact(&self) -> bool {
-        compaction::try_compact(
-            &self.state.history,
-            &self.deps_template.client,
-            &self.deps_template.config.model,
-        )
-        .await
-    }
-
-    /// Wipe the entire conversation history, returning the connection to a
-    /// fresh, empty context. Synchronous (no network). Backs
-    /// [`crate::Agent::clear_history`] — the in-tab `clear_context` tool.
-    /// Resets only the history and the per-turn bookkeeping that could
-    /// otherwise re-trigger compaction on the now-tiny history; the live
-    /// step broadcast and `conversation_id` are left untouched.
-    pub fn clear_history(&self) {
-        self.state.history.lock().clear();
-        *self.state.last_turn_usage.lock() = None;
-        *self.state.last_structured_output.lock() = None;
-        self.state
-            .next_step_index
-            .store(0, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Project the wire history into a flat sequence of user/assistant
-    /// turns suitable for repainting a UI. Tool-call activity
-    /// (FunctionCall / FunctionResponse) is surfaced as `TranscriptToolCall`s
-    /// (matched by name), so a restored session shows what the agent DID, not
-    /// just what it said.
-    pub fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
-        let snap = self.state.history.lock().clone();
-        project_history(&snap)
-    }
-}
+// The session surface (history snapshot/restore, compaction, transcript,
+// per-turn overrides) lives on the `Connection` trait impl below — R6 moved
+// it off the inherent impl so `Agent` needs no typed backend handle.
 
 /// Decode the opaque bytes produced by [`GeminiConnection::history_bytes`]
 /// into a flat user-visible transcript, without needing a live
@@ -652,6 +560,87 @@ impl Connection for GeminiConnection {
         self.state.idle_notify.notify_waiters();
         Ok(())
     }
+
+    /// Snapshot the current conversation history as opaque bytes.
+    /// Round-trips through `set_history_bytes`; the on-disk format is
+    /// not part of the public API and may change between minor versions.
+    fn history_bytes(&self) -> Result<Option<Vec<u8>>> {
+        crate::backends::state::history::encode(&self.state.history.lock()).map(Some)
+    }
+
+    /// Replace the entire conversation history with one previously
+    /// returned by `history_bytes`. Use this on connection start to
+    /// resume a saved session; calling it mid-turn is undefined.
+    fn set_history_bytes(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let restored: Vec<wire::Content> = crate::backends::state::history::decode(bytes)?;
+        *self.state.history.lock() = restored;
+        Ok(())
+    }
+
+    /// Manually trigger context compaction. Summarises older history
+    /// entries and replaces them with a single synthetic turn, freeing
+    /// context-window budget. Returns `true` if compaction changed the
+    /// history, `false` if it was too short or the summarisation was a
+    /// no-op. Never errors — failures are logged and silently skipped.
+    async fn compact(&self) -> bool {
+        compaction::try_compact(
+            &self.state.history,
+            &self.deps_template.client,
+            &self.deps_template.config.model,
+        )
+        .await
+    }
+
+    /// Wipe the entire conversation history, returning the connection to a
+    /// fresh, empty context. Synchronous (no network). Backs
+    /// [`crate::Agent::clear_history`] — the in-tab `clear_context` tool.
+    /// Resets only the history and the per-turn bookkeeping that could
+    /// otherwise re-trigger compaction on the now-tiny history; the live
+    /// step broadcast and `conversation_id` are left untouched.
+    fn clear_history(&self) {
+        self.state.history.lock().clear();
+        *self.state.last_turn_usage.lock() = None;
+        *self.state.last_structured_output.lock() = None;
+        self.state
+            .next_step_index
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Project the wire history into a flat sequence of user/assistant
+    /// turns suitable for repainting a UI. Tool-call activity
+    /// (FunctionCall / FunctionResponse) is surfaced as `TranscriptToolCall`s
+    /// (matched by name), so a restored session shows what the agent DID, not
+    /// just what it said.
+    fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
+        let snap = self.state.history.lock().clone();
+        project_history(&snap)
+    }
+
+    /// Set (or clear, with `None`) the PER-TURN thinking override — the
+    /// difficulty-router seam. Applies to the NEXT turn's model call only; the
+    /// session's configured thinking is restored after. `None` (the default)
+    /// means "use the configured level". Cheap to call between turns; does NOT
+    /// rebuild the connection or touch history.
+    fn set_thinking_override(&self, level: Option<ThinkingLevel>) {
+        *self.thinking_override.lock() = level;
+    }
+
+    /// Set (or clear, with `None`) the PER-TURN model override — the
+    /// difficulty-router model seam (#7), parallel to
+    /// [`set_thinking_override`](Connection::set_thinking_override). Applies to
+    /// the NEXT turn only; the configured model is restored after. `None` (the
+    /// default) is a no-op. The caller MUST pass a same-backend id no more
+    /// capable than the session's selected model — switching backends is unsafe
+    /// (different wire format + history shape) and must never be done here.
+    /// Cheap: does NOT rebuild the connection or touch history; the proxy routes
+    /// every model to the same endpoint, so only the request's model field
+    /// changes.
+    fn set_model_override(&self, model: Option<String>) {
+        *self.model_override.lock() = model;
+    }
 }
 
 #[cfg(test)]
@@ -792,17 +781,13 @@ mod tests {
     /// the in-tab `clear_context` tool.
     #[tokio::test]
     async fn clear_history_empties_history_and_resets_counters() {
-        let capture: Arc<Mutex<Option<Arc<GeminiConnection>>>> = Arc::new(Mutex::new(None));
         let cfg =
             GeminiBackendConfig::new("test-key").with_capabilities(CapabilitiesConfig::unrestricted());
-        let strategy = GeminiConnectionStrategy::new(cfg)
-            .with_runners(GeminiRunners {
-                tool_runner: Some(Arc::new(ToolRunner::new())),
-                ..Default::default()
-            })
-            .with_typed_capture(capture.clone());
-        let _conn = strategy.connect().await.unwrap();
-        let gc = capture.lock().take().expect("typed capture filled by connect");
+        let strategy = GeminiConnectionStrategy::new(cfg).with_runners(GeminiRunners {
+            tool_runner: Some(Arc::new(ToolRunner::new())),
+            ..Default::default()
+        });
+        let gc = strategy.connect_typed().await.unwrap();
 
         // Seed a turn + non-default per-turn bookkeeping.
         gc.state.history.lock().push(wire::Content {
@@ -832,7 +817,7 @@ mod tests {
         );
         // The public snapshot reflects the wipe too.
         let snapshot: Vec<wire::Content> =
-            serde_json::from_slice(&gc.history_bytes().unwrap()).unwrap();
+            serde_json::from_slice(&gc.history_bytes().unwrap().unwrap()).unwrap();
         assert!(snapshot.is_empty(), "history_bytes snapshot not empty");
     }
 

@@ -187,10 +187,6 @@ pub type AnthropicRunners = crate::backends::BackendRunners;
 pub struct AnthropicConnectionStrategy {
     config: AnthropicBackendConfig,
     runners: AnthropicRunners,
-    /// Optional out-slot: `connect()` stashes a clone of the typed
-    /// `Arc<AnthropicConnection>` here before upcasting. `Agent::start_anthropic`
-    /// uses this to keep a typed handle for backend-specific APIs.
-    typed_capture: Option<Arc<parking_lot::Mutex<Option<Arc<AnthropicConnection>>>>>,
 }
 
 impl AnthropicConnectionStrategy {
@@ -199,22 +195,12 @@ impl AnthropicConnectionStrategy {
         Self {
             config,
             runners: AnthropicRunners::default(),
-            typed_capture: None,
         }
     }
 
     /// Inject the runners the Agent owns (inline tool dispatch).
     pub fn with_runners(mut self, runners: AnthropicRunners) -> Self {
         self.runners = runners;
-        self
-    }
-
-    /// Provide a slot for `connect()` to write the typed connection into.
-    pub fn with_typed_capture(
-        mut self,
-        slot: Arc<parking_lot::Mutex<Option<Arc<AnthropicConnection>>>>,
-    ) -> Self {
-        self.typed_capture = Some(slot);
         self
     }
 }
@@ -300,9 +286,6 @@ impl ConnectionStrategy for AnthropicConnectionStrategy {
             thinking_override: parking_lot::Mutex::new(None),
             model_override: parking_lot::Mutex::new(None),
         });
-        if let Some(slot) = &self.typed_capture {
-            *slot.lock() = Some(typed.clone());
-        }
         Ok(typed)
     }
 }
@@ -365,85 +348,9 @@ pub struct AnthropicConnection {
     model_override: parking_lot::Mutex<Option<String>>,
 }
 
-impl AnthropicConnection {
-    /// Snapshot the current conversation history as opaque bytes.
-    /// Round-trips through `set_history_bytes`. The on-disk format (a JSON
-    /// array of Anthropic `Message`s) is not part of the public API.
-    pub fn history_bytes(&self) -> Result<Vec<u8>> {
-        crate::backends::state::history::encode(&self.state.history.lock())
-    }
-
-    /// Set (or clear, with `None`) the PER-TURN thinking override — the
-    /// difficulty-router seam (parallels
-    /// [`super::gemini::GeminiConnection::set_thinking_override`]). Applies to
-    /// the NEXT turn only; the configured thinking is restored after. `None`
-    /// (the default) is a no-op. NOTE: on Anthropic, thinking and temperature
-    /// are mutually exclusive — the loop already drops temperature when
-    /// thinking is on, so an override that turns thinking on/off composes the
-    /// same way it does at session build.
-    pub fn set_thinking_override(&self, level: Option<ThinkingLevel>) {
-        *self.thinking_override.lock() = level;
-    }
-
-    /// Set (or clear, with `None`) the PER-TURN model override — the
-    /// difficulty-router model seam (#7), parallel to
-    /// [`set_thinking_override`](Self::set_thinking_override). Applies to the
-    /// NEXT turn only; the configured model is restored after. `None` (the
-    /// default) is a no-op. The caller MUST pass a same-backend (`claude-*`) id
-    /// no more capable than the session's selected model — switching backends
-    /// is unsafe (different wire format + history shape) and must never be done
-    /// here. Cheap: does NOT rebuild the connection or touch history; the proxy
-    /// routes every model to the same endpoint, so only the request's `model`
-    /// field changes.
-    pub fn set_model_override(&self, model: Option<String>) {
-        *self.model_override.lock() = model;
-    }
-
-    /// Replace the entire conversation history with one previously returned
-    /// by `history_bytes`. Use on connection start to resume a session.
-    pub fn set_history_bytes(&self, bytes: &[u8]) -> Result<()> {
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        let restored: Vec<wire::Message> = crate::backends::state::history::decode(bytes)?;
-        *self.state.history.lock() = restored;
-        Ok(())
-    }
-
-    /// Manually trigger context compaction. Returns `true` if compaction
-    /// changed the history. Never errors — failures are logged + skipped.
-    pub async fn compact(&self) -> bool {
-        compaction::try_compact(
-            &self.state.history,
-            &self.deps_template.client,
-            &self.deps_template.config.model,
-        )
-        .await
-    }
-
-    /// Wipe the entire conversation history, returning the connection to a
-    /// fresh, empty context. Synchronous (no network). Backs
-    /// [`crate::Agent::clear_history`] — the in-tab `clear_context` tool.
-    /// Resets only the history and the per-turn bookkeeping that could
-    /// otherwise re-trigger compaction; the live step broadcast and
-    /// `conversation_id` are left untouched.
-    pub fn clear_history(&self) {
-        self.state.history.lock().clear();
-        *self.state.last_turn_usage.lock() = None;
-        *self.state.last_structured_output.lock() = None;
-        self.state
-            .next_step_index
-            .store(0, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Project the wire history into a flat, text-only `(role, text)`
-    /// transcript suitable for repainting a UI. Tool-call activity is
-    /// surfaced as `TranscriptToolCall`s (matched by `tool_use_id`).
-    pub fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
-        let snap = self.state.history.lock().clone();
-        project_history(&snap)
-    }
-}
+// The session surface (history snapshot/restore, compaction, transcript,
+// per-turn overrides) lives on the `Connection` trait impl below — R6 moved
+// it off the inherent impl so `Agent` needs no typed backend handle.
 
 /// Decode opaque bytes from [`AnthropicConnection::history_bytes`] into a
 /// flat transcript without a live connection.
@@ -614,6 +521,83 @@ impl Connection for AnthropicConnection {
         self.state.idle.store(true, Ordering::Release);
         self.state.idle_notify.notify_waiters();
         Ok(())
+    }
+
+    /// Snapshot the current conversation history as opaque bytes.
+    /// Round-trips through `set_history_bytes`. The on-disk format (a JSON
+    /// array of Anthropic `Message`s) is not part of the public API.
+    fn history_bytes(&self) -> Result<Option<Vec<u8>>> {
+        crate::backends::state::history::encode(&self.state.history.lock()).map(Some)
+    }
+
+    /// Replace the entire conversation history with one previously returned
+    /// by `history_bytes`. Use on connection start to resume a session.
+    fn set_history_bytes(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let restored: Vec<wire::Message> = crate::backends::state::history::decode(bytes)?;
+        *self.state.history.lock() = restored;
+        Ok(())
+    }
+
+    /// Manually trigger context compaction. Returns `true` if compaction
+    /// changed the history. Never errors — failures are logged + skipped.
+    async fn compact(&self) -> bool {
+        compaction::try_compact(
+            &self.state.history,
+            &self.deps_template.client,
+            &self.deps_template.config.model,
+        )
+        .await
+    }
+
+    /// Wipe the entire conversation history, returning the connection to a
+    /// fresh, empty context. Synchronous (no network). Backs
+    /// [`crate::Agent::clear_history`] — the in-tab `clear_context` tool.
+    /// Resets only the history and the per-turn bookkeeping that could
+    /// otherwise re-trigger compaction; the live step broadcast and
+    /// `conversation_id` are left untouched.
+    fn clear_history(&self) {
+        self.state.history.lock().clear();
+        *self.state.last_turn_usage.lock() = None;
+        *self.state.last_structured_output.lock() = None;
+        self.state
+            .next_step_index
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Project the wire history into a flat, text-only `(role, text)`
+    /// transcript suitable for repainting a UI. Tool-call activity is
+    /// surfaced as `TranscriptToolCall`s (matched by `tool_use_id`).
+    fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
+        let snap = self.state.history.lock().clone();
+        project_history(&snap)
+    }
+
+    /// Set (or clear, with `None`) the PER-TURN thinking override — the
+    /// difficulty-router seam (parallels the Gemini impl). Applies to
+    /// the NEXT turn only; the configured thinking is restored after. `None`
+    /// (the default) is a no-op. NOTE: on Anthropic, thinking and temperature
+    /// are mutually exclusive — the loop already drops temperature when
+    /// thinking is on, so an override that turns thinking on/off composes the
+    /// same way it does at session build.
+    fn set_thinking_override(&self, level: Option<ThinkingLevel>) {
+        *self.thinking_override.lock() = level;
+    }
+
+    /// Set (or clear, with `None`) the PER-TURN model override — the
+    /// difficulty-router model seam (#7), parallel to
+    /// [`set_thinking_override`](Connection::set_thinking_override). Applies to
+    /// the NEXT turn only; the configured model is restored after. `None` (the
+    /// default) is a no-op. The caller MUST pass a same-backend (`claude-*`) id
+    /// no more capable than the session's selected model — switching backends
+    /// is unsafe (different wire format + history shape) and must never be done
+    /// here. Cheap: does NOT rebuild the connection or touch history; the proxy
+    /// routes every model to the same endpoint, so only the request's `model`
+    /// field changes.
+    fn set_model_override(&self, model: Option<String>) {
+        *self.model_override.lock() = model;
     }
 }
 

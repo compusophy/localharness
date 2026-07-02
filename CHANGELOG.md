@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **The session surface moved onto the `Connection` trait (roadmap R6, pre-1.0 batch).**
+  `Connection` gains `history_bytes()` (default `Ok(None)`), `set_history_bytes(&[u8])`
+  (**required** — session resume / `with_history_bytes` rides it; empty bytes mean "start
+  fresh" and must succeed), `compact()` (default `false`), `clear_history()` (default no-op),
+  `transcript()` (default empty), and `set_thinking_override` / `set_model_override`
+  (default no-op). **Downstream `Connection` implementors must add a `set_history_bytes`
+  impl** (return `Ok(())` if the backend keeps no restorable history); the other six methods
+  have defaults describing a session-less backend. Consequences:
+  - `Agent` no longer holds typed per-backend connection handles; `Agent::history_bytes` /
+    `compact` / `clear_history` / `transcript` / `set_thinking_override` / `set_model_override`
+    now delegate to the trait and therefore work for ANY backend, including custom ones.
+  - The per-backend `*ConnectionStrategy::with_typed_capture` slot machinery is REMOVED
+    (it existed only to smuggle typed handles past the trait object).
+  - The typed connections' inherent session methods (e.g. `GeminiConnection::history_bytes`,
+    which returned `Result<Vec<u8>>`) are now the trait methods (`Result<Option<Vec<u8>>>`)
+    — call them through `Connection` and unwrap the `Option`.
+- **New public L3 entry point: `Agent::start_with_strategy(AgentConfig, strategy)`.** Starts
+  an `Agent` on any caller-supplied `ConnectionStrategy`, making the documented custom-backend
+  seam actually reachable (the shared bootstrap was previously private). Out-of-band tool-call
+  steps dispatch through the agent's hooks/policies/tool-runner pipeline.
+- **`LocalAgentConfig::with_capabilities` no longer copies into the backend config at build
+  time.** All five `start_*` entry points sync the backend `CapabilitiesConfig` from the
+  agent's at ONE bootstrap point; the ~10 backend-identical `AgentConfig`-forwarding builders
+  are macro-generated (surface unchanged).
+
 ### Fixed
 
 - **OpenAI backend now retries a transient stream-open failure (#29 drift).** The gemini and

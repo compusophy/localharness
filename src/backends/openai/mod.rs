@@ -163,10 +163,6 @@ pub type OpenAiRunners = crate::backends::BackendRunners;
 pub struct OpenAiConnectionStrategy {
     config: OpenAiBackendConfig,
     runners: OpenAiRunners,
-    /// Optional out-slot: `connect()` stashes a clone of the typed
-    /// `Arc<OpenAiConnection>` here before upcasting. `Agent::start_openai`
-    /// uses this to keep a typed handle for backend-specific APIs.
-    typed_capture: Option<Arc<parking_lot::Mutex<Option<Arc<OpenAiConnection>>>>>,
 }
 
 impl OpenAiConnectionStrategy {
@@ -175,22 +171,12 @@ impl OpenAiConnectionStrategy {
         Self {
             config,
             runners: OpenAiRunners::default(),
-            typed_capture: None,
         }
     }
 
     /// Inject the runners the Agent owns (inline tool dispatch).
     pub fn with_runners(mut self, runners: OpenAiRunners) -> Self {
         self.runners = runners;
-        self
-    }
-
-    /// Provide a slot for `connect()` to write the typed connection into.
-    pub fn with_typed_capture(
-        mut self,
-        slot: Arc<parking_lot::Mutex<Option<Arc<OpenAiConnection>>>>,
-    ) -> Self {
-        self.typed_capture = Some(slot);
         self
     }
 }
@@ -269,9 +255,6 @@ impl ConnectionStrategy for OpenAiConnectionStrategy {
             state,
             conversation_id: conv_id.into(),
         });
-        if let Some(slot) = &self.typed_capture {
-            *slot.lock() = Some(typed.clone());
-        }
         Ok(typed)
     }
 }
@@ -313,56 +296,9 @@ pub struct OpenAiConnection {
     conversation_id: Arc<str>,
 }
 
-impl OpenAiConnection {
-    /// Snapshot the current conversation history as opaque bytes. Round-trips
-    /// through `set_history_bytes`. The on-disk format (a JSON array of OpenAI
-    /// `Message`s) is not part of the public API.
-    pub fn history_bytes(&self) -> Result<Vec<u8>> {
-        crate::backends::state::history::encode(&self.state.history.lock())
-    }
-
-    /// Replace the entire conversation history with one previously returned by
-    /// `history_bytes`. Use on connection start to resume a session.
-    pub fn set_history_bytes(&self, bytes: &[u8]) -> Result<()> {
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        let restored: Vec<wire::Message> = crate::backends::state::history::decode(bytes)?;
-        *self.state.history.lock() = restored;
-        Ok(())
-    }
-
-    /// Manually trigger context compaction. Returns `true` if compaction
-    /// changed the history. Never errors — failures are logged + skipped.
-    pub async fn compact(&self) -> bool {
-        compaction::try_compact(
-            &self.state.history,
-            &self.deps_template.client,
-            &self.deps_template.config.model,
-        )
-        .await
-    }
-
-    /// Wipe the entire conversation history, returning the connection to a
-    /// fresh, empty context. Synchronous (no network). Backs
-    /// [`crate::Agent::clear_history`].
-    pub fn clear_history(&self) {
-        self.state.history.lock().clear();
-        *self.state.last_turn_usage.lock() = None;
-        *self.state.last_structured_output.lock() = None;
-        self.state
-            .next_step_index
-            .store(0, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Project the wire history into a flat transcript suitable for repainting
-    /// a UI. Tool-call activity is surfaced as `TranscriptToolCall`s (matched
-    /// by `tool_call_id`).
-    pub fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
-        let snap = self.state.history.lock().clone();
-        project_history(&snap)
-    }
-}
+// The session surface (history snapshot/restore, compaction, transcript)
+// lives on the `Connection` trait impl below — R6 moved it off the inherent
+// impl so `Agent` needs no typed backend handle.
 
 /// Decode opaque bytes from [`OpenAiConnection::history_bytes`] into a flat
 /// transcript without a live connection.
@@ -508,6 +444,58 @@ impl Connection for OpenAiConnection {
         self.state.idle_notify.notify_waiters();
         Ok(())
     }
+
+    /// Snapshot the current conversation history as opaque bytes. Round-trips
+    /// through `set_history_bytes`. The on-disk format (a JSON array of OpenAI
+    /// `Message`s) is not part of the public API.
+    fn history_bytes(&self) -> Result<Option<Vec<u8>>> {
+        crate::backends::state::history::encode(&self.state.history.lock()).map(Some)
+    }
+
+    /// Replace the entire conversation history with one previously returned by
+    /// `history_bytes`. Use on connection start to resume a session.
+    fn set_history_bytes(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let restored: Vec<wire::Message> = crate::backends::state::history::decode(bytes)?;
+        *self.state.history.lock() = restored;
+        Ok(())
+    }
+
+    /// Manually trigger context compaction. Returns `true` if compaction
+    /// changed the history. Never errors — failures are logged + skipped.
+    async fn compact(&self) -> bool {
+        compaction::try_compact(
+            &self.state.history,
+            &self.deps_template.client,
+            &self.deps_template.config.model,
+        )
+        .await
+    }
+
+    /// Wipe the entire conversation history, returning the connection to a
+    /// fresh, empty context. Synchronous (no network). Backs
+    /// [`crate::Agent::clear_history`].
+    fn clear_history(&self) {
+        self.state.history.lock().clear();
+        *self.state.last_turn_usage.lock() = None;
+        *self.state.last_structured_output.lock() = None;
+        self.state
+            .next_step_index
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Project the wire history into a flat transcript suitable for repainting
+    /// a UI. Tool-call activity is surfaced as `TranscriptToolCall`s (matched
+    /// by `tool_call_id`).
+    fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
+        let snap = self.state.history.lock().clone();
+        project_history(&snap)
+    }
+
+    // set_thinking_override / set_model_override: trait defaults (no-op) —
+    // the OpenAI backend has no per-turn thinking or model routing.
 }
 
 #[cfg(test)]

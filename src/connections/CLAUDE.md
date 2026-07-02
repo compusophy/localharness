@@ -30,3 +30,14 @@ The native build and the wasm build diverge HERE, and a default `cargo check`
   Idempotent + safe-when-idle is required.
 - Every method takes `&self` (impls are `Arc`-shared) so tools/triggers can call back
   into the connection without exclusive access.
+
+## Session surface (R6) — lives on `Connection`, not typed backend handles
+`history_bytes()` (default `Ok(None)`) / `set_history_bytes(&[u8])` (REQUIRED —
+`*AgentConfig::with_history_bytes` resume rides it; empty bytes = fresh start,
+must succeed) / `compact()` (default `false`) / `clear_history()` (default no-op)
+/ `transcript()` (default empty) / `set_thinking_override` + `set_model_override`
+(default no-op; overrides are PER-TURN and must be same-backend model ids).
+`Agent` delegates these straight to `Arc<dyn Connection>` — do NOT reintroduce
+typed `Option<Arc<XxxConnection>>` fields or capture-slot machinery on `Agent`;
+that was the pre-R6 shape. `Agent::start_with_strategy(config, strategy)` is the
+public entry for downstream `ConnectionStrategy` impls.
