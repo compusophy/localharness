@@ -55,10 +55,14 @@ cargo test --quiet --features wallet
 # and only run their tests — under this feature.
 cargo test --quiet --features browser-app
 
-step "2/10 wasm32 guardrails (bare SDK + wallet + browser-app)"
+step "2/10 wasm32 guardrails (bare SDK + wallet + browser-app + browser-app,mainnet)"
 cargo check --quiet --no-default-features --target wasm32-unknown-unknown
 cargo check --quiet --no-default-features --features wallet --target wasm32-unknown-unknown
 cargo check --quiet --no-default-features --target wasm32-unknown-unknown --features browser-app
+# The SHIPPED bundle is browser-app,mainnet (build-web.sh) — mainnet flips
+# feature-gated code, so guard it here too or a mainnet-only break slips past
+# release into the deploy build.
+cargo check --quiet --no-default-features --target wasm32-unknown-unknown --features browser-app,mainnet
 
 step "3/10 compile a real cartridge ($CART_SRC)"
 cargo run --quiet --features wallet --bin localharness -- compile "$CART_SRC" "$CART_WASM"

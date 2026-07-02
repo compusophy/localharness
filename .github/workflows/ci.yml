@@ -42,6 +42,12 @@ jobs:
         run: cargo clippy --features "wallet anthropic openai" --all-targets -- -D warnings
       - name: clippy (browser-app, wasm32)
         run: cargo clippy --no-default-features --features browser-app --target wasm32-unknown-unknown -- -D warnings
+      # The SHIPPED bundle is browser-app + mainnet (build-web.sh). mainnet flips
+      # feature-gated code (chain config, sponsor.rs key embedding), so a change
+      # that only breaks under `mainnet` would pass every check above yet fail the
+      # real deploy build. Gate it too.
+      - name: clippy (browser-app + mainnet, wasm32)
+        run: cargo clippy --no-default-features --features browser-app,mainnet --target wasm32-unknown-unknown -- -D warnings
 
       - name: test (wallet + anthropic + openai — superset)
         run: cargo test --features "wallet anthropic openai"
