@@ -96,7 +96,7 @@ risk concentrates in the worker onmessage dispatch split — re-verify
 test-compose-wiring.mjs (it guards cartridge-worker.js↔compose.rs vectors; neither
 is touched, but confirm). Update src/app/CLAUDE.md map.
 
-## R6 ☐ Make the Connection seam real: session surface + public start_with_strategy (2–4 days, pre-1.0 breaking batch)
+## R6 ☑ Make the Connection seam real: session surface + public start_with_strategy — `e67d0bb` (2026-07-02, breaking → next release must be 0.61.0)
 
 Source: sdk-consumer v5. `Agent::start_with_factory` (agent.rs:1313) is PRIVATE — a
 downstream `ConnectionStrategy` impl can never produce an Agent, so the crate's
