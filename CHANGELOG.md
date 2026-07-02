@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Turn-loop phase A dedupe (roadmap R3): the byte-identical per-backend copies of
   `extract_canonical_path`, `resolve_tool_args`, and the `emit_error` free fns collapsed into the
   shared `backends::loop_util` / `LoopState::emit_error`. No behavior change outside the openai
-  retry above.
+  retry above; the subagent loop's stream-open now shares `open_stream_with_retry` too (same
+  policy fns and backoff it already used — one retry implementation).
 - Browser chat session assembly dedupe (roadmap R4): the Anthropic and Gemini branches of
   `app::chat::session::start_session` each hand-registered the same ~70-tool list plus identical
   capability/policy/hook/filesystem/system-instruction wiring. Both now consume ONE

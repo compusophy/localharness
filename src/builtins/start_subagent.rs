@@ -145,30 +145,17 @@ impl StartSubagent {
         runner
     }
 
-    /// Open the model stream with a bounded retry. A transient TRANSPORT/5xx/
-    /// timeout failure (a dropped "gemini POST: error sending request") aborted
-    /// the whole subagent before; now it retries up to
-    /// [`crate::backends::retry::MAX_STREAM_ATTEMPTS`] times with a short backoff.
-    /// Only network/server/timeout classes retry; auth/credits/rate-limit fail
-    /// FAST — retrying those just burns time and quota. Shares the policy with the
-    /// gemini + anthropic turn loops.
+    /// Open the model stream with a bounded retry — the SAME shared
+    /// [`open_stream_with_retry`](crate::backends::retry::open_stream_with_retry)
+    /// wrapper the gemini/anthropic/openai turn loops use (one policy, one impl).
+    /// Transient transport/5xx/timeout failures retry with a short backoff;
+    /// auth/credits/rate-limit fail FAST — retrying those just burns time and quota.
     async fn stream_with_retry(
         &self,
         req: &GenerateContentRequest,
     ) -> Result<crate::backends::gemini::api::GeminiSseStream> {
-        let mut attempt = 0u32;
-        loop {
-            attempt += 1;
-            match self.client.stream_generate(&self.model, req).await {
-                Ok(stream) => return Ok(stream),
-                Err(e) => {
-                    if !crate::backends::retry::should_retry(e.code(), attempt) {
-                        return Err(e);
-                    }
-                    crate::runtime::sleep_ms(crate::backends::retry::backoff_ms(attempt)).await;
-                }
-            }
-        }
+        crate::backends::retry::open_stream_with_retry(|| self.client.stream_generate(&self.model, req))
+            .await
     }
 }
 
