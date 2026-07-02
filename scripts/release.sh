@@ -48,6 +48,9 @@ step "pre-flight: tooling"
 command -v cargo >/dev/null || fail "cargo not on PATH"
 command -v gh    >/dev/null || fail "gh not on PATH"
 command -v git   >/dev/null || fail "git not on PATH"
+# node is required by the proof-of-spec gate (scripts/verify.sh runs the
+# cartridge corpus proofs in node) — fail here, not mid-verify.
+command -v node  >/dev/null || fail "node not on PATH"
 
 gh auth status >/dev/null 2>&1 || fail "gh not authenticated (run: gh auth login)"
 

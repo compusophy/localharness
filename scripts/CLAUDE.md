@@ -9,10 +9,8 @@ release, in one shot. Pre-flight runs `gen-docs -- --check` so a version bump CA
 ship stale docs. On a mid-way failure consult `RELEASING.md`; don't hand-fix.
 - **It commits ONLY `Cargo.toml`/`Cargo.lock`/`CHANGELOG.md`** — commit everything
   else FIRST or it's left out of the release.
-- ⛔ **PS5.1 stderr trap**: `release.ps1` wraps native cmds in `Invoke-Native`
-  (PowerShell 5.1 turns cargo/git/gh stderr into a TERMINATING error) — never call
-  `cargo`/`git`/`gh` directly in it. And a `"` inside a here-string commit message
-  shreds PS5 native-arg quoting into pathspecs — keep `"` OUT of messages.
+- `release.ps1` is a THIN DELEGATING SHIM over `release.sh` (same pattern as
+  `build-web.ps1`/`verify.ps1`) — release logic lives ONLY in release.sh.
 - Per the maintainer: a commit is NOT a release (no auto version bump); the default
   is commit + push + `vercel` deploy. Run release scripts only when asked.
 
