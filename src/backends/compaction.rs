@@ -175,13 +175,13 @@ where
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, "compaction: summarization failed; folding to drop-oldest");
-            return drop_oldest_fallback::<A>(history, plan.split, plan.prior_summary.as_deref());
+            return drop_oldest_fallback::<A>(history, plan.split, plan.prior_summary.as_deref(), total);
         }
     };
 
     if summary.trim().is_empty() {
         warn!("compaction: summarization returned empty text; folding to drop-oldest");
-        return drop_oldest_fallback::<A>(history, plan.split, plan.prior_summary.as_deref());
+        return drop_oldest_fallback::<A>(history, plan.split, plan.prior_summary.as_deref(), total);
     }
 
     // Install the new rolling summary as a single synthetic user turn at the
@@ -364,8 +364,17 @@ fn drop_oldest_fallback<A: CompactionModel>(
     history: &Mutex<Vec<A::Message>>,
     split: usize,
     prior_summary: Option<&str>,
+    expected_len: usize,
 ) -> bool {
     let mut hist = history.lock();
+    // Same race guard as the summarize-install path: `summarize()` was awaited
+    // with the lock RELEASED, so a concurrent turn may have grown history. The
+    // `split >= len` check below only prevents out-of-bounds — it does NOT catch
+    // growth, which would fold in turns the fold decision never saw. Bail instead.
+    if hist.len() != expected_len {
+        warn!("compaction: history changed under us in fallback; aborting");
+        return false;
+    }
     if split >= hist.len() {
         return false;
     }
@@ -593,7 +602,7 @@ mod tests {
         let hist = Mutex::new(vec![m(Role::User), m(Role::Assistant), m(Role::User)]);
         // A prior summary that ALREADY carries the note (what a prior fallback left).
         let prior = format!("rolling summary\n{DROP_NOTE}");
-        assert!(drop_oldest_fallback::<MockModel>(&hist, 1, Some(&prior)));
+        assert!(drop_oldest_fallback::<MockModel>(&hist, 1, Some(&prior), 3));
 
         let head = hist.lock()[0].clone();
         let text = MockModel::sole_text(&head).unwrap().to_string();
@@ -603,9 +612,19 @@ mod tests {
         // note count must STILL be exactly one.
         let body = extract_prior_summary::<MockModel>(Some(&head)).unwrap();
         let hist2 = Mutex::new(vec![m(Role::User), m(Role::Assistant), m(Role::User)]);
-        assert!(drop_oldest_fallback::<MockModel>(&hist2, 1, Some(&body)));
+        assert!(drop_oldest_fallback::<MockModel>(&hist2, 1, Some(&body), 3));
         let head2 = hist2.lock()[0].clone();
         let text2 = MockModel::sole_text(&head2).unwrap();
         assert_eq!(text2.matches(DROP_NOTE).count(), 1, "note duplicated on re-fold: {text2}");
+    }
+
+    #[test]
+    fn drop_oldest_fallback_bails_when_history_changed() {
+        // Race guard: if history grew/changed since the fold plan (expected_len !=
+        // current len), the fallback aborts rather than apply a stale split to a
+        // Vec the plan never saw. History must be left untouched.
+        let hist = Mutex::new(vec![m(Role::User), m(Role::Assistant), m(Role::User)]);
+        assert!(!drop_oldest_fallback::<MockModel>(&hist, 1, None, 2)); // planned len 2, actual 3
+        assert_eq!(hist.lock().len(), 3, "history must be untouched on abort");
     }
 }
