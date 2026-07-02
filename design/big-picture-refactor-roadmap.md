@@ -81,7 +81,7 @@ backend branches keep only genuine specifics (key/model, max-tokens naming,
 thinking/temperature, auth, history_loads gate). Verify: tool-name count identical
 on both backends; add a name-list constant test so they can never drift again.
 
-## R5 ☐ Split display.rs (2,933 lines, 11 thread_locals) into display/ (2–3 days)
+## R5 ☑ Split display.rs (2,933 lines, 11 thread_locals) into display/ — `2658306` (2026-07-02)
 
 Source: app-browser-ide v4. One module fuses: worker lifecycle/watchdog (~1,425
 lines), pointer/touch state, feed/notify bridge, compose bridge, http fetch bridge,
