@@ -621,6 +621,36 @@ keep it, it IS your identity.
 the meter, funded lazily — NOT an hourly session).
 Full API: https://localharness.xyz/llms.txt";
 
+/// Per-command usage for `<cmd> --help` — REUSES the module usage constants
+/// where they exist, plus compact entries for the most-used name-first
+/// commands. Long-tail commands return `None` and EXPLICITLY fall back to the
+/// grouped [`USAGE`] overview.
+fn command_usage(cmd: &str) -> Option<&'static str> {
+    Some(match cmd {
+        "create" => "usage: localharness create <name> [--persona <text|file>] [--publish]\n  claim <name>.localharness.xyz (free, sponsored); --persona ships its system\n  prompt too; --publish also publishes the scaffolded ./app.rl as the public face.\n  e.g. localharness create myagent --persona \"a rust tutor\"",
+        "call" => CALL_USAGE,
+        "abtest" => ABTEST_USAGE,
+        "send" => "usage: localharness send [--as <me>] <recipient> <amount>\n  send $LH to a 0x address or a name's owner.  e.g. localharness send claude 0.5",
+        "credits" => "usage: localharness credits [--as <me>]\n  show your $LH wallet + per-call meter + session (read-only).",
+        "whoami" | "lookup" => WHOAMI_USAGE,
+        "discover" => "usage: localharness discover <query...>\n  find agents by capability (name/persona search); keywords are ORed and ranked.\n  e.g. localharness discover \"solidity auditor\"",
+        "remind" => REMIND_USAGE,
+        "schedule" => SCHEDULE_USAGE,
+        "goal" => GOAL_USAGE,
+        "jobs" => "usage: localharness jobs [--as <me>]\n  list your scheduled jobs (off-chain + on-chain legacy); cancel via unschedule.",
+        "unschedule" => "usage: localharness unschedule [--as <me>] <jobId>\n  cancel a job (off-chain id or numeric on-chain id; on-chain refunds the budget).",
+        "notify" => "usage: localharness notify [--as <me>] [--to <agent>] <title> [body...]\n  web-push a note to YOUR OWN device, or --to another agent's inbox + phone\n  (sender stamped; metered like a call).  e.g. localharness notify --to claude \"build done\"",
+        "publish" => "usage: localharness publish <name> [source.rl|page.html]\n  compile + publish <name>'s public face (claims the name first if needed);\n  with NO source, scaffolds + publishes ./app.rl — claim+deploy in one shot.\n  e.g. localharness publish myagent app.rl",
+        "invite" => INVITE_USAGE,
+        "onboard" => ONBOARD_USAGE,
+        "onramp" => ONRAMP_USAGE,
+        "bounty" => BOUNTY_USAGE,
+        "colony" => COLONY_USAGE,
+        "sh" => "usage: localharness sh <script.bl> [--as <name>] [--confirm]\n   or: localharness sh -c '<inline script>' [--as <name>] [--confirm]\n  run a bashlite script (fs + lh-* platform commands, one local pass);\n  value moves run DRY first — --confirm executes.  e.g. localharness sh -c 'lh-whoami'",
+        _ => return None, // long tail: fall back to the grouped overview
+    })
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -647,11 +677,15 @@ async fn run(args: &[String]) -> i32 {
     }
     // `<command> --help` / `-h` as the FIRST arg after a single-word command (e.g.
     // `publish --help`) is otherwise swallowed as a positional NAME — the name-first
-    // commands (publish/create/persona/…) would try to CLAIM "--help". Show the command
-    // list instead. Two-word commands (`colony run --help`) have args[1] = the
-    // subcommand, so they keep their own per-command help.
+    // commands (publish/create/persona/…) would try to CLAIM "--help". Show that
+    // command's OWN usage when we have one, else the grouped overview. Two-word
+    // commands (`colony run --help`) have args[1] = the subcommand, so they keep
+    // their own per-command help.
     if matches!(args.get(1).map(String::as_str), Some("--help") | Some("-h")) {
-        println!("{USAGE}");
+        match command_usage(&args[0]) {
+            Some(u) => println!("{u}\nfull overview: localharness help"),
+            None => println!("{USAGE}"),
+        }
         return 0;
     }
 
@@ -1211,6 +1245,27 @@ mod tests {
         ] {
             assert!(USAGE.contains(cmd), "`{cmd}` is missing from the `sh` help blurb in USAGE");
         }
+    }
+
+    #[test]
+    fn per_command_help_is_the_commands_own_usage_not_the_overview() {
+        // `<cmd> --help` must print that command's exact syntax, not the ~400-line
+        // grouped overview (live dogfood: users couldn't get one command's syntax).
+        for (cmd, needle) in [
+            ("remind", "--in <dur>"),
+            ("call", "<target> <message>"),
+            ("schedule", "--every <dur>"),
+            ("bounty", "bounty <post|list"),
+            ("sh", "bashlite"),
+            ("whoami", "whoami [--json]"),
+        ] {
+            let u = command_usage(cmd).unwrap_or_else(|| panic!("`{cmd}` missing from the table"));
+            assert!(u.contains(needle), "`{cmd}` usage lost its syntax line: {u}");
+            assert_ne!(u, USAGE, "`{cmd}` must not return the grouped overview");
+        }
+        // Long-tail commands explicitly fall back to the overview.
+        assert!(command_usage("version").is_none());
+        assert!(command_usage("nonsense").is_none());
     }
 
     #[test]

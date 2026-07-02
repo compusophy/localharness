@@ -54,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CLI: per-command `--help`.** `localharness <cmd> --help` (e.g. `remind --help`,
+  `call --help`) now prints that command's OWN 2-6 line usage (syntax + example + key
+  flags) instead of the ~400-line grouped overview, plus a "full overview: localharness
+  help" pointer. Long-tail commands still fall back to the overview; two-word forms
+  (`colony run --help`) keep their existing per-subcommand help.
 - **CLI: `whoami` now shows the owner's `$LH` balances** (wallet + per-call meter — the same reads
   `credits` prints) in both the text and `--json` output.
 
