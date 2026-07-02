@@ -16,7 +16,7 @@ function envWei(name: string, def: bigint): bigint {
 }
 
 // `$LH` (18-decimal wei) per Gemini request — FLAT (byte-identical to the prior
-// COST_PER_REQUEST_WEI), so Gemini pricing is unchanged. Default 0.01 $LH.
+// COST_PER_REQUEST_WEI), so Gemini pricing is unchanged. Default 1 $LH.
 // $LH is DECOUPLED from the dollar (a credit/points token, NOT a stablecoin) —
 // the user-facing unit is "1 $LH = 1 message", so the default model costs a
 // FLAT 1 $LH/request.
