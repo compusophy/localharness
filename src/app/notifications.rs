@@ -135,7 +135,15 @@ pub(crate) fn push_arrived(title: &str, body: &str) {
 pub(crate) async fn stash_to_inbox(title: &str, body: &str) {
     let fs = crate::app::shared_opfs();
     let mut items: Vec<(String, String)> = match fs.read(PENDING_FILE).await {
-        Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
+        Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
+            // Surface corruption instead of silently overwriting the prior stashed
+            // notifications with just this one. They're unrecoverable from bad JSON,
+            // but a silent swallow hid a real data-loss — at least make it visible.
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "notif stash: pending file corrupted, prior entries lost: {e}"
+            )));
+            Vec::new()
+        }),
         Err(_) => Vec::new(),
     };
     items.insert(0, (title.to_string(), body.to_string()));
@@ -310,8 +318,11 @@ pub(crate) async fn load_inbox() {
     if let Ok(b) = fs.read(PENDING_FILE).await {
         if let Ok(mut v) = serde_json::from_slice::<Vec<(String, String)>>(&b) {
             items.append(&mut v);
+            // Delete ONLY after a successful parse. Deleting on a parse failure
+            // (corrupted/partial JSON from a crash mid-write) would permanently lose
+            // the pushed notifications the file holds — keep it for a retry next boot.
+            let _ = fs.delete(PENDING_FILE).await;
         }
-        let _ = fs.delete(PENDING_FILE).await;
     }
     let fresh = items.len();
     if let Ok(b) = fs.read(INBOX_FILE).await {
