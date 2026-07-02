@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.16] - 2026-07-01
+
+### Fixed
+
+- **Defense-in-depth confirmation on every value/authority agent tool.** `send_lh`,
+  `batch_send_lh`, `spend_treasury`, `set_role`, and `attest` are all `CONFIRM_GATED` but
+  lacked the belt-and-suspenders in-body confirmation check that `release_subdomain` /
+  `publish_app_to` / `found_company` already carry. The dispatch-layer `confirm_guard` hook
+  is the primary enforcement, but if a dispatch path ever skipped hooks, an *unconfirmed*
+  `$LH` transfer / treasury spend / privilege grant / reputation write could have executed.
+  Each now also rejects a call with no confirmation code in its own body.
+- **Platform (proxy, deployed separately): mesh signaling roster could be hogged.** The
+  WebRTC `JOINER_RE` accepted 1–32 chars, but a joiner id is always the first 4 bytes of the
+  peer address (exactly 8 hex). One peer could register many different-length prefixes of its
+  own address to fill the 8-slot mesh roster. Pinned to exactly 8.
+
+### Docs
+
+- Corrected the `tempo_tx` wire-format docstring: `sender_signature` is flat 65 bytes
+  (`r‖s‖v`), not `rlp([v,r,s])` — matching the implementation, CLAUDE.md, and the golden vectors.
+
 ## [0.60.15] - 2026-07-01
 
 ### Fixed
