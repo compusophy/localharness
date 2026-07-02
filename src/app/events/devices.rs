@@ -269,15 +269,7 @@ pub(super) fn unlink_confirm_pressed(device_hex: String) {
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
             let (signer, _owner, main_id, main_tba) = owner_main_tba().await?;
-            let fee_payer = crate::app::sponsor::signer()?;
-            crate::app::registry::remove_signer_sponsored(
-                &signer,
-                &fee_payer,
-                main_id,
-                &main_tba,
-                &device_hex,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            crate::app::registry::remove_signer_sponsored(&signer, main_id, &main_tba, &device_hex)
             .await
         }
         .await;

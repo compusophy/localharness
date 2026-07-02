@@ -113,11 +113,9 @@ pub(crate) fn encode_fund_party(party_id: u64, amount_wei: u128) -> Vec<u8> {
 /// `bounties_of` / `guilds_of`).
 pub async fn form_party_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     member_token_ids: &[u64],
     shares_bps: &[u16],
     ttl_secs: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // The party struct's cold SSTOREs + BOTH member/share array copies (one
     // cold word per member each) + the index pushes + per-creator-seat
@@ -127,9 +125,7 @@ pub async fn form_party_sponsored(
     let gas = 2_500_000 + (member_token_ids.len() as u128) * 400_000;
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_form_party(member_token_ids, shares_bps, ttl_secs),
-        fee_token,
         gas,
     )
     .await
@@ -140,17 +136,13 @@ pub async fn form_party_sponsored(
 /// consent flips the party Active.
 pub async fn join_party_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     party_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // A consent SSTORE per owned seat + the acceptedCount/status update +
     // events. Budget like acceptGuildInvite (the same cold-write class).
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("joinParty(uint256)", party_id),
-        fee_token,
         2_000_000,
     )
     .await
@@ -165,12 +157,10 @@ pub async fn join_party_sponsored(
 /// refunds on disband/expiry.
 pub async fn fund_party_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     party_id: u64,
     amount_wei: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
-    fund_party_sponsored_bridged(sender, fee_payer, party_id, amount_wei, fee_token, 0).await
+    fund_party_sponsored_bridged(sender, party_id, amount_wei, 0).await
 }
 
 /// [`fund_party_sponsored`] with the meter auto-bridge: `bridge_wei > 0`
@@ -179,10 +169,8 @@ pub async fn fund_party_sponsored(
 /// `sponsored_escrow_diamond_call_bridged`).
 pub async fn fund_party_sponsored_bridged(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     party_id: u64,
     amount_wei: u128,
-    fee_token: &str,
     bridge_wei: u128,
 ) -> Result<String, String> {
     // approve (~46k) + fundParty (transferFrom pull + the escrow/ledger
@@ -190,10 +178,8 @@ pub async fn fund_party_sponsored_bridged(
     // Mirror the fundGuild escrow budget.
     sponsored_escrow_diamond_call_bridged(
         sender,
-        fee_payer,
         amount_wei,
         encode_fund_party(party_id, amount_wei),
-        fee_token,
         2_000_000,
         bridge_wei,
     )
@@ -207,18 +193,14 @@ pub async fn fund_party_sponsored_bridged(
 /// hash.
 pub async fn complete_party_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     party_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip + ONE payout `transfer` per member (cold token balances,
     // up to 16 members) + events. Flat headroom over the worst case — the
     // sponsor is billed on gas USED, so over-budgeting is free.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("completeParty(uint256)", party_id),
-        fee_token,
         5_000_000,
     )
     .await
@@ -231,17 +213,13 @@ pub async fn complete_party_sponsored(
 /// FUNDERS, never the caller).
 pub async fn disband_party_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     party_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip + ONE refund `transfer` per distinct funder (cap 64) +
     // event. Flat headroom over the worst case; sponsor billed on gas USED.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("disbandParty(uint256)", party_id),
-        fee_token,
         5_000_000,
     )
     .await

@@ -171,17 +171,10 @@ async fn submit_claim(name: &str, create_if_missing: bool) -> Result<String, Str
         }
     }
 
-    // 3. Submit the claim as a sponsored Tempo tx. The bundle's sponsor wallet
-    //    pays the fees in AlphaUSD; the user's apex wallet signs as sender and
-    //    needs no native gas / stablecoin. No faucet step.
-    let fee_payer =
-        crate::app::sponsor::signer().map_err(|e| format!("sponsor key: {e}"))?;
-    crate::app::registry::claim_and_maybe_set_main_sponsored(
-        &signer,
-        &fee_payer,
-        name,
-        crate::app::registry::ALPHA_USD_ADDRESS(),
-    )
+    // 3. Submit the claim as a sponsored Tempo tx. The sponsor (testnet key /
+    //    mainnet relay, resolved inside `registry::`) pays the fees; the user's
+    //    apex wallet signs as sender and needs no native gas / stablecoin.
+    crate::app::registry::claim_and_maybe_set_main_sponsored(&signer, name)
     .await
     .map_err(|e| format!("claim_name: {e}"))
 }

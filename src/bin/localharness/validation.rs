@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_lh, load_signer_and_sponsor, parse_id, registry, wallet};
+use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_lh, load_signer, parse_id, registry, wallet};
 
 // ---- validation (ValidationFacet: ERC-8004-style validation STAKING) --------
 //
@@ -160,7 +160,7 @@ pub(crate) async fn validation_stake(
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -175,12 +175,10 @@ pub(crate) async fn validation_stake(
     );
     match registry::stake_validation_sponsored(
         &signer,
-        &sponsor,
         work_ref_of_bounty(bounty_id),
         subject_id,
         valid,
         amount_wei,
-        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -228,7 +226,7 @@ pub(crate) async fn validation_challenge(caller: Option<&str>, id_arg: &str) -> 
         );
         return 1;
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -241,13 +239,7 @@ pub(crate) async fn validation_challenge(caller: Option<&str>, id_arg: &str) -> 
         fmt_lh(v.stake_wei),
         if v.verdict_valid { "INVALID" } else { "VALID" }
     );
-    match registry::challenge_validation_sponsored(
-        &signer,
-        &sponsor,
-        id,
-        v.stake_wei,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::challenge_validation_sponsored(&signer, id, v.stake_wei)
     .await
     {
         Ok(tx) => {
@@ -279,7 +271,7 @@ pub(crate) async fn validation_resolve(caller: Option<&str>, id_arg: &str, side:
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -287,13 +279,7 @@ pub(crate) async fn validation_resolve(caller: Option<&str>, id_arg: &str, side:
         "resolving validation #{id} in favour of the {} …",
         if validator_wins { "VALIDATOR" } else { "CHALLENGER" }
     );
-    match registry::resolve_validation_sponsored(
-        &signer,
-        &sponsor,
-        id,
-        validator_wins,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::resolve_validation_sponsored(&signer, id, validator_wins)
     .await
     {
         Ok(tx) => {
@@ -318,7 +304,7 @@ pub(crate) async fn validation_reclaim(caller: Option<&str>, id_arg: &str, unres
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -348,9 +334,9 @@ pub(crate) async fn validation_reclaim(caller: Option<&str>, id_arg: &str, unres
     let what = if unresolved { "draw (refund both sides of)" } else { "reclaim the unchallenged stake on" };
     println!("attempting to {what} validation #{id} …");
     let res = if unresolved {
-        registry::reclaim_unresolved_sponsored(&signer, &sponsor, id, registry::ALPHA_USD_ADDRESS()).await
+        registry::reclaim_unresolved_sponsored(&signer, id).await
     } else {
-        registry::reclaim_stake_sponsored(&signer, &sponsor, id, registry::ALPHA_USD_ADDRESS()).await
+        registry::reclaim_stake_sponsored(&signer, id).await
     };
     match res {
         Ok(tx) => {

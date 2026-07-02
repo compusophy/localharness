@@ -16,7 +16,6 @@ use localharness::wallet;
 
 // Embedded testnet sponsor — identical to `src/app/sponsor.rs`. Pays the
 // AlphaUSD fees so the fresh agent identity needs no balance.
-const SPONSOR_KEY: &str = "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
 
 #[tokio::main]
 async fn main() {
@@ -33,8 +32,6 @@ async fn main() {
     println!("registry : {}", registry::REGISTRY_ADDRESS());
     println!("identity : {addr}  (freshly generated, holds nothing)");
     println!("name     : {name}.localharness.xyz");
-
-    let sponsor = wallet::from_private_key_hex(SPONSOR_KEY).expect("sponsor key parse");
 
     // 2b. PERSIST the identity BEFORE writing on-chain, so the key is never
     // lost even if registration fails — this is what makes the subagent
@@ -64,12 +61,7 @@ async fn main() {
     }
 
     // 4. Sponsored register — the exact path `create_subdomain` runs.
-    let tx_hash = match registry::claim_and_maybe_set_main_sponsored(
-        &agent.signer,
-        &sponsor,
-        &name,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    let tx_hash = match registry::claim_and_maybe_set_main_sponsored(&agent.signer, &name)
     .await
     {
         Ok(h) => h,

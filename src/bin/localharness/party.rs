@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, collect_flags, ensure_wallet_covers, fmt_duration, fmt_lh, load_signer, load_signer_and_sponsor, parse_id, parse_ttl, registry, resolve_address_label, wallet, INVITE_DEFAULT_TTL_SECS};
+use crate::{bytes_to_hex_str, collect_flags, ensure_wallet_covers, fmt_duration, fmt_lh, load_signer, parse_id, parse_ttl, registry, resolve_address_label, wallet, INVITE_DEFAULT_TTL_SECS};
 
 // ---- party (PartyFacet: ad-hoc squads with an escrowed, pre-agreed split) ----
 //
@@ -204,7 +204,7 @@ pub(crate) async fn party_form(caller: Option<&str>, rest: &[String]) -> i32 {
             }
         }
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -212,14 +212,7 @@ pub(crate) async fn party_form(caller: Option<&str>, rest: &[String]) -> i32 {
     for l in &labels {
         println!("  {l}");
     }
-    match registry::form_party_sponsored(
-        &signer,
-        &sponsor,
-        &member_ids,
-        &shares,
-        ttl_secs,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::form_party_sponsored(&signer, &member_ids, &shares, ttl_secs)
     .await
     {
         Ok(tx) => {
@@ -257,12 +250,12 @@ pub(crate) async fn party_join(caller: Option<&str>, id_arg: &str) -> i32 {
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("consenting to party #{party_id} …");
-    match registry::join_party_sponsored(&signer, &sponsor, party_id, registry::ALPHA_USD_ADDRESS())
+    match registry::join_party_sponsored(&signer, party_id)
         .await
     {
         Ok(tx) => {
@@ -305,7 +298,7 @@ pub(crate) async fn party_fund(caller: Option<&str>, id_arg: &str, amount: &str)
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -316,13 +309,7 @@ pub(crate) async fn party_fund(caller: Option<&str>, id_arg: &str, amount: &str)
         return code;
     }
     println!("funding party #{party_id} with {} …", fmt_lh(amount_wei));
-    match registry::fund_party_sponsored(
-        &signer,
-        &sponsor,
-        party_id,
-        amount_wei,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::fund_party_sponsored(&signer, party_id, amount_wei)
     .await
     {
         Ok(tx) => {
@@ -355,12 +342,12 @@ pub(crate) async fn party_complete(caller: Option<&str>, id_arg: &str) -> i32 {
             return 1;
         }
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("completing party #{party_id} (splitting the pot to member TBAs) …");
-    match registry::complete_party_sponsored(&signer, &sponsor, party_id, registry::ALPHA_USD_ADDRESS())
+    match registry::complete_party_sponsored(&signer, party_id)
         .await
     {
         Ok(tx) => {
@@ -391,12 +378,12 @@ pub(crate) async fn party_disband(caller: Option<&str>, id_arg: &str) -> i32 {
             return 1;
         }
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("disbanding party #{party_id} (refunding its funders) …");
-    match registry::disband_party_sponsored(&signer, &sponsor, party_id, registry::ALPHA_USD_ADDRESS())
+    match registry::disband_party_sponsored(&signer, party_id)
         .await
     {
         Ok(tx) => {

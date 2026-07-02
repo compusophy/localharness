@@ -66,12 +66,10 @@ pub(crate) async fn refresh_feed_context(worker: web_sys::Worker) {
 pub(crate) async fn do_feed_subscribe(worker: web_sys::Worker, subscribe: bool) {
     let Some(feed_id) = feed_token_id().await else { return };
     let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
-    let Ok(sponsor) = crate::app::sponsor::signer() else { return };
-    let token = crate::app::registry::ALPHA_USD_ADDRESS();
     let res = if subscribe {
-        crate::app::registry::subscribe_sponsored(&signer, &sponsor, feed_id, token).await
+        crate::app::registry::subscribe_sponsored(&signer, feed_id).await
     } else {
-        crate::app::registry::unsubscribe_sponsored(&signer, &sponsor, feed_id, token).await
+        crate::app::registry::unsubscribe_sponsored(&signer, feed_id).await
     };
     if let Err(e) = res {
         web_sys::console::warn_1(&JsValue::from_str(&format!("feed subscribe: {e}")));
@@ -101,14 +99,7 @@ pub(crate) async fn do_feed_subscribe(worker: web_sys::Worker, subscribe: bool) 
 async fn publish_viewer_push_sub() {
     let Ok(sub_json) = crate::app::notifications::subscribe_push().await else { return };
     let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
-    let Ok(sponsor) = crate::app::sponsor::signer() else { return };
-    let token = crate::app::registry::ALPHA_USD_ADDRESS();
-    if let Err(e) = crate::registry::set_push_sub_sponsored(
-        &signer,
-        &sponsor,
-        sub_json.as_bytes(),
-        token,
-    )
+    if let Err(e) = crate::registry::set_push_sub_sponsored(&signer, sub_json.as_bytes())
     .await
     {
         web_sys::console::warn_1(&JsValue::from_str(&format!("publish push_sub: {e}")));

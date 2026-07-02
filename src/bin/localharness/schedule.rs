@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, collect_flags, fmt_lh, load_signer, load_signer_and_sponsor, registry, truncate_words, wallet, SCHEDULE_DEFAULT_RUNS, SCHEDULE_MIN_INTERVAL_SECS};
+use crate::{bytes_to_hex_str, collect_flags, fmt_lh, load_signer, registry, truncate_words, wallet, SCHEDULE_DEFAULT_RUNS, SCHEDULE_MIN_INTERVAL_SECS};
 
 // ---- schedule / goal / remind / jobs / unschedule ------------------------
 //
@@ -502,11 +502,11 @@ pub(crate) async fn unschedule(caller_name: Option<&str>, job_id_arg: &str) -> i
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
+    let signer = match load_signer(caller_name) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    match registry::cancel_job_sponsored(&signer, &sponsor, job_id, registry::ALPHA_USD_ADDRESS()).await
+    match registry::cancel_job_sponsored(&signer, job_id).await
     {
         Ok(tx) => {
             println!("✓ cancelled job #{job_id} — remaining budget refunded to your wallet");

@@ -1,4 +1,4 @@
-use crate::{bounty_work_ref, bytes_to_hex_str, collect_flags, credits, ensure_wallet_covers, fmt_lh, identity_key_files, load_signer_and_sponsor, parse_ttl, registry, report_call_error, resolve_caller_key, resolve_caller_label, resolve_key_read_path, resolve_own_token_id, run_agent_turn, wallet, INVITE_DEFAULT_TTL_SECS, KEY_SUFFIX};
+use crate::{bounty_work_ref, bytes_to_hex_str, collect_flags, credits, ensure_wallet_covers, fmt_lh, identity_key_files, load_signer, parse_ttl, registry, report_call_error, resolve_caller_key, resolve_caller_label, resolve_key_read_path, resolve_own_token_id, run_agent_turn, wallet, INVITE_DEFAULT_TTL_SECS, KEY_SUFFIX};
 
 // ---- colony (the agent economy's first autonomous cycle) ------------------
 //
@@ -818,7 +818,6 @@ struct ColonyWorker {
 /// own errors instead of bailing through `colony_bail`.
 async fn colony_step_post(
     caller_signer: &k256::ecdsa::SigningKey,
-    sponsor: &k256::ecdsa::SigningKey,
     caller_addr: &str,
     task: &str,
     reward_wei: u128,
@@ -828,14 +827,7 @@ async fn colony_step_post(
     // The escrow pulls the reward from the WALLET pot — auto-bridge any
     // shortfall out of the chat meter first (on-chain feedback #63).
     ensure_wallet_covers(caller_signer, caller_addr, reward_wei).await?;
-    let post_tx = match registry::post_bounty_sponsored(
-        caller_signer,
-        sponsor,
-        task.as_bytes(),
-        reward_wei,
-        ttl_secs,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    let post_tx = match registry::post_bounty_sponsored(caller_signer, task.as_bytes(), reward_wei, ttl_secs)
     .await
     {
         Ok(tx) => tx,
@@ -956,7 +948,6 @@ async fn colony_step_pick(
 /// transient-retry via [`colony_write_step`]). `Err` = the stage-3 bail message.
 async fn colony_step_claim(
     worker: &ColonyWorker,
-    sponsor: &k256::ecdsa::SigningKey,
     bounty_id: u64,
 ) -> Result<(), String> {
     println!(
@@ -964,13 +955,7 @@ async fn colony_step_claim(
         worker_name = worker.name
     );
     match colony_write_step(bounty_id, "3/8", "CLAIM", 1, || {
-        registry::claim_bounty_sponsored(
-            &worker.signer,
-            sponsor,
-            bounty_id,
-            worker.token_id,
-            registry::ALPHA_USD_ADDRESS(),
-        )
+        registry::claim_bounty_sponsored(&worker.signer, bounty_id, worker.token_id)
     })
     .await
     {
@@ -1044,7 +1029,6 @@ async fn colony_step_work(
 /// [`colony_write_step`]). `Err` = the stage-5 bail message.
 async fn colony_step_submit(
     worker: &ColonyWorker,
-    sponsor: &k256::ecdsa::SigningKey,
     bounty_id: u64,
     result_text: &str,
 ) -> Result<(), String> {
@@ -1053,13 +1037,7 @@ async fn colony_step_submit(
         worker_name = worker.name
     );
     match colony_write_step(bounty_id, "5/8", "SUBMIT", 2, || {
-        registry::submit_result_sponsored(
-            &worker.signer,
-            sponsor,
-            bounty_id,
-            result_text.as_bytes(),
-            registry::ALPHA_USD_ADDRESS(),
-        )
+        registry::submit_result_sponsored(&worker.signer, bounty_id, result_text.as_bytes())
     })
     .await
     {
@@ -1238,7 +1216,6 @@ async fn colony_step_judge(
 async fn colony_step_settle(
     accept: bool,
     caller_signer: &k256::ecdsa::SigningKey,
-    sponsor: &k256::ecdsa::SigningKey,
     bounty_id: u64,
     worker_name: &str,
     caller_label: &str,
@@ -1252,12 +1229,7 @@ async fn colony_step_settle(
              escrow to {worker_name}'s TBA …"
         );
         match colony_write_step(bounty_id, "7/8", "ACCEPT", 3, || {
-            registry::accept_result_sponsored(
-                caller_signer,
-                sponsor,
-                bounty_id,
-                registry::ALPHA_USD_ADDRESS(),
-            )
+            registry::accept_result_sponsored(caller_signer, bounty_id)
         })
         .await
         {
@@ -1294,7 +1266,6 @@ async fn colony_step_settle(
 /// branch it is reclaimable).
 async fn colony_step_attest(
     caller_signer: &k256::ecdsa::SigningKey,
-    sponsor: &k256::ecdsa::SigningKey,
     worker: &ColonyWorker,
     bounty_id: u64,
     judged_rating: u8,
@@ -1306,14 +1277,7 @@ async fn colony_step_attest(
          (workRef = bounty #{bounty_id}) …"
     );
     let work_ref = bounty_work_ref(bounty_id);
-    match registry::attest_sponsored(
-        caller_signer,
-        sponsor,
-        worker_token_id,
-        judged_rating,
-        work_ref,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::attest_sponsored(caller_signer, worker_token_id, judged_rating, work_ref)
     .await
     {
         Ok(tx) => println!(
@@ -1417,8 +1381,8 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
 
     // The caller (platform / poster) — its key signs the post + accept and pays
     // the headless `call` that runs the work.
-    let (caller_signer, sponsor) = match load_signer_and_sponsor(caller) {
-        Ok(pair) => pair,
+    let caller_signer = match load_signer(caller) {
+        Ok(k) => k,
         Err(code) => return code,
     };
     let caller_addr = bytes_to_hex_str(&wallet::address(&caller_signer));
@@ -1447,7 +1411,6 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     // -- STEP 1: the caller POSTS the bounty (escrows the reward). ----------
     let bounty_id = match colony_step_post(
         &caller_signer,
-        &sponsor,
         &caller_addr,
         &task,
         reward_wei,
@@ -1479,7 +1442,7 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     };
 
     // -- STEP 3: the worker CLAIMS the bounty. -----------------------------
-    if let Err(e) = colony_step_claim(&worker, &sponsor, bounty_id).await {
+    if let Err(e) = colony_step_claim(&worker, bounty_id).await {
         bail!("3/8", e);
     }
 
@@ -1490,7 +1453,7 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     };
 
     // -- STEP 5: the worker SUBMITS the result. ----------------------------
-    if let Err(e) = colony_step_submit(&worker, &sponsor, bounty_id, &result_text).await {
+    if let Err(e) = colony_step_submit(&worker, bounty_id, &result_text).await {
         bail!("5/8", e);
     }
 
@@ -1511,7 +1474,6 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     if let Err(e) = colony_step_settle(
         accept,
         &caller_signer,
-        &sponsor,
         bounty_id,
         &worker.name,
         &caller_label,
@@ -1525,7 +1487,7 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     }
 
     // -- STEP 8: the caller ATTESTS the JUDGE'S rating → on-chain reputation. -
-    colony_step_attest(&caller_signer, &sponsor, &worker, bounty_id, judged_rating, &caller_label)
+    colony_step_attest(&caller_signer, &worker, bounty_id, judged_rating, &caller_label)
         .await;
 
     // -- Verify the outcome against the worker's TBA $LH. -------------------

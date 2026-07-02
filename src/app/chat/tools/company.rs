@@ -11,7 +11,7 @@
 use crate::app::chat::access::credit_address_existing;
 use crate::tools::ClosureTool;
 
-use super::bounty::bounty_signers;
+use super::bounty::bounty_signer;
 use super::guild::format_lh;
 
 /// A built-in company role: its job label (recorded in the manifest + used to
@@ -375,13 +375,8 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 
             // STEP 1 — create the guild (org identity + pooled $LH treasury). The
             // caller becomes its founding Admin (so the roster IS the founder).
-            let (signer, fee_payer) = bounty_signers().await?;
-            let create_tx = crate::app::registry::create_guild_sponsored(
-                &signer,
-                &fee_payer,
-                &name,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let create_tx = crate::app::registry::create_guild_sponsored(&signer, &name)
             .await
             .map_err(|e| crate::error::Error::other(format!("create_guild failed: {e}")))?;
             // New guild id = the founder's last entry in guilds_of.
@@ -417,14 +412,7 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                             crate::app::chat::escrow_bridge_wei(&from_hex, amount_wei)
                                 .await
                                 .map_err(crate::error::Error::other)?;
-                        let fund_tx = crate::app::registry::fund_guild_sponsored_bridged(
-                            &signer,
-                            &fee_payer,
-                            guild_id,
-                            amount_wei,
-                            crate::app::registry::ALPHA_USD_ADDRESS(),
-                            bridge_wei,
-                        )
+                        let fund_tx = crate::app::registry::fund_guild_sponsored_bridged(&signer, guild_id, amount_wei, bridge_wei)
                         .await
                         .map_err(|e| {
                             crate::error::Error::other(format!("seed treasury failed: {e}"))

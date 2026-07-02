@@ -272,12 +272,11 @@ async fn lh_price(args: &[String]) -> Output {
 
 use k256::ecdsa::SigningKey;
 
-/// What a value-moving command needs from its host: the caller's identity key,
-/// the `fee_payer` sponsor, and the chain fee token.
+/// What a value-moving command needs from its host: the caller's identity key.
+/// (The `fee_payer` sponsor + fee token are resolved inside `registry::` now —
+/// testnet key / mainnet relay + the active chain's fee_token.)
 pub struct WriteEnv<'a> {
     pub signer: &'a SigningKey,
-    pub sponsor: &'a SigningKey,
-    pub fee_token: &'a str,
 }
 
 /// Dispatch a VALUE-MOVING `lh-*` command. Returns `None` when `cmd` is not a
@@ -427,14 +426,7 @@ async fn lh_send(args: &[String], env: &WriteEnv<'_>, dry_run: bool) -> (Output,
     if dry_run {
         return (Output::ok(format!("[plan] {plan}\n")), plan);
     }
-    match crate::registry::transfer_lh_sponsored(
-        env.signer,
-        env.sponsor,
-        &to_hex,
-        amount_wei,
-        env.fee_token,
-    )
-    .await
+    match crate::registry::transfer_lh_sponsored(env.signer, &to_hex, amount_wei).await
     {
         Ok(tx) => (Output::ok(format!("sent {amount} $LH -> {to_hex}  tx {tx}\n")), plan),
         Err(e) => (Output::err(format!("lh-send: {e}"), 1), plan),
@@ -559,8 +551,6 @@ mod tests {
         let k = crate::wallet::generate();
         let env = WriteEnv {
             signer: &k.signer,
-            sponsor: &k.signer,
-            fee_token: "0x20c0000000000000000000000000000000000001",
         };
         // A minimal valid cartridge → dry-run compiles + plans, NOTHING sent
         // (the ownership/RPC checks come only on the LIVE pass).
@@ -577,8 +567,6 @@ mod tests {
         let k = crate::wallet::generate();
         let env = WriteEnv {
             signer: &k.signer,
-            sponsor: &k.signer,
-            fee_token: "0x20c0000000000000000000000000000000000001",
         };
         // Missing source → usage error, empty plan (no write recorded).
         let (out, plan) = dispatch_write("lh-publish", &["mine".into()], &env, true).await.unwrap();
@@ -613,8 +601,6 @@ mod tests {
         let k = crate::wallet::generate();
         let env = WriteEnv {
             signer: &k.signer,
-            sponsor: &k.signer,
-            fee_token: "0x20c0000000000000000000000000000000000001",
         };
         // Non-value-moving commands are not ours.
         assert!(dispatch_write("echo", &[], &env, true).await.is_none());

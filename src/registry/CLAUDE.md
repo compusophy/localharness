@@ -47,7 +47,13 @@ returns `currency()=="credits"` → the chain REJECTS it as a fee_token (intenti
 $LH = in-system credits, not gas). Fee token is AlphaUSD (testnet) / USDC.e (mainnet).
 
 ## Sponsorship: embedded key (testnet) vs KEYLESS RELAY (mainnet)
-- Testnet: `app::sponsor.rs` embeds a low-budget fee_payer key (loss capped at its
+- The `*_sponsored` wrappers take NO fee_payer/fee_token — the submit skeletons
+  (`tx::default_fee`) resolve `sponsor::fee_payer()` + the active chain's fee
+  token internally (`registry/sponsor.rs` is the ONE key home; `app::sponsor::
+  signer()` is a thin alias). Custom sponsors → the explicit primitives
+  (`submit_tempo_sponsored` / `create_sponsored`). Don't reintroduce per-call
+  fee threading — every caller passed the same pair.
+- Testnet: the committed low-budget fee_payer key pays (loss capped at its
   balance if extracted). Tempo access keys CANNOT sign as fee_payer — must be a root key.
 - **MAINNET embeds NO money key.** `sponsor_relay` → `proxy/api/sponsor.ts` signs the
   fee_payer half SERVER-SIDE, gated by: selector allowlist + onboarding-only balance

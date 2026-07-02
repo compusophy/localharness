@@ -12,16 +12,14 @@ use crate::tools::ClosureTool;
 
 use super::guild::{format_lh, own_token_id};
 
-/// Resolve the (signer, fee_payer) pair for a sponsored bounty write: the
-/// owner's local credit key signs the sender_hash, the embedded sponsor pays
-/// the fee in AlphaUSD. Mirrors `events::schedule_job_pressed`'s acquisition.
-pub(crate) async fn bounty_signers(
-) -> Result<(k256::ecdsa::SigningKey, k256::ecdsa::SigningKey), crate::error::Error> {
+/// Resolve the sender signer for a sponsored bounty write: the owner's local
+/// credit key signs the sender_hash (the fee side — sponsor key or mainnet
+/// relay — is resolved inside `registry::`).
+pub(crate) async fn bounty_signer() -> Result<k256::ecdsa::SigningKey, crate::error::Error> {
     let (signer, _) = credit_signer()
         .await
         .ok_or_else(|| crate::error::Error::other("no identity — claim a subdomain first"))?;
-    let fee_payer = crate::app::sponsor::signer().map_err(crate::error::Error::other)?;
-    Ok((signer, fee_payer))
+    Ok(signer)
 }
 
 /// `post_bounty(task, reward_lh, ttl_hours?)` — escrow `$LH` behind an on-chain
@@ -89,7 +87,7 @@ pub(crate) fn post_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 return Err(crate::error::Error::other("ttl_hours must be greater than 0"));
             }
             let ttl_secs = (ttl_hours * 3600.0) as u64;
-            let (signer, fee_payer) = bounty_signers().await?;
+            let signer = bounty_signer().await?;
             // Escrow auto-bridge (feedback #63): a wallet shortfall covered by
             // unspent chat-meter credits rides as a withdrawCredits call in the
             // SAME atomic tx as approve+postBounty. Pot-aware error when both
@@ -101,11 +99,9 @@ pub(crate) fn post_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .map_err(crate::error::Error::other)?;
             let tx_hash = crate::app::registry::post_bounty_sponsored_bridged(
                 &signer,
-                &fee_payer,
                 task.as_bytes(),
                 reward_wei,
                 ttl_secs,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
                 bridge_wei,
             )
             .await
@@ -167,14 +163,8 @@ pub(crate) fn claim_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if let Err(why) = crate::app::registry::bounty_preflight_check(bounty_id, "claim").await {
                 return Err(crate::error::Error::other(why));
             }
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::claim_bounty_sponsored(
-                &signer,
-                &fee_payer,
-                bounty_id,
-                claimant_token_id,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::claim_bounty_sponsored(&signer, bounty_id, claimant_token_id)
             .await
             .map_err(|e| crate::error::Error::other(format!("claim_bounty failed: {e}")))?;
             Ok(serde_json::json!({
@@ -228,14 +218,8 @@ pub(crate) fn submit_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if let Err(why) = crate::app::registry::bounty_preflight_check(bounty_id, "submit").await {
                 return Err(crate::error::Error::other(why));
             }
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::submit_result_sponsored(
-                &signer,
-                &fee_payer,
-                bounty_id,
-                result_text.as_bytes(),
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::submit_result_sponsored(&signer, bounty_id, result_text.as_bytes())
             .await
             .map_err(|e| crate::error::Error::other(format!("submit_result failed: {e}")))?;
             Ok(serde_json::json!({
@@ -278,13 +262,8 @@ pub(crate) fn accept_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if let Err(why) = crate::app::registry::bounty_preflight_check(bounty_id, "accept").await {
                 return Err(crate::error::Error::other(why));
             }
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::accept_result_sponsored(
-                &signer,
-                &fee_payer,
-                bounty_id,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::accept_result_sponsored(&signer, bounty_id)
             .await
             .map_err(|e| crate::error::Error::other(format!("accept_result failed: {e}")))?;
             Ok(serde_json::json!({
@@ -451,15 +430,8 @@ pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 })?;
                 work_ref[24..32].copy_from_slice(&id.to_be_bytes());
             }
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::attest_sponsored(
-                &signer,
-                &fee_payer,
-                subject_token_id,
-                rating as u8,
-                work_ref,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::attest_sponsored(&signer, subject_token_id, rating as u8, work_ref)
             .await
             .map_err(|e| crate::error::Error::other(format!("attest failed: {e}")))?;
             Ok(serde_json::json!({

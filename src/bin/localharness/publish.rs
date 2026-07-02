@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, fmt_lh, key_write_path, load_name_signer, load_signer_and_sponsor, load_sponsor, name_is_valid, parse_address, registry, resolve_key_read_path, secure_key_file, tempo_tx, wallet};
+use crate::{bytes_to_hex_str, fmt_lh, key_write_path, load_name_signer, load_signer, load_sponsor, name_is_valid, parse_address, registry, resolve_key_read_path, secure_key_file, tempo_tx, wallet};
 
 /// Parsed `create` arguments: the name, an optional persona, and whether
 /// `--publish` was given (publish the scaffolded `app.rl` in the same flow so a
@@ -181,11 +181,6 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
         }
     }
 
-    let sponsor = match load_sponsor() {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-
     // PAID CLAIMS (sybil gate): a non-zero registrationCost is pulled from the
     // claimer's $LH wallet inside register(). Pre-check so a fresh unfunded
     // key gets an actionable message instead of a raw chain revert.
@@ -211,12 +206,7 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
     }
 
     println!("claiming {name}.localharness.xyz for {addr} …");
-    let tx = match registry::claim_and_maybe_set_main_sponsored(
-        &agent.signer,
-        &sponsor,
-        name,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    let tx = match registry::claim_and_maybe_set_main_sponsored(&agent.signer, name)
     .await
     {
         Ok(tx) => tx,
@@ -924,7 +914,7 @@ pub(crate) async fn release(caller: Option<&str>, name: &str, confirm: Option<&s
         eprintln!("{RELEASE_REFUSAL}");
         return 2;
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(p) => p,
         Err(code) => return code,
     };
@@ -956,7 +946,7 @@ pub(crate) async fn release(caller: Option<&str>, name: &str, confirm: Option<&s
         return 2;
     }
     println!("releasing {name}.localharness.xyz (token #{token_id}) …");
-    match registry::release_name_sponsored(&signer, &sponsor, token_id, registry::ALPHA_USD_ADDRESS())
+    match registry::release_name_sponsored(&signer, token_id)
         .await
     {
         Ok(tx) => {

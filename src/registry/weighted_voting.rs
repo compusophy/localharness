@@ -151,18 +151,14 @@ pub fn encode_vote_weighted_calldata(proposal_id: u64, support: bool) -> Vec<u8>
 /// + event; 800k for headroom (sponsor billed on gas USED).
 pub async fn set_shares_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     guild_id: u64,
     member_hex: &str,
     shares: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
     let member = parse_eth_address(member_hex)?;
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_set_shares(guild_id, &member, shares),
-        fee_token,
         800_000,
     )
     .await
@@ -177,21 +173,17 @@ pub async fn set_shares_sponsored(
 #[allow(clippy::too_many_arguments)]
 pub async fn propose_weighted_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     guild_id: u64,
     to_hex: &str,
     amount_wei: u128,
     period_secs: u64,
     memo: &[u8],
-    fee_token: &str,
 ) -> Result<String, String> {
     let to = parse_eth_address(to_hex)?;
     let gas = 3_000_000 + (memo.len() as u128) * 9_000;
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_propose_weighted(guild_id, &to, amount_wei, period_secs, memo),
-        fee_token,
         gas,
     )
     .await
@@ -203,16 +195,12 @@ pub async fn propose_weighted_sponsored(
 /// member with > 0 shares and not have voted (enforced on-chain). 800k headroom.
 pub async fn vote_weighted_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     proposal_id: u64,
     support: bool,
-    fee_token: &str,
 ) -> Result<String, String> {
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_vote_weighted(proposal_id, support),
-        fee_token,
         800_000,
     )
     .await
@@ -225,15 +213,11 @@ pub async fn vote_weighted_sponsored(
 /// otherwise FAILS with no spend. Idempotent. 3M for the cold token transfer.
 pub async fn execute_weighted_proposal_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     proposal_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("executeWeighted(uint256)", proposal_id),
-        fee_token,
         3_000_000,
     )
     .await

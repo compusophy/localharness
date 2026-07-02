@@ -10,7 +10,7 @@
 // Typical flow: `facet diamond` → your diamond addr; `facet deploy x x.sol` →
 // facet addr; `facet cut <diamond> <facet> x.sol` → it's live behind the diamond.
 
-use crate::util::load_signer_and_sponsor;
+use crate::util::{load_signer, load_sponsor};
 use localharness::cut_guard;
 use localharness::registry::{self, FacetCut};
 use localharness::soliditylite::compile;
@@ -55,8 +55,12 @@ async fn facet_deploy(caller: Option<&str>, rest: &[String]) -> i32 {
     };
     let gas = 2_000_000 + art.init_code.len() as u128 * 6_000;
     println!("compiled '{name}': {}-byte runtime, {} selector(s) → deploying via sponsored CREATE …", art.runtime.len(), art.selectors.len());
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(p) => p,
+        Err(c) => return c,
+    };
+    let sponsor = match load_sponsor() {
+        Ok(s) => s,
         Err(c) => return c,
     };
     match registry::create_sponsored(&signer, &sponsor, art.init_code, registry::ALPHA_USD_ADDRESS(), gas).await {
@@ -91,7 +95,7 @@ async fn facet_diamond(caller: Option<&str>) -> i32 {
             return 1;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(p) => p,
         Err(c) => return c,
     };
@@ -103,6 +107,10 @@ async fn facet_diamond(caller: Option<&str>) -> i32 {
     ];
     init.extend_from_slice(&registry::encode_diamond_constructor_args(&owner, &gcuts));
     println!("genesis-ing a child diamond owned by you (0x{}), guarded cut facet, via sponsored CREATE …", hex(&owner));
+    let sponsor = match load_sponsor() {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
     match registry::create_sponsored(&signer, &sponsor, init, registry::ALPHA_USD_ADDRESS(), 25_000_000).await {
         Ok(addr) => {
             println!("✓ your diamond: {addr}");
@@ -148,16 +156,14 @@ async fn facet_cut(caller: Option<&str>, rest: &[String]) -> i32 {
     let n = art.selectors.len();
     let cut = FacetCut { facet: addr20(facet_addr), action: 0, selectors: art.selectors };
     let calldata = registry::encode_diamond_cut(&[cut], &[0u8; 20], &[]);
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(p) => p,
         Err(c) => return c,
     };
     println!("cutting {n} selector(s) of {facet_addr} into {diamond} (safety-lint OK; diamondCut, sponsored) …");
-    match registry::submit_tempo_sponsored(
+    match registry::sponsored_batch(
         &signer,
-        &sponsor,
         vec![TempoCall { to: addr20(diamond), value_wei: 0, input: calldata }],
-        registry::ALPHA_USD_ADDRESS(),
         12_000_000,
     )
     .await

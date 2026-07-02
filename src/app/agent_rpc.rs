@@ -233,13 +233,11 @@ async fn settle_incoming(price: u128, p: &PaymentParts, my_name: &str) -> Result
     let (signer, _) = super::chat::credit_signer()
         .await
         .ok_or_else(|| "no identity".to_string())?;
-    let fee_payer = super::sponsor::signer()?;
     let from: [u8; 20] = parse_hex(&p.from_hex, 20)?.try_into().unwrap();
     let nonce: [u8; 32] = parse_hex(&p.nonce_hex, 32)?.try_into().unwrap();
     let sig: [u8; 65] = parse_hex(&p.sig_hex, 65)?.try_into().unwrap();
     super::registry::settle_x402_sponsored(
         &signer,
-        &fee_payer,
         &from,
         &to,
         value,
@@ -247,7 +245,6 @@ async fn settle_incoming(price: u128, p: &PaymentParts, my_name: &str) -> Result
         p.valid_before,
         &nonce,
         &sig,
-        super::registry::ALPHA_USD_ADDRESS(),
     )
     .await?;
     // H2: confirm the settlement actually consumed the nonce on-chain

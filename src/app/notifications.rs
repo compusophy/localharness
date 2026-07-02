@@ -693,9 +693,7 @@ pub(crate) async fn enable_device_push() -> Result<String, String> {
     let Some(merged) = crate::registry::merge_push_sub(slot.as_deref(), &sub_json) else {
         return Ok("already registered".to_string());
     };
-    let sponsor = crate::app::sponsor::signer().map_err(|e| format!("sponsor: {e}"))?;
-    let token = crate::registry::ALPHA_USD_ADDRESS();
-    crate::registry::set_push_sub_sponsored(&signer, &sponsor, merged.as_bytes(), token).await
+    crate::registry::set_push_sub_sponsored(&signer, merged.as_bytes()).await
 }
 
 /// Silently refresh a STALE push subscription on app open. Reinstalling the
@@ -788,11 +786,7 @@ pub(crate) async fn auto_register_device_push() {
     let Some(merged) = crate::registry::merge_push_sub(slot.as_deref(), &current) else {
         return; // already up to date
     };
-    let Ok(sponsor) = crate::app::sponsor::signer() else {
-        return;
-    };
-    let token = crate::registry::ALPHA_USD_ADDRESS();
-    match crate::registry::set_push_sub_sponsored(&signer, &sponsor, merged.as_bytes(), token).await
+    match crate::registry::set_push_sub_sponsored(&signer, merged.as_bytes()).await
     {
         Ok(_) => web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
             "[push] device auto-registered (address-keyed)",

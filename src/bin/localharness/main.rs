@@ -179,21 +179,11 @@ pub(crate) use tba::*;
 pub(crate) use util::*;
 pub(crate) use vote::*;
 
-/// Testnet sponsor key (mirrors `src/app/sponsor.rs`) — derives 0x0aff88…a922c,
-/// pays AlphaUSD fees. Committed, low-budget; the testnet/dev-sandbox `fee_payer`.
-const TESTNET_SPONSOR_KEY: &str = "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
-
-/// The `fee_payer` key for sponsored CLI ops. The published binary ships NO
-/// money-moving mainnet key at all: on MAINNET the fee_payer half is signed by
-/// the server-side relay (`design/cli-mainnet-relay.md` §2.2 — the submit path
-/// in `registry::tx` routes through `registry::sponsor_relay` when the active
-/// chain is mainnet, ignoring this key). On TESTNET the committed low-budget
-/// [`TESTNET_SPONSOR_KEY`] pays AlphaUSD fees directly. So this only ever
-/// returns the public testnet key — harmless on mainnet (unused; the relay
-/// signs) and self-contained on testnet.
-pub(crate) fn sponsor_key() -> Result<String, String> {
-    Ok(TESTNET_SPONSOR_KEY.to_string())
-}
+// The `fee_payer` key for sponsored CLI ops lives in `registry::sponsor` now
+// (ONE home, shared with the browser bundle): the committed testnet key on
+// testnet, an unused placeholder on mainnet where the server-side relay signs
+// the fee_payer half (`registry::sponsor_relay`) — the published binary ships
+// NO money-moving mainnet key.
 
 /// The credit proxy debits ~this much `$LH` per DEFAULT-model request (mirrors
 /// the proxy's `COST_PER_REQUEST_WEI` = 1e18 = 1 `$LH`; premium models cost more).
@@ -1270,20 +1260,16 @@ mod tests {
 
     #[test]
     fn sponsor_key_is_valid_and_derives_documented_address() {
-        // The committed TESTNET_SPONSOR_KEY pays fees for EVERY sponsored CLI op
-        // on testnet (create/publish/persona). If it's stale or mistyped, all
-        // onboarding silently fails. Guard that it parses and derives the
-        // documented sponsor address (the dedicated low-budget key, rotated
-        // 2026-05-25). The MAINNET fee_payer is NOT embedded at all — on mainnet
-        // the server relay signs the fee_payer half (`registry::sponsor_relay`),
-        // so the published binary carries no money-moving key.
-        let signer =
-            wallet::from_private_key_hex(TESTNET_SPONSOR_KEY).expect("TESTNET_SPONSOR_KEY must parse");
+        // The committed testnet sponsor (now ONE home: `registry::sponsor`) pays
+        // fees for EVERY sponsored CLI op on testnet. If it's stale or mistyped,
+        // all onboarding silently fails. The MAINNET fee_payer is NOT embedded at
+        // all — the server relay signs it (`registry::sponsor_relay`).
+        let signer = registry::sponsor::fee_payer().expect("sponsor key must parse");
         let addr = bytes_to_hex_str(&wallet::address(&signer));
         assert_eq!(
             addr.to_ascii_lowercase(),
             "0x0aff88ad13ef24cac5befd0f9dc3a05df79a922c",
-            "TESTNET_SPONSOR_KEY no longer derives the documented sponsor address"
+            "sponsor key no longer derives the documented sponsor address"
         );
     }
 

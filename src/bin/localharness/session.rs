@@ -1,4 +1,4 @@
-use crate::{load_signer, load_signer_and_sponsor, parse_id, registry};
+use crate::{load_signer, parse_id, registry};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---- session room: encrypted on-chain shared KV (SessionRoomFacet, #22) ------
@@ -54,7 +54,7 @@ fn now_secs() -> u64 {
 }
 
 async fn session_create(caller: Option<&str>) -> i32 {
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -69,7 +69,7 @@ async fn session_create(caller: Option<&str>) -> i32 {
         return 0;
     }
     println!("creating session room …");
-    match registry::create_room_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS()).await {
+    match registry::create_room_sponsored(&signer).await {
         Ok(_tx) => {
             match registry::room_id_created_by(&creator).await {
                 Ok(Some(id)) => {
@@ -105,7 +105,7 @@ async fn session_set(caller: Option<&str>, args: &[String]) -> i32 {
     };
     let key = args[1].clone();
     let value = args[2..].join(" ");
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -127,7 +127,7 @@ async fn session_set(caller: Option<&str>, args: &[String]) -> i32 {
         eprintln!("session set: failed to seal op");
         return 1;
     };
-    match registry::append_op_sponsored(&signer, &sponsor, room_id, &blob, registry::ALPHA_USD_ADDRESS()).await {
+    match registry::append_op_sponsored(&signer, room_id, &blob).await {
         Ok(_tx) => {
             println!("✓ set {key} in room #{room_id}");
             0
@@ -215,11 +215,11 @@ async fn session_clear(caller: Option<&str>, args: &[String]) -> i32 {
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    match registry::clear_room_sponsored(&signer, &sponsor, room_id, registry::ALPHA_USD_ADDRESS()).await {
+    match registry::clear_room_sponsored(&signer, room_id).await {
         Ok(_tx) => {
             println!("✓ room #{room_id} cleared");
             0

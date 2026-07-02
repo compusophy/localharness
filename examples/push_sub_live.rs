@@ -13,7 +13,6 @@
 
 use localharness::registry;
 
-const ALPHA_USD: &str = "0x20c0000000000000000000000000000000000001";
 
 // Same shape/length as a real Chrome FCM subscription (~365 bytes).
 const SUB_JSON: &str = concat!(
@@ -36,17 +35,11 @@ async fn main() -> Result<(), String> {
     };
     let sender = localharness::wallet::from_private_key_hex(key_hex.trim())
         .map_err(|e| format!("bad key: {e}"))?;
-    // The dedicated low-budget testnet sponsor (same key the wasm bundle embeds).
-    let sponsor = localharness::wallet::from_private_key_hex(
-        "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43",
-    )
-    .map_err(|e| format!("bad sponsor key: {e}"))?;
-
     let addr = localharness::encoding::bytes_to_hex(&localharness::wallet::address(&sender));
     println!("device address  {addr}");
     println!("payload bytes   {}", SUB_JSON.len());
 
-    let tx = registry::set_push_sub_sponsored(&sender, &sponsor, SUB_JSON.as_bytes(), ALPHA_USD)
+    let tx = registry::set_push_sub_sponsored(&sender, SUB_JSON.as_bytes())
         .await?;
     println!("setPushSub tx   {tx}");
 

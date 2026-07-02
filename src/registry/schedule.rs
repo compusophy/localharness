@@ -65,12 +65,10 @@ pub(crate) fn encode_cancel_job(job_id: u64) -> Vec<u8> {
 /// remaining `budgetWei` to the owner (`cancelJob` is owner-gated on-chain).
 pub async fn cancel_job_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     job_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip + budget zero (1 SSTORE) + the refund `transfer` + event.
-    sponsored_diamond_call(sender, fee_payer, encode_cancel_job(job_id), fee_token, 400_000).await
+    sponsored_diamond_call(sender, encode_cancel_job(job_id), 400_000).await
 }
 
 // --- OFF-CHAIN scheduling (GitHub store via the proxy) ----------------------

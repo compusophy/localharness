@@ -34,12 +34,10 @@ pub fn encode_submit_feedback(text: &str) -> Vec<u8> {
 /// silently out-of-gasses long notes (see CLAUDE.md feedback-gas gotcha).
 pub async fn submit_feedback_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     text: &str,
-    fee_token: &str,
 ) -> Result<String, String> {
     let gas = 1_500_000u128 + (text.len() as u128) * 9_000;
-    sponsored_diamond_call(sender, fee_payer, encode_submit_feedback(text), fee_token, gas).await
+    sponsored_diamond_call(sender, encode_submit_feedback(text), gas).await
 }
 
 /// Read recent `FeedbackSubmitted(address indexed sender, uint256

@@ -16,7 +16,7 @@
 
 use crate::tools::ClosureTool;
 
-use super::bounty::bounty_signers;
+use super::bounty::bounty_signer;
 use super::guild::format_lh;
 
 /// workRef = `bytes32(bountyId)` — the same coupling the facet's resolver uses
@@ -115,15 +115,13 @@ pub(crate) fn stake_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
             if stake_wei == 0 {
                 return Err(crate::error::Error::other("amount_lh must be greater than 0"));
             }
-            let (signer, fee_payer) = bounty_signers().await?;
+            let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::stake_validation_sponsored(
                 &signer,
-                &fee_payer,
                 work_ref_of_bounty(bounty_id),
                 subject,
                 valid,
                 stake_wei,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("stake_validation failed: {e}")))?;
@@ -192,14 +190,8 @@ pub(crate) fn challenge_validation_tool() -> std::sync::Arc<dyn crate::tools::To
                     validation_status_label(v.status)
                 )));
             }
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::challenge_validation_sponsored(
-                &signer,
-                &fee_payer,
-                validation_id,
-                v.stake_wei,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::challenge_validation_sponsored(&signer, validation_id, v.stake_wei)
             .await
             .map_err(|e| crate::error::Error::other(format!("challenge_validation failed: {e}")))?;
             Ok(serde_json::json!({
@@ -258,14 +250,8 @@ pub(crate) fn resolve_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool
                     )));
                 }
             };
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::resolve_validation_sponsored(
-                &signer,
-                &fee_payer,
-                validation_id,
-                validator_wins,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::resolve_validation_sponsored(&signer, validation_id, validator_wins)
             .await
             .map_err(|e| {
                 crate::error::Error::other(format!(
@@ -332,22 +318,12 @@ pub(crate) fn reclaim_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool
                     )));
                 }
             };
-            let (signer, fee_payer) = bounty_signers().await?;
+            let signer = bounty_signer().await?;
             let res = if unresolved {
-                crate::app::registry::reclaim_unresolved_sponsored(
-                    &signer,
-                    &fee_payer,
-                    validation_id,
-                    crate::app::registry::ALPHA_USD_ADDRESS(),
-                )
+                crate::app::registry::reclaim_unresolved_sponsored(&signer, validation_id)
                 .await
             } else {
-                crate::app::registry::reclaim_stake_sponsored(
-                    &signer,
-                    &fee_payer,
-                    validation_id,
-                    crate::app::registry::ALPHA_USD_ADDRESS(),
-                )
+                crate::app::registry::reclaim_stake_sponsored(&signer, validation_id)
                 .await
             };
             let tx_hash = res.map_err(|e| {

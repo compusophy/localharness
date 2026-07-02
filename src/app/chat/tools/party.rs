@@ -15,7 +15,7 @@
 
 use crate::tools::ClosureTool;
 
-use super::bounty::bounty_signers;
+use super::bounty::bounty_signer;
 use super::guild::format_lh;
 
 /// Resolve a `member` spec to its registry tokenId: a bare/`#`-prefixed number
@@ -153,15 +153,8 @@ pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 return Err(crate::error::Error::other("ttl_hours must be greater than 0"));
             }
             let ttl_secs = (ttl_hours * 3600.0) as u64;
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::form_party_sponsored(
-                &signer,
-                &fee_payer,
-                &member_ids,
-                &shares,
-                ttl_secs,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::form_party_sponsored(&signer, &member_ids, &shares, ttl_secs)
             .await
             .map_err(|e| crate::error::Error::other(format!("form_party failed: {e}")))?;
             // The new partyId = the creator's last entry in parties_of (best-effort).
@@ -211,13 +204,8 @@ pub(crate) fn join_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .get("party_id")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| crate::error::Error::other("party_id is required"))?;
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::join_party_sponsored(
-                &signer,
-                &fee_payer,
-                party_id,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::join_party_sponsored(&signer, party_id)
             .await
             .map_err(|e| crate::error::Error::other(format!("join_party failed: {e}")))?;
             Ok(serde_json::json!({
@@ -277,7 +265,7 @@ pub(crate) fn fund_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if amount_wei == 0 {
                 return Err(crate::error::Error::other("amount_lh must be greater than 0"));
             }
-            let (signer, fee_payer) = bounty_signers().await?;
+            let signer = bounty_signer().await?;
             // Escrow auto-bridge (feedback #63): a wallet shortfall covered by
             // unspent chat-meter credits rides as a withdrawCredits call in the
             // SAME atomic tx as approve+fundParty.
@@ -286,14 +274,7 @@ pub(crate) fn fund_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let bridge_wei = crate::app::chat::escrow_bridge_wei(&from_hex, amount_wei)
                 .await
                 .map_err(crate::error::Error::other)?;
-            let tx_hash = crate::app::registry::fund_party_sponsored_bridged(
-                &signer,
-                &fee_payer,
-                party_id,
-                amount_wei,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-                bridge_wei,
-            )
+            let tx_hash = crate::app::registry::fund_party_sponsored_bridged(&signer, party_id, amount_wei, bridge_wei)
             .await
             .map_err(|e| crate::error::Error::other(format!("fund_party failed: {e}")))?;
             Ok(serde_json::json!({
@@ -333,13 +314,8 @@ pub(crate) fn complete_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .get("party_id")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| crate::error::Error::other("party_id is required"))?;
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::complete_party_sponsored(
-                &signer,
-                &fee_payer,
-                party_id,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::complete_party_sponsored(&signer, party_id)
             .await
             .map_err(|e| crate::error::Error::other(format!("complete_party failed: {e}")))?;
             Ok(serde_json::json!({
@@ -378,13 +354,8 @@ pub(crate) fn disband_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .get("party_id")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| crate::error::Error::other("party_id is required"))?;
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::disband_party_sponsored(
-                &signer,
-                &fee_payer,
-                party_id,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::disband_party_sponsored(&signer, party_id)
             .await
             .map_err(|e| crate::error::Error::other(format!("disband_party failed: {e}")))?;
             Ok(serde_json::json!({

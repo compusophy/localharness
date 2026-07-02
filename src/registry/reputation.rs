@@ -40,11 +40,9 @@ pub(crate) fn encode_attest(subject_token_id: u64, rating: u8, work_ref: &[u8; 3
 /// self-attestation, or a duplicate `(attester, subject, workRef)`.
 pub async fn attest_sponsored(
     attester_signer: &SigningKey,
-    fee_payer: &SigningKey,
     subject_token_id: u64,
     rating: u8,
     work_ref: [u8; 32],
-    fee_token: &str,
 ) -> Result<String, String> {
     // One struct push (attester/rating/workRef) into the subject's enumerable
     // list + two counter SSTOREs (count, sum) + an event. The FIRST attestation to a
@@ -52,9 +50,7 @@ pub async fn attest_sponsored(
     // never-touched) so 600k OOG'd live — bump to 2M (over-budget is free, billed on USED).
     sponsored_diamond_call(
         attester_signer,
-        fee_payer,
         encode_attest(subject_token_id, rating, &work_ref),
-        fee_token,
         2_000_000,
     )
     .await

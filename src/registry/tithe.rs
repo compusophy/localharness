@@ -68,12 +68,10 @@ pub fn set_tithe_call(guild_id: u64, bps: u64) -> Result<crate::tempo_tx::TempoC
 /// `setTithe`'d; sponsored, so it holds no gas token.
 pub async fn revoke_tithe_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
-    fee_token: &str,
 ) -> Result<String, String> {
     // A single `delete` of the config struct + event. 400k mirrors the
     // bounty-claim / set-role budget (sponsor billed on gas USED).
-    sponsored_diamond_call(sender, fee_payer, encode_revoke_tithe(), fee_token, 400_000).await
+    sponsored_diamond_call(sender, encode_revoke_tithe(), 400_000).await
 }
 
 /// Trigger a consented tithe via a sponsored Tempo tx (`collectTithe(account)`).
@@ -83,9 +81,7 @@ pub async fn revoke_tithe_sponsored(
 /// is protected because collect reads only its stored config.
 pub async fn collect_tithe_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     account_hex: &str,
-    fee_token: &str,
 ) -> Result<String, String> {
     let account = parse_eth_address(account_hex)?;
     // balanceOf + allowance reads + the guild-ledger SSTORE + a `transferFrom`
@@ -94,9 +90,7 @@ pub async fn collect_tithe_sponsored(
     // the cold-balance pull with headroom; sponsor billed on gas USED.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_collect_tithe(&account),
-        fee_token,
         1_000_000,
     )
     .await

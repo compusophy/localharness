@@ -185,13 +185,11 @@ pub(crate) fn encode_submit_result(bounty_id: u64, result: &[u8]) -> Vec<u8> {
 #[allow(clippy::too_many_arguments)]
 pub async fn post_bounty_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     task: &[u8],
     reward_wei: u128,
     ttl_secs: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
-    post_bounty_sponsored_bridged(sender, fee_payer, task, reward_wei, ttl_secs, fee_token, 0)
+    post_bounty_sponsored_bridged(sender, task, reward_wei, ttl_secs, 0)
         .await
 }
 
@@ -202,11 +200,9 @@ pub async fn post_bounty_sponsored(
 #[allow(clippy::too_many_arguments)]
 pub async fn post_bounty_sponsored_bridged(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     task: &[u8],
     reward_wei: u128,
     ttl_secs: u64,
-    fee_token: &str,
     bridge_wei: u128,
 ) -> Result<String, String> {
     // approve (~46k) + postBounty (transferFrom pull + the bounty struct's cold
@@ -218,10 +214,8 @@ pub async fn post_bounty_sponsored_bridged(
     let gas = 3_500_000 + (task.len() as u128) * 9_000;
     sponsored_escrow_diamond_call_bridged(
         sender,
-        fee_payer,
         reward_wei,
         encode_post_bounty(task, reward_wei, ttl_secs),
-        fee_token,
         gas,
         bridge_wei,
     )
@@ -235,17 +229,13 @@ pub async fn post_bounty_sponsored_bridged(
 /// Claimed and records the claimant.
 pub async fn claim_bounty_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     bounty_id: u64,
     claimant_token_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip + claimant SSTORE + event. 400k mirrors the cancelJob budget.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_claim_bounty(bounty_id, claimant_token_id),
-        fee_token,
         400_000,
     )
     .await
@@ -256,19 +246,15 @@ pub async fn claim_bounty_sponsored(
 /// to Submitted, awaiting the poster's `acceptResult`.
 pub async fn submit_result_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     bounty_id: u64,
     result: &[u8],
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip + the cold `result` bytes SSTOREs (~7.6k/byte) + event. Scale
     // the same 1.2M base + 9k/byte the on-chain `bytes` writes use elsewhere.
     let gas = 1_200_000 + (result.len() as u128) * 9_000;
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_submit_result(bounty_id, result),
-        fee_token,
         gas,
     )
     .await
@@ -279,17 +265,13 @@ pub async fn submit_result_sponsored(
 /// claimant's TBA and flips the status to Paid (CEI). Returns the tx hash.
 pub async fn accept_result_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     bounty_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip (1 SSTORE) + the payout `transfer` (cold token balances) +
     // event. Mirror the redeem/accept-invite payout budget for headroom.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("acceptResult(uint256)", bounty_id),
-        fee_token,
         2_000_000,
     )
     .await
@@ -300,16 +282,12 @@ pub async fn accept_result_sponsored(
 /// and flips the status to Cancelled (allowed before payout).
 pub async fn cancel_bounty_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     bounty_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip + the refund `transfer` + event.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("cancelBounty(uint256)", bounty_id),
-        fee_token,
         600_000,
     )
     .await
@@ -320,16 +298,12 @@ pub async fn cancel_bounty_sponsored(
 /// TTL has elapsed without an accepted result, flipping the status to Reclaimed.
 pub async fn reclaim_expired_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     bounty_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip + the refund `transfer` + event.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("reclaimExpired(uint256)", bounty_id),
-        fee_token,
         600_000,
     )
     .await

@@ -426,16 +426,10 @@ async fn run_claim_name_op(name: String) -> Result<ReplyFields, String> {
 async fn run_claim_name(name: &str) -> Result<(String, String), String> {
     let (signer, address) = wallet_handle()?;
     let address_hex = bytes_to_hex_str(&address);
-    // Sponsored path: sender (user's wallet) holds zero, fee_payer
-    // (bundle's sponsor) pays gas in AlphaUSD. No faucet drip
-    // required — users get on-chain in one click with no native gas.
-    let fee_payer = super::sponsor::signer()?;
-    let tx_hash = crate::registry::claim_and_maybe_set_main_sponsored(
-        &signer,
-        &fee_payer,
-        name,
-        crate::registry::ALPHA_USD_ADDRESS(),
-    )
+    // Sponsored path: sender (user's wallet) holds zero; the sponsor (testnet
+    // key / mainnet relay, resolved inside `registry::`) pays the gas. No
+    // faucet drip required — on-chain in one click with no native gas.
+    let tx_hash = crate::registry::claim_and_maybe_set_main_sponsored(&signer, name)
     .await?;
     Ok((address_hex, tx_hash))
 }

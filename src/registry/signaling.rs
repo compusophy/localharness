@@ -78,20 +78,16 @@ pub(crate) fn encode_leave(
 /// can edit the roster — mirrors `announce_sponsored`.
 pub async fn leave_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     owner_key: &SigningKey,
     owner: &[u8; 20],
     topic: &[u8; 32],
     ephemeral: &[u8; 20],
-    fee_token: &str,
 ) -> Result<String, String> {
     let digest = leave_digest(topic, ephemeral);
     let sig = crate::wallet::sign_hash(owner_key, &digest); // low-s r‖s‖v, v∈{27,28}
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_leave(topic, owner, ephemeral, &sig),
-        fee_token,
         1_200_000,
     )
     .await
@@ -131,22 +127,18 @@ pub(crate) fn encode_announce(
 #[allow(clippy::too_many_arguments)]
 pub async fn announce_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     owner_key: &SigningKey,
     owner: &[u8; 20],
     topic: &[u8; 32],
     ephemeral: &[u8; 20],
     pubkey: &[u8],
-    fee_token: &str,
 ) -> Result<String, String> {
     let digest = announce_digest(topic, ephemeral, pubkey);
     let sig = crate::wallet::sign_hash(owner_key, &digest); // low-s r‖s‖v, v∈{27,28}
     let gas = 1_200_000u128 + (pubkey.len() as u128) * 9_000;
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_announce(topic, owner, ephemeral, pubkey, &sig),
-        fee_token,
         gas,
     )
     .await
@@ -164,13 +156,11 @@ pub(crate) fn encode_post_signal(to: &[u8; 20], blob: &[u8]) -> Vec<u8> {
 /// `to`'s inbox (sponsored).
 pub async fn post_signal_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     to: &[u8; 20],
     blob: &[u8],
-    fee_token: &str,
 ) -> Result<String, String> {
     let gas = 1_200_000u128 + (blob.len() as u128) * 9_000;
-    sponsored_diamond_call(sender, fee_payer, encode_post_signal(to, blob), fee_token, gas).await
+    sponsored_diamond_call(sender, encode_post_signal(to, blob), gas).await
 }
 
 /// One discovered/received entry. `peersOf` → (ephemeral, ts, pubkey);

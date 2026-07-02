@@ -88,12 +88,10 @@ pub(crate) fn encode_stake_validation(
 /// workRef). Read the new id back from `validation_count()` after mining.
 pub async fn stake_validation_sponsored(
     validator_signer: &SigningKey,
-    fee_payer: &SigningKey,
     work_ref: [u8; 32],
     subject_token_id: u64,
     valid: bool,
     stake_wei: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
     // approve (~46k) + stakeValidation: the transferFrom pull + a 5-slot cold
     // record + dedup flag + two enumerable index pushes + two counters + event.
@@ -102,10 +100,8 @@ pub async fn stake_validation_sponsored(
     // scheduleJob) use — the sponsor is billed on gas USED, over-budget is free.
     sponsored_escrow_diamond_call(
         validator_signer,
-        fee_payer,
         stake_wei,
         encode_stake_validation(&work_ref, subject_token_id, valid, stake_wei),
-        fee_token,
         3_500_000,
     )
     .await
@@ -119,20 +115,16 @@ pub async fn stake_validation_sponsored(
 /// and `now <= challengeDeadline`, and never by the validator themself.
 pub async fn challenge_validation_sponsored(
     challenger_signer: &SigningKey,
-    fee_payer: &SigningKey,
     validation_id: u64,
     stake_wei: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
     // approve + status flip + challenger/deadline SSTOREs + the transferFrom
     // pull + event. The record's slots are warm-ish but the token balances are
     // cold; 1.5M gives the same headroom the deposit-shaped escrows use.
     sponsored_escrow_diamond_call(
         challenger_signer,
-        fee_payer,
         stake_wei,
         call_uint_bytes("challengeValidation(uint256)", validation_id),
-        fee_token,
         1_500_000,
     )
     .await
@@ -144,10 +136,8 @@ pub async fn challenge_validation_sponsored(
 /// staked verdict; the winner is paid BOTH stakes.
 pub async fn resolve_validation_sponsored(
     resolver_signer: &SigningKey,
-    fee_payer: &SigningKey,
     validation_id: u64,
     validator_wins: bool,
-    fee_token: &str,
 ) -> Result<String, String> {
     let mut input = Vec::with_capacity(4 + 2 * 32);
     input.extend_from_slice(&selector("resolveValidation(uint256,bool)"));
@@ -155,7 +145,7 @@ pub async fn resolve_validation_sponsored(
     input.extend_from_slice(&u256_be(validator_wins as u128));
     // status flip + two stakedOf decrements + the payout `transfer` (cold token
     // balances) + event — mirror the acceptResult payout budget.
-    sponsored_diamond_call(resolver_signer, fee_payer, input, fee_token, 2_000_000).await
+    sponsored_diamond_call(resolver_signer, input, 2_000_000).await
 }
 
 /// Reclaim an UNCHALLENGED validation's stake after the challenge window, via
@@ -163,16 +153,12 @@ pub async fn resolve_validation_sponsored(
 /// VALIDATOR regardless of who calls.
 pub async fn reclaim_stake_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     validation_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip + accounting decrements + the refund `transfer` + event.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("reclaimStake(uint256)", validation_id),
-        fee_token,
         600_000,
     )
     .await
@@ -183,16 +169,12 @@ pub async fn reclaim_stake_sponsored(
 /// draw). Permissionless poke; the AWOL-resolver hard stop.
 pub async fn reclaim_unresolved_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     validation_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip + accounting + TWO refund `transfer`s + event.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("reclaimUnresolved(uint256)", validation_id),
-        fee_token,
         800_000,
     )
     .await

@@ -70,13 +70,11 @@ pub(crate) fn encode_reclaim_invite(code_hash: &[u8; 32]) -> Vec<u8> {
 #[allow(clippy::too_many_arguments)]
 pub async fn create_invite_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     code_hash: [u8; 32],
     amount_wei: u128,
     ttl_secs: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
-    create_invite_sponsored_bridged(sender, fee_payer, code_hash, amount_wei, ttl_secs, fee_token, 0)
+    create_invite_sponsored_bridged(sender, code_hash, amount_wei, ttl_secs, 0)
         .await
 }
 
@@ -87,11 +85,9 @@ pub async fn create_invite_sponsored(
 #[allow(clippy::too_many_arguments)]
 pub async fn create_invite_sponsored_bridged(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     code_hash: [u8; 32],
     amount_wei: u128,
     ttl_secs: u64,
-    fee_token: &str,
     bridge_wei: u128,
 ) -> Result<String, String> {
     // approve (~46k) + createInvite (transferFrom pull + the invite struct's TWO
@@ -101,10 +97,8 @@ pub async fn create_invite_sponsored_bridged(
     // not the limit, so over-budgeting is free.
     sponsored_escrow_diamond_call_bridged(
         sender,
-        fee_payer,
         amount_wei,
         encode_create_invite(&code_hash, amount_wei, ttl_secs),
-        fee_token,
         2_500_000,
         bridge_wei,
     )
@@ -118,14 +112,12 @@ pub async fn create_invite_sponsored_bridged(
 /// the tx hash once mined.
 pub async fn accept_invite_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     code: &str,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip (1 SSTORE) + the payout `transfer` + `escrowedOf` decrement +
     // event — cheaper than create. Mirror redeem's mint-path budget for
     // headroom (cold token-balance SSTOREs on the payout).
-    sponsored_diamond_call(sender, fee_payer, encode_accept_invite(code), fee_token, 2_000_000)
+    sponsored_diamond_call(sender, encode_accept_invite(code), 2_000_000)
         .await
 }
 
@@ -136,16 +128,12 @@ pub async fn accept_invite_sponsored(
 /// Returns the tx hash once mined.
 pub async fn reclaim_invite_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     code_hash: [u8; 32],
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip + the refund `transfer` + `escrowedOf` decrement + event.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_reclaim_invite(&code_hash),
-        fee_token,
         600_000,
     )
     .await

@@ -31,6 +31,7 @@ mod rpc;
 mod schedule;
 mod sessionroom;
 mod signaling;
+pub mod sponsor;
 mod sponsor_relay;
 mod subscribe;
 mod tba;

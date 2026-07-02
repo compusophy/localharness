@@ -42,29 +42,23 @@ pub(crate) fn encode_clear_room(room_id: u64) -> Vec<u8> {
 /// by other accounts creating rooms concurrently).
 pub async fn create_room_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
-    fee_token: &str,
 ) -> Result<String, String> {
     // `cast estimate createRoom()` on the live diamond = ~1.31M gas (cold
     // SSTOREs + diamond fallback routing), NOT the ~225k a bare foundry call
     // shows. Plus ~275k AA/sponsor overhead → 2M leaves headroom (CLAUDE.md:
     // cast estimate, never guess — a 1.2M cap out-of-gassed the inner call).
-    sponsored_diamond_call(sender, fee_payer, encode_create_room(), fee_token, 2_000_000).await
+    sponsored_diamond_call(sender, encode_create_room(), 2_000_000).await
 }
 
 /// Enroll `member` as a writer (creator-only, sponsored).
 pub async fn room_add_member_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     room_id: u64,
     member: &[u8; 20],
-    fee_token: &str,
 ) -> Result<String, String> {
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_room_add_member(room_id, member),
-        fee_token,
         1_500_000,
     )
     .await
@@ -74,25 +68,21 @@ pub async fn room_add_member_sponsored(
 /// `post_signal_sponsored`.
 pub async fn append_op_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     room_id: u64,
     blob: &[u8],
-    fee_token: &str,
 ) -> Result<String, String> {
     // Like createRoom, the diamond-routed write base is ~1.3M live; blob bytes
     // add cold-SSTORE cost on top (length-scaled), matching post_signal's shape.
     let gas = 2_000_000u128 + (blob.len() as u128) * 9_000;
-    sponsored_diamond_call(sender, fee_payer, encode_append_op(room_id, blob), fee_token, gas).await
+    sponsored_diamond_call(sender, encode_append_op(room_id, blob), gas).await
 }
 
 /// Clear the room log + bump its epoch (creator-only, sponsored).
 pub async fn clear_room_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     room_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
-    sponsored_diamond_call(sender, fee_payer, encode_clear_room(room_id), fee_token, 1_500_000).await
+    sponsored_diamond_call(sender, encode_clear_room(room_id), 1_500_000).await
 }
 
 // ---- reads (free) ------------------------------------------------------------

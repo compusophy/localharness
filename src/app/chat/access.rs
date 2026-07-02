@@ -203,16 +203,7 @@ pub(crate) async fn ensure_credit_meter() {
     if wallet == 0 {
         return; // nothing to fund the meter with (already moved, or empty)
     }
-    let Ok(fee_payer) = crate::app::sponsor::signer() else {
-        return;
-    };
-    let _ = crate::app::registry::deposit_credits_sponsored(
-        &signer,
-        &fee_payer,
-        wallet,
-        crate::app::registry::ALPHA_USD_ADDRESS(),
-    )
-    .await;
+    let _ = crate::app::registry::deposit_credits_sponsored(&signer, wallet).await;
 }
 
 /// Read the api key with graceful fallback. Tries the live `#key`

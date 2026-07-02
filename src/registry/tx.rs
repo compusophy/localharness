@@ -349,17 +349,39 @@ pub(crate) fn parse_eth_address(hex_str: &str) -> Result<[u8; 20], String> {
 //
 // Every `*_sponsored` wrapper repeated the same parse-address → TempoCall →
 // submit_tempo_sponsored skeleton; the wrappers now keep ONLY what differs
-// per facet call: the calldata encoding and the gas budget.
+// per facet call: the calldata encoding and the gas budget. The fee side
+// (fee_payer + fee_token) is NOT a parameter: it is resolved HERE from
+// global state — `sponsor::fee_payer()` (testnet key; unused placeholder on
+// mainnet, where the relay signs) + the active chain's fee_token — because
+// every caller passed exactly that pair. Custom sponsors go through the
+// explicit [`submit_tempo_sponsored`] / [`create_sponsored`] primitives.
+
+/// The resolved default `(fee_payer, fee_token)` pair every sponsored
+/// skeleton submits with.
+pub(crate) fn default_fee() -> Result<(SigningKey, &'static str), String> {
+    Ok((super::sponsor::fee_payer()?, ALPHA_USD_ADDRESS()))
+}
+
+/// Sponsored submit of a prepared multi-call batch with the default fee pair —
+/// the batch-shaped sibling of [`sponsored_call_to`] (TBA execute batches,
+/// remove+unlink pairs, multi-burn releases; public for the CLI's hand-built
+/// setMetadata/diamondCut batches). Custom sponsors → [`submit_tempo_sponsored`].
+pub async fn sponsored_batch(
+    sender: &SigningKey,
+    calls: Vec<crate::tempo_tx::TempoCall>,
+    gas_limit: u128,
+) -> Result<String, String> {
+    let (fee_payer, fee_token) = default_fee()?;
+    submit_tempo_sponsored(sender, &fee_payer, calls, fee_token, gas_limit).await
+}
 
 /// ONE sponsored Tempo call to `to_hex` (zero value). The shared body of
 /// every single-call `*_sponsored` wrapper; non-diamond targets ($LH token
 /// approve/transfer, TBA execute) pass their own address.
 pub(crate) async fn sponsored_call_to(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     to_hex: &str,
     input: Vec<u8>,
-    fee_token: &str,
     gas_limit: u128,
 ) -> Result<String, String> {
     let call = crate::tempo_tx::TempoCall {
@@ -367,7 +389,8 @@ pub(crate) async fn sponsored_call_to(
         value_wei: 0,
         input,
     };
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas_limit).await
+    let (fee_payer, fee_token) = default_fee()?;
+    submit_tempo_sponsored(sender, &fee_payer, vec![call], fee_token, gas_limit).await
 }
 
 /// ONE sponsored call to the registry diamond — the most common wrapper
@@ -375,12 +398,10 @@ pub(crate) async fn sponsored_call_to(
 /// announce / submitFeedback / …).
 pub(crate) async fn sponsored_diamond_call(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     input: Vec<u8>,
-    fee_token: &str,
     gas_limit: u128,
 ) -> Result<String, String> {
-    sponsored_call_to(sender, fee_payer, REGISTRY_ADDRESS(), input, fee_token, gas_limit).await
+    sponsored_call_to(sender, REGISTRY_ADDRESS(), input, gas_limit).await
 }
 
 /// `$LH.approve(diamond, amount)` + a diamond call batched in ONE sponsored
@@ -389,14 +410,11 @@ pub(crate) async fn sponsored_diamond_call(
 /// register/registerMain/openSession paths.
 pub(crate) async fn sponsored_escrow_diamond_call(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     amount_wei: u128,
     input: Vec<u8>,
-    fee_token: &str,
     gas_limit: u128,
 ) -> Result<String, String> {
-    sponsored_escrow_diamond_call_bridged(sender, fee_payer, amount_wei, input, fee_token, gas_limit, 0)
-        .await
+    sponsored_escrow_diamond_call_bridged(sender, amount_wei, input, gas_limit, 0).await
 }
 
 /// [`sponsored_escrow_diamond_call`] with the METER AUTO-BRIDGE: when
@@ -406,19 +424,17 @@ pub(crate) async fn sponsored_escrow_diamond_call(
 /// approve→escrow pair runs — so "1057 $LH in the meter but the wallet is
 /// short" no longer blocks an escrow (on-chain feedback #63). Gas is bumped
 /// 150k when bridging (the same rider budget `send_lh` uses).
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn sponsored_escrow_diamond_call_bridged(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     amount_wei: u128,
     input: Vec<u8>,
-    fee_token: &str,
     gas_limit: u128,
     bridge_wei: u128,
 ) -> Result<String, String> {
     let calls = escrow_call_batch(amount_wei, input, bridge_wei)?;
     let gas = if bridge_wei > 0 { gas_limit + 150_000 } else { gas_limit };
-    submit_tempo_sponsored(sender, fee_payer, calls, fee_token, gas).await
+    let (fee_payer, fee_token) = default_fee()?;
+    submit_tempo_sponsored(sender, &fee_payer, calls, fee_token, gas).await
 }
 
 /// Build the calls array for a (possibly meter-bridged) escrow tx, in EXACT

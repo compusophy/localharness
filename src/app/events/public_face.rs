@@ -158,13 +158,6 @@ pub(super) async fn run_set_public_face(choice: &str) {
     };
     let result = if is_signer {
         let (signer, _) = local.unwrap();
-        let fee_payer = match crate::app::sponsor::signer() {
-            Ok(s) => s,
-            Err(e) => {
-                set_err(&e);
-                return;
-            }
-        };
         let token_id = match crate::app::registry::tba_token_id_of(&on_chain_owner).await {
             Ok(t) => t,
             Err(e) => {
@@ -174,15 +167,7 @@ pub(super) async fn run_set_public_face(choice: &str) {
         };
         let targets: Vec<([u8; 20], Vec<u8>)> =
             calls.iter().map(|c| (registry_addr, c.input.clone())).collect();
-        crate::app::registry::tba_execute_batch_sponsored(
-            &signer,
-            &fee_payer,
-            token_id,
-            &on_chain_owner,
-            &targets,
-            crate::app::registry::ALPHA_USD_ADDRESS(),
-            gas + 800_000,
-        )
+        crate::app::registry::tba_execute_batch_sponsored(&signer, token_id, &on_chain_owner, &targets, gas + 800_000)
         .await
     } else if let Some(owner_hex) =
         verified_eoa.filter(|a| a.eq_ignore_ascii_case(&on_chain_owner))

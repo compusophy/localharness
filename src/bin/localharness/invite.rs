@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_duration, fmt_lh, key_home_dir, load_signer, load_signer_and_sponsor, registry, wallet, INVITE_DEFAULT_AMOUNT_WEI, INVITE_DEFAULT_TTL_SECS, INVITE_MAX_AMOUNT_WEI, INVITE_MAX_TTL_SECS, INVITE_MIN_AMOUNT_WEI, INVITE_MIN_TTL_SECS};
+use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_duration, fmt_lh, key_home_dir, load_signer, registry, wallet, INVITE_DEFAULT_AMOUNT_WEI, INVITE_DEFAULT_TTL_SECS, INVITE_MAX_AMOUNT_WEI, INVITE_MAX_TTL_SECS, INVITE_MIN_AMOUNT_WEI, INVITE_MIN_TTL_SECS};
 
 pub(crate) const INVITE_USAGE: &str = "\
 usage: localharness invite <create|accept|reclaim|list> ...
@@ -279,7 +279,7 @@ pub(crate) async fn invite_create(caller: Option<&str>, rest: &[String]) -> i32 
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -297,14 +297,7 @@ pub(crate) async fn invite_create(caller: Option<&str>, rest: &[String]) -> i32 
         fmt_lh(amount_wei),
         fmt_duration(ttl_secs)
     );
-    match registry::create_invite_sponsored(
-        &signer,
-        &sponsor,
-        code_hash,
-        amount_wei,
-        ttl_secs,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::create_invite_sponsored(&signer, code_hash, amount_wei, ttl_secs)
     .await
     {
         Ok(tx) => {
@@ -387,11 +380,11 @@ pub(crate) async fn invite_accept(caller: Option<&str>, code: &str) -> i32 {
             return 1;
         }
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    match registry::accept_invite_sponsored(&signer, &sponsor, code, registry::ALPHA_USD_ADDRESS()).await {
+    match registry::accept_invite_sponsored(&signer, code).await {
         Ok(tx) => {
             println!("✓ invite accepted — the escrowed $LH is now in your wallet  tx: {tx}");
             0
@@ -412,12 +405,12 @@ pub(crate) async fn invite_reclaim(caller: Option<&str>, code: &str) -> i32 {
         eprintln!("invite reclaim: empty code");
         return 2;
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     let code_hash = registry::invite_code_hash(code);
-    match registry::reclaim_invite_sponsored(&signer, &sponsor, code_hash, registry::ALPHA_USD_ADDRESS()).await {
+    match registry::reclaim_invite_sponsored(&signer, code_hash).await {
         Ok(tx) => {
             println!("✓ invite reclaimed — the escrowed $LH is refunded to its funder  tx: {tx}");
             0

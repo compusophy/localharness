@@ -235,13 +235,7 @@ fn redeem_from(input_id: &'static str, msg_id: &'static str) {
             let (signer, _) = crate::app::chat::credit_signer()
                 .await
                 .ok_or_else(|| "no identity".to_string())?;
-            let fee_payer = crate::app::sponsor::signer()?;
-            crate::app::registry::redeem_sponsored(
-                &signer,
-                &fee_payer,
-                &code,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            crate::app::registry::redeem_sponsored(&signer, &code)
             .await
         }
         .await;
@@ -319,7 +313,6 @@ pub(super) fn redeem_invite_onboard_pressed() {
             .await
             .map_err(|_| "identity setup timed out — reload and try again".to_string())?
             .ok_or_else(|| "no identity".to_string())?;
-            let fee_payer = crate::app::sponsor::signer()?;
             crate::app::debuglog::log("onboard: identity ready — sending sponsored claim");
             dom::swap_inner(
                 "invite-onboard-msg",
@@ -327,20 +320,10 @@ pub(super) fn redeem_invite_onboard_pressed() {
             );
             let send = async {
                 if is_invite {
-                    crate::app::registry::accept_invite_sponsored(
-                        &signer,
-                        &fee_payer,
-                        &code,
-                        crate::app::registry::ALPHA_USD_ADDRESS(),
-                    )
+                    crate::app::registry::accept_invite_sponsored(&signer, &code)
                     .await
                 } else {
-                    crate::app::registry::redeem_sponsored(
-                        &signer,
-                        &fee_payer,
-                        &code,
-                        crate::app::registry::ALPHA_USD_ADDRESS(),
-                    )
+                    crate::app::registry::redeem_sponsored(&signer, &code)
                     .await
                 }
             };
@@ -778,9 +761,6 @@ pub(crate) async fn try_redeem_pending_invite(allow_generate: bool) {
     let Some((signer, _)) = crate::app::chat::credit_signer().await else {
         return;
     };
-    let Ok(fee_payer) = crate::app::sponsor::signer() else {
-        return;
-    };
     // Commit: clear the pending code first so a concurrent repaint or a
     // refresh can't fire a second (double-spend) accept/redeem of the same
     // code.
@@ -795,20 +775,10 @@ pub(crate) async fn try_redeem_pending_invite(allow_generate: bool) {
     );
     let claim = async {
         if is_invite {
-            crate::app::registry::accept_invite_sponsored(
-                &signer,
-                &fee_payer,
-                &code,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            crate::app::registry::accept_invite_sponsored(&signer, &code)
             .await
         } else {
-            crate::app::registry::redeem_sponsored(
-                &signer,
-                &fee_payer,
-                &code,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            crate::app::registry::redeem_sponsored(&signer, &code)
             .await
         }
     };
@@ -916,14 +886,11 @@ pub(super) fn create_invite_pressed() {
             let from_hex = crate::encoding::bytes_to_hex_str(&addr);
             let bridge_wei =
                 crate::app::chat::escrow_bridge_wei(&from_hex, amount_wei).await?;
-            let fee_payer = crate::app::sponsor::signer()?;
             crate::app::registry::create_invite_sponsored_bridged(
                 &signer,
-                &fee_payer,
                 code_hash,
                 amount_wei,
                 INVITE_DEFAULT_TTL_SECS,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
                 bridge_wei,
             )
             .await

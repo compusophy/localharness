@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_lh, load_sponsor, non_blank, parse_address, registry, report_call_error, resolve_caller_key, run_agent_turn, take_as_flag, wallet};
+use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_lh, non_blank, parse_address, registry, report_call_error, resolve_caller_key, run_agent_turn, take_as_flag, wallet};
 
 // ---- MCP server ----------------------------------------------------------
 //
@@ -224,14 +224,7 @@ pub(crate) async fn ensure_diamond_allowance(
         Ok(allowance) if allowance >= value_wei => Ok(()),
         Ok(_) => {
             println!("approving the diamond to spend $LH (one-time) …");
-            let sponsor = load_sponsor()?;
-            match registry::approve_lh_sponsored(
-                signer,
-                &sponsor,
-                registry::REGISTRY_ADDRESS(),
-                u128::MAX,
-                registry::ALPHA_USD_ADDRESS(),
-            )
+            match registry::approve_lh_sponsored(signer, registry::REGISTRY_ADDRESS(), u128::MAX)
             .await
             {
                 Ok(tx) => {

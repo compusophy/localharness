@@ -10,7 +10,7 @@
 use crate::app::chat::access::credit_address_existing;
 use crate::tools::ClosureTool;
 
-use super::bounty::bounty_signers;
+use super::bounty::bounty_signer;
 
 /// `create_guild(name)` — found an on-chain guild (members + roles + a pooled
 /// `$LH` treasury); the caller becomes its founding Admin. Reuses
@@ -39,13 +39,8 @@ pub(crate) fn create_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if name.is_empty() {
                 return Err(crate::error::Error::other("name cannot be empty"));
             }
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::create_guild_sponsored(
-                &signer,
-                &fee_payer,
-                name,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::create_guild_sponsored(&signer, name)
             .await
             .map_err(|e| crate::error::Error::other(format!("create_guild failed: {e}")))?;
             // New guild id = the caller's last entry in guilds_of (best-effort).
@@ -114,14 +109,8 @@ pub(crate) fn invite_to_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .trim()
                 .to_string();
             let member_hex = resolve_account(&member_arg).await?;
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::invite_to_guild_sponsored(
-                &signer,
-                &fee_payer,
-                guild_id,
-                &member_hex,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::invite_to_guild_sponsored(&signer, guild_id, &member_hex)
             .await
             .map_err(|e| crate::error::Error::other(format!("invite_to_guild failed: {e}")))?;
             Ok(serde_json::json!({
@@ -180,7 +169,7 @@ pub(crate) fn fund_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if amount_wei == 0 {
                 return Err(crate::error::Error::other("amount_lh must be greater than 0"));
             }
-            let (signer, fee_payer) = bounty_signers().await?;
+            let signer = bounty_signer().await?;
             // Escrow auto-bridge (feedback #63): a wallet shortfall covered by
             // unspent chat-meter credits rides as a withdrawCredits call in the
             // SAME atomic tx as approve+fundGuild.
@@ -189,14 +178,7 @@ pub(crate) fn fund_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let bridge_wei = crate::app::chat::escrow_bridge_wei(&from_hex, amount_wei)
                 .await
                 .map_err(crate::error::Error::other)?;
-            let tx_hash = crate::app::registry::fund_guild_sponsored_bridged(
-                &signer,
-                &fee_payer,
-                guild_id,
-                amount_wei,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-                bridge_wei,
-            )
+            let tx_hash = crate::app::registry::fund_guild_sponsored_bridged(&signer, guild_id, amount_wei, bridge_wei)
             .await
             .map_err(|e| crate::error::Error::other(format!("fund_guild failed: {e}")))?;
             Ok(serde_json::json!({
@@ -294,16 +276,8 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 ));
             }
             let to_hex = resolve_account(&to_arg).await?;
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::spend_treasury_sponsored(
-                &signer,
-                &fee_payer,
-                guild_id,
-                &to_hex,
-                amount_wei,
-                memo.as_bytes(),
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::spend_treasury_sponsored(&signer, guild_id, &to_hex, amount_wei, memo.as_bytes())
             .await
             .map_err(|e| crate::error::Error::other(format!("spend_treasury failed: {e}")))?;
             Ok(serde_json::json!({
@@ -389,15 +363,8 @@ pub(crate) fn set_role_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 ));
             }
             let member_hex = resolve_account(&member_arg).await?;
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::set_role_sponsored(
-                &signer,
-                &fee_payer,
-                guild_id,
-                &member_hex,
-                role.as_u8(),
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::set_role_sponsored(&signer, guild_id, &member_hex, role.as_u8())
             .await
             .map_err(|e| crate::error::Error::other(format!("set_role failed: {e}")))?;
             Ok(serde_json::json!({

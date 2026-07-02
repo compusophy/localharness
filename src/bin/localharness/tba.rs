@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, decode_hex_arg, fmt_lh, load_signer, load_signer_and_sponsor, registry, resolve_own_token_id, take_data_flag, take_tba_flag, wallet};
+use crate::{bytes_to_hex_str, decode_hex_arg, fmt_lh, load_signer, registry, resolve_own_token_id, take_data_flag, take_tba_flag, wallet};
 
 // ---- tba (token-bound account: make YOUR agent's wallet EXECUTE a call) ------
 //
@@ -121,7 +121,7 @@ pub(crate) async fn tba_show(caller: Option<&str>, name: Option<&str>) -> i32 {
 /// via `createTokenBoundAccount` (idempotent; a no-op if already deployed).
 /// Needed before the TBA can `execute` / hold signers. Sponsored gas.
 pub(crate) async fn tba_deploy(caller: Option<&str>, name: Option<&str>) -> i32 {
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -148,12 +148,7 @@ pub(crate) async fn tba_deploy(caller: Option<&str>, name: Option<&str>) -> i32 
         return 0;
     }
     println!("deploying {label}'s TBA {tba_addr} …");
-    match registry::create_token_bound_account_sponsored(
-        &signer,
-        &sponsor,
-        token_id,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::create_token_bound_account_sponsored(&signer, token_id)
     .await
     {
         Ok(tx) => {
@@ -250,7 +245,7 @@ pub(crate) async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
         None => None,
     };
 
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -341,12 +336,7 @@ pub(crate) async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
         match exec_token_id {
             Some(token_id) => {
                 println!("{tba_label} TBA {tba_addr} isn't deployed yet — deploying first …");
-                if let Err(e) = registry::create_token_bound_account_sponsored(
-                    &signer,
-                    &sponsor,
-                    token_id,
-                    registry::ALPHA_USD_ADDRESS(),
-                )
+                if let Err(e) = registry::create_token_bound_account_sponsored(&signer, token_id)
                 .await
                 {
                     eprintln!("tba exec: TBA deploy failed: {e}");
@@ -372,28 +362,13 @@ pub(crate) async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
                 fmt_lh(amount_wei),
                 bytes.len()
             );
-            registry::tba_execute_call_sponsored(
-                &signer,
-                &sponsor,
-                &tba_addr,
-                &to_hex,
-                amount_wei,
-                bytes,
-                registry::ALPHA_USD_ADDRESS(),
-            )
+            registry::tba_execute_call_sponsored(&signer, &tba_addr, &to_hex, amount_wei, bytes)
             .await
         }
         // Plain $LH transfer: execute($LH, 0, transfer(to, amount)).
         None => {
             println!("{tba_label} TBA {tba_addr} → send {} $LH to {to_hex} …", fmt_lh(amount_wei));
-            registry::tba_send_lh_sponsored(
-                &signer,
-                &sponsor,
-                &tba_addr,
-                &to_hex,
-                amount_wei,
-                registry::ALPHA_USD_ADDRESS(),
-            )
+            registry::tba_send_lh_sponsored(&signer, &tba_addr, &to_hex, amount_wei)
             .await
         }
     };
@@ -426,7 +401,7 @@ pub(crate) async fn tba_execute_diamond_call(
     calldata: Vec<u8>,
     action: &str,
 ) -> i32 {
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -463,12 +438,7 @@ pub(crate) async fn tba_execute_diamond_call(
             return 1;
         }
         println!("{subguild}'s TBA {tba_addr} isn't deployed yet — deploying first …");
-        if let Err(e) = registry::create_token_bound_account_sponsored(
-            &signer,
-            &sponsor,
-            token_id,
-            registry::ALPHA_USD_ADDRESS(),
-        )
+        if let Err(e) = registry::create_token_bound_account_sponsored(&signer, token_id)
         .await
         {
             eprintln!("{action}: TBA deploy failed: {e}");
@@ -479,12 +449,12 @@ pub(crate) async fn tba_execute_diamond_call(
     println!("{subguild}'s TBA {tba_addr} → {action} …");
     match registry::tba_execute_call_sponsored(
         &signer,
-        &sponsor,
         &tba_addr,
-        registry::REGISTRY_ADDRESS(), // inner `to` = the diamond
-        0,                          // no native value
+        registry::REGISTRY_ADDRESS(),
+        // inner `to` = the diamond
+        0,
+        // no native value
         &calldata,
-        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {

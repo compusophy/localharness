@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_lh, load_signer, load_signer_and_sponsor, parse_guild_id, registry, take_tba_flag, tba_execute_diamond_call, wallet};
+use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_lh, load_signer, parse_guild_id, registry, take_tba_flag, tba_execute_diamond_call, wallet};
 
 // ---- guild (GuildFacet: on-chain orgs — members, roles, pooled treasury) -----
 //
@@ -139,12 +139,12 @@ pub(crate) async fn guild_create(caller: Option<&str>, name: &str) -> i32 {
         eprintln!("guild create: name is empty");
         return 2;
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("creating guild '{name}' …");
-    match registry::create_guild_sponsored(&signer, &sponsor, name, registry::ALPHA_USD_ADDRESS()).await
+    match registry::create_guild_sponsored(&signer, name).await
     {
         Ok(tx) => {
             // The new guildId is the last entry in the creator's guildsOf index.
@@ -190,18 +190,12 @@ pub(crate) async fn guild_invite(caller: Option<&str>, id_arg: &str, member: &st
             return 1;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("inviting {member_hex} to guild #{guild_id} …");
-    match registry::invite_to_guild_sponsored(
-        &signer,
-        &sponsor,
-        guild_id,
-        &member_hex,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::invite_to_guild_sponsored(&signer, guild_id, &member_hex)
     .await
     {
         Ok(tx) => {
@@ -238,17 +232,12 @@ pub(crate) async fn guild_accept(caller: Option<&str>, id_arg: &str, tba: Option
         )
         .await;
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("accepting the invite to guild #{guild_id} …");
-    match registry::accept_guild_invite_sponsored(
-        &signer,
-        &sponsor,
-        guild_id,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::accept_guild_invite_sponsored(&signer, guild_id)
     .await
     {
         Ok(tx) => {
@@ -271,12 +260,12 @@ pub(crate) async fn guild_leave(caller: Option<&str>, id_arg: &str) -> i32 {
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("leaving guild #{guild_id} …");
-    match registry::leave_guild_sponsored(&signer, &sponsor, guild_id, registry::ALPHA_USD_ADDRESS()).await
+    match registry::leave_guild_sponsored(&signer, guild_id).await
     {
         Ok(tx) => {
             println!("✓ left guild #{guild_id}  tx: {tx}");
@@ -313,19 +302,12 @@ pub(crate) async fn guild_role(caller: Option<&str>, id_arg: &str, member: &str,
             return 1;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("setting {member_hex}'s role in guild #{guild_id} to {} …", role.label());
-    match registry::set_role_sponsored(
-        &signer,
-        &sponsor,
-        guild_id,
-        &member_hex,
-        role.as_u8(),
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::set_role_sponsored(&signer, guild_id, &member_hex, role.as_u8())
     .await
     {
         Ok(tx) => {
@@ -357,7 +339,7 @@ pub(crate) async fn guild_fund(caller: Option<&str>, id_arg: &str, amount: &str)
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -368,13 +350,7 @@ pub(crate) async fn guild_fund(caller: Option<&str>, id_arg: &str, amount: &str)
         return code;
     }
     println!("funding guild #{guild_id} with {} …", fmt_lh(amount_wei));
-    match registry::fund_guild_sponsored(
-        &signer,
-        &sponsor,
-        guild_id,
-        amount_wei,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::fund_guild_sponsored(&signer, guild_id, amount_wei)
     .await
     {
         Ok(tx) => {
@@ -457,7 +433,7 @@ pub(crate) async fn tithe_manual(caller: Option<&str>, id_arg: &str, amount: &st
         eprintln!("tithe: --as <agent> is required (the agent whose TBA tithes its earnings)");
         return 2;
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -506,15 +482,7 @@ pub(crate) async fn tithe_manual(caller: Option<&str>, id_arg: &str, amount: &st
         "{agent}'s TBA {tba_addr} tithing {} to guild #{guild_id}'s treasury …",
         fmt_lh(amount_wei)
     );
-    match registry::tba_execute_batch_sponsored(
-        &signer,
-        &sponsor,
-        token_id,
-        &tba_addr,
-        &targets,
-        registry::ALPHA_USD_ADDRESS(),
-        2_000_000,
-    )
+    match registry::tba_execute_batch_sponsored(&signer, token_id, &tba_addr, &targets, 2_000_000)
     .await
     {
         Ok(tx) => {
@@ -564,7 +532,7 @@ pub(crate) async fn tithe_auto(caller: Option<&str>, id_arg: &str, bps_arg: &str
         eprintln!("tithe auto: --as <agent> is required (the agent whose TBA opts in)");
         return 2;
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -608,15 +576,7 @@ pub(crate) async fn tithe_auto(caller: Option<&str>, id_arg: &str, bps_arg: &str
     println!(
         "{agent}'s TBA {tba_addr} opting in to tithe {pct}% of its balance to guild #{guild_id} …"
     );
-    match registry::tba_execute_batch_sponsored(
-        &signer,
-        &sponsor,
-        token_id,
-        &tba_addr,
-        &targets,
-        registry::ALPHA_USD_ADDRESS(),
-        2_000_000,
-    )
+    match registry::tba_execute_batch_sponsored(&signer, token_id, &tba_addr, &targets, 2_000_000)
     .await
     {
         Ok(tx) => {
@@ -640,7 +600,7 @@ pub(crate) async fn tithe_auto(caller: Option<&str>, id_arg: &str, bps_arg: &str
 /// so the trigger can't redirect or inflate the tithe. Signed by the caller
 /// (`--as`); the agent need not be online.
 pub(crate) async fn tithe_collect(caller: Option<&str>, agent: &str) -> i32 {
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -670,12 +630,7 @@ pub(crate) async fn tithe_collect(caller: Option<&str>, agent: &str) -> i32 {
             return 1;
         }
     }
-    match registry::collect_tithe_sponsored(
-        &signer,
-        &sponsor,
-        &tba_addr,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::collect_tithe_sponsored(&signer, &tba_addr)
     .await
     {
         Ok(tx) => {
@@ -713,20 +668,12 @@ pub(crate) async fn guild_spend(caller: Option<&str>, id_arg: &str, to: &str, am
             return 1;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("spending {} from guild #{guild_id} to {to_hex} …", fmt_lh(amount_wei));
-    match registry::spend_treasury_sponsored(
-        &signer,
-        &sponsor,
-        guild_id,
-        &to_hex,
-        amount_wei,
-        memo.as_bytes(),
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::spend_treasury_sponsored(&signer, guild_id, &to_hex, amount_wei, memo.as_bytes())
     .await
     {
         Ok(tx) => {

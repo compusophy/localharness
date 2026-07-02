@@ -11,12 +11,10 @@ use super::*;
 /// Reverts on-chain if the caller has already claimed this UTC day.
 pub async fn claim_daily_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
-    fee_token: &str,
 ) -> Result<String, String> {
     // claimDaily inner: a single SSTORE + mint (token Transfer event +
     // memo event) — ~120k. Plus ~275k Tempo sponsorship overhead.
-    sponsored_diamond_call(sender, fee_payer, selector("claimDaily()").to_vec(), fee_token, 600_000)
+    sponsored_diamond_call(sender, selector("claimDaily()").to_vec(), 600_000)
         .await
 }
 
@@ -86,16 +84,14 @@ pub(crate) fn encode_redeem(code: &str) -> Vec<u8> {
 /// are minted to `sender`.
 pub async fn redeem_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     code: &str,
-    fee_token: &str,
 ) -> Result<String, String> {
     // redeem mints on the credits token (cold balanceOf + totalSupply
     // SSTOREs, AccessControl role checks, memo event) plus the claimed-flag
     // SSTORE — empirically ~1.07M inner, NOT the ~120k first assumed (a 600k
     // limit silently out-of-gassed every redeem). Plus ~275k sponsorship.
     // 2M gives headroom; sponsor is billed on gas used, not the limit.
-    sponsored_diamond_call(sender, fee_payer, encode_redeem(code), fee_token, 2_000_000).await
+    sponsored_diamond_call(sender, encode_redeem(code), 2_000_000).await
 }
 
 /// Read `sessionExpiryOf(address)` — unix-seconds expiry of the
@@ -121,17 +117,15 @@ pub async fn session_price() -> Result<u128, String> {
 /// pattern as `register`).
 pub async fn open_session_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
-    fee_token: &str,
 ) -> Result<String, String> {
     let price = session_price().await.unwrap_or(0);
     let input = selector("openSession()").to_vec();
     // approve (~46k) + openSession (transferFrom + 1 SSTORE + event,
     // ~90k) + ~275k sponsorship. 600k headroom.
     if price > 0 {
-        sponsored_escrow_diamond_call(sender, fee_payer, price, input, fee_token, 600_000).await
+        sponsored_escrow_diamond_call(sender, price, input, 600_000).await
     } else {
-        sponsored_diamond_call(sender, fee_payer, input, fee_token, 600_000).await
+        sponsored_diamond_call(sender, input, 600_000).await
     }
 }
 
@@ -166,19 +160,15 @@ pub async fn withdrawable_credit_of(account_hex: &str) -> Result<u128, String> {
 /// (same cost-gate shape as `open_session_sponsored`).
 pub async fn deposit_credits_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     amount_wei: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
     // approve + transferFrom (pull $LH into the diamond) + cold meter-
     // balance SSTORE + event. Like redeem, comfortably more than the old
     // 600k once cold SSTOREs are counted — 1.5M gives headroom.
     sponsored_escrow_diamond_call(
         sender,
-        fee_payer,
         amount_wei,
         encode_deposit_credits(amount_wei),
-        fee_token,
         1_500_000,
     )
     .await
@@ -191,18 +181,14 @@ pub async fn deposit_credits_sponsored(
 /// cover an x402 price from chat credits when the wallet pot is short.
 pub async fn withdraw_credits_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     amount_wei: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
     // Ledger SSTORE + token transfer (warm balance SSTOREs) + event — well
     // under deposit's cost, but sponsorship overhead is ~275k on its own;
     // 1M keeps the same headroom policy as the other sponsored writes.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_withdraw_credits(amount_wei),
-        fee_token,
         1_000_000,
     )
     .await
@@ -239,20 +225,16 @@ pub async fn lh_allowance(owner_hex: &str, spender_hex: &str) -> Result<u128, St
 /// succeeds. Pass a large/`u128::MAX` amount to approve once and reuse.
 pub async fn approve_lh_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     spender_hex: &str,
     amount_wei: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
     let spender = parse_eth_address(spender_hex)?;
     // approve is a single SSTORE (cold the first time) + event. 300k is
     // ample headroom on top of the AA-settlement overhead.
     sponsored_call_to(
         sender,
-        fee_payer,
         LOCALHARNESS_TOKEN_ADDRESS(),
         encode_approve(&spender, amount_wei),
-        fee_token,
         300_000,
     )
     .await
@@ -264,18 +246,14 @@ pub async fn approve_lh_sponsored(
 /// redeem code (controlled funding now that the daily allowance is disabled).
 pub async fn transfer_lh_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     to_hex: &str,
     amount_wei: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
     let to = parse_eth_address(to_hex)?;
     sponsored_call_to(
         sender,
-        fee_payer,
         LOCALHARNESS_TOKEN_ADDRESS(),
         encode_transfer(&to, amount_wei),
-        fee_token,
         300_000,
     )
     .await

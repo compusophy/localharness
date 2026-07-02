@@ -2,7 +2,7 @@
 // Governance tools — DAO governance over a guild treasury (VotingFacet). Guild
 // members propose treasury spends, vote, and execute once a proposal passes past
 // its deadline. Same sponsored path as the guild/bounty tools (owner's credit key
-// signs the sender_hash, the embedded sponsor pays gas via `bounty_signers`).
+// signs the sender_hash, the embedded sponsor pays gas via `bounty_signer`).
 // Registry helpers reused (SIBLING-OWNED — never re-encoded here): propose_sponsored
 // / vote_sponsored / execute_proposal_sponsored + reads get_proposal / tally_of /
 // has_voted / proposals_of.
@@ -10,7 +10,7 @@
 
 use crate::tools::ClosureTool;
 
-use super::bounty::bounty_signers;
+use super::bounty::bounty_signer;
 use super::guild::{format_lh, resolve_account};
 
 /// Default proposal voting period (hours) when `period_hours` is omitted.
@@ -99,16 +99,14 @@ pub(crate) fn propose_measure_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             }
             let period_secs = (period_hours * 3600.0) as u64;
             let to_hex = resolve_account(&to_arg).await?;
-            let (signer, fee_payer) = bounty_signers().await?;
+            let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::propose_sponsored(
                 &signer,
-                &fee_payer,
                 guild_id,
                 &to_hex,
                 amount_wei,
                 memo.as_bytes(),
                 period_secs,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("propose_measure failed: {e}")))?;
@@ -166,14 +164,8 @@ pub(crate) fn cast_vote_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .get("support")
                 .and_then(|v| v.as_bool())
                 .ok_or_else(|| crate::error::Error::other("support (true/false) is required"))?;
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::vote_sponsored(
-                &signer,
-                &fee_payer,
-                proposal_id,
-                support,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::vote_sponsored(&signer, proposal_id, support)
             .await
             .map_err(|e| crate::error::Error::other(format!("cast_vote failed: {e}")))?;
             Ok(serde_json::json!({
@@ -212,13 +204,8 @@ pub(crate) fn execute_proposal_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
                 .get("proposal_id")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| crate::error::Error::other("proposal_id is required"))?;
-            let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::execute_proposal_sponsored(
-                &signer,
-                &fee_payer,
-                proposal_id,
-                crate::app::registry::ALPHA_USD_ADDRESS(),
-            )
+            let signer = bounty_signer().await?;
+            let tx_hash = crate::app::registry::execute_proposal_sponsored(&signer, proposal_id)
             .await
             .map_err(|e| crate::error::Error::other(format!("execute_proposal failed: {e}")))?;
             Ok(serde_json::json!({

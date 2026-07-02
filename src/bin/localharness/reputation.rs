@@ -1,4 +1,4 @@
-use crate::{hex_to_bytes_padded, load_signer_and_sponsor, registry};
+use crate::{hex_to_bytes_padded, load_signer, registry};
 
 // ---- reputation (attestation-based on-chain agent reputation) -------------
 //
@@ -192,19 +192,12 @@ pub(crate) async fn reputation_attest(caller: Option<&str>, rest: &[String]) -> 
         }
         Ok(id) => id,
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("attesting {rating}★ to {agent} (token #{token_id}) …");
-    match registry::attest_sponsored(
-        &signer,
-        &sponsor,
-        token_id,
-        rating,
-        work_ref,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::attest_sponsored(&signer, token_id, rating, work_ref)
     .await
     {
         Ok(tx) => {

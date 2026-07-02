@@ -187,8 +187,10 @@ L1 backend-onboarding builder ritual (partially absorbed by R6) · gate compiler
 platform cores behind features (business call — surface to user first) · app
 #[test]s never run (mitigate via R5-style hoists) · events/mod.rs inline flow
 bodies + 28 thread_locals (partially absorbed by R5) · mock as parallel impl ·
-dead gemini/tools shim + render_system near-variant · one submission context for
-79 *_sponsored wrappers · facet dead weight + persona duplication · stringly Http/
+dead gemini/tools shim + render_system near-variant · ~~one submission context for
+79 *_sponsored wrappers~~ (SHIPPED 2026-07-02: the fee side resolves inside the
+registry submit skeletons — `registry::sponsor::fee_payer()` + active-chain
+fee_token; wrappers/call sites dropped both params, net -808 SLOC) · facet dead weight + persona duplication · stringly Http/
 Other error variants (consider before 1.0 alongside R6) · loop_util stall
 (superseded by R3/R7) · money-path E2E proofs run only by hand + stale wrong-chain
 scripts · templates.rs growth hazard.

@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, registry, resolve_caller_key, resolve_key_read_path, sponsor_key, wallet};
+use crate::{bytes_to_hex_str, registry, resolve_caller_key, resolve_key_read_path, wallet};
 
 /// Print a CLI error to stderr stamped with its stable `LHxxxx` code when the
 /// message matches a known backend/transport pattern (`error_codes::classify`).
@@ -143,11 +143,10 @@ pub(crate) fn parse_bounty_id(raw: &str) -> Result<u64, String> {
     parse_id(raw, "bounty")
 }
 
-/// Load the caller's identity signer alone, mapping any failure to a process
-/// exit code (resolve failure = 2, unparseable key = 1). The shared front-half
-/// of every READ-ONLY command that still needs a local key (credits / status /
-/// list / jobs / `* mine` / probe) — the sponsored-write twin is
-/// [`load_signer_and_sponsor`].
+/// Load the caller's identity signer, mapping any failure to a process exit
+/// code (resolve failure = 2, unparseable key = 1). The shared front-half of
+/// every command that needs a local key — reads AND sponsored writes alike
+/// (the fee side is resolved inside `registry::` — see `registry::sponsor`).
 pub(crate) fn load_signer(caller: Option<&str>) -> Result<k256::ecdsa::SigningKey, i32> {
     let (key_file, key_hex) = resolve_caller_key(caller).map_err(|e| {
         eprintln!("{e}");
@@ -159,16 +158,11 @@ pub(crate) fn load_signer(caller: Option<&str>) -> Result<k256::ecdsa::SigningKe
     })
 }
 
-/// Load the sponsor `fee_payer` key (exit 1 on a bad key). Always the committed
-/// testnet const ([`sponsor_key`]): on testnet it pays fees; on mainnet it's an
-/// unused placeholder because the server relay signs the fee_payer half
-/// (`registry::sponsor_relay`) — the binary embeds no mainnet money key.
+/// Load the sponsor `fee_payer` key (exit 1 on a bad key) for the few commands
+/// that still call an EXPLICIT-sponsor primitive (`create_sponsored`). Everything
+/// else resolves the fee side inside `registry::` ([`registry::sponsor`]).
 pub(crate) fn load_sponsor() -> Result<k256::ecdsa::SigningKey, i32> {
-    let key = sponsor_key().map_err(|e| {
-        eprintln!("sponsor key error: {e}");
-        1
-    })?;
-    wallet::from_private_key_hex(&key).map_err(|e| {
+    registry::sponsor::fee_payer().map_err(|e| {
         eprintln!("sponsor key error: {e}");
         1
     })
@@ -194,15 +188,6 @@ pub(crate) fn load_name_signer(name: &str) -> Result<k256::ecdsa::SigningKey, i3
         eprintln!("bad key in {key_file}: {e}");
         1
     })
-}
-
-/// Load the caller's identity signer + the embedded sponsor in one shot, mapping
-/// any failure to a process exit code. The shared front-half of every sponsored
-/// write (bounty / guild / vote / invite / schedule / credits / …).
-pub(crate) fn load_signer_and_sponsor(
-    caller: Option<&str>,
-) -> Result<(k256::ecdsa::SigningKey, k256::ecdsa::SigningKey), i32> {
-    Ok((load_signer(caller)?, load_sponsor()?))
 }
 
 /// Ensure the caller's WALLET holds at least `needed_wei` `$LH` before a
@@ -240,13 +225,7 @@ pub(crate) async fn ensure_wallet_covers(
         "wallet is short {} — pulling it from your unspent chat credits …",
         fmt_lh(shortfall)
     );
-    let sponsor = load_sponsor()?;
-    match registry::withdraw_credits_sponsored(
-        signer,
-        &sponsor,
-        shortfall,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::withdraw_credits_sponsored(signer, shortfall)
     .await
     {
         Ok(tx) => {

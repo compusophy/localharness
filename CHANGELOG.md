@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`registry::*_sponsored` wrappers no longer take `fee_payer`/`fee_token`**
+  (BREAKING on the semver-exempt `registry::` surface). Every call site passed
+  the identical pair — the committed testnet sponsor key (an unused placeholder
+  on mainnet, where the relay signs) and the active chain's fee token — so the
+  ~75 wrappers now resolve both internally at the submit skeletons. New ONE key
+  home `registry::sponsor::fee_payer()` (the duplicated consts in `app::sponsor`
+  and the CLI are gone; `app::sponsor::signer()` is a thin alias), new
+  `registry::sponsored_batch(sender, calls, gas)` for prepared multi-call
+  batches, and `bashlite::platform::WriteEnv` slims to just the signer. The
+  explicit-sponsor primitives (`submit_tempo_sponsored`, `create_sponsored`,
+  `submit_tempo_self_paid`) are unchanged for custom sponsors (live examples,
+  facet deploys). No wire/behavior change — every transaction submits with
+  exactly the same fee pair as before.
+
 - Internal module hygiene: the long inline dispatch arms in `src/app/events/mod.rs`
   (identity/seed onboarding, claim, OPFS delete) moved verbatim into domain modules
   (new `events/identity.rs`, plus `events/claim.rs` / `opfs.rs`), leaving one-line

@@ -92,22 +92,18 @@ pub(crate) fn encode_mint_from_fiat(
 #[allow(clippy::too_many_arguments)]
 pub async fn mint_from_fiat_sponsored(
     submitter: &SigningKey,
-    fee_payer: &SigningKey,
     to: &[u8; 20],
     amount_wei: u128,
     receipt_id: &[u8; 32],
     valid_before: u64,
     signature: &[u8; 65],
-    fee_token: &str,
 ) -> Result<String, String> {
     // EIP-712 verify + mint-to-escrow (cold balance/supply SSTOREs) + creditOf
     // bump + lock SSTOREs; like redeem, comfortably more than 600k cold. 2M
     // gives headroom; ~275k is Tempo sponsorship overhead.
     sponsored_diamond_call(
         submitter,
-        fee_payer,
         encode_mint_from_fiat(to, amount_wei, receipt_id, valid_before, signature),
-        fee_token,
         2_000_000,
     )
     .await

@@ -133,13 +133,11 @@ pub fn encode_vote_calldata(proposal_id: u64, support: bool) -> Vec<u8> {
 #[allow(clippy::too_many_arguments)]
 pub async fn propose_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     guild_id: u64,
     to_hex: &str,
     amount_wei: u128,
     memo: &[u8],
     voting_period_secs: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     let to = parse_eth_address(to_hex)?;
     // The proposal struct's cold SSTOREs (3 packed scalar slots + the
@@ -149,9 +147,7 @@ pub async fn propose_sponsored(
     let gas = 3_000_000 + (memo.len() as u128) * 9_000;
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_propose(guild_id, &to, amount_wei, memo, voting_period_secs),
-        fee_token,
         gas,
     )
     .await
@@ -163,18 +159,14 @@ pub async fn propose_sponsored(
 /// not have voted already (enforced on-chain).
 pub async fn vote_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     proposal_id: u64,
     support: bool,
-    fee_token: &str,
 ) -> Result<String, String> {
     // voted-flag SSTORE + the forVotes/againstVotes tally bump + event. 800k for
     // headroom (the propose/createGuild OOGs showed estimates run high; free on USED).
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_vote(proposal_id, support),
-        fee_token,
         800_000,
     )
     .await
@@ -188,18 +180,14 @@ pub async fn vote_sponsored(
 /// `execute` reverts `ProposalNotActive`).
 pub async fn execute_proposal_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     proposal_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // status flip (1 SSTORE) + on the PASS path the treasury debit + payout
     // `transfer` (cold token balances) + event. Mirror the accept-result /
     // payout budget for headroom (sponsor billed on gas USED).
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("execute(uint256)", proposal_id),
-        fee_token,
         3_000_000,
     )
     .await

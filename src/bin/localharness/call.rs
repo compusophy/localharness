@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, default_persona, ensure_diamond_allowance, fmt_duration, fmt_lh, load_sponsor, non_blank, parse_address, registry, resolve_caller_key, resolve_caller_label, sponsor_key, take_as_flag, wallet, CALL_COST_WEI, CALL_METER_TOPUP_WEI};
+use crate::{bytes_to_hex_str, default_persona, ensure_diamond_allowance, fmt_duration, fmt_lh, non_blank, parse_address, registry, resolve_caller_key, resolve_caller_label, take_as_flag, wallet, CALL_COST_WEI, CALL_METER_TOPUP_WEI};
 
 /// Prompt another agent and print its reply — HEADLESS, via the credit proxy.
 ///
@@ -443,22 +443,7 @@ async fn settle_call_payment(key_hex: &str, target: &str, value_wei: u128) -> i3
             return 1;
         }
     };
-    let sponsor = match load_sponsor() {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    match registry::settle_x402_sponsored(
-        &signer,
-        &sponsor,
-        &from,
-        &to,
-        value_wei,
-        0,
-        valid_before,
-        &nonce,
-        &signature,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::settle_x402_sponsored(&signer, &from, &to, value_wei, 0, valid_before, &nonce, &signature)
     .await
     {
         Ok(tx) => {
@@ -488,23 +473,12 @@ async fn settle_call_payment(key_hex: &str, target: &str, value_wei: u128) -> i3
 /// later as an unexplained 402 (seen live: colony judges quietly dropping
 /// out of the panel). Still best-effort: an unfunded wallet stays unfunded.
 pub(crate) async fn ensure_meter_funded(caller: &k256::ecdsa::SigningKey) {
-    let Ok(key) = sponsor_key() else {
-        return;
-    };
-    let Ok(sponsor) = wallet::from_private_key_hex(&key) else {
-        return;
-    };
     let addr = bytes_to_hex_str(&wallet::address(caller));
     if registry::credit_balance_of(&addr).await.unwrap_or(0) >= CALL_COST_WEI {
         return;
     }
     let deposit = || {
-        registry::deposit_credits_sponsored(
-            caller,
-            &sponsor,
-            CALL_METER_TOPUP_WEI,
-            registry::ALPHA_USD_ADDRESS(),
-        )
+        registry::deposit_credits_sponsored(caller, CALL_METER_TOPUP_WEI)
     };
     match deposit().await {
         Ok(_) => {}

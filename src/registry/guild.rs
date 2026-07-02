@@ -182,9 +182,7 @@ pub fn encode_accept_guild_invite_calldata(guild_id: u64) -> Vec<u8> {
 /// 0 cost falls back to the plain call, byte-identical to the old behavior.
 pub async fn create_guild_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     name: &str,
-    fee_token: &str,
 ) -> Result<String, String> {
     // The guild struct's cold SSTOREs (id↔owner, name `bytes`, the creator's
     // Admin role + the `guildsOf` enumerable push) + ~275k sponsorship. Cold
@@ -212,11 +210,11 @@ pub async fn create_guild_sponsored(
         let wallet_bal = token_balance_of(&sender_hex).await.unwrap_or(0);
         let bridge_wei = cost.saturating_sub(wallet_bal);
         sponsored_escrow_diamond_call_bridged(
-            sender, fee_payer, cost, create_input, fee_token, gas, bridge_wei,
+            sender, cost, create_input, gas, bridge_wei,
         )
         .await
     } else {
-        sponsored_diamond_call(sender, fee_payer, create_input, fee_token, gas).await
+        sponsored_diamond_call(sender, create_input, gas).await
     }
 }
 
@@ -235,7 +233,6 @@ pub async fn create_guild_sponsored(
 pub async fn create_guild_self_paid(
     sender: &SigningKey,
     name: &str,
-    fee_token: &str,
 ) -> Result<String, String> {
     // Gas budget covers the WHOLE self-paid tx: the batched `approve` (~255k on the
     // $LH token) + the AA executor overhead + the `createGuild` mint. On MAINNET the
@@ -256,7 +253,7 @@ pub async fn create_guild_self_paid(
             input: create_input,
         }]
     };
-    submit_tempo_self_paid(sender, calls, Some(fee_token), gas).await
+    submit_tempo_self_paid(sender, calls, Some(ALPHA_USD_ADDRESS()), gas).await
 }
 
 /// Invite an address to a guild via a sponsored Tempo tx
@@ -264,18 +261,14 @@ pub async fn create_guild_self_paid(
 /// join. Admin/officer-gated on-chain.
 pub async fn invite_to_guild_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     guild_id: u64,
     member_hex: &str,
-    fee_token: &str,
 ) -> Result<String, String> {
     let member = parse_eth_address(member_hex)?;
     // A pending-invite SSTORE + event. 400k mirrors the bounty-claim budget.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_invite_to_guild(guild_id, &member),
-        fee_token,
         400_000,
     )
     .await
@@ -286,9 +279,7 @@ pub async fn invite_to_guild_sponsored(
 /// roster + `guildsOf` index.
 pub async fn accept_guild_invite_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     guild_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // Role SSTORE + the roster + `guildsOf` enumerable pushes + event — cold
     // index writes dominate. Measured: `cast estimate acceptGuildInvite` ≈ 1.33M
@@ -296,9 +287,7 @@ pub async fn accept_guild_invite_sponsored(
     // billed on gas USED, so the headroom is free).
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("acceptGuildInvite(uint256)", guild_id),
-        fee_token,
         2_000_000,
     )
     .await
@@ -308,18 +297,14 @@ pub async fn accept_guild_invite_sponsored(
 /// role is cleared and they're removed from the roster + `guildsOf` index.
 pub async fn leave_guild_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     guild_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // Role clear + the roster/index removals (swap-and-pop array writes, symmetric
     // to accept's pushes) + event. Budget 1.5M like accept (the 600k guess was the
     // same under-estimate class as the createGuild/accept OOGs).
     sponsored_diamond_call(
         sender,
-        fee_payer,
         call_uint_bytes("leaveGuild(uint256)", guild_id),
-        fee_token,
         1_500_000,
     )
     .await
@@ -330,19 +315,15 @@ pub async fn leave_guild_sponsored(
 /// — pass [`GuildRole::as_u8`]. Admin-gated on-chain.
 pub async fn set_role_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     guild_id: u64,
     member_hex: &str,
     role: u8,
-    fee_token: &str,
 ) -> Result<String, String> {
     let member = parse_eth_address(member_hex)?;
     // A single role SSTORE + event.
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_set_role(guild_id, &member, role),
-        fee_token,
         400_000,
     )
     .await
@@ -356,12 +337,10 @@ pub async fn set_role_sponsored(
 /// the moment this mines and lands in the guild's pooled treasury.
 pub async fn fund_guild_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     guild_id: u64,
     amount_wei: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
-    fund_guild_sponsored_bridged(sender, fee_payer, guild_id, amount_wei, fee_token, 0).await
+    fund_guild_sponsored_bridged(sender, guild_id, amount_wei, 0).await
 }
 
 /// [`fund_guild_sponsored`] with the meter auto-bridge: `bridge_wei > 0`
@@ -370,20 +349,16 @@ pub async fn fund_guild_sponsored(
 /// `sponsored_escrow_diamond_call_bridged`).
 pub async fn fund_guild_sponsored_bridged(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     guild_id: u64,
     amount_wei: u128,
-    fee_token: &str,
     bridge_wei: u128,
 ) -> Result<String, String> {
     // approve (~46k) + fundGuild (transferFrom pull + the treasury-balance
     // SSTORE + event) + ~275k sponsorship. Mirror the invite escrow budget.
     sponsored_escrow_diamond_call_bridged(
         sender,
-        fee_payer,
         amount_wei,
         encode_fund_guild(guild_id, amount_wei),
-        fee_token,
         2_000_000,
         bridge_wei,
     )
@@ -404,12 +379,10 @@ fn reject_zero_payout(to: &[u8; 20]) -> Result<(), String> {
 /// Admin/officer-gated on-chain. The `memo` `bytes` write scales the gas.
 pub async fn spend_treasury_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     guild_id: u64,
     to_hex: &str,
     amount_wei: u128,
     memo: &[u8],
-    fee_token: &str,
 ) -> Result<String, String> {
     let to = parse_eth_address(to_hex)?;
     reject_zero_payout(&to)?;
@@ -418,9 +391,7 @@ pub async fn spend_treasury_sponsored(
     let gas = 2_000_000 + (memo.len() as u128) * 9_000;
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_spend_treasury(guild_id, &to, amount_wei, memo),
-        fee_token,
         gas,
     )
     .await

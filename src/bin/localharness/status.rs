@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, fmt_interval, fmt_lh, job_is_terminal, load_signer, load_signer_and_sponsor, registry, resolve_caller_label, truncate_words, wallet};
+use crate::{bytes_to_hex_str, fmt_interval, fmt_lh, job_is_terminal, load_signer, registry, resolve_caller_label, truncate_words, wallet};
 
 pub(crate) const WHOAMI_USAGE: &str = "usage: localharness whoami [--json] [--as] <name>";
 
@@ -741,12 +741,12 @@ pub(crate) async fn feedback_submit(caller_name: Option<&str>, text: &str) -> i3
         eprintln!("feedback too long: {} bytes (max 2048)", text.len());
         return 1;
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
+    let signer = match load_signer(caller_name) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("submitting {}-byte feedback on-chain …", text.len());
-    match registry::submit_feedback_sponsored(&signer, &sponsor, text, registry::ALPHA_USD_ADDRESS())
+    match registry::submit_feedback_sponsored(&signer, text)
         .await
     {
         Ok(tx) => {

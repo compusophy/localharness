@@ -22,9 +22,7 @@ fn encode_target_call(sig: &str, target_id: u64) -> Vec<u8> {
 /// Tempo tx. Idempotent on-chain (a repeat is a no-op, not a revert).
 pub async fn subscribe_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     target_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // `cast estimate` (never guess): the FIRST subscriber to a feed creates the
     // dynamic array (length + element + 1-based index mapping = several cold
@@ -35,9 +33,7 @@ pub async fn subscribe_sponsored(
     // the headroom is free (CLAUDE.md "the bug is always an under-set cap").
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_target_call("subscribe(uint256)", target_id),
-        fee_token,
         2_000_000,
     )
     .await
@@ -46,15 +42,11 @@ pub async fn subscribe_sponsored(
 /// Unsubscribe the sender from `target_id`'s feed (sponsored). Idempotent.
 pub async fn unsubscribe_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     target_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_target_call("unsubscribe(uint256)", target_id),
-        fee_token,
         600_000,
     )
     .await

@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, collect_flags, ensure_wallet_covers, fmt_duration, fmt_lh, load_signer, load_signer_and_sponsor, parse_bounty_id, parse_id, parse_ttl, registry, resolve_address_label, resolve_own_token_id, truncate_words, wallet, INVITE_DEFAULT_TTL_SECS};
+use crate::{bytes_to_hex_str, collect_flags, ensure_wallet_covers, fmt_duration, fmt_lh, load_signer, parse_bounty_id, parse_id, parse_ttl, registry, resolve_address_label, resolve_own_token_id, truncate_words, wallet, INVITE_DEFAULT_TTL_SECS};
 
 // ---- bounty post/list/claim/submit/accept/cancel/mine (BountyFacet) ------
 //
@@ -156,7 +156,7 @@ pub(crate) async fn bounty_post(caller: Option<&str>, rest: &[String]) -> i32 {
         eprintln!("bounty post: task is empty");
         return 2;
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -171,14 +171,7 @@ pub(crate) async fn bounty_post(caller: Option<&str>, rest: &[String]) -> i32 {
         fmt_lh(reward_wei),
         fmt_duration(ttl_secs)
     );
-    match registry::post_bounty_sponsored(
-        &signer,
-        &sponsor,
-        task.as_bytes(),
-        reward_wei,
-        ttl_secs,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::post_bounty_sponsored(&signer, task.as_bytes(), reward_wei, ttl_secs)
     .await
     {
         Ok(tx) => {
@@ -378,7 +371,7 @@ pub(crate) async fn bounty_claim(caller: Option<&str>, id_arg: &str) -> i32 {
     if let Err(code) = bounty_preflight_or_reject(bounty_id, "claim").await {
         return code;
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -393,13 +386,7 @@ pub(crate) async fn bounty_claim(caller: Option<&str>, id_arg: &str) -> i32 {
         }
     };
     println!("claiming bounty #{bounty_id} as token #{claimant_token_id} …");
-    match registry::claim_bounty_sponsored(
-        &signer,
-        &sponsor,
-        bounty_id,
-        claimant_token_id,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::claim_bounty_sponsored(&signer, bounty_id, claimant_token_id)
     .await
     {
         Ok(tx) => {
@@ -432,18 +419,12 @@ pub(crate) async fn bounty_submit(caller: Option<&str>, id_arg: &str, result: &s
     if let Err(code) = bounty_preflight_or_reject(bounty_id, "submit").await {
         return code;
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("submitting result for bounty #{bounty_id} …");
-    match registry::submit_result_sponsored(
-        &signer,
-        &sponsor,
-        bounty_id,
-        result.as_bytes(),
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    match registry::submit_result_sponsored(&signer, bounty_id, result.as_bytes())
     .await
     {
         Ok(tx) => {
@@ -471,12 +452,12 @@ pub(crate) async fn bounty_accept(caller: Option<&str>, id_arg: &str) -> i32 {
     if let Err(code) = bounty_preflight_or_reject(bounty_id, "accept").await {
         return code;
     }
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("accepting bounty #{bounty_id}'s result + paying the claimant …");
-    match registry::accept_result_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS()).await {
+    match registry::accept_result_sponsored(&signer, bounty_id).await {
         Ok(tx) => {
             println!("✓ bounty #{bounty_id} accepted — the escrowed $LH is paid to the claimant  tx: {tx}");
             0
@@ -498,12 +479,12 @@ pub(crate) async fn bounty_cancel(caller: Option<&str>, id_arg: &str) -> i32 {
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("cancelling bounty #{bounty_id} (refunding its escrow) …");
-    match registry::cancel_bounty_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS()).await {
+    match registry::cancel_bounty_sponsored(&signer, bounty_id).await {
         Ok(tx) => {
             println!("✓ bounty #{bounty_id} cancelled — the escrowed $LH is refunded to you  tx: {tx}");
             0
@@ -528,12 +509,12 @@ pub(crate) async fn bounty_reclaim(caller: Option<&str>, id_arg: &str) -> i32 {
             return 2;
         }
     };
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     println!("reclaiming expired bounty #{bounty_id} (refunding its escrow to the poster) …");
-    match registry::reclaim_expired_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS()).await {
+    match registry::reclaim_expired_sponsored(&signer, bounty_id).await {
         Ok(tx) => {
             println!("✓ bounty #{bounty_id} reclaimed — the escrowed $LH is refunded to its poster  tx: {tx}");
             0

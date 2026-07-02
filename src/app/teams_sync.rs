@@ -104,10 +104,9 @@ pub(crate) async fn sync_my_devices() -> Result<usize, String> {
     let owner = super::chat::credit_address_existing()
         .await
         .ok_or("no identity")?;
-    let fee_payer = super::sponsor::signer().map_err(|_| "no sponsor")?;
     let owner_addr = addr20(&owner).ok_or("bad owner address")?;
     let topic = registry::devices_topic(&owner);
-    sync_topic(&master, &fee_payer, &owner_addr, &topic).await
+    sync_topic(&master, &owner_addr, &topic).await
 }
 
 /// Announce under `topic`, discover peers, connect + sync each. `owner_addr` is
@@ -116,7 +115,6 @@ pub(crate) async fn sync_my_devices() -> Result<usize, String> {
 /// `master` MUST be its key (true on the owner's device: same seed wallet).
 async fn sync_topic(
     master: &k256::ecdsa::SigningKey,
-    fee_payer: &k256::ecdsa::SigningKey,
     owner_addr: &[u8; 20],
     topic: &[u8; 32],
 ) -> Result<usize, String> {
@@ -130,13 +128,12 @@ async fn sync_topic(
     // holder. We sign with `master` (= the owner's seed key on this device).
     registry::announce_sponsored(
         master,
-        fee_payer,
-        master, // owner_key = the seed key (== master on the owner's device)
+        master,
+        // owner_key = the seed key (== master on the owner's device)
         owner_addr,
         topic,
         &eph_addr,
-        &crate::wallet::pubkey_compressed(&eph.signer), // seal target for our peers
-        registry::ALPHA_USD_ADDRESS(),
+        &crate::wallet::pubkey_compressed(&eph.signer),
     )
     .await?;
 
@@ -167,7 +164,6 @@ async fn sync_topic(
         }
         if connect_and_sync(
             master,
-            fee_payer,
             &eph.signer,
             &eph_addr,
             &me,
@@ -189,7 +185,6 @@ async fn sync_topic(
 #[allow(clippy::too_many_arguments)]
 async fn connect_and_sync(
     master: &k256::ecdsa::SigningKey,
-    fee_payer: &k256::ecdsa::SigningKey,
     eph_signer: &k256::ecdsa::SigningKey,
     eph_addr: &[u8; 20],
     me_hex: &str,
@@ -206,10 +201,8 @@ async fn connect_and_sync(
             .ok_or("seal offer failed")?;
         registry::post_signal_sponsored(
             master,
-            fee_payer,
             peer_addr,
             &crate::signaling_seal::seal_envelope(eph_signer, peer_addr, &sealed),
-            registry::ALPHA_USD_ADDRESS(),
         )
         .await?;
         let answer = poll_inbox_from(eph_signer, eph_addr, peer_addr)
@@ -228,10 +221,8 @@ async fn connect_and_sync(
             .ok_or("seal answer failed")?;
         registry::post_signal_sponsored(
             master,
-            fee_payer,
             peer_addr,
             &crate::signaling_seal::seal_envelope(eph_signer, peer_addr, &sealed),
-            registry::ALPHA_USD_ADDRESS(),
         )
         .await?;
         s

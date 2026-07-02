@@ -1,6 +1,6 @@
 use crate::{
     bytes_to_hex_str, collect_flags, ensure_wallet_covers, fmt_lh, load_signer,
-    load_signer_and_sponsor, name_is_valid, parse_address, registry, tempo_tx, wallet,
+    name_is_valid, parse_address, registry, tempo_tx, wallet,
 };
 use localharness::accounting::{
     breakeven_price, is_self_funding, net_position, relies_on_seed, runway_cycles, Ledger,
@@ -406,7 +406,7 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
     }
 
     // ---- EXECUTE (only with --confirm) -------------------------------------------
-    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+    let signer = match load_signer(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -451,9 +451,9 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
     // STEP 1 — create the guild (founder becomes its sole Admin).
     println!("founding '{name}' — creating the on-chain guild …");
     let create_result = if pay {
-        registry::create_guild_self_paid(&signer, &name, registry::ALPHA_USD_ADDRESS()).await
+        registry::create_guild_self_paid(&signer, &name).await
     } else {
-        registry::create_guild_sponsored(&signer, &sponsor, &name, registry::ALPHA_USD_ADDRESS()).await
+        registry::create_guild_sponsored(&signer, &name).await
     };
     let create_tx = match create_result {
         Ok(tx) => tx,
@@ -478,13 +478,7 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
     // unwind the guild that already exists.
     if seed_wei > 0 {
         println!("  seeding the treasury with {} …", fmt_lh(seed_wei));
-        match registry::fund_guild_sponsored(
-            &signer,
-            &sponsor,
-            guild_id,
-            seed_wei,
-            registry::ALPHA_USD_ADDRESS(),
-        )
+        match registry::fund_guild_sponsored(&signer, guild_id, seed_wei)
         .await
         {
             Ok(tx) => println!("    ✓ treasury funded  (tx {tx})"),
@@ -512,14 +506,9 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
             }
             Ok(None) => {
                 let claim_result = if pay {
-                    registry::claim_name_self_paid(&signer, cand, registry::ALPHA_USD_ADDRESS()).await
+                    registry::claim_name_self_paid(&signer, cand).await
                 } else {
-                    registry::claim_and_maybe_set_main_sponsored(
-                        &signer,
-                        &sponsor,
-                        cand,
-                        registry::ALPHA_USD_ADDRESS(),
-                    )
+                    registry::claim_and_maybe_set_main_sponsored(&signer, cand)
                     .await
                 };
                 match claim_result {
@@ -547,9 +536,9 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
             staffed += 1;
             continue;
         }
-        let persona_set = set_role_persona(&signer, &sponsor, pay, token_id, &role.persona).await;
+        let persona_set = set_role_persona(&signer, pay, token_id, &role.persona).await;
         let prefunded = prefund_each_wei > 0
-            && prefund_role_tba(&signer, &sponsor, cand, token_id, prefund_each_wei).await;
+            && prefund_role_tba(&signer, cand, token_id, prefund_each_wei).await;
         let persona_tag = if persona_set { " [persona]" } else { " [persona FAILED]" };
         let prefund_tag = if prefunded {
             format!(" [+{} $LH]", fmt_lh(prefund_each_wei))
@@ -588,7 +577,6 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
 /// whether it landed.
 async fn set_role_persona(
     signer: &k256::ecdsa::SigningKey,
-    sponsor: &k256::ecdsa::SigningKey,
     pay: bool,
     token_id: u64,
     persona: &str,
@@ -607,15 +595,7 @@ async fn set_role_persona(
             .await
             .is_ok()
     } else {
-        registry::submit_tempo_sponsored(
-            signer,
-            sponsor,
-            calls,
-            registry::ALPHA_USD_ADDRESS(),
-            gas,
-        )
-        .await
-        .is_ok()
+        registry::sponsored_batch(signer, calls, gas).await.is_ok()
     }
 }
 
@@ -624,7 +604,6 @@ async fn set_role_persona(
 /// controls (the proxy keys x402 payee resolution on the TBA). Best-effort.
 async fn prefund_role_tba(
     signer: &k256::ecdsa::SigningKey,
-    sponsor: &k256::ecdsa::SigningKey,
     name: &str,
     token_id: u64,
     amount_wei: u128,
@@ -633,14 +612,9 @@ async fn prefund_role_tba(
         return false;
     };
     // Deploy the counterfactual TBA so it can receive funds (no-op if already live).
-    let _ = registry::create_token_bound_account_sponsored(
-        signer,
-        sponsor,
-        token_id,
-        registry::ALPHA_USD_ADDRESS(),
-    )
+    let _ = registry::create_token_bound_account_sponsored(signer, token_id)
     .await;
-    registry::transfer_lh_sponsored(signer, sponsor, &tba, amount_wei, registry::ALPHA_USD_ADDRESS())
+    registry::transfer_lh_sponsored(signer, &tba, amount_wei)
         .await
         .is_ok()
 }

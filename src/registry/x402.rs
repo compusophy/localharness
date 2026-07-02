@@ -134,7 +134,6 @@ fn reject_zero_settlement(to: &[u8; 20]) -> Result<(), String> {
 #[allow(clippy::too_many_arguments)]
 pub async fn settle_x402_sponsored(
     submitter: &SigningKey,
-    fee_payer: &SigningKey,
     from: &[u8; 20],
     to: &[u8; 20],
     value_wei: u128,
@@ -142,7 +141,6 @@ pub async fn settle_x402_sponsored(
     valid_before: u64,
     nonce: &[u8; 32],
     signature: &[u8; 65],
-    fee_token: &str,
 ) -> Result<String, String> {
     reject_zero_settlement(to)?;
     // ecrecover + one-shot nonce SSTORE + TIP-20 transferFrom. The first
@@ -151,9 +149,7 @@ pub async fn settle_x402_sponsored(
     // limit is Tempo sponsorship overhead before the inner call even runs.
     sponsored_diamond_call(
         submitter,
-        fee_payer,
         encode_settle(from, to, value_wei, valid_after, valid_before, nonce, signature),
-        fee_token,
         1_200_000,
     )
     .await

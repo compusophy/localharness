@@ -110,15 +110,11 @@ fn set_push_sub_gas(len: usize) -> u128 {
 /// later broadcast can reach this exact device.
 pub async fn set_push_sub_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     sub_json: &[u8],
-    fee_token: &str,
 ) -> Result<String, String> {
     sponsored_diamond_call(
         sender,
-        fee_payer,
         encode_set_addr_push_sub(sub_json),
-        fee_token,
         set_push_sub_gas(sub_json.len()),
     )
     .await

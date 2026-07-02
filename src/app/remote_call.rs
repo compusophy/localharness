@@ -90,13 +90,7 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
             let shortfall = pay_wei - wallet_wei;
             let meter_wei = registry::credit_balance_of(&from_hex).await.unwrap_or(0);
             if meter_wei >= shortfall {
-                let sponsor = super::sponsor::signer()?;
-                registry::withdraw_credits_sponsored(
-                    &signer,
-                    &sponsor,
-                    shortfall,
-                    registry::ALPHA_USD_ADDRESS(),
-                )
+                registry::withdraw_credits_sponsored(&signer, shortfall)
                 .await
                 .map_err(|e| format!("credit withdraw (meter -> wallet): {e}"))?;
             } else {
@@ -118,14 +112,7 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
     match registry::lh_allowance(&from_hex, registry::REGISTRY_ADDRESS()).await {
         Ok(allowance) if allowance >= pay_wei => {}
         Ok(_) => {
-            let sponsor = super::sponsor::signer()?;
-            registry::approve_lh_sponsored(
-                &signer,
-                &sponsor,
-                registry::REGISTRY_ADDRESS(),
-                u128::MAX,
-                registry::ALPHA_USD_ADDRESS(),
-            )
+            registry::approve_lh_sponsored(&signer, registry::REGISTRY_ADDRESS(), u128::MAX)
             .await
             .map_err(|e| format!("$LH approve: {e}"))?;
         }

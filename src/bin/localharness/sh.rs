@@ -23,9 +23,9 @@ use localharness::bashlite::platform::WriteEnv;
 use localharness::bashlite::{self, BashHost, Output};
 use localharness::encoding::bytes_to_hex_str;
 use localharness::filesystem::{Filesystem, NativeFilesystem, RootedFilesystem};
-use localharness::{registry, wallet};
+use localharness::wallet;
 
-use crate::{load_signer, load_sponsor};
+use crate::load_signer;
 
 /// A native bashlite host: the fs sandbox rooted at the script's directory, the
 /// read-only `lh-*` reads, and the value-moving `lh-*` writes behind the
@@ -38,8 +38,6 @@ struct CliBashHost {
     fs: RootedFilesystem,
     identity: Option<String>,
     signer: Option<SigningKey>,
-    sponsor: SigningKey,
-    fee_token: String,
     /// Every value move encountered, in order — the confirm manifest. On
     /// `--confirm` EXACTLY these execute (the script is never re-run).
     manifest: Vec<PlannedMove>,
@@ -89,7 +87,7 @@ impl BashHost for CliBashHost {
                     }
                 }
             }
-            let env = WriteEnv { signer, sponsor: &self.sponsor, fee_token: &self.fee_token };
+            let env = WriteEnv { signer };
             // DRY-ONLY here: collect the plan and send nothing. The APPROVED
             // manifest (not a re-run of this script) is what executes live, so
             // record the command + effective args alongside the plan.
@@ -120,16 +118,12 @@ async fn run_pass(
     base: &str,
     identity: Option<String>,
     signer: Option<SigningKey>,
-    sponsor: SigningKey,
-    fee_token: String,
 ) -> Result<(bashlite::ScriptResult, Vec<PlannedMove>), String> {
     let fs = RootedFilesystem::new(Arc::new(NativeFilesystem::new()), base.to_string());
     let mut host = CliBashHost {
         fs,
         identity,
         signer,
-        sponsor,
-        fee_token,
         manifest: Vec::new(),
     };
     let res = bashlite::run(&mut host, src).await.map_err(|e| e.to_string())?;
@@ -163,33 +157,19 @@ pub(crate) async fn cmd_sh_inline(src: &str, as_name: Option<&str>, confirm: boo
     run_source(src, ".", as_name, confirm).await
 }
 
-/// The shared run pipeline: load identity/sponsor, run the DRY pass ONCE to
+/// The shared run pipeline: load the identity, run the DRY pass ONCE to
 /// collect the value-move manifest, then print (read/compose scripts) or gate on
 /// `--confirm` (value-moving scripts). `base` roots the fs sandbox.
 async fn run_source(src: &str, base: &str, as_name: Option<&str>, confirm: bool) -> i32 {
     let signer = as_name.and_then(|n| load_signer(Some(n)).ok());
     // `bytes_to_hex_str` already prefixes `0x`.
     let identity = signer.as_ref().map(|s| bytes_to_hex_str(&wallet::address(s)));
-    let sponsor = match load_sponsor() {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    let fee_token = registry::ALPHA_USD_ADDRESS().to_string();
 
     // DRY-RUN (the ONLY script execution): collect the value-move manifest;
     // send nothing. The captured moves ARE what executes on --confirm — the
     // script is never re-run, so a divergent second pass can't inject a move the
     // user didn't approve.
-    let (dry, manifest) = match run_pass(
-        src,
-        base,
-        identity,
-        signer.clone(),
-        sponsor.clone(),
-        fee_token.clone(),
-    )
-    .await
-    {
+    let (dry, manifest) = match run_pass(src, base, identity, signer.clone()).await {
         Ok(v) => v,
         Err(e) => {
             eprintln!("sh: {e}");
@@ -231,7 +211,7 @@ async fn run_source(src: &str, base: &str, as_name: Option<&str>, confirm: bool)
         eprintln!("sh: no identity — run with --as <name>");
         return 2;
     };
-    let env = WriteEnv { signer, sponsor: &sponsor, fee_token: &fee_token };
+    let env = WriteEnv { signer };
     let mut code = 0;
     for m in &manifest {
         match bashlite::platform::dispatch_write(&m.cmd, &m.args, &env, false).await {
@@ -272,8 +252,6 @@ mod tests {
             fs,
             identity: Some(bytes_to_hex_str(&wallet::address(&k.signer))),
             signer: Some(k.signer.clone()),
-            sponsor: k.signer.clone(),
-            fee_token: registry::ALPHA_USD_ADDRESS().to_string(),
             manifest: Vec::new(),
         };
         // `lh-send` to a 0x ADDRESS is network-free in the dry pass (no resolve).

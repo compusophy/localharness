@@ -36,9 +36,7 @@ pub async fn main_of(holder_hex: &str) -> Result<u64, String> {
 /// LH from their balance; the credits land at the diamond's treasury.
 pub async fn register_main_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     token_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     let cost = main_cost().await.unwrap_or(0);
     let input = encode_register_main(token_id);
@@ -46,9 +44,9 @@ pub async fn register_main_sponsored(
     // (~50k) + transferFrom (~30k) when cost > 0. + ~275k Tempo
     // sponsorship. 700k gives headroom either way.
     if cost > 0 {
-        sponsored_escrow_diamond_call(sender, fee_payer, cost, input, fee_token, 700_000).await
+        sponsored_escrow_diamond_call(sender, cost, input, 700_000).await
     } else {
-        sponsored_diamond_call(sender, fee_payer, input, fee_token, 700_000).await
+        sponsored_diamond_call(sender, input, 700_000).await
     }
 }
 
@@ -97,11 +95,9 @@ pub async fn tba_token_id_of(tba_hex: &str) -> Result<u64, String> {
 /// `TBA.execute(target, 0, data)` per entry. Sponsored.
 pub async fn tba_execute_batch_sponsored(
     signer: &SigningKey,
-    fee_payer: &SigningKey,
     token_id: u64,
     tba_hex: &str,
     targets: &[([u8; 20], Vec<u8>)],
-    fee_token: &str,
     gas_limit: u128,
 ) -> Result<String, String> {
     let diamond = parse_eth_address(REGISTRY_ADDRESS())?;
@@ -119,7 +115,7 @@ pub async fn tba_execute_batch_sponsored(
             input: encode_tba_execute(target, 0, data),
         });
     }
-    submit_tempo_sponsored(signer, fee_payer, calls, fee_token, gas_limit).await
+    sponsored_batch(signer, calls, gas_limit).await
 }
 
 /// Read `devicesOf(mainId)` — the identity's linked devices, from the
@@ -155,10 +151,8 @@ pub(crate) fn encode_erc721_transfer_from(from: &[u8; 20], to: &[u8; 20], token_
 /// sponsored. One-way by design — move back later via TBA.execute.
 pub async fn consolidate_into_main_sponsored(
     owner: &SigningKey,
-    fee_payer: &SigningKey,
     main_tba_hex: &str,
     token_ids: &[u64],
-    fee_token: &str,
 ) -> Result<String, String> {
     if token_ids.is_empty() {
         return Err("no subdomains to consolidate".into());
@@ -176,7 +170,7 @@ pub async fn consolidate_into_main_sponsored(
         .collect();
     // ~60k per ERC-721 transfer + ~275k sponsorship.
     let gas = 300_000 + token_ids.len() as u128 * 90_000;
-    submit_tempo_sponsored(owner, fee_payer, calls, fee_token, gas).await
+    sponsored_batch(owner, calls, gas).await
 }
 
 pub(crate) fn encode_release_name(token_id: u64) -> Vec<u8> {
@@ -239,14 +233,12 @@ pub fn fund_guild_call(guild_id: u64, amount_wei: u128) -> Result<crate::tempo_t
 /// on-chain.
 pub async fn release_name_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     token_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     // 1M, not a flat 400k: a name burn runs ~375-425k all-in (cold-slot clears
     // + ~275k sponsorship), so 400k OOG-reverted while the UI reported success.
     // Over-budget is free — the sponsor pays gas USED, not the limit.
-    sponsored_diamond_call(sender, fee_payer, encode_release_name(token_id), fee_token, 1_000_000)
+    sponsored_diamond_call(sender, encode_release_name(token_id), 1_000_000)
         .await
 }
 
@@ -261,9 +253,7 @@ pub async fn release_name_sponsored(
 /// `release_name_sponsored`.)
 pub async fn release_names_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     token_ids: &[u64],
-    fee_token: &str,
 ) -> Result<String, String> {
     if token_ids.is_empty() {
         return Err("no subdomains to release".into());
@@ -281,18 +271,16 @@ pub async fn release_names_sponsored(
     // 1M base mirrors the single-release headroom (release_name_sponsored),
     // then ~250k/extra burn. Over-budget is free (sponsor billed on gas USED).
     let gas = 1_000_000 + (token_ids.len() as u128).saturating_sub(1) * 250_000;
-    submit_tempo_sponsored(sender, fee_payer, calls, fee_token, gas).await
+    sponsored_batch(sender, calls, gas).await
 }
 
 /// Sponsored TBA remove-signer + index unlink (the unlink half of the
 /// device lifecycle). `sender` must be an authorized signer of the MAIN.
 pub async fn remove_signer_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     token_id: u64,
     tba_address: &str,
     signer_hex: &str,
-    fee_token: &str,
 ) -> Result<String, String> {
     let signer_addr = parse_eth_address(signer_hex)?;
     let tba_addr = parse_eth_address(tba_address)?;
@@ -308,7 +296,7 @@ pub async fn remove_signer_sponsored(
         value_wei: 0,
         input: encode_unlink_device(token_id, &signer_addr),
     };
-    submit_tempo_sponsored(sender, fee_payer, vec![remove_call, unlink_call], fee_token, 600_000)
+    sponsored_batch(sender, vec![remove_call, unlink_call], 600_000)
         .await
 }
 
@@ -375,13 +363,11 @@ pub(crate) fn encode_addr_amount(signature: &str, addr: &[u8; 20], amount_wei: u
 #[allow(clippy::too_many_arguments)]
 pub async fn tba_execute_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     token_id: u64,
     tba_address: &str,
     target_hex: &str,
     value_wei: u128,
     inner_data: Vec<u8>,
-    fee_token: &str,
     gas_limit: u128,
 ) -> Result<String, String> {
     let tba_addr = parse_eth_address(tba_address)?;
@@ -398,14 +384,7 @@ pub async fn tba_execute_sponsored(
         value_wei: 0,
         input: encode_tba_execute(&target, value_wei, &inner_data),
     };
-    submit_tempo_sponsored(
-        sender,
-        fee_payer,
-        vec![create_call, execute_call],
-        fee_token,
-        gas_limit,
-    )
-    .await
+    sponsored_batch(sender, vec![create_call, execute_call], gas_limit).await
 }
 
 /// Build the call batch that makes `token_id`'s TBA send `$LH`:
@@ -461,15 +440,13 @@ pub const TBA_SEND_LH_GAS: u128 = 2_000_000;
 /// (the NFT holder or an enrolled device signer).
 pub async fn tba_transfer_lh_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     token_id: u64,
     tba_address: &str,
     recipient_hex: &str,
     amount_wei: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
     let calls = tba_send_lh_calls(token_id, tba_address, recipient_hex, amount_wei)?;
-    submit_tempo_sponsored(sender, fee_payer, calls, fee_token, TBA_SEND_LH_GAS).await
+    sponsored_batch(sender, calls, TBA_SEND_LH_GAS).await
 }
 
 /// Make a token-bound account EXECUTE an arbitrary call — the headless /
@@ -499,12 +476,10 @@ pub async fn tba_transfer_lh_sponsored(
 #[allow(clippy::too_many_arguments)]
 pub async fn tba_execute_call_sponsored(
     owner_signer: &SigningKey,
-    fee_payer: &SigningKey,
     tba_addr: &str,
     to: &str,
     value_wei: u128,
     data: &[u8],
-    fee_token: &str,
 ) -> Result<String, String> {
     let target = parse_eth_address(to)?;
     // execute (~30k) + the inner call + Tempo sponsorship (~275k). The inner
@@ -518,10 +493,8 @@ pub async fn tba_execute_call_sponsored(
     // create_token_bound_account_sponsored (a separate tx).
     sponsored_call_to(
         owner_signer,
-        fee_payer,
         tba_addr,
         encode_tba_execute(&target, value_wei, data),
-        fee_token,
         2_000_000,
     )
     .await
@@ -536,15 +509,11 @@ pub async fn tba_execute_call_sponsored(
 /// ~742k live-measured — so the limit covers that plus Tempo sponsorship.
 pub async fn create_token_bound_account_sponsored(
     owner_signer: &SigningKey,
-    fee_payer: &SigningKey,
     token_id: u64,
-    fee_token: &str,
 ) -> Result<String, String> {
     sponsored_diamond_call(
         owner_signer,
-        fee_payer,
         encode_create_tba(token_id),
-        fee_token,
         1_200_000,
     )
     .await
@@ -557,22 +526,18 @@ pub async fn create_token_bound_account_sponsored(
 /// yet, so this assumes a live TBA. The TBA must hold at least `amount_wei`.
 pub async fn tba_send_lh_sponsored(
     owner_signer: &SigningKey,
-    fee_payer: &SigningKey,
     tba_addr: &str,
     recipient_hex: &str,
     amount_wei: u128,
-    fee_token: &str,
 ) -> Result<String, String> {
     let recipient = parse_eth_address(recipient_hex)?;
     let transfer_data = encode_erc20_transfer(&recipient, amount_wei);
     tba_execute_call_sponsored(
         owner_signer,
-        fee_payer,
         tba_addr,
         LOCALHARNESS_TOKEN_ADDRESS(),
         0,
         &transfer_data,
-        fee_token,
     )
     .await
 }
@@ -642,9 +607,7 @@ pub(crate) fn encode_remove_signer(addr: &[u8; 20]) -> Vec<u8> {
 /// their balance; the credits accumulate at the diamond's address.
 pub async fn claim_and_maybe_set_main_sponsored(
     sender: &SigningKey,
-    fee_payer: &SigningKey,
     name: &str,
-    fee_token: &str,
 ) -> Result<String, String> {
     // Routable-label guard at the single first-claim chokepoint (juno-qa): the
     // registry will happily mint a >63-char / bad-char label, but the DNS
@@ -683,11 +646,11 @@ pub async fn claim_and_maybe_set_main_sponsored(
         let wallet_bal = token_balance_of(&sender_hex).await.unwrap_or(0);
         let bridge_wei = cost.saturating_sub(wallet_bal);
         sponsored_escrow_diamond_call_bridged(
-            sender, fee_payer, cost, register_input, fee_token, 2_200_000, bridge_wei,
+            sender, cost, register_input, 2_200_000, bridge_wei,
         )
         .await?
     } else {
-        sponsored_diamond_call(sender, fee_payer, register_input, fee_token, 2_200_000).await?
+        sponsored_diamond_call(sender, register_input, 2_200_000).await?
     };
 
     // After register, fetch the new tokenId and set MAIN if none.
@@ -695,7 +658,7 @@ pub async fn claim_and_maybe_set_main_sponsored(
     if let Ok(0) = main_of(&sender_addr).await {
         if let Ok(Status::Taken { agent_id }) = check_name(name).await {
             if let Err(err) =
-                register_main_sponsored(sender, fee_payer, agent_id, fee_token).await
+                register_main_sponsored(sender, agent_id).await
             {
                 log_main_warning(&err);
             }
@@ -718,7 +681,6 @@ pub async fn claim_and_maybe_set_main_sponsored(
 pub async fn claim_name_self_paid(
     sender: &SigningKey,
     name: &str,
-    fee_token: &str,
 ) -> Result<String, String> {
     if !crate::subdomain::is_valid_subdomain_label(name) {
         return Err(format!(
@@ -742,7 +704,7 @@ pub async fn claim_name_self_paid(
     // the sponsored 2.2M budget, bumped so the mint isn't left under-gassed on
     // mainnet after the approve/overhead (same class as the createGuild OOG).
     // Self-pay bills gas USED, so the headroom is free.
-    submit_tempo_self_paid(sender, calls, Some(fee_token), 4_000_000).await
+    submit_tempo_self_paid(sender, calls, Some(ALPHA_USD_ADDRESS()), 4_000_000).await
 }
 
 
