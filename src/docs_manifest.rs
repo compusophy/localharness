@@ -497,6 +497,64 @@ mod tests {
         );
     }
 
+    /// CLAUDE.md staleness guard (roadmap R1). The project map is loaded into
+    /// EVERY agent session, so its load-bearing facts must not drift: (a) it
+    /// must not pin a crate-version literal of the `(**X.Y.x**)` shape (one
+    /// went 9 minors stale); (b) any full 40-hex `0x…` address it still carries
+    /// must appear VERBATIM in the canonical sources (`src/registry/chain.rs`
+    /// or `src/app/sponsor.rs`) — addresses are READ from chain.rs, never
+    /// hand-copied. Skips if CLAUDE.md is absent (packaged crate).
+    #[test]
+    fn claude_md_facts_not_stale() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Ok(claude) = std::fs::read_to_string(root.join("CLAUDE.md")) else {
+            eprintln!("skip: CLAUDE.md not present (packaged crate)");
+            return;
+        };
+
+        // (a) No `(**X.Y.x**)` / `(**X.Y.Z**)` crate-version literal.
+        let is_num = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        for (i, _) in claude.match_indices("(**") {
+            let rest = &claude[i + 3..];
+            let Some(end) = rest.find("**)") else { continue };
+            let mut parts = rest[..end].split('.');
+            if let (Some(a), Some(b), Some(c), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            {
+                assert!(
+                    !(is_num(a) && is_num(b) && (c == "x" || is_num(c))),
+                    "CLAUDE.md pins a crate-version literal `(**{a}.{b}.{c}**)` — it WILL go \
+                     stale; point at Cargo.toml/crates.io instead."
+                );
+            }
+        }
+
+        // (b) Every full 40-hex address must exist verbatim in a canonical source.
+        let canon: String = ["src/registry/chain.rs", "src/app/sponsor.rs"]
+            .iter()
+            .map(|p| std::fs::read_to_string(root.join(p)).unwrap_or_default())
+            .collect();
+        let bytes = claude.as_bytes();
+        let mut i = 0;
+        while i + 42 <= bytes.len() {
+            if bytes[i] == b'0' && bytes[i + 1] == b'x' {
+                let hexlen = claude[i + 2..].bytes().take_while(u8::is_ascii_hexdigit).count();
+                if hexlen == 40 {
+                    let addr = &claude[i..i + 42];
+                    assert!(
+                        canon.contains(addr),
+                        "CLAUDE.md carries address `{addr}` that is not verbatim in \
+                         src/registry/chain.rs or src/app/sponsor.rs — don't hand-copy \
+                         addresses into the project map; point at chain.rs."
+                    );
+                }
+                i += 2 + hexlen.max(1);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     /// No managed doc may carry a STALE dependency pin (`localharness = "X.Y"`)
     /// — `fill` owns those now, so a drifted pin shows up as `dep-version` in the
     /// change report. This is the exact class that shipped a stale `0.47` past

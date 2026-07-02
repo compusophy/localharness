@@ -16,25 +16,21 @@ MCP, and context compaction (behind a `Connection`/`ConnectionStrategy` seam —
 Gemini/Anthropic/OpenAI/Mock backends ship). Build with `browser-app` on wasm32 and
 you also get the live IDE at `<name>.localharness.xyz`.
 
-- [crates.io/crates/localharness](https://crates.io/crates/localharness) (**0.51.x**) · [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
+- [crates.io/crates/localharness](https://crates.io/crates/localharness) (version: `Cargo.toml` / crates.io — never pinned here) · [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
 - Native: stable Rust 1.85+, tokio. wasm32: same crate, browser.
 - Live: `localharness.xyz` (apex) + wildcard `*.localharness.xyz` (per-user agents).
 - On-chain: EIP-2535 Diamond on Tempo Moderato testnet (chain 42431, RPC
   `https://rpc.moderato.tempo.xyz`); Tempo MAINNET live (chain 4217) — flip via
   `mainnet`. See **Canonical addresses** below.
 
-## Canonical addresses (post-reset)
+## Canonical addresses
 
-| What | Address |
-|------|---------|
-| Diamond (`registry::REGISTRY_ADDRESS`) | `0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c` |
-| `$LH` token (`LocalharnessCredits`, TIP-20) | `0x90B84c7234Aae89BadA7f69160B9901B9bc37B17` |
-| 6551 Registry | `0x2795810e5dfC8bC92Ef7fc9557F6c0699E11c3B3` |
-| 6551 Account impl (`MultiSignerAccount`) | `0x86be7c44d1940F4dE53A738153A12FaAEa68B5a7` |
-| Sponsor (fee_payer, in `sponsor.rs`) | `0x0AFf88Ad13eF24caC5BeFD0F9Dc3A05DF79a922C` |
-| Diamond owner (cut/admin key, NOT in repo) | `0x313b1659F5037080aA0C113D386C5954F348EF1e` |
-| AlphaUSD (sponsor fee_token) | `0x20c0000000000000000000000000000000000001` |
-| Credit proxy | `https://proxy-tau-ten-15.vercel.app` |
+Live in ONE place — `src/registry/chain.rs`: `MAINNET` (chain 4217, RPC
+`https://rpc.tempo.xyz` — the LIVE default) and `MODERATO` (testnet, chain 42431,
+RPC `https://rpc.moderato.tempo.xyz` — explicit dev opt-in), each pinning diamond
+/ `$LH` token / fee_token / explorer. Contract architecture + facet detail:
+`contracts/README.md`. Don't hand-copy addresses into docs — the table that used
+to live here went stale; READ chain.rs.
 
 **Per-facet addresses are NOT pinned** — facets churn via `diamondCut`; query live
 via DiamondLoupeFacet (`facets()` / `facetAddress(selector)`). The diamond address
@@ -592,10 +588,12 @@ regenerate. Gates enforce it: a `cargo test` drift-test
 `build-web.sh` regenerates pre-build, and `release.{sh,ps1}` run
 `gen-docs -- --check` in PRE-FLIGHT — **a version bump cannot ship stale docs.**
 
-**README.md = a DERIVED COPY of web/skill.md** (#56: ONE doc; gen-docs writes
-filled skill.md → README; edit skill.md only; guard `readme_skill_in_sync`).
-Hand-written: **docs.rs** (`///`) · **CLAUDE.md** (under 40K) · **CHANGELOG.md**
-· skill.md/llms.txt PROSE (only GEN-block facts generated).
+**README.md is HAND-WRITTEN and DECOUPLED from gen-docs** (#56's "one doc"
+derived-copy experiment was REVERSED): a substantive-but-guarded front door —
+no GEN blocks, zero testnet, no images, ≤220 lines; guard
+`readme_is_substantive_but_guarded` (`tests/readme_skill_in_sync.rs`).
+Hand-written: **README.md** · **docs.rs** (`///`) · **CLAUDE.md** (under 40K) ·
+**CHANGELOG.md** · skill.md/llms.txt PROSE (only GEN-block facts generated).
 
 **When to update what:** drift-prone fact (chain/version/pricing/tool/CLI) →
 `docs_manifest.rs` + `gen-docs`; new pub API → `///`; new module → CLAUDE.md tree; new agent tool → `AGENT_TOOLS` in the
