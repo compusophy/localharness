@@ -151,7 +151,10 @@ impl AnthropicClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<no body>".to_string());
-            return Err(Error::other(format!("anthropic HTTP {status}: {body}")));
+            return Err(Error::http_status(
+                status.as_u16(),
+                format!("anthropic HTTP {status}: {body}"),
+            ));
         }
 
         response
@@ -197,7 +200,10 @@ impl AnthropicClient {
             if debug_sse {
                 eprintln!("[anthropic ERROR] HTTP {status}: {body}");
             }
-            return Err(Error::other(format!("anthropic HTTP {status}: {body}")));
+            return Err(Error::http_status(
+                status.as_u16(),
+                format!("anthropic HTTP {status}: {body}"),
+            ));
         }
 
         let byte_stream = response

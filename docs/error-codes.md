@@ -178,13 +178,18 @@ error string to one of these; the `.turn-error` chat line shows `LH3xxx · <mean
 One code per [`Error`](https://docs.rs/localharness) enum variant, so `Error::code()`
 always resolves to a stable code (the `src/bin/localharness/` CLI prints it on failure).
 The string-wrapping variants (`Http`/`ToolFailed`/`Other`) first defer to `classify()`,
-so they surface a `LH3xxx` backend code when the message matches one.
+so they surface a `LH3xxx` backend code when the message matches one. The structured
+`HttpStatus { status, message }` variant (what the model backends raise on a non-2xx
+response) classifies off its **real status code** via `classify_http()` /
+`classify_status()` — no substring parsing — falling back to the message string for
+unmapped statuses, and to `LH4003` when nothing matches. Consumers can read the raw
+status via `Error::http_status_code()`.
 
 | Code | `Error` variant | Meaning |
 |------|-----------------|---------|
 | `LH4001` | `Io` | an OS-level I/O error |
 | `LH4002` | `Json` | a JSON (de)serialization error |
-| `LH4003` | `Http` | an HTTP transport error not matched by `classify()` |
+| `LH4003` | `Http` / `HttpStatus` | an HTTP transport error not matched by classification |
 | `LH4004` | `Closed` | the connection closed unexpectedly |
 | `LH4005` | `NotStarted` | the operation needs a started agent |
 | `LH4006` | `AlreadyStarted` | `start()` was called more than once |

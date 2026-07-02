@@ -137,7 +137,10 @@ impl GeminiClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<no body>".to_string());
-            return Err(Error::other(format!("gemini HTTP {status}: {body}")));
+            return Err(Error::http_status(
+                status.as_u16(),
+                format!("gemini HTTP {status}: {body}"),
+            ));
         }
 
         response
@@ -182,7 +185,10 @@ impl GeminiClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<no body>".to_string());
-            return Err(Error::other(format!("gemini HTTP {status}: {body}")));
+            return Err(Error::http_status(
+                status.as_u16(),
+                format!("gemini HTTP {status}: {body}"),
+            ));
         }
 
         let byte_stream = response.bytes_stream().map(|res| {

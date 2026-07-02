@@ -503,11 +503,43 @@ pub fn compact_index() -> String {
     out.trim_end().to_string()
 }
 
+/// Map a REAL HTTP status code to a stable `LH3xxx` backend code — the
+/// structured twin of [`classify`], which has to substring-match "429"/"503"
+/// out of prose. Used by [`classify_http`] for [`crate::Error::HttpStatus`];
+/// `None` for statuses that carry no backend meaning on their own (e.g. 400).
+pub fn classify_status(status: u16) -> Option<u16> {
+    match status {
+        429 => Some(BACKEND_RATE_LIMIT),
+        401 | 403 => Some(BACKEND_AUTH),
+        402 => Some(BACKEND_CREDITS),
+        408 => Some(BACKEND_TIMEOUT),
+        500..=599 => Some(BACKEND_SERVER),
+        _ => None,
+    }
+}
+
+/// Structured classification for an HTTP failure with a KNOWN status code
+/// (`Error::HttpStatus`): the one body-borne semantic override that must win
+/// regardless of status runs first (a stale device clock arrives as a 401 but
+/// is NOT an auth-key problem), then the real status decides
+/// ([`classify_status`]), then full string classification of the body is the
+/// fallback (a provider 400 whose body says "API key not valid" is still an
+/// auth failure). Legacy string-only errors keep using [`classify`] directly.
+pub fn classify_http(status: u16, body: &str) -> Option<u16> {
+    let l = body.to_lowercase();
+    if l.contains("stale or future timestamp") || l.contains("clock") {
+        return Some(BACKEND_STALE_AUTH);
+    }
+    classify_status(status).or_else(|| classify(body))
+}
+
 /// Map a raw error string to a stable `LH3xxx` backend/runtime code — the SINGLE
 /// source of truth for turning an opaque provider/proxy/transport message into a
 /// code. Used by both the chat `.turn-error` surface and [`crate::Error::code`]
 /// (for the string-wrapping `Http`/`Other`/`ToolFailed` variants). Returns
 /// `None` when nothing matches, so the caller can fall back to a core code.
+/// When the real numeric status is known, prefer the structured
+/// [`classify_http`] over substring-matching the digits out of prose.
 ///
 /// Order matters — most specific first. Pure + case-insensitive; no deps, so it
 /// is unit-tested headlessly.
@@ -692,6 +724,35 @@ mod tests {
             classify("429 RESOURCE_EXHAUSTED: project exceeded its monthly spending cap"),
             Some(BACKEND_RATE_LIMIT)
         );
+    }
+
+    #[test]
+    fn classify_status_reads_the_real_number() {
+        assert_eq!(classify_status(429), Some(BACKEND_RATE_LIMIT));
+        assert_eq!(classify_status(401), Some(BACKEND_AUTH));
+        assert_eq!(classify_status(403), Some(BACKEND_AUTH));
+        assert_eq!(classify_status(402), Some(BACKEND_CREDITS));
+        assert_eq!(classify_status(408), Some(BACKEND_TIMEOUT));
+        for s in [500, 502, 503, 504, 529] {
+            assert_eq!(classify_status(s), Some(BACKEND_SERVER), "status {s}");
+        }
+        // Statuses with no backend meaning of their own stay unclassified.
+        assert_eq!(classify_status(400), None);
+        assert_eq!(classify_status(404), None);
+        assert_eq!(classify_status(200), None);
+    }
+
+    #[test]
+    fn classify_http_status_first_with_overrides_and_fallback() {
+        // Structured: the status decides even with an opaque body.
+        assert_eq!(classify_http(429, "<opaque provider body>"), Some(BACKEND_RATE_LIMIT));
+        assert_eq!(classify_http(503, "x"), Some(BACKEND_SERVER));
+        // Stale device clock overrides the 401 it arrives under.
+        assert_eq!(classify_http(401, "stale or future timestamp"), Some(BACKEND_STALE_AUTH));
+        // Unmapped status falls back to the body string.
+        assert_eq!(classify_http(400, "API key not valid"), Some(BACKEND_AUTH));
+        assert_eq!(classify_http(400, "exceeded your quota"), Some(BACKEND_RATE_LIMIT));
+        assert_eq!(classify_http(418, "a perfectly ordinary message"), None);
     }
 
     #[test]

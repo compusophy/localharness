@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **HTTP errors now carry their status code structurally (additive — no breaking
+  change).** New `Error::HttpStatus { status, message }` variant (the enum is
+  `#[non_exhaustive]`, so adding it is semver-safe) with `Error::http_status(status,
+  msg)` constructor and `Error::http_status_code() -> Option<u16>` accessor; the
+  gemini/anthropic/openai non-2xx paths route through it. `Error::code()` for these
+  errors classifies off the REAL status via the new
+  `error_codes::{classify_status, classify_http}` (429→LH3001, 401/403→LH3002,
+  402→LH3003, 408→LH3004, 5xx→LH3006; stale-clock body still overrides to LH3008;
+  unmapped statuses fall back to string classification). Legacy string-wrapping
+  variants keep substring `classify()`. Error MESSAGES are byte-identical to before.
+  Behavioral delta: a 5xx whose body contains rate-limit words (e.g. a 503
+  "overloaded") now codes as LH3006 (server, transient → the stream-open retries it)
+  instead of LH3001 — the status is authoritative.
+
 - **The mock backend now drives the real `TurnEngine` — loop tests exercise shipped
   code.** `MockConnection` is no longer a parallel re-implementation of the turn
   loop: a `MockProvider` feeds the scripted step sequence to the shared

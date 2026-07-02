@@ -131,7 +131,10 @@ impl OpenAiClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<no body>".to_string());
-            return Err(Error::other(format!("openai HTTP {status}: {body}")));
+            return Err(Error::http_status(
+                status.as_u16(),
+                format!("openai HTTP {status}: {body}"),
+            ));
         }
 
         response
@@ -174,7 +177,10 @@ impl OpenAiClient {
             if debug_sse {
                 eprintln!("[openai ERROR] HTTP {status}: {body}");
             }
-            return Err(Error::other(format!("openai HTTP {status}: {body}")));
+            return Err(Error::http_status(
+                status.as_u16(),
+                format!("openai HTTP {status}: {body}"),
+            ));
         }
 
         let byte_stream = response
