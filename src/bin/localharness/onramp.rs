@@ -13,7 +13,10 @@ usage: localharness onramp --pay <usdce> [--as <name>]
   --as <name>     act as this local identity (its key signs the auth + the tx).
   The 402<->200 dance: POST without a credential -> parse the 402 Payment
   challenge (USDC.e, treasury recipient, quote) -> transfer USDC.e to the treasury
-  -> retry with the settlement tx -> the proxy verifies on-chain and mints $LH.";
+  -> retry with the settlement tx -> the proxy verifies on-chain and mints $LH.
+  --settlement-tx <hash>   RESUME a paid-but-unclaimed run (the prior claim timed out on
+                  a slow settlement): rerun with --settlement-tx <hash> --pay <same usdce>
+                  to claim WITHOUT paying again (the mint is idempotent, bound to the tx).";
 
 /// USDC.e is a 6-decimal TIP-20; `--pay` is parsed at this precision.
 const USDCE_DECIMALS: u32 = 6;
@@ -177,6 +180,11 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
 pub(crate) async fn onramp(args: &[String]) -> i32 {
     let mut pay: Option<String> = None;
     let mut as_name: Option<String> = None;
+    // RESUME: a prior run whose USDC.e payment landed but whose claim timed out
+    // (slow settlement confirmation). Given, we skip the challenge+payment and
+    // claim against this already-settled tx — the mint is idempotent, so no
+    // double-pay. Requires `--pay` too (the amount originally paid).
+    let mut resume_tx: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -197,6 +205,16 @@ pub(crate) async fn onramp(args: &[String]) -> i32 {
                 }
                 None => {
                     eprintln!("--as needs a name\n{ONRAMP_USAGE}");
+                    return 2;
+                }
+            },
+            "--settlement-tx" => match args.get(i + 1) {
+                Some(t) => {
+                    resume_tx = Some(t.clone());
+                    i += 2;
+                }
+                None => {
+                    eprintln!("--settlement-tx needs a tx hash\n{ONRAMP_USAGE}");
                     return 2;
                 }
             },
@@ -232,64 +250,73 @@ pub(crate) async fn onramp(args: &[String]) -> i32 {
     let endpoint = format!("{base}/mpp/onramp");
     let client = reqwest::Client::new();
 
-    // --- step 1: POST without a credential -> 402 + Payment challenge ---------
-    let challenge = match fetch_challenge(&client, &endpoint, &signer, usdce_units).await {
-        Ok(c) => c,
-        Err(e) => {
-            report_call_error("onramp: challenge request failed", &e);
-            return 1;
-        }
-    };
-    // Pay what the caller asked (`--pay`), but never UNDER the proxy's quoted
-    // minimum (`maxAmountRequired` is its band floor for the requested $LH). The
-    // proxy mints from the ON-CHAIN USDC.e amount at parity (it does not cap the
-    // mint to the quote), so paying our own `--pay` mints exactly that, while the
-    // floor keeps a too-small `--pay` from landing below the mintable minimum.
-    let to_pay = usdce_units.max(challenge.max_amount_required);
-    println!(
-        "402 challenge: treasury {} ({}); quoted minimum {} USDC.e",
-        challenge.pay_to,
-        challenge.asset,
-        fmt_usdce(challenge.max_amount_required)
-    );
-
-    // The asset the proxy named MUST be the USDC.e fee token we will self-pay in.
-    let fee_token = registry::ALPHA_USD_ADDRESS();
-    if challenge.asset.to_lowercase() != fee_token.to_lowercase() {
-        eprintln!(
-            "onramp: the 402 names asset {} but this chain's USDC.e is {} — refusing to pay \
-             (wrong chain? use `--dev` for testnet, or check the proxy config)",
-            challenge.asset, fee_token
+    // Acquire the settlement tx: RESUME a prior paid-but-unclaimed run
+    // (`--settlement-tx`, skips the challenge+payment), else do the full 402->pay
+    // dance. Either way the claim loop below is idempotent + bound to the tx.
+    let settlement_tx = if let Some(tx) = resume_tx {
+        println!("resuming: claiming against prior settlement tx {tx} (skipping payment; mint is idempotent — no double-pay)");
+        tx
+    } else {
+        // --- step 1: POST without a credential -> 402 + Payment challenge -----
+        let challenge = match fetch_challenge(&client, &endpoint, &signer, usdce_units).await {
+            Ok(c) => c,
+            Err(e) => {
+                report_call_error("onramp: challenge request failed", &e);
+                return 1;
+            }
+        };
+        // Pay what the caller asked (`--pay`), but never UNDER the proxy's quoted
+        // minimum (`maxAmountRequired` is its band floor for the requested $LH). The
+        // proxy mints from the ON-CHAIN USDC.e amount at parity (it does not cap the
+        // mint to the quote), so paying our own `--pay` mints exactly that, while the
+        // floor keeps a too-small `--pay` from landing below the mintable minimum.
+        let to_pay = usdce_units.max(challenge.max_amount_required);
+        println!(
+            "402 challenge: treasury {} ({}); quoted minimum {} USDC.e",
+            challenge.pay_to,
+            challenge.asset,
+            fmt_usdce(challenge.max_amount_required)
         );
-        return 1;
-    }
 
-    // --- step 2: SELF-PAY the quoted USDC.e to the treasury -------------------
-    // USDC.e is the Tempo fee token, NOT the diamond/$LH surface, so the keyless
-    // relay does not sponsor this — the caller signs both halves and pays its own
-    // gas in USDC.e. Must hold to_pay + gas.
-    println!("paying {} USDC.e to the treasury (self-paid, no sponsor) …", fmt_usdce(to_pay));
-    let settlement_tx = match registry::transfer_token_self_paid(
-        &signer,
-        fee_token,
-        &challenge.pay_to,
-        to_pay,
-        USDCE_TRANSFER_GAS,
-    )
-    .await
-    {
-        Ok(tx) => tx,
-        Err(e) => {
-            report_call_error("onramp: USDC.e payment failed", &e);
+        // The asset the proxy named MUST be the USDC.e fee token we will self-pay in.
+        let fee_token = registry::ALPHA_USD_ADDRESS();
+        if challenge.asset.to_lowercase() != fee_token.to_lowercase() {
             eprintln!(
-                "  hint: this is SELF-PAID — your wallet must hold {} USDC.e plus gas. \
-                 Check your USDC.e balance.",
-                fmt_usdce(to_pay)
+                "onramp: the 402 names asset {} but this chain's USDC.e is {} — refusing to pay \
+                 (wrong chain? use `--dev` for testnet, or check the proxy config)",
+                challenge.asset, fee_token
             );
             return 1;
         }
+
+        // --- step 2: SELF-PAY the quoted USDC.e to the treasury ---------------
+        // USDC.e is the Tempo fee token, NOT the diamond/$LH surface, so the keyless
+        // relay does not sponsor this — the caller signs both halves and pays its own
+        // gas in USDC.e. Must hold to_pay + gas.
+        println!("paying {} USDC.e to the treasury (self-paid, no sponsor) …", fmt_usdce(to_pay));
+        let tx = match registry::transfer_token_self_paid(
+            &signer,
+            fee_token,
+            &challenge.pay_to,
+            to_pay,
+            USDCE_TRANSFER_GAS,
+        )
+        .await
+        {
+            Ok(tx) => tx,
+            Err(e) => {
+                report_call_error("onramp: USDC.e payment failed", &e);
+                eprintln!(
+                    "  hint: this is SELF-PAID — your wallet must hold {} USDC.e plus gas. \
+                     Check your USDC.e balance.",
+                    fmt_usdce(to_pay)
+                );
+                return 1;
+            }
+        };
+        println!("  settled on-chain (tx {tx})");
+        tx
     };
-    println!("  settled on-chain (tx {settlement_tx})");
 
     // --- step 3: retry with the Payment credential -> verify + mint -----------
     // The settlement needs 1-2 Tempo blocks to confirm before the proxy can
@@ -312,9 +339,11 @@ pub(crate) async fn onramp(args: &[String]) -> i32 {
                     continue;
                 }
                 report_call_error("onramp: mint claim failed", &format!("HTTP {status}: {reason}"));
+                let as_hint = as_name.as_deref().map(|n| format!(" --as {n}")).unwrap_or_default();
                 eprintln!(
                     "  your USDC.e payment landed on-chain (tx {settlement_tx}); the mint is bound to \
-                     that tx and is idempotent, so you can safely retry the claim once it confirms."
+                     that tx and is idempotent. Retry the claim WITHOUT re-paying once it confirms:\n\
+                     \x20   localharness onramp --settlement-tx {settlement_tx} --pay {pay_raw}{as_hint}"
                 );
                 return 1;
             }
