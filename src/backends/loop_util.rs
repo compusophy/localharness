@@ -6,13 +6,14 @@
 //! openai. Hoisted to ONE home so a fix (e.g. canonical-path handling, the
 //! malformed-args convention) can't drift between backends.
 //!
-//! NOTE: currently consumed only by the OpenAI loop, so the module is gated on
-//! `feature = "openai"` to stay dead-code-free. As the gemini (always-on) and
-//! anthropic loops migrate to these impls, widen the gate in `backends/mod.rs`
-//! to unconditional (`extract_canonical_path` is also used by gemini) and
-//! `resolve_tool_args` to `any(feature = "anthropic", feature = "openai")`.
+//! The module is unconditional (`extract_canonical_path` is used by the
+//! always-on gemini loop); `resolve_tool_args` gates on
+//! `any(feature = "anthropic", feature = "openai")` — its consumers.
 
-use serde_json::{json, Value};
+use serde_json::Value;
+#[cfg(any(feature = "anthropic", feature = "openai"))]
+use serde_json::json;
+#[cfg(any(feature = "anthropic", feature = "openai"))]
 use tracing::warn;
 
 /// Resolve a tool call's concatenated streamed `arguments` fragment into parsed
@@ -20,6 +21,7 @@ use tracing::warn;
 /// NON-EMPTY fragment that fails to parse returns `({}, Some(error))`: the
 /// caller surfaces that error to the model as a tool error rather than running
 /// the tool with empty args silently.
+#[cfg(any(feature = "anthropic", feature = "openai"))]
 pub(crate) fn resolve_tool_args(name: &str, args_json: &str) -> (Value, Option<String>) {
     if args_json.trim().is_empty() {
         return (json!({}), None);
@@ -57,10 +59,12 @@ pub(crate) fn extract_canonical_path(args: &Value) -> Option<String> {
         .map(|p| p.join(file).display().to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "anthropic", feature = "openai")))]
 mod tests {
     use super::*;
 
+    /// THE canonical `resolve_tool_args` suite (the per-backend copies were
+    /// deduped here — anthropic/openai consume this one impl).
     #[test]
     fn resolve_tool_args_valid_empty_and_malformed() {
         // Valid JSON parses.

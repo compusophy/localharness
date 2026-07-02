@@ -64,9 +64,9 @@ impl std::fmt::Debug for AuthTokenProvider {
 pub(crate) mod dispatch;
 
 /// Small helpers shared by the streaming-backend turn loops (canonical-path
-/// resolution, the malformed-args convention). Gated on `feature = "openai"`
-/// for now — the only converted consumer; widen as gemini/anthropic migrate.
-#[cfg(feature = "openai")]
+/// resolution, the malformed-args convention). Unconditional: the always-on
+/// gemini loop uses `extract_canonical_path`; `resolve_tool_args` gates
+/// internally on `any(feature = "anthropic", feature = "openai")`.
 pub(crate) mod loop_util;
 
 /// The generic context-compaction fold engine (rolling summary + recent

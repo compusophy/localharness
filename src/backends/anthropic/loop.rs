@@ -30,6 +30,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::backends::dispatch::{dispatch_post_turn, dispatch_tool_call, gate_pre_turn};
+use crate::backends::loop_util::{extract_canonical_path, resolve_tool_args};
 use crate::backends::anthropic::api::SharedClient;
 use crate::backends::anthropic::wire::{
     Block, BlockDelta, ImageSource, Message, MessagesRequest, Role, StopReason, StreamEvent,
@@ -170,7 +171,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
     // never pollutes context. On deny the model is never called; the
     // turn_error Step becomes a stream `Err` via `subscribe_step_stream`.
     if let Some(denied) = gate_pre_turn(deps.hook_runner.as_ref(), &turn_ctx, &prompt).await {
-        emit_error(&deps.state, denied.clone());
+        deps.state.emit_error(denied.clone());
         deps.state.idle.store(true, Ordering::Release);
         deps.state.idle_notify.notify_waiters();
         return Err(Error::other(denied));
@@ -231,27 +232,20 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
 
         let paused = 'request: loop {
             let request = build_request(&deps.config, &deps.state.history.lock());
-            // Retry the stream OPEN on a transient transport/5xx/timeout (shared
-            // policy with the gemini + subagent loops; #29). A mid-stream error and
-            // auth/credits/rate-limit still fail fast.
-            let mut stream = {
-                let mut attempt = 0u32;
-                loop {
-                    attempt += 1;
-                    match deps.client.stream_messages(&request).await {
-                        Ok(s) => break s,
-                        Err(e) => {
-                            if crate::backends::retry::should_retry(e.code(), attempt) {
-                                crate::runtime::sleep_ms(crate::backends::retry::backoff_ms(attempt))
-                                    .await;
-                                continue;
-                            }
-                            emit_error(&deps.state, e.to_string());
-                            deps.state.idle.store(true, Ordering::Release);
-                            deps.state.idle_notify.notify_waiters();
-                            return Err(e);
-                        }
-                    }
+            // Retry the stream OPEN on a transient transport/5xx/timeout (ONE
+            // shared policy+wrapper with the gemini/openai + subagent loops; #29).
+            // A mid-stream error and auth/credits/rate-limit still fail fast.
+            let mut stream = match crate::backends::retry::open_stream_with_retry(|| {
+                deps.client.stream_messages(&request)
+            })
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    deps.state.emit_error(e.to_string());
+                    deps.state.idle.store(true, Ordering::Release);
+                    deps.state.idle_notify.notify_waiters();
+                    return Err(e);
                 }
             };
 
@@ -271,7 +265,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
                             "model stream stalled — no data for {}s",
                             idle_ms / 1000
                         ));
-                        emit_error(&deps.state, e.to_string());
+                        deps.state.emit_error(e.to_string());
                         deps.state.idle.store(true, Ordering::Release);
                         deps.state.idle_notify.notify_waiters();
                         return Err(e);
@@ -283,7 +277,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
                 let ev = match ev_res {
                     Ok(e) => e,
                     Err(e) => {
-                        emit_error(&deps.state, e.to_string());
+                        deps.state.emit_error(e.to_string());
                         deps.state.idle.store(true, Ordering::Release);
                         deps.state.idle_notify.notify_waiters();
                         return Err(e);
@@ -371,7 +365,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
                     StreamEvent::MessageStop => {}
                     StreamEvent::Error { error } => {
                         let msg = format!("anthropic stream error [{}]: {}", error.kind, error.message);
-                        emit_error(&deps.state, msg.clone());
+                        deps.state.emit_error(msg.clone());
                         deps.state.idle.store(true, Ordering::Release);
                         deps.state.idle_notify.notify_waiters();
                         return Err(Error::other(msg));
@@ -634,25 +628,6 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve a tool_use block's concatenated `partial_json` fragment into
-/// parsed args. An EMPTY/absent fragment is a valid no-arg call → `({}, None)`.
-/// A NON-EMPTY fragment that fails to parse returns `({}, Some(error))`: the
-/// caller surfaces that error to the model as a tool error rather than running
-/// the tool with empty args silently.
-fn resolve_tool_args(name: &str, args_json: &str) -> (Value, Option<String>) {
-    if args_json.trim().is_empty() {
-        return (json!({}), None);
-    }
-    match serde_json::from_str(args_json) {
-        Ok(v) => (v, None),
-        Err(e) => {
-            let msg = format!("malformed tool arguments for '{name}': {e} (got: {args_json})");
-            warn!(error = %e, name = %name, "tool_use args not valid JSON; surfacing tool error");
-            (json!({}), Some(msg))
-        }
-    }
-}
-
 /// Normalize a tool's return `Value` into a wire-valid `tool_result.content`.
 ///
 /// Anthropic's `tool_result.content` is typed `string | content_block[]` — a
@@ -744,28 +719,6 @@ fn accumulate_wire_usage(acc: &mut WireUsage, other: &WireUsage) {
     );
 }
 
-fn extract_canonical_path(args: &Value) -> Option<String> {
-    let path_str = args.get("path").and_then(|v| v.as_str())?;
-    let path = std::path::Path::new(path_str);
-    if let Ok(p) = dunce::canonicalize(path) {
-        return Some(p.display().to_string());
-    }
-    let parent = path.parent()?;
-    let file = path.file_name()?;
-    let parent = if parent.as_os_str().is_empty() {
-        std::path::Path::new(".")
-    } else {
-        parent
-    };
-    dunce::canonicalize(parent)
-        .ok()
-        .map(|p| p.join(file).display().to_string())
-}
-
-fn emit_error(state: &LoopState, message: String) {
-    state.emit(Step::turn_error(state.alloc_step_index(), message));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,37 +733,8 @@ mod tests {
         assert_eq!(render_system(&s), "be terse");
     }
 
-    #[test]
-    fn resolve_tool_args_valid_json_parses() {
-        let (args, err) = resolve_tool_args("view_file", r#"{"path":"main.rs"}"#);
-        assert!(err.is_none());
-        assert_eq!(args["path"], "main.rs");
-    }
-
-    #[test]
-    fn resolve_tool_args_empty_is_valid_no_arg_call() {
-        // A legitimately no-arg tool sends no partial_json → {} with no error.
-        let (args, err) = resolve_tool_args("list_subdomains", "");
-        assert!(err.is_none(), "empty args must NOT be treated as malformed");
-        assert_eq!(args, json!({}));
-        // Whitespace-only is also "no args".
-        let (args2, err2) = resolve_tool_args("list_subdomains", "   ");
-        assert!(err2.is_none());
-        assert_eq!(args2, json!({}));
-    }
-
-    #[test]
-    fn resolve_tool_args_malformed_surfaces_error_not_empty() {
-        // Non-empty but invalid JSON (e.g. truncated stream) → error, NOT a
-        // silent empty-object execution.
-        let (args, err) = resolve_tool_args("edit_file", r#"{"path":"a.rs","content":"#);
-        assert!(err.is_some(), "malformed non-empty args must surface an error");
-        let msg = err.unwrap();
-        assert!(msg.contains("malformed tool arguments for 'edit_file'"));
-        // args fall back to {} for the assistant-turn echo, but the error
-        // (set above) makes dispatch skip execution and report the failure.
-        assert_eq!(args, json!({}));
-    }
+    // `resolve_tool_args` tests: deduped into the canonical suite in
+    // `backends/loop_util.rs` (this loop consumes that one impl).
 
     /// REGRESSION: Anthropic's `tool_result.content` is typed
     /// `string | content_block[]`; a bare JSON object/array/number is

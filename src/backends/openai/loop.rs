@@ -204,7 +204,15 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
         let mut round_usage = WireUsage::default();
 
         let request = build_request(&deps.config, &deps.state.history.lock());
-        let mut stream = match deps.client.stream_chat(&request).await {
+        // Retry the stream OPEN on a transient transport/5xx/timeout (ONE shared
+        // policy+wrapper with the gemini/anthropic + subagent loops; #29 — this
+        // loop shipped WITHOUT the retry the other two had). A mid-stream error
+        // and auth/credits/rate-limit still fail fast.
+        let mut stream = match crate::backends::retry::open_stream_with_retry(|| {
+            deps.client.stream_chat(&request)
+        })
+        .await
+        {
             Ok(s) => s,
             Err(e) => {
                 deps.state.emit_error(e.to_string());
@@ -594,30 +602,8 @@ mod tests {
         assert_eq!(render_system(&s), "be terse");
     }
 
-    #[test]
-    fn resolve_tool_args_valid_json_parses() {
-        let (args, err) = resolve_tool_args("view_file", r#"{"path":"main.rs"}"#);
-        assert!(err.is_none());
-        assert_eq!(args["path"], "main.rs");
-    }
-
-    #[test]
-    fn resolve_tool_args_empty_is_valid_no_arg_call() {
-        let (args, err) = resolve_tool_args("list_subdomains", "");
-        assert!(err.is_none(), "empty args must NOT be treated as malformed");
-        assert_eq!(args, json!({}));
-        let (args2, err2) = resolve_tool_args("list_subdomains", "   ");
-        assert!(err2.is_none());
-        assert_eq!(args2, json!({}));
-    }
-
-    #[test]
-    fn resolve_tool_args_malformed_surfaces_error_not_empty() {
-        let (args, err) = resolve_tool_args("edit_file", r#"{"path":"a.rs","content":"#);
-        assert!(err.is_some(), "malformed non-empty args must surface an error");
-        assert!(err.unwrap().contains("malformed tool arguments for 'edit_file'"));
-        assert_eq!(args, json!({}));
-    }
+    // `resolve_tool_args` tests: deduped into the canonical suite in
+    // `backends/loop_util.rs` (this loop consumes that one impl).
 
     /// OpenAI's `tool` message content must be a STRING. A JSON object result
     /// becomes its compact JSON text; a string passes through verbatim.

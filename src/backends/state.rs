@@ -62,9 +62,8 @@ impl<M> LoopState<M> {
     /// Emit a System-sourced turn-FAILURE step (HTTP non-200, stream decode
     /// error, idle stall) which `subscribe_step_stream` translates into a
     /// stream `Err` for `chat()`/`text()`. Hoisted from the per-backend
-    /// `fn emit_error` free functions (L24). Gated on `feature = "openai"`
-    /// (the only migrated caller today); widen as gemini/anthropic adopt it.
-    #[cfg(feature = "openai")]
+    /// `fn emit_error` free functions (L24) — all three streaming loops
+    /// (gemini / anthropic / openai) call this method now.
     pub fn emit_error(&self, message: String) {
         self.emit(Step::turn_error(self.alloc_step_index(), message));
     }

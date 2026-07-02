@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **OpenAI backend now retries a transient stream-open failure (#29 drift).** The gemini and
+  anthropic turn loops retried a transient transport/5xx/timeout when OPENING the model stream;
+  the openai loop shipped without that retry, so a single 503 aborted the whole turn. The
+  retry-wrapped open is hoisted into the shared `backends::retry::open_stream_with_retry` and used
+  by all three loops, so the policy can't drift per-backend again. (Auth/credits/rate-limit still
+  fail fast; a mid-stream failure is never retried.)
+
+### Changed
+
+- Turn-loop phase A dedupe (roadmap R3): the byte-identical per-backend copies of
+  `extract_canonical_path`, `resolve_tool_args`, and the `emit_error` free fns collapsed into the
+  shared `backends::loop_util` / `LoopState::emit_error`. No behavior change outside the openai
+  retry above.
+
 ## [0.60.20] - 2026-07-02
 
 ### Fixed

@@ -23,6 +23,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::backends::dispatch::{dispatch_post_turn, dispatch_tool_call, gate_pre_turn};
+use crate::backends::loop_util::extract_canonical_path;
 use crate::backends::gemini::api::SharedClient;
 use crate::backends::gemini::compaction::{self, should_compact};
 use crate::backends::stream_timeout::{idle_timeout_ms, next_with_idle_timeout, NextChunk};
@@ -165,7 +166,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
     // never pollutes context. On deny the model is never called; the
     // turn_error Step becomes a stream `Err` via `subscribe_step_stream`.
     if let Some(denied) = gate_pre_turn(deps.hook_runner.as_ref(), &turn_ctx, &prompt).await {
-        emit_error(&deps.state, denied.clone());
+        deps.state.emit_error(denied.clone());
         deps.state.idle.store(true, Ordering::Release);
         deps.state.idle_notify.notify_waiters();
         return Err(Error::other(denied));
@@ -205,27 +206,20 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
 
         let request = build_request(&deps.config, &deps.state.history.lock());
         // Retry the stream OPEN on a transient transport/5xx/timeout (telemetry #29:
-        // a Gemini HTTP 503 aborted the whole turn). Shared policy with the anthropic
-        // + subagent loops; auth/credits/rate-limit fall through and fail fast, and a
-        // mid-stream failure (below) is never retried.
-        let mut stream = {
-            let mut attempt = 0u32;
-            loop {
-                attempt += 1;
-                match deps.client.stream_generate(&deps.config.model, &request).await {
-                    Ok(s) => break s,
-                    Err(e) => {
-                        if crate::backends::retry::should_retry(e.code(), attempt) {
-                            crate::runtime::sleep_ms(crate::backends::retry::backoff_ms(attempt))
-                                .await;
-                            continue;
-                        }
-                        emit_error(&deps.state, e.to_string());
-                        deps.state.idle.store(true, Ordering::Release);
-                        deps.state.idle_notify.notify_waiters();
-                        return Err(e);
-                    }
-                }
+        // a Gemini HTTP 503 aborted the whole turn). ONE shared policy+wrapper with
+        // the anthropic/openai + subagent loops; auth/credits/rate-limit fail fast,
+        // and a mid-stream failure (below) is never retried.
+        let mut stream = match crate::backends::retry::open_stream_with_retry(|| {
+            deps.client.stream_generate(&deps.config.model, &request)
+        })
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                deps.state.emit_error(e.to_string());
+                deps.state.idle.store(true, Ordering::Release);
+                deps.state.idle_notify.notify_waiters();
+                return Err(e);
             }
         };
 
@@ -255,7 +249,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
                         "model stream stalled — no data for {}s",
                         idle_ms / 1000
                     ));
-                    emit_error(&deps.state, e.to_string());
+                    deps.state.emit_error(e.to_string());
                     deps.state.idle.store(true, Ordering::Release);
                     deps.state.idle_notify.notify_waiters();
                     return Err(e);
@@ -268,7 +262,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
             let chunk = match chunk_res {
                 Ok(c) => c,
                 Err(e) => {
-                    emit_error(&deps.state, e.to_string());
+                    deps.state.emit_error(e.to_string());
                     deps.state.idle.store(true, Ordering::Release);
                     deps.state.idle_notify.notify_waiters();
                     return Err(e);
@@ -575,33 +569,6 @@ fn thinking_level_to_config(level: ThinkingLevel) -> ThinkingConfig {
         include_thoughts: Some(true),
     }
 }
-
-fn extract_canonical_path(args: &Value) -> Option<String> {
-    let path_str = args.get("path").and_then(|v| v.as_str())?;
-    let path = std::path::Path::new(path_str);
-    // Existing files / dirs: canonicalize directly.
-    if let Ok(p) = dunce::canonicalize(path) {
-        return Some(p.display().to_string());
-    }
-    // Non-existent target (e.g. create_file): canonicalize the parent
-    // and join the file name so workspace_only still has something to
-    // check against.
-    let parent = path.parent()?;
-    let file = path.file_name()?;
-    let parent = if parent.as_os_str().is_empty() {
-        std::path::Path::new(".")
-    } else {
-        parent
-    };
-    dunce::canonicalize(parent)
-        .ok()
-        .map(|p| p.join(file).display().to_string())
-}
-
-fn emit_error(state: &LoopState, message: String) {
-    state.emit(Step::turn_error(state.alloc_step_index(), message));
-}
-
 
 #[cfg(test)]
 mod tests {
