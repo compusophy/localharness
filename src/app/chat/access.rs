@@ -13,14 +13,21 @@ use crate::encoding::{bytes_to_hex_str, parse_address};
 pub(crate) async fn collect_payment_if_required() -> Result<Option<String>, String> {
     use crate::app::VerifyState;
 
-    let (price_wei, verify_state, tba) = APP.with(|cell| {
+    let (pricing_wei, verify_state, tba) = APP.with(|cell| {
         let app = cell.borrow();
         (
-            app.pricing_wei.unwrap_or(0),
+            app.pricing_wei,
             app.verify_state.clone(),
             app.tba_address.clone(),
         )
     });
+    // `None` = pricing not checked yet (verification still running); `Some(0)` = free.
+    // Do NOT collapse None to 0 (`unwrap_or(0)`) — a fast visitor could send before the
+    // price loads and bypass a PRICED agent's gate for free. Fail closed until known
+    // (same posture as the TBA/verify checks below); the window is a few seconds.
+    let Some(price_wei) = pricing_wei else {
+        return Err("agent pricing is still loading (verification running) — retry in a moment".into());
+    };
     if price_wei == 0 {
         return Ok(None);
     }
