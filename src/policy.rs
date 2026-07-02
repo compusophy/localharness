@@ -40,7 +40,10 @@ pub enum Decision {
 
 /// A closure that tests whether a policy applies to a given tool call.
 pub type Predicate = Arc<dyn Fn(&ToolCall) -> bool + Send + Sync>;
-/// A closure that prompts the user and returns `true` if approved.
+/// A closure that decides whether a matching tool call is approved: return
+/// `true` to approve, `false` to deny. It is the SDK's human-in-the-loop hook —
+/// the SDK calls it where a confirmation prompt would go; the closure itself
+/// returns the decision (it does not prompt).
 pub type AskUserHandler = Arc<dyn Fn(&ToolCall) -> bool + Send + Sync>;
 
 /// A declarative rule governing whether a tool call is allowed.
@@ -80,7 +83,20 @@ impl Policy {
         }
     }
 
-    /// Create an ask-user policy with a confirmation handler.
+    /// Create an ask-user policy: `handler` decides each matching call, returning
+    /// `true` to approve or `false` to deny (see [`AskUserHandler`]). This is the
+    /// human-in-the-loop hook — surface the [`ToolCall`] to the user however you
+    /// like and return their choice.
+    ///
+    /// # Examples
+    /// ```
+    /// use std::sync::Arc;
+    /// use localharness::policy::{Policy, AskUserHandler};
+    ///
+    /// // Approve read-only tools, deny writes. A real handler would prompt the user.
+    /// let handler: AskUserHandler = Arc::new(|call| !call.name.contains("_file"));
+    /// let _policy = Policy::ask("edit_file", handler);
+    /// ```
     pub fn ask(tool: impl Into<String>, handler: AskUserHandler) -> Self {
         Self {
             tool: tool.into(),
