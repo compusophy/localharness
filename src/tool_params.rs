@@ -201,9 +201,177 @@ crate::tool_params! {
     }
 }
 
+crate::tool_params! {
+    /// Args for the browser `create_subdomain` tool
+    /// (`src/app/chat/tools/platform.rs`) — sponsored name mint + optional
+    /// actor-model persona/prefund. Body keeps its own validate/trim logic.
+    pub struct CreateSubdomainParams: lenient {
+        name: req_str = "Subdomain to register, e.g. \"alice\" becomes \
+                    alice.localharness.xyz. 3-32 chars; lowercase letters, digits, \
+                    and hyphens only.",
+        persona: opt_str = "OPTIONAL system instruction / persona for the new \
+                    agent — published on-chain as its system prompt (the persona \
+                    that headless `call`s and the public face read). Omit to leave \
+                    the default.",
+        prefund_lh: opt_str = "OPTIONAL amount of $LH to prefund the new agent with, \
+                    as a decimal string (\"5\", \"1.5\"). Transferred from YOUR \
+                    wallet to the new subdomain's token-bound account (its own \
+                    spendable wallet — used to pay other agents via x402). Omit, or \
+                    pass \"0\", to skip. Must not exceed your $LH balance.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `create_and_publish_app` tool
+    /// (`src/app/chat/tools/platform.rs`) — one-shot compile + register + publish.
+    pub struct CreateAndPublishAppParams: lenient {
+        name: req_str = "Subdomain to register, e.g. \"clock\" becomes \
+                    clock.localharness.xyz. 3-32 chars; lowercase letters, digits, \
+                    and hyphens only.",
+        source: req_str = "rustlite cartridge source — the SAME dialect as \
+                    run_cartridge. Exports `fn frame(t: i32)` (animated) or \
+                    `fn render()` and draws via `use host::display;`. This becomes \
+                    the subdomain's fullscreen public face.",
+        persona: opt_str = "OPTIONAL system instruction / persona for the new \
+                    agent — published on-chain as its system prompt (read by \
+                    headless `call`s). Omit to leave the default.",
+        prefund_lh: opt_str = "OPTIONAL amount of $LH to prefund the new agent with, \
+                    as a decimal string (\"5\", \"1.5\"). Transferred from YOUR \
+                    wallet to the new subdomain's token-bound account (its own \
+                    spendable wallet). Omit, or pass \"0\", to skip. Must not exceed \
+                    your $LH balance.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `publish_app_to` tool
+    /// (`src/app/chat/tools/platform.rs`) — update-from-MAIN publish, confirm-gated.
+    pub struct PublishAppToParams: lenient {
+        name: req_str = "The subdomain to publish to — MUST be one you already \
+                    own (e.g. \"clock\" → clock.localharness.xyz). Can be different from \
+                    the subdomain you are currently on. To create a NEW subdomain, use \
+                    create_and_publish_app instead.",
+        source: req_str = "rustlite cartridge source — the SAME dialect as \
+                    run_cartridge / create_and_publish_app. Exports `fn frame(t: i32)` \
+                    (animated) or `fn render()` and draws via `use host::display;`. \
+                    Becomes the target subdomain's fullscreen public face.",
+        confirmation: opt_str = "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. State \
+                    which subdomain you will update, ask the owner to TYPE the code in \
+                    chat, then retry with it. Never invent it; only the platform issues it.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `embed_app` tool (`src/app/chat/tools/platform.rs`).
+    pub struct EmbedAppParams: lenient {
+        name: req_str = "Subdomain whose published cartridge to embed, \
+                    e.g. \"pong\" embeds pong.localharness.xyz's app inline.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `publish_public_face` tool
+    /// (`src/app/chat/tools/platform.rs`).
+    pub struct PublishPublicFaceParams: lenient {
+        choice: req_str = "Which face to publish: \"app\" (compile + publish \
+                    this device's local app.rl as a fullscreen cartridge), \
+                    \"html\" (publish local index.html), or \"directory\" (a \
+                    profile landing listing your sibling agents).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `release_subdomain` tool
+    /// (`src/app/chat/tools/platform.rs`) — DESTRUCTIVE burn, confirm-gated.
+    pub struct ReleaseSubdomainParams: lenient {
+        name: req_str = "Subdomain to release/recycle — burns the NFT, frees the name.",
+        confirmation: opt_str = "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code that is shown to the owner. \
+                    Relay it, wait for the owner to TYPE that code in chat, then retry \
+                    with the code here. Never invent it; only the platform issues it.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `discover_agents` tool
+    /// (`src/app/chat/tools/platform.rs`) — read-only registry scan.
+    pub struct DiscoverAgentsParams: lenient {
+        query: req_str = "What to look for — capabilities, topics, or \
+                    keywords matched (case-insensitively) against agent names \
+                    and personas. Several keywords are ORed and ranked by \
+                    overlap (e.g. \"solidity audit security\"). \
+                    Empty returns recent agents.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `query_balance` tool
+    /// (`src/app/chat/tools/platform.rs`) — read-only balance lookup.
+    pub struct QueryBalanceParams: lenient {
+        target: req_str = "an agent NAME (e.g. \"binglescan\") or a 0x address",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `post_bounty` tool (`src/app/chat/tools/bounty.rs`)
+    /// — escrow $LH behind an on-chain task. Body keeps parse/positivity checks.
+    pub struct PostBountyParams: lenient {
+        task: req_str = "The task to be done — a clear, self-contained \
+                    description of what a claimant must deliver to earn the reward.",
+        reward_lh: req_str = "Reward in $LH, as a decimal string (\"5\", \"1.5\"). \
+                    Escrowed from YOUR wallet when the bounty is posted; paid out to \
+                    the claimant when you accept their result. Must be > 0.",
+        ttl_hours: opt_str = "OPTIONAL lifetime in hours before the bounty expires \
+                    (decimal). Omit for the 24h default.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `set_persona` tool (`src/app/chat/tools/misc.rs`)
+    /// — SELF-EDIT of the agent's own system instruction.
+    pub struct SetPersonaParams: lenient {
+        text: req_str = "The new system instruction / persona for YOURSELF — \
+                    your role, personality, and constraints. This becomes both your \
+                    on-chain published persona AND your local custom system prompt; it \
+                    takes effect on your next session. Keep it focused.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `record_lesson` tool (`src/app/chat/tools/misc.rs`)
+    /// — the write half of the LESSONS LOOP.
+    pub struct RecordLessonParams: lenient {
+        lesson: req_str = "ONE short lesson (a single sentence, max 240 chars) \
+                    learned from a REAL error, failed tool call, or user correction. \
+                    Make it concrete and actionable (what to do differently next \
+                    time), not a description of what happened.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `notify` tool (`src/app/chat/tools/misc.rs`)
+    /// — local device notification or cross-agent inbox push.
+    pub struct NotifyParams: lenient {
+        title: req_str = "Short notification title, e.g. \"timer done\" or \
+                    \"new message from dex\".",
+        body: opt_str = "Optional body text shown under the title. Keep it \
+                    to a sentence.",
+        vibrate: opt_bool = "Also vibrate the device (mobile only; silently \
+                    ignored where unsupported).",
+        to: opt_str = "CROSS-AGENT: deliver to ANOTHER agent's \
+                    notification inbox instead of this device — the target \
+                    subdomain name, e.g. \"krafto\". Routed via the platform \
+                    proxy (costs the per-request $LH like a model call); the \
+                    push title is stamped with YOUR identity so the recipient \
+                    sees who pinged them. Omit for a local notification on \
+                    this device.",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SendLhParams;
+    use super::*;
     use serde_json::{json, Value};
 
     crate::tool_params! {
@@ -264,6 +432,18 @@ mod tests {
             ("AllKinds", AllKinds::schema()),
             ("AllKindsLenient", AllKindsLenient::schema()),
             ("SendLhParams", SendLhParams::schema()),
+            ("CreateSubdomainParams", CreateSubdomainParams::schema()),
+            ("CreateAndPublishAppParams", CreateAndPublishAppParams::schema()),
+            ("PublishAppToParams", PublishAppToParams::schema()),
+            ("EmbedAppParams", EmbedAppParams::schema()),
+            ("PublishPublicFaceParams", PublishPublicFaceParams::schema()),
+            ("ReleaseSubdomainParams", ReleaseSubdomainParams::schema()),
+            ("DiscoverAgentsParams", DiscoverAgentsParams::schema()),
+            ("QueryBalanceParams", QueryBalanceParams::schema()),
+            ("PostBountyParams", PostBountyParams::schema()),
+            ("SetPersonaParams", SetPersonaParams::schema()),
+            ("RecordLessonParams", RecordLessonParams::schema()),
+            ("NotifyParams", NotifyParams::schema()),
         ] {
             assert_gemini_safe(&schema, name);
         }
@@ -392,5 +572,315 @@ mod tests {
         assert_eq!(p.amount, "1.5");
         // old: .map(|s| !s.trim().is_empty()).unwrap_or(false) → still false
         assert!(!p.confirmation.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false));
+    }
+
+    /// BYTE-IDENTITY for the chat-tools wave: each generated schema serializes
+    /// byte-for-byte equal to the hand-written literal it replaced in
+    /// `src/app/chat/tools/{platform,bounty,misc}.rs` (frozen verbatim below) —
+    /// the same migration contract as `send_lh` above.
+    #[test]
+    fn chat_tool_schemas_are_byte_identical_to_the_frozen_originals() {
+        let cases: [(&str, Value, Value); 12] = [
+            ("create_subdomain", CreateSubdomainParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Subdomain to register, e.g. \"alice\" \
+                            becomes alice.localharness.xyz. 3-32 chars; lowercase \
+                            letters, digits, and hyphens only."
+                    },
+                    "persona": {
+                        "type": "string",
+                        "description": "OPTIONAL system instruction / persona for the new \
+                            agent — published on-chain as its system prompt (the persona \
+                            that headless `call`s and the public face read). Omit to leave \
+                            the default."
+                    },
+                    "prefund_lh": {
+                        "type": "string",
+                        "description": "OPTIONAL amount of $LH to prefund the new agent with, \
+                            as a decimal string (\"5\", \"1.5\"). Transferred from YOUR \
+                            wallet to the new subdomain's token-bound account (its own \
+                            spendable wallet — used to pay other agents via x402). Omit, or \
+                            pass \"0\", to skip. Must not exceed your $LH balance."
+                    }
+                },
+                "required": ["name"]
+            })),
+            ("create_and_publish_app", CreateAndPublishAppParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Subdomain to register, e.g. \"clock\" \
+                            becomes clock.localharness.xyz. 3-32 chars; lowercase \
+                            letters, digits, and hyphens only."
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "rustlite cartridge source — the SAME dialect as \
+                            run_cartridge. Exports `fn frame(t: i32)` (animated) or \
+                            `fn render()` and draws via `use host::display;`. This becomes \
+                            the subdomain's fullscreen public face."
+                    },
+                    "persona": {
+                        "type": "string",
+                        "description": "OPTIONAL system instruction / persona for the new \
+                            agent — published on-chain as its system prompt (read by \
+                            headless `call`s). Omit to leave the default."
+                    },
+                    "prefund_lh": {
+                        "type": "string",
+                        "description": "OPTIONAL amount of $LH to prefund the new agent with, \
+                            as a decimal string (\"5\", \"1.5\"). Transferred from YOUR \
+                            wallet to the new subdomain's token-bound account (its own \
+                            spendable wallet). Omit, or pass \"0\", to skip. Must not exceed \
+                            your $LH balance."
+                    }
+                },
+                "required": ["name", "source"]
+            })),
+            ("publish_app_to", PublishAppToParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The subdomain to publish to — MUST be one you already \
+                            own (e.g. \"clock\" → clock.localharness.xyz). Can be different from \
+                            the subdomain you are currently on. To create a NEW subdomain, use \
+                            create_and_publish_app instead."
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "rustlite cartridge source — the SAME dialect as \
+                            run_cartridge / create_and_publish_app. Exports `fn frame(t: i32)` \
+                            (animated) or `fn render()` and draws via `use host::display;`. \
+                            Becomes the target subdomain's fullscreen public face."
+                    },
+                    "confirmation": {
+                        "type": "string",
+                        "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                            first call — it returns a challenge code shown to the owner. State \
+                            which subdomain you will update, ask the owner to TYPE the code in \
+                            chat, then retry with it. Never invent it; only the platform issues it."
+                    }
+                },
+                "required": ["name", "source"]
+            })),
+            ("embed_app", EmbedAppParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Subdomain whose published cartridge to embed, \
+                            e.g. \"pong\" embeds pong.localharness.xyz's app inline."
+                    }
+                },
+                "required": ["name"]
+            })),
+            ("publish_public_face", PublishPublicFaceParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "choice": {
+                        "type": "string",
+                        "description": "Which face to publish: \"app\" (compile + publish \
+                            this device's local app.rl as a fullscreen cartridge), \
+                            \"html\" (publish local index.html), or \"directory\" (a \
+                            profile landing listing your sibling agents)."
+                    }
+                },
+                "required": ["choice"]
+            })),
+            ("release_subdomain", ReleaseSubdomainParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Subdomain to release/recycle — burns the NFT, frees the name."
+                    },
+                    "confirmation": {
+                        "type": "string",
+                        "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                            first call — it returns a challenge code that is shown to the owner. \
+                            Relay it, wait for the owner to TYPE that code in chat, then retry \
+                            with the code here. Never invent it; only the platform issues it."
+                    }
+                },
+                "required": ["name"]
+            })),
+            ("discover_agents", DiscoverAgentsParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What to look for — capabilities, topics, or \
+                            keywords matched (case-insensitively) against agent names \
+                            and personas. Several keywords are ORed and ranked by \
+                            overlap (e.g. \"solidity audit security\"). \
+                            Empty returns recent agents."
+                    }
+                },
+                "required": ["query"]
+            })),
+            ("query_balance", QueryBalanceParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "an agent NAME (e.g. \"binglescan\") or a 0x address"
+                    }
+                },
+                "required": ["target"]
+            })),
+            ("post_bounty", PostBountyParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "The task to be done — a clear, self-contained \
+                            description of what a claimant must deliver to earn the reward."
+                    },
+                    "reward_lh": {
+                        "type": "string",
+                        "description": "Reward in $LH, as a decimal string (\"5\", \"1.5\"). \
+                            Escrowed from YOUR wallet when the bounty is posted; paid out to \
+                            the claimant when you accept their result. Must be > 0."
+                    },
+                    "ttl_hours": {
+                        "type": "string",
+                        "description": "OPTIONAL lifetime in hours before the bounty expires \
+                            (decimal). Omit for the 24h default."
+                    }
+                },
+                "required": ["task", "reward_lh"]
+            })),
+            ("set_persona", SetPersonaParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The new system instruction / persona for YOURSELF — \
+                            your role, personality, and constraints. This becomes both your \
+                            on-chain published persona AND your local custom system prompt; it \
+                            takes effect on your next session. Keep it focused."
+                    }
+                },
+                "required": ["text"]
+            })),
+            ("record_lesson", RecordLessonParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "lesson": {
+                        "type": "string",
+                        "description": "ONE short lesson (a single sentence, max 240 chars) \
+                            learned from a REAL error, failed tool call, or user correction. \
+                            Make it concrete and actionable (what to do differently next \
+                            time), not a description of what happened."
+                    }
+                },
+                "required": ["lesson"]
+            })),
+            ("notify", NotifyParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short notification title, e.g. \"timer done\" or \
+                            \"new message from dex\"."
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Optional body text shown under the title. Keep it \
+                            to a sentence."
+                    },
+                    "vibrate": {
+                        "type": "boolean",
+                        "description": "Also vibrate the device (mobile only; silently \
+                            ignored where unsupported)."
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "CROSS-AGENT: deliver to ANOTHER agent's \
+                            notification inbox instead of this device — the target \
+                            subdomain name, e.g. \"krafto\". Routed via the platform \
+                            proxy (costs the per-request $LH like a model call); the \
+                            push title is stamped with YOUR identity so the recipient \
+                            sees who pinged them. Omit for a local notification on \
+                            this device."
+                    }
+                },
+                "required": ["title"]
+            })),
+        ];
+        for (name, generated, frozen) in cases {
+            assert_eq!(generated.to_string(), frozen.to_string(), "schema drift: {name}");
+        }
+    }
+
+    /// Lenient parity for the chat-tools wave: the extraction feeds each tool's
+    /// unchanged body validation the same values the old inline
+    /// `.get().and_then().unwrap_or()` chains produced, including the edges
+    /// (missing args, wrong types, empty/whitespace optionals).
+    #[test]
+    fn chat_tool_lenient_matches_the_old_inline_extraction() {
+        // create_subdomain: missing/wrong-typed → defaults; want_persona /
+        // want_prefund logic sees identical values.
+        let p = CreateSubdomainParams::lenient(&json!({"name": 7, "persona": true}));
+        assert_eq!((p.name.as_str(), p.persona, p.prefund_lh), ("", None, None));
+        let p = CreateSubdomainParams::lenient(
+            &json!({"name": " alice ", "persona": "  ", "prefund_lh": "0"}),
+        );
+        assert_eq!(p.name.trim(), "alice");
+        // old: persona.map(|p| !p.trim().is_empty()).unwrap_or(false) → false
+        assert!(!p.persona.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false));
+        // old: prefund.map(|p| { let t = p.trim(); !t.is_empty() && t != "0" }) → false
+        let t = p.prefund_lh.as_deref().unwrap().trim();
+        assert!(t.is_empty() || t == "0");
+
+        // create_and_publish_app / publish_app_to: req_str "" default keeps the
+        // body's empty-source error path reachable exactly as before.
+        let p = CreateAndPublishAppParams::lenient(&json!({"name": "x"}));
+        assert_eq!(p.source, "");
+        let p = PublishAppToParams::lenient(&json!({"name": "x", "source": "s"}));
+        assert!(!p.confirmation.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false));
+        let p = PublishAppToParams::lenient(&json!({"confirmation": "c0de"}));
+        assert!(p.confirmation.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false));
+
+        // Single-required-string tools: missing OR wrong-typed → "".
+        assert_eq!(EmbedAppParams::lenient(&json!({})).name, "");
+        assert_eq!(PublishPublicFaceParams::lenient(&json!({"choice": 3})).choice, "");
+        assert_eq!(PublishPublicFaceParams::lenient(&json!({"choice": "APP "})).choice, "APP ");
+        assert_eq!(DiscoverAgentsParams::lenient(&json!({})).query, "");
+        assert_eq!(QueryBalanceParams::lenient(&json!({"target": " k "})).target, " k ");
+        assert_eq!(SetPersonaParams::lenient(&json!({"text": 1})).text, "");
+        assert_eq!(RecordLessonParams::lenient(&json!({})).lesson, "");
+        let p = ReleaseSubdomainParams::lenient(&json!({"name": " z "}));
+        assert_eq!(p.name.trim().to_string(), "z");
+        assert_eq!(p.confirmation, None);
+
+        // post_bounty: ttl_hours missing/blank → the body's 24h default arm.
+        let p = PostBountyParams::lenient(&json!({"task": " t ", "reward_lh": "1.5"}));
+        assert_eq!((p.task.trim(), p.reward_lh.trim()), ("t", "1.5"));
+        assert!(p.ttl_hours.is_none());
+        let p = PostBountyParams::lenient(&json!({"ttl_hours": "  "}));
+        // old match arm: Some(s) if !s.trim().is_empty() → falls to the 24h default
+        assert!(!matches!(p.ttl_hours.as_deref(), Some(s) if !s.trim().is_empty()));
+
+        // notify: body defaults to "", vibrate wrong-typed → false, `to` empty
+        // string filtered out (local path), populated `to` normalized by the body.
+        let p = NotifyParams::lenient(&json!({"title": "hi", "vibrate": 1, "to": ""}));
+        assert_eq!(p.body.as_deref().unwrap_or(""), "");
+        assert!(!p.vibrate.unwrap_or(false));
+        assert_eq!(
+            p.to.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()),
+            None
+        );
+        let p = NotifyParams::lenient(&json!({"to": " Krafto ", "vibrate": true}));
+        assert_eq!(
+            p.to.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()),
+            Some("krafto".to_string())
+        );
+        assert!(p.vibrate.unwrap_or(false));
     }
 }

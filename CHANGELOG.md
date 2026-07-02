@@ -19,7 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wire schemas and parse/validation behavior unchanged. Still hand-written (need
   kinds the table doesn't have): ask_question / configure_agent / compile_rustlite
   (array fields), finish (type-less `output`), run_command (`maximum`),
-  current_time (no args).
+  current_time (no args). PLUS the first CHAT-TOOLS wave: 12 browser chat tools
+  (create_subdomain, create_and_publish_app, publish_app_to, embed_app,
+  publish_public_face, release_subdomain, discover_agents, query_balance,
+  post_bounty, set_persona, record_lesson, notify) migrated in lenient mode with
+  their tables HOISTED to `src/tool_params.rs` like send_lh — so plain `cargo
+  test` byte-checks these wasm-gated (`browser-app`) schemas natively for the
+  first time. Skipped pending new kinds: claim_bounty / submit_result /
+  accept_result (required u64 that errors on missing — no lenient kind conflates
+  that with a real id 0), attest (`maximum` + int-or-string rating coercion),
+  discover_bounties (its literal `"required": []` can't byte-match the macro's
+  omit-when-empty), the array/batch tools, and the no-arg tools.
 
 - **`registry::*_sponsored` wrappers no longer take `fee_payer`/`fee_token`**
   (BREAKING on the semver-exempt `registry::` surface). Every call site passed

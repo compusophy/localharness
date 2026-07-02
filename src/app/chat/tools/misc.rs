@@ -26,19 +26,9 @@ use super::platform::{create_and_publish_app_tool, create_subdomain_tool};
 /// (see `set_persona_allowed` / `start_session`). A low-autonomy agent (one with
 /// a restrictive allowlist that omits `set_persona`) never receives this tool.
 pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "text": {
-                "type": "string",
-                "description": "The new system instruction / persona for YOURSELF — \
-                    your role, personality, and constraints. This becomes both your \
-                    on-chain published persona AND your local custom system prompt; it \
-                    takes effect on your next session. Keep it focused."
-            }
-        },
-        "required": ["text"]
-    });
+    // Schema + lenient extraction from ONE hoisted table
+    // (`crate::tool_params::SetPersonaParams`), byte-identity-tested natively.
+    let schema = crate::tool_params::SetPersonaParams::schema();
     ClosureTool::new(
         "set_persona",
         "SELF-EDIT: set YOUR OWN system instruction (how you behave). Publishes `text` \
@@ -50,7 +40,8 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          { persona_set, length, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let params = crate::tool_params::SetPersonaParams::lenient(&args);
+            let text = params.text.trim();
             if text.is_empty() {
                 return Err(crate::error::Error::other(
                     "set_persona text cannot be empty (to clear, edit your config instead)",
@@ -107,19 +98,8 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// Every surface (browser session, headless CLI `call`, scheduler worker)
 /// folds the blob into the system prompt via `compose_section`.
 pub(crate) fn record_lesson_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "lesson": {
-                "type": "string",
-                "description": "ONE short lesson (a single sentence, max 240 chars) \
-                    learned from a REAL error, failed tool call, or user correction. \
-                    Make it concrete and actionable (what to do differently next \
-                    time), not a description of what happened."
-            }
-        },
-        "required": ["lesson"]
-    });
+    // Hoisted table: `crate::tool_params::RecordLessonParams`.
+    let schema = crate::tool_params::RecordLessonParams::schema();
     ClosureTool::new(
         "record_lesson",
         "Record ONE short lesson after a REAL error, failed tool call, or user \
@@ -132,7 +112,8 @@ pub(crate) fn record_lesson_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          total_lessons, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let lesson = args.get("lesson").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let params = crate::tool_params::RecordLessonParams::lenient(&args);
+            let lesson = params.lesson.trim();
             if lesson.is_empty() {
                 return Err(crate::error::Error::other("record_lesson lesson cannot be empty"));
             }
@@ -540,37 +521,8 @@ pub(crate) fn delete_skill_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// through the service-worker registration when available (the page
 /// constructor throws on Android).
 pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "title": {
-                "type": "string",
-                "description": "Short notification title, e.g. \"timer done\" or \
-                    \"new message from dex\"."
-            },
-            "body": {
-                "type": "string",
-                "description": "Optional body text shown under the title. Keep it \
-                    to a sentence."
-            },
-            "vibrate": {
-                "type": "boolean",
-                "description": "Also vibrate the device (mobile only; silently \
-                    ignored where unsupported)."
-            },
-            "to": {
-                "type": "string",
-                "description": "CROSS-AGENT: deliver to ANOTHER agent's \
-                    notification inbox instead of this device — the target \
-                    subdomain name, e.g. \"krafto\". Routed via the platform \
-                    proxy (costs the per-request $LH like a model call); the \
-                    push title is stamped with YOUR identity so the recipient \
-                    sees who pinged them. Omit for a local notification on \
-                    this device."
-            }
-        },
-        "required": ["title"]
-    });
+    // Hoisted table: `crate::tool_params::NotifyParams`.
+    let schema = crate::tool_params::NotifyParams::schema();
     ClosureTool::new(
         "notify",
         "Show a system NOTIFICATION on the user's device, optionally vibrating it \
@@ -589,20 +541,21 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          `note` so the user knows the target must enable notifications first.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let params = crate::tool_params::NotifyParams::lenient(&args);
+            let title = params.title.trim();
             if title.is_empty() {
                 return Err(crate::error::Error::other("notify title cannot be empty"));
             }
-            let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
-            let to = args
-                .get("to")
-                .and_then(|v| v.as_str())
+            let body = params.body.as_deref().unwrap_or("");
+            let to = params
+                .to
+                .as_deref()
                 .map(|s| s.trim().to_lowercase())
                 .filter(|s| !s.is_empty());
             if let Some(to) = to {
                 return notify_cross_agent(&to, title, body).await;
             }
-            let vibrate = args.get("vibrate").and_then(|v| v.as_bool()).unwrap_or(false);
+            let vibrate = params.vibrate.unwrap_or(false);
             // Vibration is independent of Notification permission — fire it
             // even if the notification itself ends up blocked.
             let vibrated = vibrate && crate::app::notifications::vibrate(200);

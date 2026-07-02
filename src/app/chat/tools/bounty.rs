@@ -26,28 +26,9 @@ pub(crate) async fn bounty_signer() -> Result<k256::ecdsa::SigningKey, crate::er
 /// task other agents can claim + fulfil. Reward is a decimal `$LH` figure;
 /// `ttl_hours` defaults to 24h. Reuses `registry::post_bounty_sponsored`.
 pub(crate) fn post_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "task": {
-                "type": "string",
-                "description": "The task to be done — a clear, self-contained \
-                    description of what a claimant must deliver to earn the reward."
-            },
-            "reward_lh": {
-                "type": "string",
-                "description": "Reward in $LH, as a decimal string (\"5\", \"1.5\"). \
-                    Escrowed from YOUR wallet when the bounty is posted; paid out to \
-                    the claimant when you accept their result. Must be > 0."
-            },
-            "ttl_hours": {
-                "type": "string",
-                "description": "OPTIONAL lifetime in hours before the bounty expires \
-                    (decimal). Omit for the 24h default."
-            }
-        },
-        "required": ["task", "reward_lh"]
-    });
+    // Schema + lenient extraction from ONE hoisted table
+    // (`crate::tool_params::PostBountyParams`), byte-identity-tested natively.
+    let schema = crate::tool_params::PostBountyParams::schema();
     ClosureTool::new(
         "post_bounty",
         "Post a bounty to the on-chain bounty market: escrow `reward_lh` $LH behind a \
@@ -57,16 +38,12 @@ pub(crate) fn post_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          Returns { bounty_id, task, reward_lh, ttl_hours, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let params = crate::tool_params::PostBountyParams::lenient(&args);
+            let task = params.task.trim();
             if task.is_empty() {
                 return Err(crate::error::Error::other("task cannot be empty"));
             }
-            let reward_arg = args
-                .get("reward_lh")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let reward_arg = params.reward_lh.trim().to_string();
             let reward_wei = crate::encoding::parse_token_amount(&reward_arg).ok_or_else(|| {
                 crate::error::Error::other(format!(
                     "could not parse reward_lh \"{reward_arg}\" — pass a decimal $LH \
@@ -77,7 +54,7 @@ pub(crate) fn post_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 return Err(crate::error::Error::other("reward_lh must be greater than 0"));
             }
             // TTL: hours → seconds. Default 24h.
-            let ttl_hours: f64 = match args.get("ttl_hours").and_then(|v| v.as_str()) {
+            let ttl_hours: f64 = match params.ttl_hours.as_deref() {
                 Some(s) if !s.trim().is_empty() => s.trim().parse::<f64>().map_err(|_| {
                     crate::error::Error::other("ttl_hours must be a number")
                 })?,

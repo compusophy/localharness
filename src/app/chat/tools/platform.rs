@@ -118,33 +118,9 @@ async fn meter_bridge_call(
 /// the iframe signer. Returns the tx hash. Sanitises the input the same
 /// way `tenant::sanitize` does for the apex claim form.
 pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Subdomain to register, e.g. \"alice\" \
-                    becomes alice.localharness.xyz. 3-32 chars; lowercase \
-                    letters, digits, and hyphens only."
-            },
-            "persona": {
-                "type": "string",
-                "description": "OPTIONAL system instruction / persona for the new \
-                    agent — published on-chain as its system prompt (the persona \
-                    that headless `call`s and the public face read). Omit to leave \
-                    the default."
-            },
-            "prefund_lh": {
-                "type": "string",
-                "description": "OPTIONAL amount of $LH to prefund the new agent with, \
-                    as a decimal string (\"5\", \"1.5\"). Transferred from YOUR \
-                    wallet to the new subdomain's token-bound account (its own \
-                    spendable wallet — used to pay other agents via x402). Omit, or \
-                    pass \"0\", to skip. Must not exceed your $LH balance."
-            }
-        },
-        "required": ["name"]
-    });
+    // Schema + lenient extraction from ONE hoisted table
+    // (`crate::tool_params::CreateSubdomainParams`), byte-identity-tested natively.
+    let schema = crate::tool_params::CreateSubdomainParams::schema();
     ClosureTool::new(
         "create_subdomain",
         "Register a new <name>.localharness.xyz subdomain on-chain (the ACTOR MODEL). \
@@ -155,9 +131,10 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
          Returns { name, url, owner, tx_hash, persona_set?, prefunded_lh?, tba? }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
-            let persona = args.get("persona").and_then(|v| v.as_str());
-            let prefund_lh = args.get("prefund_lh").and_then(|v| v.as_str());
+            let params = crate::tool_params::CreateSubdomainParams::lenient(&args);
+            let name = params.name.trim();
+            let persona = params.persona.as_deref();
+            let prefund_lh = params.prefund_lh.as_deref();
             // Validate (don't silently mangle) — an invalid name returns a clear
             // reason to the agent instead of minting a DIFFERENT name (#66/#60).
             let cleaned = crate::subdomain::validate(name)
@@ -418,39 +395,8 @@ async fn owned_token_for_publish(
 /// on-chain separately (small, sponsored). A brand-new app never silently
 /// overwrites the owner's MAIN. Returns `{ name, url, tx_hash, off_chain, updated }`.
 pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Subdomain to register, e.g. \"clock\" \
-                    becomes clock.localharness.xyz. 3-32 chars; lowercase \
-                    letters, digits, and hyphens only."
-            },
-            "source": {
-                "type": "string",
-                "description": "rustlite cartridge source — the SAME dialect as \
-                    run_cartridge. Exports `fn frame(t: i32)` (animated) or \
-                    `fn render()` and draws via `use host::display;`. This becomes \
-                    the subdomain's fullscreen public face."
-            },
-            "persona": {
-                "type": "string",
-                "description": "OPTIONAL system instruction / persona for the new \
-                    agent — published on-chain as its system prompt (read by \
-                    headless `call`s). Omit to leave the default."
-            },
-            "prefund_lh": {
-                "type": "string",
-                "description": "OPTIONAL amount of $LH to prefund the new agent with, \
-                    as a decimal string (\"5\", \"1.5\"). Transferred from YOUR \
-                    wallet to the new subdomain's token-bound account (its own \
-                    spendable wallet). Omit, or pass \"0\", to skip. Must not exceed \
-                    your $LH balance."
-            }
-        },
-        "required": ["name", "source"]
-    });
+    // Hoisted table: `crate::tool_params::CreateAndPublishAppParams`.
+    let schema = crate::tool_params::CreateAndPublishAppParams::schema();
     ClosureTool::new(
         "create_and_publish_app",
         "Publish a compiled rustlite cartridge as <name>.localharness.xyz's fullscreen \
@@ -465,10 +411,11 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
          { name, url, tx_hash, off_chain, updated, persona_set?, prefunded_lh?, tba? }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
-            let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
-            let persona = args.get("persona").and_then(|v| v.as_str());
-            let prefund_lh = args.get("prefund_lh").and_then(|v| v.as_str());
+            let params = crate::tool_params::CreateAndPublishAppParams::lenient(&args);
+            let name = params.name.trim();
+            let source = params.source.as_str();
+            let persona = params.persona.as_deref();
+            let prefund_lh = params.prefund_lh.as_deref();
             let cleaned = crate::subdomain::validate(name)
                 .map_err(|why| crate::error::Error::other(format!("invalid subdomain name: {why}")))?;
             // Compile FIRST (also bounds-checks size) so a bad cartridge fails
@@ -602,33 +549,8 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
 /// the typed-confirmation gate (`chat::confirm_guard`). NOT granted to
 /// subagents. Returns `{ name, url, tx_hash, updated: true }`.
 pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "The subdomain to publish to — MUST be one you already \
-                    own (e.g. \"clock\" → clock.localharness.xyz). Can be different from \
-                    the subdomain you are currently on. To create a NEW subdomain, use \
-                    create_and_publish_app instead."
-            },
-            "source": {
-                "type": "string",
-                "description": "rustlite cartridge source — the SAME dialect as \
-                    run_cartridge / create_and_publish_app. Exports `fn frame(t: i32)` \
-                    (animated) or `fn render()` and draws via `use host::display;`. \
-                    Becomes the target subdomain's fullscreen public face."
-            },
-            "confirmation": {
-                "type": "string",
-                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
-                    first call — it returns a challenge code shown to the owner. State \
-                    which subdomain you will update, ask the owner to TYPE the code in \
-                    chat, then retry with it. Never invent it; only the platform issues it."
-            }
-        },
-        "required": ["name", "source"]
-    });
+    // Hoisted table: `crate::tool_params::PublishAppToParams`.
+    let schema = crate::tool_params::PublishAppToParams::schema();
     ClosureTool::new(
         "publish_app_to",
         "Publish (UPDATE) a rustlite cartridge to ANOTHER subdomain you OWN — the \
@@ -642,14 +564,15 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          `confirmation` set to it. Returns { name, url, tx_hash, updated: true }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
-            let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let params = crate::tool_params::PublishAppToParams::lenient(&args);
+            let name = params.name.trim();
+            let source = params.source.as_str();
             // Belt-and-suspenders: the confirm_guard hook denies any unconfirmed
             // call before this body runs; this guards a registration path that
             // forgot the hook (same posture as send_lh / release_subdomain).
-            let confirmed = args
-                .get("confirmation")
-                .and_then(|v| v.as_str())
+            let confirmed = params
+                .confirmation
+                .as_deref()
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
@@ -708,17 +631,8 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// HOST page's subdomain, not the embedded one — cross-subdomain feed identity
 /// is a follow-up.
 pub(crate) fn embed_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Subdomain whose published cartridge to embed, \
-                    e.g. \"pong\" embeds pong.localharness.xyz's app inline."
-            }
-        },
-        "required": ["name"]
-    });
+    // Hoisted table: `crate::tool_params::EmbedAppParams`.
+    let schema = crate::tool_params::EmbedAppParams::schema();
     ClosureTool::new(
         "embed_app",
         "Embed another subdomain's published cartridge INLINE in this chat as a \
@@ -730,7 +644,8 @@ pub(crate) fn embed_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          unpublished names return an error. Returns { name, url, embedded: true }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let params = crate::tool_params::EmbedAppParams::lenient(&args);
+            let name = params.name.trim();
             let cleaned = crate::app::tenant::sanitize(name);
             if cleaned.is_empty() {
                 return Err(crate::error::Error::other("name cannot be empty"));
@@ -777,19 +692,8 @@ pub(crate) fn embed_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// Tempo tx. Owner-only, own subdomain only. Mirrors
 /// `events::public_face::run_set_public_face` minus the DOM. Reversible.
 pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "choice": {
-                "type": "string",
-                "description": "Which face to publish: \"app\" (compile + publish \
-                    this device's local app.rl as a fullscreen cartridge), \
-                    \"html\" (publish local index.html), or \"directory\" (a \
-                    profile landing listing your sibling agents)."
-            }
-        },
-        "required": ["choice"]
-    });
+    // Hoisted table: `crate::tool_params::PublishPublicFaceParams`.
+    let schema = crate::tool_params::PublishPublicFaceParams::schema();
     ClosureTool::new(
         "publish_public_face",
         "Publish YOUR OWN public face — what a visitor to \
@@ -801,10 +705,8 @@ pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Too
          user the returned `url`. Returns { choice, url, tx_hash, off_chain? }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let choice = args
-                .get("choice")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
+            let choice = crate::tool_params::PublishPublicFaceParams::lenient(&args)
+                .choice
                 .trim()
                 .to_lowercase();
             if !matches!(choice.as_str(), "directory" | "app" | "html") {
@@ -908,23 +810,8 @@ pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Too
 /// The model cannot auto-fill it (the code is random and must appear in the
 /// latest USER message).
 pub(crate) fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Subdomain to release/recycle — burns the NFT, frees the name."
-            },
-            "confirmation": {
-                "type": "string",
-                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
-                    first call — it returns a challenge code that is shown to the owner. \
-                    Relay it, wait for the owner to TYPE that code in chat, then retry \
-                    with the code here. Never invent it; only the platform issues it."
-            }
-        },
-        "required": ["name"]
-    });
+    // Hoisted table: `crate::tool_params::ReleaseSubdomainParams`.
+    let schema = crate::tool_params::ReleaseSubdomainParams::schema();
     ClosureTool::new(
         "release_subdomain",
         "DESTRUCTIVE + IRREVERSIBLE: burn a subdomain NFT and free its name. The first \
@@ -934,7 +821,8 @@ pub(crate) fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool>
          contains the code. Refuses your MAIN. Returns the tx hash.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let params = crate::tool_params::ReleaseSubdomainParams::lenient(&args);
+            let name = params.name.trim().to_string();
             if name.is_empty() {
                 return Err(crate::error::Error::other("name is required"));
             }
@@ -942,9 +830,9 @@ pub(crate) fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool>
             // and denies any call without a user-typed challenge code. This
             // belt-and-suspenders check only guards a registration path that
             // forgot the hook.
-            let confirmed = args
-                .get("confirmation")
-                .and_then(|v| v.as_str())
+            let confirmed = params
+                .confirmation
+                .as_deref()
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
@@ -1211,26 +1099,10 @@ pub(crate) fn discover_agents_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          sequential call per keyword. Use this to LOCATE an agent to delegate \
          to, then call_agent it. Returns { agents: [ { name, persona } ], \
          count } (persona is a short preview).",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "What to look for — capabilities, topics, or \
-                        keywords matched (case-insensitively) against agent names \
-                        and personas. Several keywords are ORed and ranked by \
-                        overlap (e.g. \"solidity audit security\"). \
-                        Empty returns recent agents."
-                }
-            },
-            "required": ["query"]
-        }),
+        // Hoisted table: `crate::tool_params::DiscoverAgentsParams`.
+        crate::tool_params::DiscoverAgentsParams::schema(),
         |args: serde_json::Value, _ctx| async move {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let query = crate::tool_params::DiscoverAgentsParams::lenient(&args).query;
             // Reuse the registry's ranked discovery (same core as the
             // `localharness discover` CLI). 100 = how many recent agents to scan.
             let matches = crate::app::registry::discover_agents(&query, 100)
@@ -1635,16 +1507,8 @@ pub(crate) fn check_balances_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// reading them (krafto on-chain #263); this is the read tool so they stop.
 /// Read-only, costs nothing.
 pub(crate) fn query_balance_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "target": {
-                "type": "string",
-                "description": "an agent NAME (e.g. \"binglescan\") or a 0x address"
-            }
-        },
-        "required": ["target"]
-    });
+    // Hoisted table: `crate::tool_params::QueryBalanceParams`.
+    let schema = crate::tool_params::QueryBalanceParams::schema();
     ClosureTool::new(
         "query_balance",
         "Read the LIVE on-chain $LH balance of ANY agent (by name) or 0x address — \
@@ -1654,10 +1518,8 @@ pub(crate) fn query_balance_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          Decimal $LH plus raw wei.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let target = args
-                .get("target")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
+            let target = crate::tool_params::QueryBalanceParams::lenient(&args)
+                .target
                 .trim()
                 .to_string();
             if target.is_empty() {
