@@ -12,10 +12,11 @@ provider: `sse.rs` (SSE frame decoder), `dispatch.rs` (hook-gated tool pipeline)
 `compaction.rs` are THIN adapters), `stream_timeout.rs`, `state.rs`, and
 `turn_engine.rs` (R7: ONE generic streaming turn loop behind a static-dispatch
 `TurnProvider` seam — same pattern as `CompactionModel`; async edges ride in as
-closures so it stays wasm-safe. Phase 1: openai rides it; anthropic/gemini
-loops are still standalone copies — a scaffold fix must land in BOTH the engine
-and those two until they migrate). Per-backend dirs (`gemini/ anthropic/ openai/
-mock/ mcp/ local/`) hold only the wire-specific client + loop/provider. If a fix
+closures so it stays wasm-safe. Phases 1–2: openai + anthropic ride it (the two
+control-flow hooks — anthropic pause_turn resume + #82 cancel balancing — are
+proven); gemini's loop is still a standalone copy — a scaffold fix must land in
+BOTH the engine and gemini until phase 3). Per-backend dirs (`gemini/ anthropic/
+openai/ mock/ mcp/ local/`) hold only the wire-specific client + loop/provider. If a fix
 would be copy-pasted into two backends, it belongs in the shared core.
 
 ## Gemini (the default path — most quirks)

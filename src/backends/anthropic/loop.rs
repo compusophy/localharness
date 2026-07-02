@@ -1,57 +1,50 @@
-//! Agent loop for the Anthropic backend.
+//! Agent loop for the Anthropic (Claude Messages API) backend — on the shared
+//! [`crate::backends::turn_engine`] (R7 phase 2, after openai in phase 1).
 //!
-//! Mirrors `backends/gemini/loop.rs` 1:1 in control flow; only the wire
-//! shapes differ. Each `run_turn` drives one user-initiated turn to
-//! completion: optionally many model ↔ tool round-trips, terminating when
-//! the model stops with no `tool_use` blocks (or calls `finish`).
+//! The turn scaffold (idle/cancel atomics, pre-turn gate, retry-wrapped
+//! stream open, idle-stall arm, MAX_TOOL_ROUNDS, the finish-tool special
+//! case, usage folding, terminal step, compaction trigger) lives in the
+//! engine; this module supplies only the Anthropic-specific wire behavior
+//! via [`AnthropicProvider`]:
 //!
-//! The dispatch loop:
-//!
-//! 1. Build a `MessagesRequest` from history + tool declarations.
-//! 2. Stream the response. Accumulate text, thinking, and `tool_use`
-//!    blocks — tool args arrive as `input_json_delta.partial_json`
-//!    FRAGMENTS concatenated per block `index`, parsed at
-//!    `content_block_stop`.
-//! 3. Persist the assistant turn (text + tool_use) into history.
-//! 4. If no tool calls — emit terminal Step, done. (`pause_turn` instead
-//!    re-requests to resume.)
-//! 5. Else, dispatch each call through hooks → tool_runner. Build a
-//!    `user`-role message of `tool_result` blocks (matched by `id`) and
-//!    append it to history.
-//! 6. Loop back to step 1.
+//! - Stream fold: INDEX-KEYED `thinking`/`signature`/`input_json` deltas —
+//!   tool args arrive as `input_json_delta.partial_json` FRAGMENTS
+//!   concatenated per block index; a thinking block's `signature` arrives on
+//!   a trailing `signature_delta` for the same index.
+//! - Assistant-message assembly: SIGNED thinking blocks lead the turn
+//!   (thinking → text → tool_use); unsigned thinking is dropped.
+//! - Tool results: ONE batched `user`-role message of `tool_result` blocks
+//!   matched by `tool_use_id` (unlike openai's one message per call).
+//! - `on_stream_end`: the `pause_turn` resume loop (re-request against
+//!   identical history, accumulators retained) under the anthropic-owned
+//!   [`MAX_PAUSE_RESUMES`] cap.
+//! - `on_cancel_with_pending_calls`: the #82 tool_result balancing — a
+//!   dangling `tool_use` 400s the NEXT request.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use base64::Engine as _;
 use serde_json::{json, Value};
-use tracing::{debug, warn};
-use uuid::Uuid;
 
-use crate::backends::dispatch::{dispatch_post_turn, dispatch_tool_call, gate_pre_turn};
-use crate::backends::loop_util::{extract_canonical_path, resolve_tool_args};
+use crate::backends::loop_util::resolve_tool_args;
 use crate::backends::anthropic::api::SharedClient;
 use crate::backends::anthropic::wire::{
     Block, BlockDelta, ImageSource, Message, MessagesRequest, Role, StopReason, StreamEvent,
     ThinkingConfig, ToolDef, WireUsage, DEFAULT_MAX_TOKENS,
 };
-use crate::backends::gemini::tools::FINISH_TOOL_NAME;
-use crate::backends::stream_timeout::{idle_timeout_ms, next_with_idle_timeout, NextChunk};
+use crate::backends::turn_engine::{
+    self, DispatchedResult, EmitCtx, EngineDeps, ResolvedCall, StreamEnd, TurnProvider,
+};
 use crate::content::{Content, Part as ApiPart};
 use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
-use crate::types::{
-    Step, StepStatus, StreamChunk, SystemInstructions, ThinkingLevel, ToolCall, ToolResult,
-    UsageMetadata,
-};
-
-/// Maximum dispatch rounds per turn — cap runaway tool loops.
-const MAX_TOOL_ROUNDS: u32 = 16;
+use crate::types::{StepStatus, SystemInstructions, ThinkingLevel, UsageMetadata};
 
 /// Hard cap on `pause_turn` resumes within a single round, so a backend
-/// stuck emitting `pause_turn` can't spin forever.
+/// stuck emitting `pause_turn` can't spin forever. Anthropic-owned (the
+/// engine only threads the resume COUNT through `on_stream_end`).
 const MAX_PAUSE_RESUMES: u32 = 8;
 
 #[derive(Clone)]
@@ -155,473 +148,301 @@ struct ThinkingAccum {
     signature: String,
 }
 
-pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> Result<()> {
-    deps.state.idle.store(false, Ordering::Release);
-    deps.state.cancel.store(false, Ordering::Release);
+/// One round's stream accumulators (the [`TurnProvider::Accum`]).
+#[derive(Default)]
+pub(crate) struct RoundAccum {
+    /// Per-index thinking accumulators. With extended thinking enabled,
+    /// Anthropic REQUIRES the assistant turn's thinking block(s) — WITH
+    /// their `signature` — to be echoed back verbatim in the next request
+    /// whenever that turn also contains `tool_use`; otherwise the follow-up
+    /// round 400s (`messages.N: ... thinking blocks must be preserved`).
+    /// So we accumulate each thinking block's text + signature by block
+    /// index and re-emit them (in index order, ahead of text/tool_use) into
+    /// the persisted assistant message. (`signature` arrives on a separate
+    /// `signature_delta`, after the `thinking_delta`s for the same index.)
+    thinking_blocks: BTreeMap<u32, ThinkingAccum>,
+    /// Per-index block accumulators — text blocks need no state (the engine's
+    /// `EmitCtx` owns visible text), tool_use blocks accumulate id/name/args
+    /// across deltas.
+    tool_blocks: BTreeMap<u32, ToolUseAccum>,
+    stop_reason: Option<StopReason>,
+    usage: WireUsage,
+}
 
-    // ONE turn context shared by the pre-turn gate, the per-call tool hooks,
-    // and the post-turn hooks of this turn.
-    let turn_ctx = deps
-        .session_ctx
-        .as_ref()
-        .map(|s| s.child())
-        .unwrap_or_default();
+/// The Anthropic side of the [`TurnProvider`] seam — a zero-sized marker the
+/// engine is monomorphized over (static dispatch; see `turn_engine`).
+pub(crate) struct AnthropicProvider;
 
-    // Pre-turn gate — BEFORE the prompt enters history, so a denied prompt
-    // never pollutes context. On deny the model is never called; the
-    // turn_error Step becomes a stream `Err` via `subscribe_step_stream`.
-    if let Some(denied) = gate_pre_turn(deps.hook_runner.as_ref(), &turn_ctx, &prompt).await {
-        deps.state.emit_error(denied.clone());
-        deps.state.idle.store(true, Ordering::Release);
-        deps.state.idle_notify.notify_waiters();
-        return Err(Error::other(denied));
+impl TurnProvider for AnthropicProvider {
+    type Message = Message;
+    type Config = LoopConfig;
+    type Request = MessagesRequest;
+    type Event = StreamEvent;
+    type Accum = RoundAccum;
+
+    fn build_request(config: &LoopConfig, history: &[Message]) -> MessagesRequest {
+        build_request(config, history)
     }
 
-    {
-        let mut hist = deps.state.history.lock();
-        hist.push(user);
+    fn compaction_threshold(config: &LoopConfig) -> Option<u32> {
+        config.compaction_threshold
     }
-    *deps.state.last_turn_usage.lock() = Some(UsageMetadata::default());
-    *deps.state.last_structured_output.lock() = None;
 
-    let mut rounds = 0u32;
-    let mut last_text = String::new();
-    let mut last_stop: Option<StopReason> = None;
-    // The model called `finish` this turn — flags the terminal step as
-    // `StepType::Finish` (see `gemini::loop`).
-    let mut finished_turn = false;
-    // The `finish` tool's optional `summary` arg — threaded onto the terminal
-    // step so the UI can paint a final reply on a tool-only turn (see
-    // `gemini::loop`).
-    let mut finish_summary: Option<String> = None;
-    let trajectory_id = Uuid::new_v4().to_string();
-
-    loop {
-        rounds += 1;
-        if rounds > MAX_TOOL_ROUNDS {
-            warn!(rounds, "exceeded MAX_TOOL_ROUNDS; forcing turn end");
-            break;
-        }
-        if deps.state.cancel.load(Ordering::Acquire) {
-            debug!("turn cancelled before model call");
-            break;
-        }
-
-        let step_index = deps.state.alloc_step_index();
-        let mut accumulated_text = String::new();
-        // Per-index thinking accumulators. With extended thinking enabled,
-        // Anthropic REQUIRES the assistant turn's thinking block(s) — WITH
-        // their `signature` — to be echoed back verbatim in the next request
-        // whenever that turn also contains `tool_use`; otherwise the follow-up
-        // round 400s (`messages.N: ... thinking blocks must be preserved`).
-        // So we accumulate each thinking block's text + signature by block
-        // index and re-emit them (in index order, ahead of text/tool_use) into
-        // the persisted assistant message. (`signature` arrives on a separate
-        // `signature_delta`, after the `thinking_delta`s for the same index.)
-        let mut thinking_blocks: BTreeMap<u32, ThinkingAccum> = BTreeMap::new();
-        // Per-index block accumulators — text blocks need no state, tool_use
-        // blocks accumulate id/name/args across deltas.
-        let mut tool_blocks: BTreeMap<u32, ToolUseAccum> = BTreeMap::new();
-        let mut stop_reason: Option<StopReason> = None;
-        let mut round_usage = WireUsage::default();
-        // pause_turn resume loop — re-request with the SAME history until a
-        // non-pause stop reason (or the resume cap) is reached. The loop's
-        // break value is `paused` (true iff we stopped while still in
-        // pause_turn, e.g. the resume cap was hit).
-        let mut pause_resumes = 0u32;
-
-        let paused = 'request: loop {
-            let request = build_request(&deps.config, &deps.state.history.lock());
-            // Retry the stream OPEN on a transient transport/5xx/timeout (ONE
-            // shared policy+wrapper with the gemini/openai + subagent loops; #29).
-            // A mid-stream error and auth/credits/rate-limit still fail fast.
-            let mut stream = match crate::backends::retry::open_stream_with_retry(|| {
-                deps.client.stream_messages(&request)
-            })
-            .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    deps.state.emit_error(e.to_string());
-                    deps.state.idle.store(true, Ordering::Release);
-                    deps.state.idle_notify.notify_waiters();
-                    return Err(e);
+    fn fold_event(
+        acc: &mut RoundAccum,
+        ctx: &mut EmitCtx<'_, Message>,
+        ev: StreamEvent,
+    ) -> Result<()> {
+        match ev {
+            StreamEvent::MessageStart { message } => {
+                if let Some(u) = message.usage {
+                    accumulate_wire_usage(&mut acc.usage, &u);
                 }
-            };
-
-            // Idle-stall guard: a fresh `idle_ms` timer is armed for EACH event
-            // (re-armed every time data arrives), so a steadily streaming
-            // response never trips it — only `idle_ms` of total silence does.
-            // On a stall we end the stream with an Err so the turn returns via
-            // the normal error path and the one-turn guard releases (vs.
-            // hanging on a dead socket the cooperative cancel below can't reach).
-            let idle_ms = idle_timeout_ms();
-            loop {
-                let ev_res = match next_with_idle_timeout(&mut stream, idle_ms).await {
-                    NextChunk::Item(item) => item,
-                    NextChunk::End => break,
-                    NextChunk::IdleTimeout => {
-                        let e = Error::other(format!(
-                            "model stream stalled — no data for {}s",
-                            idle_ms / 1000
-                        ));
-                        deps.state.emit_error(e.to_string());
-                        deps.state.idle.store(true, Ordering::Release);
-                        deps.state.idle_notify.notify_waiters();
-                        return Err(e);
-                    }
-                };
-                if deps.state.cancel.load(Ordering::Acquire) {
-                    break;
-                }
-                let ev = match ev_res {
-                    Ok(e) => e,
-                    Err(e) => {
-                        deps.state.emit_error(e.to_string());
-                        deps.state.idle.store(true, Ordering::Release);
-                        deps.state.idle_notify.notify_waiters();
-                        return Err(e);
-                    }
-                };
-
-                match ev {
-                    StreamEvent::MessageStart { message } => {
-                        if let Some(u) = message.usage {
-                            accumulate_wire_usage(&mut round_usage, &u);
-                        }
-                    }
-                    StreamEvent::ContentBlockStart {
+            }
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block,
+            } => match content_block {
+                Block::ToolUse { id, name, .. } => {
+                    acc.tool_blocks.insert(
                         index,
-                        content_block,
-                    } => {
-                        match content_block {
-                            Block::ToolUse { id, name, .. } => {
-                                tool_blocks.insert(
-                                    index,
-                                    ToolUseAccum {
-                                        id,
-                                        name,
-                                        args_json: String::new(),
-                                    },
-                                );
-                            }
-                            // content_block_start for a text block may carry a
-                            // non-empty seed (rare); an empty one falls to `_`.
-                            Block::Text { text } if !text.is_empty() => {
-                                accumulated_text.push_str(&text);
-                                deps.state.emit(Step::text_delta(
-                                    &trajectory_id,
-                                    step_index,
-                                    &text,
-                                ));
-                            }
-                            _ => {}
-                        }
+                        ToolUseAccum {
+                            id,
+                            name,
+                            args_json: String::new(),
+                        },
+                    );
+                }
+                // content_block_start for a text block may carry a non-empty
+                // seed (rare); `push_text` no-ops on an empty one.
+                Block::Text { text } => ctx.push_text(&text),
+                _ => {}
+            },
+            StreamEvent::ContentBlockDelta { index, delta } => match delta {
+                BlockDelta::TextDelta { text } => ctx.push_text(&text),
+                BlockDelta::ThinkingDelta { thinking } => {
+                    if !thinking.is_empty() {
+                        acc.thinking_blocks
+                            .entry(index)
+                            .or_default()
+                            .thinking
+                            .push_str(&thinking);
+                        ctx.push_thought(&thinking);
                     }
-                    StreamEvent::ContentBlockDelta { index, delta } => match delta {
-                        BlockDelta::TextDelta { text } => {
-                            if !text.is_empty() {
-                                accumulated_text.push_str(&text);
-                                deps.state
-                                    .emit(Step::text_delta(&trajectory_id, step_index, &text));
-                            }
-                        }
-                        BlockDelta::ThinkingDelta { thinking } => {
-                            if !thinking.is_empty() {
-                                thinking_blocks
-                                    .entry(index)
-                                    .or_default()
-                                    .thinking
-                                    .push_str(&thinking);
-                                deps.state.emit(Step::thought_delta(
-                                    &trajectory_id,
-                                    step_index,
-                                    &thinking,
-                                ));
-                            }
-                        }
-                        BlockDelta::SignatureDelta { signature } => {
-                            // The cryptographic signature for the thinking
-                            // block at this index — required when echoing the
-                            // block back alongside a tool_use.
-                            thinking_blocks.entry(index).or_default().signature = signature;
-                        }
-                        BlockDelta::InputJsonDelta { partial_json } => {
-                            if let Some(acc) = tool_blocks.get_mut(&index) {
-                                acc.args_json.push_str(&partial_json);
-                            }
-                        }
-                        _ => {}
-                    },
-                    StreamEvent::ContentBlockStop { .. } => {}
-                    StreamEvent::MessageDelta { delta, usage } => {
-                        if let Some(r) = delta.stop_reason {
-                            stop_reason = Some(r);
-                        }
-                        if let Some(u) = usage {
-                            accumulate_wire_usage(&mut round_usage, &u);
-                        }
+                }
+                BlockDelta::SignatureDelta { signature } => {
+                    // The cryptographic signature for the thinking block at
+                    // this index — required when echoing the block back
+                    // alongside a tool_use.
+                    acc.thinking_blocks.entry(index).or_default().signature = signature;
+                }
+                BlockDelta::InputJsonDelta { partial_json } => {
+                    if let Some(a) = acc.tool_blocks.get_mut(&index) {
+                        a.args_json.push_str(&partial_json);
                     }
-                    StreamEvent::MessageStop => {}
-                    StreamEvent::Error { error } => {
-                        let msg = format!("anthropic stream error [{}]: {}", error.kind, error.message);
-                        deps.state.emit_error(msg.clone());
-                        deps.state.idle.store(true, Ordering::Release);
-                        deps.state.idle_notify.notify_waiters();
-                        return Err(Error::other(msg));
-                    }
-                    StreamEvent::Ping | StreamEvent::Unknown => {}
+                }
+                _ => {}
+            },
+            StreamEvent::MessageDelta { delta, usage } => {
+                if let Some(r) = delta.stop_reason {
+                    acc.stop_reason = Some(r);
+                }
+                if let Some(u) = usage {
+                    accumulate_wire_usage(&mut acc.usage, &u);
                 }
             }
-
-            // pause_turn: the model paused mid-turn (e.g. a server-side
-            // tool). Re-request with identical history to resume. Anything
-            // already streamed (text/tool blocks) stays accumulated.
-            if matches!(stop_reason, Some(StopReason::PauseTurn))
-                && !deps.state.cancel.load(Ordering::Acquire)
-                && pause_resumes < MAX_PAUSE_RESUMES
-            {
-                pause_resumes += 1;
-                debug!(pause_resumes, "anthropic pause_turn; resuming");
-                stop_reason = None;
-                continue 'request;
+            // An in-band `error` event fails the turn through the engine's
+            // shared stream-error path.
+            StreamEvent::Error { error } => {
+                return Err(Error::other(format!(
+                    "anthropic stream error [{}]: {}",
+                    error.kind, error.message
+                )));
             }
-            break 'request matches!(stop_reason, Some(StopReason::PauseTurn));
-        };
-
-        // Resolve tool_use accumulators into ordered ToolCalls (parse the
-        // concatenated args JSON). An EMPTY/absent fragment is a valid
-        // no-arg call → `{}`. A NON-EMPTY fragment that FAILS to parse
-        // (truncated stream, malformed concat) must NOT silently run the
-        // tool with `{}` — that executes with wrong args invisibly. Carry
-        // the parse error so dispatch surfaces it as a tool error to the
-        // model instead (which can then retry the call correctly).
-        let mut pending_calls: Vec<(String, String, Value, Option<String>)> = Vec::new();
-        for (_idx, acc) in tool_blocks {
-            let (args, parse_error) = resolve_tool_args(&acc.name, &acc.args_json);
-            pending_calls.push((acc.id, acc.name, args, parse_error));
+            StreamEvent::ContentBlockStop { .. }
+            | StreamEvent::MessageStop
+            | StreamEvent::Ping
+            | StreamEvent::Unknown => {}
         }
+        Ok(())
+    }
 
-        // Build the assistant-turn content and push. Block order matters:
-        // Anthropic requires thinking block(s) to lead the turn (ahead of
-        // text/tool_use), each carrying its `signature`. We only persist a
-        // thinking block once its signature has arrived — an unsigned thinking
-        // block echoed back would itself 400. (A thinking block with no
-        // signature can only occur on a truncated/cancelled stream, in which
-        // case we drop it; the turn won't be replayed correctly anyway.)
-        let mut assistant_blocks: Vec<Block> = Vec::new();
-        for (_idx, acc) in std::mem::take(&mut thinking_blocks) {
-            if !acc.thinking.is_empty() && !acc.signature.is_empty() {
-                assistant_blocks.push(Block::Thinking {
-                    thinking: acc.thinking,
-                    signature: Some(acc.signature),
+    /// Resolve tool_use accumulators into ordered calls (parse the
+    /// concatenated args JSON). An EMPTY/absent fragment is a valid no-arg
+    /// call → `{}`. A NON-EMPTY fragment that FAILS to parse (truncated
+    /// stream) must NOT silently run with `{}` — carry the parse error so
+    /// dispatch surfaces it as a tool error to the model instead.
+    fn resolve_pending_calls(acc: &mut RoundAccum) -> Vec<ResolvedCall> {
+        std::mem::take(&mut acc.tool_blocks)
+            .into_values()
+            .map(|a| {
+                let (args, parse_error) = resolve_tool_args(&a.name, &a.args_json);
+                ResolvedCall {
+                    // Anthropic correlates by id (Gemini leaves None).
+                    id: Some(a.id),
+                    name: a.name,
+                    args,
+                    parse_error,
+                }
+            })
+            .collect()
+    }
+
+    fn round_usage(acc: &RoundAccum) -> UsageMetadata {
+        acc.usage.clone().into()
+    }
+
+    fn map_finish_reason(acc: &RoundAccum) -> (StepStatus, &'static str) {
+        match acc.stop_reason {
+            Some(StopReason::Refusal) => (StepStatus::Error, "stopped by refusal"),
+            Some(StopReason::MaxTokens) => (StepStatus::Done, "stopped at max tokens"),
+            Some(StopReason::PauseTurn) => (StepStatus::Done, "paused (resume cap reached)"),
+            _ => (StepStatus::Done, ""),
+        }
+    }
+
+    /// Build the assistant-turn message. Block order matters: Anthropic
+    /// requires thinking block(s) to lead the turn (ahead of text/tool_use),
+    /// each carrying its `signature`. We only persist a thinking block once
+    /// its signature has arrived — an unsigned thinking block echoed back
+    /// would itself 400. (A thinking block with no signature can only occur
+    /// on a truncated/cancelled stream, in which case we drop it; the turn
+    /// won't be replayed correctly anyway.)
+    fn assemble_assistant_message(
+        acc: RoundAccum,
+        text: &str,
+        calls: &[ResolvedCall],
+    ) -> Option<Message> {
+        let mut blocks: Vec<Block> = Vec::new();
+        for (_idx, t) in acc.thinking_blocks {
+            if !t.thinking.is_empty() && !t.signature.is_empty() {
+                blocks.push(Block::Thinking {
+                    thinking: t.thinking,
+                    signature: Some(t.signature),
                 });
             }
         }
-        if !accumulated_text.is_empty() {
-            assistant_blocks.push(Block::Text {
-                text: accumulated_text.clone(),
+        if !text.is_empty() {
+            blocks.push(Block::Text {
+                text: text.to_string(),
             });
         }
-        for (id, name, args, _parse_error) in &pending_calls {
-            assistant_blocks.push(Block::ToolUse {
-                id: id.clone(),
-                name: name.clone(),
-                input: args.clone(),
+        for c in calls {
+            blocks.push(Block::ToolUse {
+                id: c.id.clone().unwrap_or_default(),
+                name: c.name.clone(),
+                input: c.args.clone(),
             });
         }
-        if !assistant_blocks.is_empty() {
-            deps.state.history.lock().push(Message {
-                role: Role::Assistant,
-                content: assistant_blocks,
-            });
+        (!blocks.is_empty()).then_some(Message {
+            role: Role::Assistant,
+            content: blocks,
+        })
+    }
+
+    /// ONE batched `user`-role message of `tool_result` blocks matched by
+    /// `tool_use_id` (unlike openai's one `tool` message per call).
+    fn tool_result_messages(results: Vec<DispatchedResult>) -> Vec<Message> {
+        if results.is_empty() {
+            return Vec::new();
         }
+        let blocks: Vec<Block> = results
+            .into_iter()
+            .map(|r| Block::ToolResult {
+                tool_use_id: r.call.id.unwrap_or_default(),
+                content: tool_result_content(&r.value),
+                is_error: r.is_error.then_some(true),
+            })
+            .collect();
+        vec![Message {
+            role: Role::User,
+            content: blocks,
+        }]
+    }
 
-        // Accumulate usage.
-        let usage: UsageMetadata = round_usage.into();
-        if usage != UsageMetadata::default() {
-            let mut slot = deps.state.last_turn_usage.lock();
-            match slot.as_mut() {
-                Some(acc) => acc.merge_round(&usage),
-                None => *slot = Some(usage),
-            }
+    /// THE `pause_turn` hook (this backend is why the engine has it): the
+    /// model paused mid-turn (e.g. a server-side tool) — `Resume` re-requests
+    /// against IDENTICAL history with the round's accumulators retained,
+    /// bounded by the anthropic-owned [`MAX_PAUSE_RESUMES`] cap
+    /// (`ProceedAndEndTurn`: persist what streamed, end the turn without
+    /// dispatching). `stop_reason` is NOT cleared on `Resume`: a resumed
+    /// stream's `message_delta` overwrites it, and when the ENGINE ignores
+    /// the `Resume` (cancelled pause) the retained `PauseTurn` still maps the
+    /// terminal step to the "paused" finish reason — the old loop's exact
+    /// cancelled-pause semantics.
+    fn on_stream_end(acc: &mut RoundAccum, pause_resumes: u32) -> StreamEnd {
+        if !matches!(acc.stop_reason, Some(StopReason::PauseTurn)) {
+            return StreamEnd::Proceed;
         }
-
-        last_text = accumulated_text;
-        last_stop = stop_reason;
-
-        // No tool calls → turn over. (If paused without resolving, also
-        // stop — we hit the resume cap or cancellation.)
-        if pending_calls.is_empty() || paused {
-            break;
+        if pause_resumes < MAX_PAUSE_RESUMES {
+            StreamEnd::Resume
+        } else {
+            StreamEnd::ProceedAndEndTurn
         }
+    }
 
-        if deps.state.cancel.load(Ordering::Acquire) {
-            debug!("turn cancelled before tool dispatch");
-            // The assistant message with these tool_use blocks is already in
-            // history (pushed above; `pending_calls` is non-empty here — the
-            // empty case broke at the check above). Anthropic 400s the NEXT
-            // turn if a tool_use isn't answered by a matching tool_result, so
-            // balance every pending call with a cancelled tool_result before
-            // bailing — otherwise the dangling tool_use bricks the conversation.
-            let cancelled_blocks: Vec<Block> = pending_calls
-                .into_iter()
-                .map(|(id, _name, _args, _err)| Block::ToolResult {
-                    tool_use_id: id,
-                    content: tool_result_content(&json!({ "error": "cancelled" })),
-                    is_error: Some(true),
-                })
-                .collect();
-            deps.state.history.lock().push(Message {
-                role: Role::User,
-                content: cancelled_blocks,
-            });
-            break;
-        }
+    /// REGRESSION guard (#82): the assistant turn carrying `tool_use` blocks
+    /// is pushed to history BEFORE tools dispatch. Anthropic 400s the NEXT
+    /// turn if a tool_use isn't answered by a matching tool_result
+    /// (`tool_use ids were found without tool_result blocks`), so balance
+    /// every pending call with a cancelled tool_result — otherwise the
+    /// dangling tool_use bricks the conversation.
+    fn on_cancel_with_pending_calls(calls: &[ResolvedCall]) -> Vec<Message> {
+        let blocks: Vec<Block> = calls
+            .iter()
+            .map(|c| Block::ToolResult {
+                tool_use_id: c.id.clone().unwrap_or_default(),
+                content: tool_result_content(&json!({ "error": "cancelled" })),
+                is_error: Some(true),
+            })
+            .collect();
+        vec![Message {
+            role: Role::User,
+            content: blocks,
+        }]
+    }
+}
 
-        // Dispatch every tool call; results return as a user message of
-        // tool_result blocks matched by id.
-        let mut result_blocks: Vec<Block> = Vec::with_capacity(pending_calls.len());
-        let mut saw_finish = false;
-        for (id, name, args, parse_error) in pending_calls {
-            // Streamed args failed to parse — surface a clear tool error to
-            // the model (matching the dispatch error convention) instead of
-            // running the tool with `{}`. Skip execution entirely.
-            if let Some(msg) = parse_error {
-                let post_result = ToolResult {
-                    name: name.clone(),
-                    id: Some(id.clone()),
-                    result: Some(json!({ "error": msg.clone() })),
-                    error: Some(msg.clone()),
-                };
-                deps.state
-                    .emit_chunk_step(StreamChunk::ToolResult(post_result));
-                result_blocks.push(Block::ToolResult {
-                    tool_use_id: id,
-                    content: tool_result_content(&json!({ "error": msg })),
-                    is_error: Some(true),
-                });
-                continue;
-            }
-            if name == FINISH_TOOL_NAME {
-                if let Some(out) = args.get("output").cloned() {
-                    *deps.state.last_structured_output.lock() = Some(out);
-                }
-                // Capture the closing `summary` (the finish args were otherwise
-                // discarded), so a tool-only turn can still end with a reply.
-                if let Some(sm) = args.get("summary").and_then(|v| v.as_str()) {
-                    if !sm.is_empty() {
-                        finish_summary = Some(sm.to_string());
-                    }
-                }
-                saw_finish = true;
-                result_blocks.push(Block::ToolResult {
-                    tool_use_id: id,
-                    content: tool_result_content(&json!({ "ok": true })),
-                    is_error: None,
-                });
-                continue;
-            }
-
-            let tool_call = ToolCall {
-                name: name.clone(),
-                args: args.clone(),
-                // Anthropic correlates by id — set it (Gemini leaves None).
-                id: Some(id.clone()),
-                canonical_path: extract_canonical_path(&args),
-            };
-            deps.state
-                .emit_chunk_step(StreamChunk::ToolCall(tool_call.clone()));
-
-            // The shared pipeline: pre-hooks → execute → error-lift →
-            // post-hooks. `post_result.id` carries the tool_use id (set on
-            // `tool_call` above) so results correlate Anthropic-style.
-            let post_result = dispatch_tool_call(
-                deps.tool_runner.as_ref(),
-                deps.hook_runner.as_ref(),
-                &turn_ctx,
-                &tool_call,
+/// Drive one turn through the shared engine, plugging in the Anthropic
+/// client for the stream open and the compaction fold (the engine stays
+/// client-agnostic — the async edges ride in as closures, exactly like the
+/// compaction engine's `summarize`).
+pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> Result<()> {
+    let TurnDeps {
+        client,
+        config,
+        state,
+        tool_runner,
+        hook_runner,
+        session_ctx,
+    } = deps;
+    let model = config.model.clone();
+    let engine_deps = EngineDeps::<AnthropicProvider> {
+        config,
+        state: state.clone(),
+        tool_runner,
+        hook_runner,
+        session_ctx,
+    };
+    let open_client = client.clone();
+    turn_engine::run_turn::<AnthropicProvider, _, _, _, _, _>(
+        engine_deps,
+        user,
+        prompt,
+        move |req: MessagesRequest| {
+            let client = open_client.clone();
+            async move { client.stream_messages(&req).await }
+        },
+        move || async move {
+            crate::backends::anthropic::compaction::try_compact(
+                &state.history,
+                &client,
+                &model,
             )
             .await;
-            let result_value = post_result.result.clone().unwrap_or(Value::Null);
-            let is_error = post_result.error.is_some();
-            deps.state
-                .emit_chunk_step(StreamChunk::ToolResult(post_result.clone()));
-
-            result_blocks.push(Block::ToolResult {
-                tool_use_id: id,
-                content: tool_result_content(&result_value),
-                is_error: is_error.then_some(true),
-            });
-        }
-
-        // Push the tool_result blocks back as a user turn.
-        deps.state.history.lock().push(Message {
-            role: Role::User,
-            content: result_blocks,
-        });
-
-        if saw_finish {
-            finished_turn = true;
-            break;
-        }
-        // Otherwise loop and let the model react to the tool results.
-    }
-
-    let usage = deps.state.last_turn_usage.lock().clone().unwrap_or_default();
-    let usage_opt = if usage == UsageMetadata::default() {
-        None
-    } else {
-        Some(usage.clone())
-    };
-
-    let (status, error_msg): (StepStatus, &str) = match last_stop {
-        Some(StopReason::Refusal) => (StepStatus::Error, "stopped by refusal"),
-        Some(StopReason::MaxTokens) => (StepStatus::Done, "stopped at max tokens"),
-        Some(StopReason::PauseTurn) => (StepStatus::Done, "paused (resume cap reached)"),
-        _ => (StepStatus::Done, ""),
-    };
-
-    let structured = deps.state.last_structured_output.lock().clone();
-    let terminal = Step::turn_complete(
-        trajectory_id,
-        deps.state.alloc_step_index(),
-        status,
-        last_text.as_str(),
-        error_msg,
-        finished_turn,
-        structured,
-        usage_opt,
+        },
     )
-    .with_finish_summary(finish_summary);
-    deps.state.emit(terminal);
-
-    // Post-turn hooks observe the completed turn's final text — fired after
-    // the terminal step, never on denied or errored turns.
-    dispatch_post_turn(deps.hook_runner.as_ref(), &turn_ctx, &last_text).await;
-
-    // Compaction: if the turn pushed prompt tokens over the threshold,
-    // summarize the old prefix before the next turn starts.
-    let used = usage.prompt_token_count;
-    if crate::backends::anthropic::compaction::should_compact(used, deps.config.compaction_threshold)
-    {
-        debug!(
-            used,
-            threshold = ?deps.config.compaction_threshold,
-            "compaction triggered"
-        );
-        crate::backends::anthropic::compaction::try_compact(
-            &deps.state.history,
-            &deps.client,
-            &deps.config.model,
-        )
-        .await;
-    }
-
-    deps.state.idle.store(true, Ordering::Release);
-    deps.state.idle_notify.notify_waiters();
-    debug!(?last_stop, rounds, "turn complete");
-    Ok(())
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -722,7 +543,7 @@ fn accumulate_wire_usage(acc: &mut WireUsage, other: &WireUsage) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{CustomSystemInstructions, SystemInstructions};
+    use crate::types::{CustomSystemInstructions, Step, StepStatus, StreamChunk, SystemInstructions};
     use tokio::sync::broadcast;
 
     #[test]
@@ -816,15 +637,16 @@ mod tests {
     /// REGRESSION: Anthropic splits usage across two events — `message_start`
     /// carries `input_tokens` + a small PLACEHOLDER `output_tokens` (typically
     /// 1-4, the envelope), and `message_delta` carries the CUMULATIVE final
-    /// `output_tokens` for the whole message. `run_turn` folds both into
-    /// `round_usage` exactly as this test does. `output_tokens` must end up
-    /// equal to the `message_delta` value (the cumulative total), NOT
-    /// `message_start.output_tokens + message_delta.output_tokens` — adding
-    /// them double-counts the placeholder and over-reports billed output
-    /// tokens every turn (and compounds per round in a multi-round tool turn).
+    /// `output_tokens` for the whole message. The provider's `fold_event`
+    /// folds both into the round accumulator exactly as this test does.
+    /// `output_tokens` must end up equal to the `message_delta` value (the
+    /// cumulative total), NOT `message_start.output_tokens +
+    /// message_delta.output_tokens` — adding them double-counts the
+    /// placeholder and over-reports billed output tokens every turn (and
+    /// compounds per round in a multi-round tool turn).
     #[test]
     fn usage_does_not_double_count_message_start_output_placeholder() {
-        // Replicates the exact accumulation `run_turn` performs in one round.
+        // Replicates the exact accumulation the provider performs in one round.
         let mut round = WireUsage::default();
         // message_start.message.usage
         accumulate_wire_usage(
@@ -867,49 +689,36 @@ mod tests {
         assert_eq!(neutral.total_token_count, Some(45)); // 12 + 33
     }
 
-    /// Replicate `run_turn`'s assistant-block assembly for a thinking-enabled
-    /// turn that also makes a tool call. Anthropic REQUIRES the signed thinking
-    /// block(s) to be echoed back (and lead the assistant turn) whenever the
-    /// turn contains a tool_use — omitting them 400s the follow-up round. The
-    /// block order must be: thinking (with signature) → text → tool_use.
+    /// A thinking-enabled turn that also makes a tool call: Anthropic
+    /// REQUIRES the signed thinking block(s) to be echoed back (and lead the
+    /// assistant turn) whenever the turn contains a tool_use — omitting them
+    /// 400s the follow-up round. The block order must be: thinking (with
+    /// signature) → text → tool_use. (R7 phase 2: setup retargeted from the
+    /// deleted inline scaffold to the provider's real
+    /// `assemble_assistant_message` — assertions unchanged.)
     #[test]
     fn assistant_turn_preserves_signed_thinking_block_before_tool_use() {
-        // Mirror the per-index accumulators run_turn fills from the stream.
-        let mut thinking_blocks: BTreeMap<u32, ThinkingAccum> = BTreeMap::new();
+        // Mirror the per-index accumulators fold_event fills from the stream.
+        let mut acc = RoundAccum::default();
         // Block 0: a thinking block with text + a trailing signature.
-        thinking_blocks.insert(
+        acc.thinking_blocks.insert(
             0,
             ThinkingAccum {
                 thinking: "Let me reason about this.".into(),
                 signature: "sig_abc".into(),
             },
         );
-        let accumulated_text = "I'll read it.".to_string();
-        let pending_calls: Vec<(String, String, Value, Option<String>)> =
-            vec![("toolu_1".into(), "view_file".into(), json!({"path": "a.rs"}), None)];
+        let pending_calls = vec![ResolvedCall {
+            id: Some("toolu_1".into()),
+            name: "view_file".into(),
+            args: json!({"path": "a.rs"}),
+            parse_error: None,
+        }];
 
-        // --- assembly copied from run_turn (thinking → text → tool_use) ---
-        let mut assistant_blocks: Vec<Block> = Vec::new();
-        for (_idx, acc) in std::mem::take(&mut thinking_blocks) {
-            if !acc.thinking.is_empty() && !acc.signature.is_empty() {
-                assistant_blocks.push(Block::Thinking {
-                    thinking: acc.thinking,
-                    signature: Some(acc.signature),
-                });
-            }
-        }
-        if !accumulated_text.is_empty() {
-            assistant_blocks.push(Block::Text {
-                text: accumulated_text.clone(),
-            });
-        }
-        for (id, name, args, _e) in &pending_calls {
-            assistant_blocks.push(Block::ToolUse {
-                id: id.clone(),
-                name: name.clone(),
-                input: args.clone(),
-            });
-        }
+        let msg = AnthropicProvider::assemble_assistant_message(acc, "I'll read it.", &pending_calls)
+            .expect("assistant message assembled");
+        assert_eq!(msg.role, Role::Assistant);
+        let assistant_blocks = msg.content;
 
         // Thinking must be FIRST and carry its signature.
         match &assistant_blocks[0] {
@@ -931,28 +740,21 @@ mod tests {
 
     /// A thinking block whose `signature_delta` never arrived (truncated /
     /// cancelled stream) must be DROPPED, not echoed back unsigned — an
-    /// unsigned thinking block sent back is itself a 400.
+    /// unsigned thinking block sent back is itself a 400. (Setup retargeted
+    /// to the provider's `assemble_assistant_message`; assertion unchanged.)
     #[test]
     fn unsigned_thinking_block_is_dropped() {
-        let mut thinking_blocks: BTreeMap<u32, ThinkingAccum> = BTreeMap::new();
-        thinking_blocks.insert(
+        let mut acc = RoundAccum::default();
+        acc.thinking_blocks.insert(
             0,
             ThinkingAccum {
                 thinking: "partial reasoning".into(),
                 signature: String::new(), // never signed
             },
         );
-        let mut assistant_blocks: Vec<Block> = Vec::new();
-        for (_idx, acc) in std::mem::take(&mut thinking_blocks) {
-            if !acc.thinking.is_empty() && !acc.signature.is_empty() {
-                assistant_blocks.push(Block::Thinking {
-                    thinking: acc.thinking,
-                    signature: Some(acc.signature),
-                });
-            }
-        }
+        let msg = AnthropicProvider::assemble_assistant_message(acc, "", &[]);
         assert!(
-            assistant_blocks.is_empty(),
+            msg.is_none(),
             "unsigned thinking must not be persisted"
         );
     }
@@ -963,23 +765,31 @@ mod tests {
     /// — a dangling tool_use that 400s the NEXT Anthropic turn
     /// (`tool_use ids were found without tool_result blocks`). The cancel branch
     /// must balance every pending call with a cancelled tool_result so history
-    /// stays valid. This mirrors the block assembly run_turn performs on cancel.
+    /// stays valid. Exercises the provider's `on_cancel_with_pending_calls`
+    /// (the engine hook this phase exists to prove); assertions unchanged from
+    /// the pre-engine pinning test.
     #[test]
     fn cancelled_turn_balances_pending_tool_use_with_tool_results() {
-        let pending_calls: Vec<(String, String, Value, Option<String>)> = vec![
-            ("toolu_1".into(), "view_file".into(), json!({"path": "a.rs"}), None),
-            ("toolu_2".into(), "list_directory".into(), json!({}), None),
+        let pending_calls = vec![
+            ResolvedCall {
+                id: Some("toolu_1".into()),
+                name: "view_file".into(),
+                args: json!({"path": "a.rs"}),
+                parse_error: None,
+            },
+            ResolvedCall {
+                id: Some("toolu_2".into()),
+                name: "list_directory".into(),
+                args: json!({}),
+                parse_error: None,
+            },
         ];
 
-        // --- assembly copied from run_turn's cancel branch ---
-        let cancelled_blocks: Vec<Block> = pending_calls
-            .into_iter()
-            .map(|(id, _name, _args, _err)| Block::ToolResult {
-                tool_use_id: id,
-                content: tool_result_content(&json!({ "error": "cancelled" })),
-                is_error: Some(true),
-            })
-            .collect();
+        let balance = AnthropicProvider::on_cancel_with_pending_calls(&pending_calls);
+        // ONE batched user message of tool_result blocks (the wire shape).
+        assert_eq!(balance.len(), 1, "anthropic balances with one user turn");
+        assert_eq!(balance[0].role, Role::User);
+        let cancelled_blocks = &balance[0].content;
 
         // One tool_result per tool_use, ids preserved, marked errored.
         assert_eq!(cancelled_blocks.len(), 2);
@@ -1062,5 +872,160 @@ mod tests {
             StepStatus::Done,
             "inline-dispatched tool-call step must be Done, not Active",
         );
+    }
+
+    /// THE index-keyed stream-fold contract, exercised through the provider's
+    /// real seam (the path the engine drives): `thinking`/`signature`/
+    /// `input_json` deltas accumulate per block index, args fragments
+    /// concatenate, and `resolve_pending_calls` parses them in index order.
+    #[test]
+    fn provider_fold_accumulates_index_keyed_deltas() {
+        let (tx, _rx) = broadcast::channel::<Step>(8);
+        let state = LoopState::new(tx);
+        let mut acc = RoundAccum::default();
+        turn_engine::test_fold_events::<AnthropicProvider>(
+            &state,
+            &mut acc,
+            vec![
+                // Block 0: thinking text then its trailing signature.
+                StreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: BlockDelta::ThinkingDelta { thinking: "reason ".into() },
+                },
+                StreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: BlockDelta::ThinkingDelta { thinking: "more".into() },
+                },
+                StreamEvent::ContentBlockDelta {
+                    index: 0,
+                    delta: BlockDelta::SignatureDelta { signature: "sig_x".into() },
+                },
+                // Block 1: a tool_use whose args stream as fragments.
+                StreamEvent::ContentBlockStart {
+                    index: 1,
+                    content_block: Block::ToolUse {
+                        id: "toolu_9".into(),
+                        name: "view_file".into(),
+                        input: Value::Null,
+                    },
+                },
+                StreamEvent::ContentBlockDelta {
+                    index: 1,
+                    delta: BlockDelta::InputJsonDelta { partial_json: "{\"path\":".into() },
+                },
+                StreamEvent::ContentBlockDelta {
+                    index: 1,
+                    delta: BlockDelta::InputJsonDelta { partial_json: "\"a.rs\"}".into() },
+                },
+                // Terminal stop reason.
+                StreamEvent::MessageDelta {
+                    delta: crate::backends::anthropic::wire::MessageDeltaBody {
+                        stop_reason: Some(StopReason::ToolUse),
+                        stop_sequence: None,
+                    },
+                    usage: None,
+                },
+            ],
+        );
+
+        let t = &acc.thinking_blocks[&0];
+        assert_eq!(t.thinking, "reason more", "thinking deltas concatenate per index");
+        assert_eq!(t.signature, "sig_x", "trailing signature lands on the same index");
+
+        let calls = AnthropicProvider::resolve_pending_calls(&mut acc);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id.as_deref(), Some("toolu_9"));
+        assert_eq!(calls[0].name, "view_file");
+        assert_eq!(calls[0].args, json!({"path": "a.rs"}), "args fragments reassemble");
+        assert!(calls[0].parse_error.is_none());
+        assert_eq!(acc.stop_reason, Some(StopReason::ToolUse));
+    }
+
+    /// THE `pause_turn` hook (the other hook this phase proves): under the
+    /// anthropic-owned MAX_PAUSE_RESUMES cap the provider asks the engine to
+    /// Resume (identical history, accumulators retained); AT the cap it ends
+    /// the turn after persisting (ProceedAndEndTurn); a non-pause stop
+    /// proceeds normally. `stop_reason` is retained across Resume so a
+    /// CANCELLED pause (the engine ignores Resume while cancelled) still maps
+    /// the terminal step to the "paused" finish reason — and a resume cap hit
+    /// reports it too.
+    #[test]
+    fn pause_turn_resumes_until_cap_then_ends_turn() {
+        let mut acc = RoundAccum {
+            stop_reason: Some(StopReason::EndTurn),
+            ..Default::default()
+        };
+
+        // Non-pause stop → Proceed.
+        assert!(matches!(
+            AnthropicProvider::on_stream_end(&mut acc, 0),
+            StreamEnd::Proceed
+        ));
+
+        // pause_turn under the cap → Resume, stop_reason retained.
+        acc.stop_reason = Some(StopReason::PauseTurn);
+        assert!(matches!(
+            AnthropicProvider::on_stream_end(&mut acc, 0),
+            StreamEnd::Resume
+        ));
+        assert_eq!(
+            acc.stop_reason,
+            Some(StopReason::PauseTurn),
+            "retained so a cancelled pause still reports the paused finish reason"
+        );
+        assert!(matches!(
+            AnthropicProvider::on_stream_end(&mut acc, MAX_PAUSE_RESUMES - 1),
+            StreamEnd::Resume
+        ));
+
+        // AT the cap → persist what streamed, end the turn (no dispatch).
+        assert!(matches!(
+            AnthropicProvider::on_stream_end(&mut acc, MAX_PAUSE_RESUMES),
+            StreamEnd::ProceedAndEndTurn
+        ));
+
+        // The retained PauseTurn maps to the "paused" terminal message.
+        let (status, msg) = AnthropicProvider::map_finish_reason(&acc);
+        assert_eq!(status, StepStatus::Done);
+        assert_eq!(msg, "paused (resume cap reached)");
+    }
+
+    /// The engine hands every dispatched result back for wire-shaping: one
+    /// BATCHED user message; `is_error` maps onto the typed
+    /// `tool_result.is_error` (`false` → omitted, matching the old loop's
+    /// finish/success shape); content is stringified.
+    #[test]
+    fn tool_result_messages_batch_into_one_user_turn() {
+        let mk = |id: &str, value: Value, is_error: bool| DispatchedResult {
+            call: ResolvedCall {
+                id: Some(id.into()),
+                name: "t".into(),
+                args: json!({}),
+                parse_error: None,
+            },
+            value,
+            is_error,
+        };
+        let msgs = AnthropicProvider::tool_result_messages(vec![
+            mk("toolu_1", json!({"ok": true}), false),
+            mk("toolu_2", json!({"error": "boom"}), true),
+        ]);
+        assert_eq!(msgs.len(), 1, "one batched user turn");
+        assert_eq!(msgs[0].role, Role::User);
+        match &msgs[0].content[0] {
+            Block::ToolResult { tool_use_id, is_error, content } => {
+                assert_eq!(tool_use_id, "toolu_1");
+                assert_eq!(*is_error, None, "success omits is_error");
+                assert!(content.is_string());
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+        match &msgs[0].content[1] {
+            Block::ToolResult { tool_use_id, is_error, .. } => {
+                assert_eq!(tool_use_id, "toolu_2");
+                assert_eq!(*is_error, Some(true), "failure marks is_error");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 }

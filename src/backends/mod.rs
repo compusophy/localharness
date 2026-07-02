@@ -75,12 +75,13 @@ pub(crate) mod loop_util;
 /// ([`compaction::CompactionModel`]) and its summarization request.
 pub(crate) mod compaction;
 
-/// The generic streaming TURN ENGINE (R7 phase 1): ONE copy of the turn-loop
+/// The generic streaming TURN ENGINE (R7): ONE copy of the turn-loop
 /// scaffold behind a static-dispatch [`turn_engine::TurnProvider`] seam (the
 /// `CompactionModel` pattern; async edges ride in as closures — wasm-safe by
-/// construction). Phase 1: only the openai loop rides it; anthropic/gemini
-/// migrate in later phases — widen this cfg then.
-#[cfg(feature = "openai")]
+/// construction). Phases 1–2: the openai + anthropic loops ride it (both
+/// control-flow hooks proven); gemini migrates in phase 3 — widen this cfg
+/// to unconditional then.
+#[cfg(any(feature = "openai", feature = "anthropic"))]
 pub(crate) mod turn_engine;
 
 pub mod gemini;

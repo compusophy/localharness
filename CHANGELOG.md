@@ -69,7 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate, retry-wrapped stream open, idle-stall arm, MAX_TOOL_ROUNDS, finish-tool + finish_summary,
   usage folding, terminal step, compaction trigger) behind a static-dispatch `TurnProvider` seam
   (the `CompactionModel` pattern; wasm-safe by construction). openai is the first backend on it —
-  behavior unchanged; anthropic/gemini migrate in later phases (their loops are untouched).
+  behavior unchanged; anthropic joined in phase 2 — both control-flow hooks proven
+  (`on_stream_end` drives the pause_turn resume loop under the anthropic-owned MAX_PAUSE_RESUMES
+  cap, with the cancelled-pause persist-and-end semantics; `on_cancel_with_pending_calls` keeps
+  the #82 tool_result balancing) — its loop is now a ~350-line provider with zero scaffold copy;
+  gemini migrates in phase 3 (its loop is untouched).
 - Turn-loop phase A dedupe (roadmap R3): the byte-identical per-backend copies of
   `extract_canonical_path`, `resolve_tool_args`, and the `emit_error` free fns collapsed into the
   shared `backends::loop_util` / `LoopState::emit_error`. No behavior change outside the openai
