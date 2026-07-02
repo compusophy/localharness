@@ -291,8 +291,14 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
         // stream) must NOT silently run with `{}` — carry the parse error so
         // dispatch surfaces it as a tool error to the model instead.
         let mut pending_calls: Vec<(String, String, Value, Option<String>)> = Vec::new();
-        for (_idx, acc) in tool_accum {
+        for (idx, acc) in tool_accum {
             if acc.name.is_empty() {
+                // Never silently drop accumulated args (the policy noted above): a
+                // name-less accumulator that still carried args means a truncated or
+                // malformed stream — surface it instead of vanishing the call.
+                if !acc.args_json.trim().is_empty() {
+                    warn!("openai: tool-call fragment index {idx} has args but no name; dropping");
+                }
                 continue;
             }
             // OpenAI does not always supply an id (rare); synthesize one so the
