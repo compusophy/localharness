@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.20] - 2026-07-02
+
+### Fixed
+
+- **Notifications could be lost when the pending-push file was corrupted.** On reload
+  `load_inbox` deleted `PENDING_FILE` even when its JSON failed to parse — permanently losing the
+  closed-tab pushes it held; it now deletes only after a successful parse (keeping the file for a
+  retry). And `stash_to_inbox` did `unwrap_or_default()` on a parse failure, then overwrote the
+  file — silently discarding all prior stashed entries; it now surfaces the corruption instead of
+  swallowing it.
+- **OpenAI backend silently dropped a tool-call fragment with args but no name.** A truncated or
+  malformed stream (args accumulated, name empty) was dropped via a bare `continue`, against the
+  "never silently drop a part" policy. It now logs before skipping.
+
+### Docs
+
+- Corrected stale `COST_PER_REQUEST_WEI` / `MAX_COST_PER_REQUEST_WEI` defaults in `proxy/README.md`
+  (were 0.01 LH / 1 LH; the code is 1 LH / 100 LH). (The 0.01 in `session.rs` is the separate x402
+  ask price and is correct.)
+
 ## [0.60.19] - 2026-07-02
 
 ### Fixed
