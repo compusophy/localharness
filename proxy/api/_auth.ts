@@ -161,15 +161,40 @@ export async function meterDebit(
     functionName: 'meter',
     args: [user as `0x${string}`, amount],
   });
-  const hash = await wallet.sendTransaction({
-    to: REGISTRY as `0x${string}`,
-    data,
-    value: 0n,
-  });
+  const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
+
+  // Concurrent debits for the SAME meter key each auto-fetch the SAME pending
+  // nonce and collide: one lands, the rest are REJECTED "nonce too low" and 502
+  // the caller. Pass an EXPLICIT pending nonce and retry on nonce-too-low only —
+  // that case DEFINITIVELY never landed, so retrying can't double-debit; any
+  // other error (incl. ambiguous "already known") is rethrown, never re-sent.
+  let hash: `0x${string}` | undefined;
+  const MAX_SEND_ATTEMPTS = 5;
+  for (let attempt = 0; attempt < MAX_SEND_ATTEMPTS; attempt++) {
+    try {
+      const nonce = await pub.getTransactionCount({
+        address: account.address,
+        blockTag: 'pending',
+      });
+      hash = await wallet.sendTransaction({
+        to: REGISTRY as `0x${string}`,
+        data,
+        value: 0n,
+        nonce,
+      });
+      break;
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e).toLowerCase();
+      const nonceTooLow =
+        msg.includes('nonce') &&
+        (msg.includes('too low') || msg.includes('lower than current'));
+      if (!nonceTooLow || attempt === MAX_SEND_ATTEMPTS - 1) throw e;
+      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+    }
+  }
+  if (!hash) throw new Error('meter tx broadcast failed after nonce retries');
 
   if (!confirm) return;
-
-  const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
   let status: 'success' | 'reverted';
   try {
     ({ status } = await pub.waitForTransactionReceipt({

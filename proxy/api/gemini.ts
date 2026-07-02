@@ -366,23 +366,49 @@ async function meterDebit(user: string, amount: bigint, confirm = true): Promise
     functionName: 'meter',
     args: [user as `0x${string}`, amount],
   });
-  const hash = await wallet.sendTransaction({
-    to: REGISTRY as `0x${string}`,
-    data,
-    value: 0n,
-  });
+  const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
+
+  // Concurrent debits for the SAME meter key each auto-fetch the SAME pending
+  // nonce (viem's implicit nonce) and collide on-chain: one lands, the rest are
+  // REJECTED "nonce too low" and — with no retry — 502 the user's call (a real
+  // burst failure). So pass an EXPLICIT pending nonce and, on a nonce-too-low
+  // rejection, refetch + retry. Retrying is money-SAFE only for this case: a
+  // "nonce too low" tx DEFINITIVELY never landed, so it cannot double-debit. Any
+  // OTHER error (incl. the ambiguous "already known", which CAN still be mined)
+  // is rethrown — never re-sent — to preserve the no-double-charge invariant.
+  let hash: `0x${string}` | undefined;
+  const MAX_SEND_ATTEMPTS = 5;
+  for (let attempt = 0; attempt < MAX_SEND_ATTEMPTS; attempt++) {
+    try {
+      const nonce = await pub.getTransactionCount({
+        address: account.address,
+        blockTag: 'pending',
+      });
+      hash = await wallet.sendTransaction({
+        to: REGISTRY as `0x${string}`,
+        data,
+        value: 0n,
+        nonce,
+      });
+      break;
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e).toLowerCase();
+      const nonceTooLow =
+        msg.includes('nonce') &&
+        (msg.includes('too low') || msg.includes('lower than current'));
+      if (!nonceTooLow || attempt === MAX_SEND_ATTEMPTS - 1) throw e;
+      // Let the winning tx settle into the mempool so 'pending' advances past it.
+      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+    }
+  }
+  if (!hash) throw new Error('meter tx broadcast failed after nonce retries');
 
   // Streaming callers (`confirm=false`) await only the broadcast above — they
   // must NOT serialize first-byte latency behind the receipt (up to the 12s
-  // timeout below). NOTE: `meter()` is NOT CAS-guarded on-chain (it just reverts
-  // when the balance is short). Burst safety comes from elsewhere: awaiting the
-  // broadcast assigns this address's account nonce SERIALLY (concurrent same-
-  // address debits queue on-chain), the caller subtracts an in-isolate
-  // reservation from the gate snapshot, and an up-front floor debit is charged
-  // before streaming — so a stale read can't yield N-1 free calls per burst.
+  // timeout below). `meter()` is NOT CAS-guarded on-chain (it just reverts when
+  // the balance is short); the remaining burst safety is the caller's in-isolate
+  // reservation off the gate snapshot + an up-front floor debit before streaming.
   if (!confirm) return;
-
-  const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
   let status: 'success' | 'reverted';
   try {
     ({ status } = await pub.waitForTransactionReceipt({
