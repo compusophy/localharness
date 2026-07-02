@@ -16,6 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verify/TBA fail-closed checks, bypassing a priced agent's gate. It now fails closed until
   pricing is known (retry-in-a-moment), matching the function's other not-ready guards.
 
+## [0.60.18] - 2026-07-02
+
+### Added
+
+- **`onramp --settlement-tx <hash>` resumes a paid-but-unclaimed mint.** If the mint claim
+  timed out waiting for a slow settlement confirmation, the user had already paid USDC.e but
+  had no way to claim without paying again — and the error even promised an idempotent retry
+  that didn't exist. Now `onramp --settlement-tx <hash> --pay <same usdce>` skips the
+  challenge+payment and claims against the already-settled tx (the mint is idempotent, bound
+  to that tx — no double-pay). The failure message prints the exact resume command.
+
+### Fixed
+
+- **Registration funding-deficit message floor-divided to a confusing "need 0 more LH".** A
+  fractional shortfall (e.g. 0.5 LH short of a 1 LH cost) showed "need 0 more LH". It now
+  rounds up.
+
+### Docs
+
+- Corrected a `display.rs` comment still citing the old `JOINER_RE` `{1,32}` (now `{8}`).
+
 ## [0.60.16] - 2026-07-01
 
 ### Fixed
