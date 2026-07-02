@@ -322,6 +322,29 @@ pub(crate) async fn validation_reclaim(caller: Option<&str>, id_arg: &str, unres
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    // Preflight the on-chain state so an invalid poke doesn't burn sponsor gas on an
+    // opaque revert: `reclaim` needs an OPEN (0) validation, `draw` needs a CHALLENGED
+    // (1) one. An RPC hiccup falls through to the call (the on-chain guard is still
+    // authoritative) rather than blocking a valid poke on a transient read.
+    match registry::get_validation(id).await {
+        Ok(Some(v)) => {
+            let ok = if unresolved { v.status == 1 } else { v.status == 0 };
+            if !ok {
+                eprintln!(
+                    "validation #{id} is {} — {} requires a {} validation.",
+                    validation_status_label(v.status),
+                    if unresolved { "draw" } else { "reclaim" },
+                    if unresolved { "CHALLENGED" } else { "OPEN" },
+                );
+                return 1;
+            }
+        }
+        Ok(None) => {
+            eprintln!("validation #{id} doesn't exist.");
+            return 1;
+        }
+        Err(_) => {}
+    }
     let what = if unresolved { "draw (refund both sides of)" } else { "reclaim the unchallenged stake on" };
     println!("attempting to {what} validation #{id} …");
     let res = if unresolved {
