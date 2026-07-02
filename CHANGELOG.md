@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.60.14] - 2026-07-01
+
+### Fixed
+
+- **Compaction drop-oldest fallback could fold in turns it never planned for.** The
+  summarize-install path bails if history changed while `summarize()` awaited, but the
+  drop-oldest fallback (taken on a summarization failure) lacked the same guard — so it
+  applied a stale split position to a possibly-grown history. It now threads the expected
+  length through and aborts identically on a race (regression tested).
+- **bashlite: backslash-newline inside double quotes is now a line continuation.** An
+  unquoted `\<newline>` was spliced, but inside double quotes both the backslash and the
+  newline were preserved as literals. POSIX splices it in quotes too.
+
+### Docs
+
+- Clarified `AskUserHandler` / `Policy::ask` — the handler returns the decision
+  (`true` = approve, `false` = deny), it doesn't itself prompt — with a compiling doctest.
+
 ## [0.60.13] - 2026-07-01
 
 ### Fixed
