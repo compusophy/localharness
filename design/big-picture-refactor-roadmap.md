@@ -119,7 +119,13 @@ encode real divergence); macro-generate only the ~10 truly-identical forwarders 
 fix the capabilities double-copy at ONE bootstrap point. Breaking → lands in the
 1.0.0 batch with the Phase-1 freeze (5901e29).
 
-## R7 ◐ Generic TurnEngine: one streaming turn loop, three thin providers — phase 1 (engine + openai) `062b25a`; phase 2 (anthropic, both hooks proven) `8f9f375`; phase 3 (gemini) open
+## R7 ☑ Generic TurnEngine: one streaming turn loop, three thin providers — phase 1 (engine + openai) `062b25a`; phase 2 (anthropic, both hooks proven) `8f9f375`; phase 3 (gemini, engine always-compiled) `e51ecf7` — COMPLETE 2026-07-02
+
+**ROADMAP COMPLETE: all 7 items (R1–R7) shipped 2026-07-02**, one autonomous
+overnight run — R1/R2 in 0.61.0's lead-up, R3–R6 + R7p1/p2 released in 0.61.0,
+R7p3 lands in the next release. Future architecture work: draw from the
+lower-value backlog below only opportunistically; the next dedicated efforts
+are user-gated (schemars project, notifications redesign, 1.0 batch).
 
 Source: backends-connections v5 + crate-architecture v4 (the big one; do LAST,
 after R3/R6 have thinned the surface). anthropic/loop.rs opens with "Mirrors
