@@ -15,7 +15,7 @@
 //!   * `LH3xxx` — **BACKEND / agent-runtime** failures (the chat-facing ones):
 //!     a model provider rate-limit / quota, a rejected API key, out-of-credits,
 //!     a request timeout, an empty/truncated response, a transport failure. The
-//!     `.turn-error` chat line shows the code; [`classify`] maps a raw error
+//!     `.turn-error` chat line shows the code; [`classify`](crate::error_codes::classify) maps a raw error
 //!     string to one of these.
 //!   * `LH4xxx` — **SDK CORE** errors — one per [`crate::Error`] variant, so
 //!     `Error::code()` always resolves to a stable code (the CLI prints it).
@@ -270,7 +270,8 @@ pub const BACKEND_STALE_AUTH: u16 = 3008;
 pub const CORE_IO: u16 = 4001;
 /// `LH4002` — `Error::Json`: a (de)serialization error.
 pub const CORE_JSON: u16 = 4002;
-/// `LH4003` — `Error::Http`: an HTTP transport error not matched by [`classify`].
+/// `LH4003` — `Error::Http`: an HTTP transport error not matched by
+/// [`classify`](crate::error_codes::classify).
 pub const CORE_HTTP: u16 = 4003;
 /// `LH4004` — `Error::Closed`: the connection closed unexpectedly.
 pub const CORE_CLOSED: u16 = 4004;
@@ -288,7 +289,8 @@ pub const CORE_TOOL_FAILED: u16 = 4009;
 pub const CORE_POLICY_DENIED: u16 = 4010;
 /// `LH4011` — `Error::Timeout`: an operation exceeded its deadline.
 pub const CORE_TIMEOUT: u16 = 4011;
-/// `LH4012` — `Error::Other`: a catch-all not matched by [`classify`].
+/// `LH4012` — `Error::Other`: a catch-all not matched by
+/// [`classify`](crate::error_codes::classify).
 pub const CORE_OTHER: u16 = 4012;
 
 /// The full registry — the SINGLE source of truth. `docs/error-codes.md` is a
