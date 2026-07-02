@@ -5,17 +5,6 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.60.17] - 2026-07-01
-
-### Fixed
-
-- **Visitor could get a free turn on a priced agent during the load window.** The
-  per-turn payment gate read `pricing_wei.unwrap_or(0)`, collapsing `None` ("pricing not
-  checked yet — verification still running") into `0` ("free"). A visitor who sent within
-  the few-second window before the price loaded hit the free-return path *before* the
-  verify/TBA fail-closed checks, bypassing a priced agent's gate. It now fails closed until
-  pricing is known (retry-in-a-moment), matching the function's other not-ready guards.
-
 ## [0.60.18] - 2026-07-02
 
 ### Added
@@ -36,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Docs
 
 - Corrected a `display.rs` comment still citing the old `JOINER_RE` `{1,32}` (now `{8}`).
+
+## [0.60.17] - 2026-07-01
+
+### Fixed
+
+- **Visitor could get a free turn on a priced agent during the load window.** The
+  per-turn payment gate read `pricing_wei.unwrap_or(0)`, collapsing `None` ("pricing not
+  checked yet — verification still running") into `0` ("free"). A visitor who sent within
+  the few-second window before the price loaded hit the free-return path *before* the
+  verify/TBA fail-closed checks, bypassing a priced agent's gate. It now fails closed until
+  pricing is known (retry-in-a-moment), matching the function's other not-ready guards.
 
 ## [0.60.16] - 2026-07-01
 
