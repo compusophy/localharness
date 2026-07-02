@@ -95,7 +95,13 @@ pub(crate) fn parse_member_specs(positional: &[String]) -> Result<Vec<(String, u
 pub(crate) async fn resolve_member_token_id(member: &str) -> Result<u64, String> {
     let trimmed = member.trim().trim_start_matches('#');
     if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
-        return trimmed.parse::<u64>().map_err(|_| format!("invalid member id '{member}'"));
+        return match trimmed.parse::<u64>() {
+            // Reject id 0 up front (mirrors the name path's zero-check) — it's never
+            // a valid tokenId and formParty would otherwise revert with a cryptic error.
+            Ok(0) => Err(format!("member id 0 is not valid (check the member '{member}')")),
+            Ok(id) => Ok(id),
+            Err(_) => Err(format!("invalid member id '{member}'")),
+        };
     }
     match registry::id_of_name(&member.trim().to_ascii_lowercase()).await {
         Ok(0) => Err(format!("'{member}' is not registered")),
