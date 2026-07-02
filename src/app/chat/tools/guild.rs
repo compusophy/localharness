@@ -280,6 +280,19 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if amount_wei == 0 {
                 return Err(crate::error::Error::other("amount_lh must be greater than 0"));
             }
+            // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
+            // this body runs; this guards a path that forgot the hook (spend_treasury
+            // moves guild $LH — same posture as send_lh / release_subdomain).
+            let confirmed = args
+                .get("confirmation")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(crate::error::Error::other(
+                    "spend_treasury requires the platform-issued confirmation code",
+                ));
+            }
             let to_hex = resolve_account(&to_arg).await?;
             let (signer, fee_payer) = bounty_signers().await?;
             let tx_hash = crate::app::registry::spend_treasury_sponsored(
@@ -362,6 +375,19 @@ pub(crate) fn set_role_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let role_arg = args.get("role").and_then(|v| v.as_str()).unwrap_or("").trim();
             let role = crate::app::registry::GuildRole::parse(role_arg)
                 .map_err(crate::error::Error::other)?;
+            // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
+            // this body runs; this guards a path that forgot the hook (set_role is a
+            // privilege escalation — same posture as spend_treasury).
+            let confirmed = args
+                .get("confirmation")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(crate::error::Error::other(
+                    "set_role requires the platform-issued confirmation code",
+                ));
+            }
             let member_hex = resolve_account(&member_arg).await?;
             let (signer, fee_payer) = bounty_signers().await?;
             let tx_hash = crate::app::registry::set_role_sponsored(

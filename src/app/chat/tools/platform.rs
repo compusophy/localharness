@@ -1329,6 +1329,19 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     "amount must be greater than 0",
                 ));
             }
+            // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
+            // this body runs; this guards a path that forgot the hook (send_lh moves
+            // real $LH — same posture as release_subdomain).
+            let confirmed = args
+                .get("confirmation")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(crate::error::Error::other(
+                    "send_lh requires the platform-issued confirmation code",
+                ));
+            }
 
             // Recipient: address used directly; name → on-chain owner address.
             let to_hex = resolve_lh_recipient(&recipient_arg).await?;
@@ -1452,6 +1465,19 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if items.len() > 20 {
                 return Err(crate::error::Error::other(
                     "batch_send_lh: at most 20 transfers per batch",
+                ));
+            }
+            // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
+            // this body runs; this guards a path that forgot the hook (batch_send_lh
+            // moves real $LH to many recipients — same posture as send_lh).
+            let confirmed = args
+                .get("confirmation")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(crate::error::Error::other(
+                    "batch_send_lh requires the platform-issued confirmation code",
                 ));
             }
 

@@ -412,6 +412,19 @@ pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if !(1..=5).contains(&rating) {
                 return Err(crate::error::Error::other("rating must be an integer 1-5"));
             }
+            // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
+            // this body runs; this guards a path that forgot the hook (attest writes a
+            // durable one-shot reputation signal — same posture as the other gated tools).
+            let confirmed = args
+                .get("confirmation")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(crate::error::Error::other(
+                    "attest requires the platform-issued confirmation code",
+                ));
+            }
             // subject → tokenId: a bare integer is a direct tokenId; otherwise resolve
             // the subdomain name via id_of_name.
             let subject_token_id = match subject_arg.parse::<u64>() {
