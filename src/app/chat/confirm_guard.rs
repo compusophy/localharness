@@ -121,10 +121,14 @@ impl PreToolCallDecideHook for TypedConfirmationGuard {
         let outcome =
             GATE.with(|g| g.borrow_mut().check(&fp, confirmation, &last_user, fresh_nonce()));
         // A denial means the loop must STOP and wait for the owner to type the
-        // code; an approval clears any stale flag from a prior turn.
-        AWAITING_CONFIRMATION.with(|f| {
-            *f.borrow_mut() = !matches!(outcome, ConfirmOutcome::Approved);
-        });
+        // code. SET-ONLY within a turn (never clear on approval): with MULTIPLE
+        // confirm-gated tools in ONE turn, a later approval must not erase an
+        // earlier denial's pending flag — else the turn-end check reads false and
+        // the loop auto-continues PAST the blocked call (re-issuing it, burning
+        // credits). take_awaiting_confirmation() clears it for the next turn.
+        if !matches!(outcome, ConfirmOutcome::Approved) {
+            AWAITING_CONFIRMATION.with(|f| *f.borrow_mut() = true);
+        }
         match outcome {
             ConfirmOutcome::Approved => Ok(HookResult::allow()),
             ConfirmOutcome::Challenge { nonce } => {
