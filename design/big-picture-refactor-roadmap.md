@@ -51,7 +51,7 @@ invariant text). Validate by running the shim so it exercises delegation + env,
 expecting the "already released" pre-flight abort (there is NO dry-run mode — never
 validate with an unreleased version). Risk low; fallback is release.sh directly.
 
-## R3 ☐ Turn-loop phase A: loop_util migration + the shipped #29 drift bug (1 day)
+## R3 ☑ Turn-loop phase A: loop_util migration + the shipped #29 drift bug — `35339a5` (2026-07-02)
 
 Source: crate-architecture v4 + backends-connections v5 (phase 1 of R7; zero-risk,
 land first). loop_util.rs's own doc says it's "currently consumed only by the
