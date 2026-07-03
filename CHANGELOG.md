@@ -18,8 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   small docs FAQ answered from the embedded self-docs facts. CONSERVATIVE by
   contract — only exact allowlist phrasings route free ("balance my argument"
   and friends all hit the model untouched); a leading `!` always forces a
-  metered turn, every free card says so, and `/router off` disables the gate
-  per session (default ON). The `IntentClassifier` trait is the seam the
+  metered turn and every free card says so. The gate is **default OFF** —
+  opt-in per session via `/router on` (`/router off` reverts, `/router status`
+  reports) until the browser paths get a tab-E2E pass; the default is pinned
+  by a native test. The `IntentClassifier` trait is the seam the
   in-browser Gemma (`browser-app-local`) can replace the heuristic behind
   later.
 

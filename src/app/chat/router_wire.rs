@@ -11,8 +11,8 @@
 //! the [`crate::router::FREE_ROUTE_FOOTER`] on every card tells the user how
 //! to reach the model instead.
 //!
-//! Per-session kill switch: `/router off` (sessionStorage `lh_router_off`;
-//! default ON — the free tiers are strictly money-saving and escapable).
+//! Per-session opt-in: `/router on` (sessionStorage `lh_router_on`; default
+//! OFF until the browser paths get a tab-E2E pass — `/router off` reverts).
 
 use maud::html;
 
@@ -23,8 +23,8 @@ use crate::router::{
 
 use super::super::{dom, templates, APP};
 
-/// sessionStorage key for the per-session opt-out ("1" = router disabled).
-const ROUTER_OFF_KEY: &str = "lh_router_off";
+/// sessionStorage key for the per-session opt-IN ("1" = router enabled).
+const ROUTER_ON_KEY: &str = "lh_router_on";
 
 /// What `run_send` should do with the message after the gate.
 pub(super) enum PreRoute {
@@ -36,8 +36,8 @@ pub(super) enum PreRoute {
 }
 
 /// The gate. Order: `/router` commands first (always live, even when the
-/// router is off — they're how it comes back on), then the opt-out check,
-/// then the conservative classifier.
+/// router is off — they're how it comes on), then the opt-in check, then the
+/// conservative classifier.
 pub(super) async fn pre_route(prompt: &str) -> PreRoute {
     if let Some(cmd) = parse_router_cmd(prompt) {
         apply_cmd(cmd);
@@ -55,11 +55,13 @@ pub(super) async fn pre_route(prompt: &str) -> PreRoute {
     }
 }
 
-/// Is the gate on for this session? Default ON; only an explicit
-/// `/router off` (or no sessionStorage at all being unwritable) flips it.
+/// Is the gate on for this session? **Default OFF** (opt-in via `/router on`)
+/// until the browser paths are tab-E2E'd; the decision itself is the pure
+/// [`crate::router::router_enabled`] so the default is pinned natively.
 fn enabled() -> bool {
-    let Ok(Some(storage)) = dom::session_storage() else { return true };
-    !matches!(storage.get_item(ROUTER_OFF_KEY), Ok(Some(v)) if v == "1")
+    let Ok(Some(storage)) = dom::session_storage() else { return false };
+    let flag = storage.get_item(ROUTER_ON_KEY).ok().flatten();
+    crate::router::router_enabled(flag.as_deref())
 }
 
 /// Apply a `/router on|off|status` command; feedback via the status line
@@ -69,29 +71,30 @@ fn apply_cmd(cmd: RouterCmd) {
     match cmd {
         RouterCmd::Off => {
             if let Some(s) = &storage {
-                let _ = s.set_item(ROUTER_OFF_KEY, "1");
+                let _ = s.remove_item(ROUTER_ON_KEY);
             }
             dom::set_status(
-                "intent router OFF for this session — every message goes to the model \
-                 (metered). '/router on' to re-enable.",
+                "intent router OFF (the default) — every message goes to the model \
+                 (metered). '/router on' opts this session in.",
                 false,
             );
         }
         RouterCmd::On => {
             if let Some(s) = &storage {
-                let _ = s.remove_item(ROUTER_OFF_KEY);
+                let _ = s.set_item(ROUTER_ON_KEY, "1");
             }
             dom::set_status(
-                "intent router ON — obvious balance/files/display/docs messages are \
-                 answered free. '!' prefix forces the model; '/router off' disables.",
+                "intent router ON for this session — obvious balance/files/display/docs \
+                 messages are answered free. '!' prefix forces the model; '/router off' \
+                 reverts to the default (off).",
                 false,
             );
         }
         RouterCmd::Status => {
-            let state = if enabled() { "ON" } else { "OFF" };
+            let state = if enabled() { "ON (opted in this session)" } else { "OFF (the default)" };
             dom::set_status(
                 &format!(
-                    "intent router: {state}. Free tiers: balance/credits, open \
+                    "intent router: {state}. Free tiers when on: balance/credits, open \
                      files/display/terminal, a small docs FAQ. '!' prefix forces the \
                      model; '/router on|off' toggles."
                 ),

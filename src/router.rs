@@ -184,15 +184,24 @@ pub fn strip_bang(input: &str) -> &str {
     }
 }
 
-/// The `/router` chat command — the per-session kill switch for the gate.
+/// The `/router` chat command — the per-session switch for the gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouterCmd {
-    /// `/router on` — (re-)enable the free tiers (the default).
+    /// `/router on` — enable the free tiers for this session (OPT-IN; the
+    /// gate defaults OFF until the browser paths are tab-E2E'd).
     On,
-    /// `/router off` — every message goes to the model for this session.
+    /// `/router off` — every message goes to the model (the default).
     Off,
     /// `/router` / `/router status` — report the current state.
     Status,
+}
+
+/// The gate's enable decision from the stored opt-in flag (sessionStorage
+/// `lh_router_on` in the browser wiring). **Default OFF** — the free tiers are
+/// OPT-IN via `/router on` until the browser paths get a tab E2E pass; only an
+/// explicit `"1"` enables the gate. Pure so the default is pinned natively.
+pub fn router_enabled(opt_in_flag: Option<&str>) -> bool {
+    matches!(opt_in_flag, Some("1"))
 }
 
 /// Parse a `/router …` chat command. `None` for anything else (including
@@ -457,6 +466,17 @@ mod tests {
         assert_eq!(parse_router_cmd("/router maybe"), None);
         assert_eq!(parse_router_cmd("router off"), None);
         assert_eq!(parse_router_cmd("turn the /router off"), None);
+    }
+
+    #[test]
+    fn router_default_is_off_opt_in_only() {
+        // DEFAULT OFF until a browser tab-E2E pass: no flag / anything but an
+        // explicit "1" leaves the gate disabled.
+        assert!(!router_enabled(None));
+        assert!(!router_enabled(Some("")));
+        assert!(!router_enabled(Some("0")));
+        assert!(!router_enabled(Some("true")));
+        assert!(router_enabled(Some("1")));
     }
 
     // ── allowlist hygiene: every entry must be its own normalized form ───
