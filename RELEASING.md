@@ -15,7 +15,6 @@ The release flow is **one command**. Read this once; then trust the script.
 | `Cargo.toml` `version` | every release | release script |
 | `Cargo.lock` | every release (auto) | cargo |
 | `CHANGELOG.md` | every release | **you** (write the entry beforehand) |
-| `src/app/templates.rs` `"web demo · X.Y.Z"` tag | every release | **you** (commit before running script) |
 | `README.md` install line `localharness = "X.Y"` | breaking minor/major only | you |
 | `LICENSE` | never | upstream |
 
