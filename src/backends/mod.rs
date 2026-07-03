@@ -115,11 +115,9 @@ use crate::error::Error;
 use crate::types::{Step, StepSource, StepStatus};
 
 /// Flatten [`SystemInstructions`](crate::types::SystemInstructions) into a
-/// plain system-preamble string. Shared VERBATIM by the Anthropic backend
-/// (top-level `system`) and the local backend (prompt preamble); the Gemini
-/// backend keeps its own near-variant, which wraps the same flattening in a
-/// wire `Content` instead of returning the string.
-#[cfg(any(feature = "anthropic", feature = "local", feature = "openai"))]
+/// plain system-preamble string. Shared by ALL backends: Anthropic/OpenAI
+/// (top-level `system`), local (prompt preamble), and Gemini (which wraps the
+/// string in a wire `Content` at the call site).
 pub(crate) fn render_system(s: &crate::types::SystemInstructions) -> String {
     use crate::types::SystemInstructions;
     match s {

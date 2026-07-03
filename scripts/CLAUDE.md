@@ -22,8 +22,9 @@ browser-app,mainnet) → STAMPS the `?v=` cache-buster into boot.js/index.html (
 ## Feedback tooling — use the RIGHT chain
 - `check-feedback.mjs` (node, view-function loop) reads on-chain feedback on BOTH
   chains. **MAINNET is live; the testnet 274 is STALE** (pre-migration). Use THIS.
-- ⛔ `harvest-feedback.{sh,ps1}` point at the WRONG (testnet) chain + need cast —
-  DON'T use them; `check-feedback.mjs` is the replacement.
+- `harvest-feedback.{sh,ps1}` are THIN DELEGATING SHIMS over `check-feedback.mjs`
+  (`--unresolved`/`-Unresolved` map to `--open`). They used to read the FeedbackFacet
+  via `cast` pinned to the stale TESTNET diamond — don't reintroduce that.
 - `gen-feedback-resolutions.mjs`: `docs/feedback-resolved-*.txt` → 
   `web/feedback-resolutions.json` (the resolved-bell feed). Mark an item resolved =
   add its index to the resolved file + regen + deploy.

@@ -12,7 +12,6 @@ pub(crate) mod compaction;
 pub(crate) mod wire;
 #[path = "loop.rs"]
 mod r#loop;
-pub(crate) mod tools;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -25,7 +24,7 @@ use crate::backends::gemini::api::{GeminiClient, SharedClient};
 use crate::backends::gemini::r#loop::{
     run_turn, to_wire_user_content, LoopConfig, LoopState, TurnDeps,
 };
-use crate::backends::gemini::tools::{register_builtins, BuiltinDeps};
+use crate::builtins::{register_builtins, BuiltinDeps};
 use crate::connections::{Connection, ConnectionStrategy, StepStream};
 use crate::content::Content;
 use crate::error::{Error, Result};

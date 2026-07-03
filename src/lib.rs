@@ -77,7 +77,7 @@ pub mod agent;
 pub mod backends;
 /// The crate-wide built-in tool registry (fs tools, ask_question, finish,
 /// call_agent, ...) — backend-neutral; every backend registers from here.
-/// Formerly `backends::gemini::tools` (a re-export shim remains there).
+/// Formerly `backends::gemini::tools` (the re-export shim is gone).
 pub mod builtins;
 /// Transport abstraction traits.
 pub mod connections;

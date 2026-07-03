@@ -42,7 +42,7 @@ use crate::backends::anthropic::wire::ToolDef;
 // Built-in tool registration is reused verbatim from the Gemini backend —
 // the tools consume neutral `Tool::input_schema()` JSON, which Anthropic's
 // `tools[].input_schema` takes raw.
-use crate::backends::gemini::tools::{register_builtins, BuiltinDeps};
+use crate::builtins::{register_builtins, BuiltinDeps};
 use crate::connections::{Connection, ConnectionStrategy, StepStream};
 use crate::content::Content;
 use crate::error::{Error, Result};

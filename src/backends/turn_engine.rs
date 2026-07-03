@@ -44,7 +44,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::backends::dispatch::{dispatch_post_turn, dispatch_tool_call, gate_pre_turn};
-use crate::backends::gemini::tools::FINISH_TOOL_NAME;
+use crate::builtins::FINISH_TOOL_NAME;
 use crate::backends::loop_util::extract_canonical_path;
 use crate::backends::state::LoopState;
 use crate::backends::stream_timeout::{idle_timeout_ms, next_with_idle_timeout, NextChunk};

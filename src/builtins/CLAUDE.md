@@ -43,4 +43,5 @@ reason. If you migrate a resident anyway, keep a frozen byte-identity test.
 ## Registration
 The default tool SETS + `Step` constructors live in `src/types.rs` (no hand-written
 wire literals). A builtin is registered there; `BuiltinDeps` carries its deps (fs,
-etc.). A back-compat shim is left at `backends/gemini/tools`.
+etc.). The old `backends/gemini/tools` back-compat shim is GONE — import from
+`crate::builtins` directly.

@@ -70,26 +70,8 @@ impl LoopConfig {
         tool_declarations: Vec<wire::FunctionDeclaration>,
         compaction_threshold: Option<u32>,
     ) -> Result<Self> {
-        let system_instruction = system.map(|s| match s {
-            SystemInstructions::Custom(c) => wire::Content::system_text(c.text.clone()),
-            SystemInstructions::Templated(t) => {
-                let mut buf = String::new();
-                if let Some(id) = &t.identity {
-                    buf.push_str(id);
-                    buf.push_str("\n\n");
-                }
-                for section in &t.sections {
-                    if !section.title.is_empty() {
-                        buf.push_str("## ");
-                        buf.push_str(&section.title);
-                        buf.push('\n');
-                    }
-                    buf.push_str(&section.content);
-                    buf.push_str("\n\n");
-                }
-                wire::Content::system_text(buf.trim().to_string())
-            }
-        });
+        let system_instruction = system
+            .map(|s| wire::Content::system_text(crate::backends::render_system(s)));
 
         let response_schema = match response_schema {
             Some(s) => Some(

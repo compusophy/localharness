@@ -8,7 +8,7 @@
 //! no client is supplied in `BuiltinDeps`.
 //!
 //! Lived at `backends/gemini/tools/` until 0.29.x (the Gemini backend was
-//! written first); a re-export shim remains there so old paths compile.
+//! written first); every backend now imports from here directly.
 //!
 //! SCHEMA CONSTRAINT (load-bearing): every tool's `input_schema()` must use a
 //! single `type` (no `["string","null"]` unions) and none of

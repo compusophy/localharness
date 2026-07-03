@@ -43,7 +43,7 @@ use tokio::sync::{broadcast, Notify};
 // (and the portable ones) run over the supplied filesystem (OPFS on wasm),
 // exactly as the Anthropic backend does. `FINISH_TOOL_NAME` lets the local
 // tool loop honour an explicit `finish()` call.
-use crate::backends::gemini::tools::{register_builtins, BuiltinDeps, FINISH_TOOL_NAME};
+use crate::builtins::{register_builtins, BuiltinDeps, FINISH_TOOL_NAME};
 use crate::connections::{Connection, ConnectionStrategy, StepStream};
 use crate::content::{Content, Part};
 use crate::error::{Error, Result};

@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Gemini system-instruction rendering unified onto the shared
+  `backends::render_system`** — `gemini/loop.rs::LoopConfig::from_system` carried
+  a byte-identical copy of the flattening (wrapped in a wire `Content`); it now
+  calls the one shared renderer, and the renderer's feature gate is gone (Gemini
+  is always compiled).
+- **`scripts/harvest-feedback.{sh,ps1}` are now thin delegating shims over
+  `scripts/check-feedback.mjs`** (the build-web.ps1 pattern). The old bodies
+  read the FeedbackFacet via `cast` pinned to the stale TESTNET diamond; the
+  shims map `--unresolved`/`-Unresolved` to check-feedback's `--open` and need
+  only node (no foundry).
+
+### Removed
+
+- **The dead `backends::gemini::tools` re-export shim** (left when the builtins
+  moved to `crate::builtins` in 0.29.x). All in-crate consumers now import from
+  `crate::builtins` directly; the module was `pub(crate)`, so nothing external
+  could reach it.
+
 ## [0.63.0] - 2026-07-03
 
 ### Changed
