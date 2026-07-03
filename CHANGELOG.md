@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`colony run` economics are now PROPORTIONAL to the reward** (three dogfooded
+  cycles each burned ~31-40× the bounty reward on overhead): the judge panel
+  default SCALES with the reward (<0.5 $LH → 1 judge, 0.5–2 → 2, >2 → 3; an
+  explicit `--judges N` still wins; a 2-judge median = the LOWER of the two —
+  conservative, one generous judge can't force a payment; min-accept-rating
+  unchanged), an under-floor judge is pre-funded 2.0 $LH instead of 0.5 (≈4
+  cycles amortized per top-up; `--judge-topup <lh>` overrides), and every run
+  ends with a CYCLE ECONOMICS line (total spent / reward / overhead ratio) so
+  the cost is visible on the first cycle.
 - **Gemini system-instruction rendering unified onto the shared
   `backends::render_system`** — `gemini/loop.rs::LoopConfig::from_system` carried
   a byte-identical copy of the flattening (wrapped in a wire `Content`); it now

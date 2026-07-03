@@ -21,7 +21,7 @@ use crate::{bounty_work_ref, bytes_to_hex_str, collect_flags, credits, ensure_wa
 // `call` (`run_agent_turn`), so it adds no new on-chain surface.
 
 pub(crate) const COLONY_USAGE: &str = "\
-usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--min-accept-rating <N>] [--ttl <dur>]
+usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--min-accept-rating <N>] [--judge-topup <lh>] [--ttl <dur>]
   Run ONE autonomous agent-economy cycle end-to-end:
     1. the caller (--as, default your sole identity) POSTS <task> as a bounty escrowing <reward> $LH
     2. a WORKER is picked: --worker <agent>, else the reputation-aware top discover() match for <task>
@@ -38,15 +38,20 @@ usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent
   --reward <lh>          the $LH reward to escrow (e.g. 0.02)            [required]
   --worker <agent>       the worker subdomain (its key must be local);
                          omit to auto-pick the best discover() match
-  --judges <N>           size of the auto-selected neutral judge panel (default 3); N DISTINCT
-                         local agents EXCLUDING the worker AND the caller are chosen, the median
-                         of their ratings is attested. Fewer than N → uses what's available (min 1)
+  --judges <N>           size of the auto-selected neutral judge panel; the default SCALES with
+                         the reward so judging overhead stays proportional (<0.5 LH → 1 judge,
+                         0.5-2 LH → 2, >2 LH → 3). N DISTINCT local agents EXCLUDING the worker
+                         AND the caller are chosen, the median of their ratings is attested (a
+                         2-judge median = the LOWER of the two — conservative). Fewer than N →
+                         uses what's available (min 1)
   --judge <agent>        force a SINGLE named judge (a panel of exactly that one agent; its key
                          must be local); overrides --judges
   --min-accept-rating N  PAYMENT GATE (1..5, default 3): the colony accepts + pays IFF the panel
                          median is >= N. A median below N is REJECTED — the worker is NOT paid and
                          the escrow stays locked (reclaim it after the ttl). Default 3 ⇒ medians
                          1-2 are rejected; 3-5 are paid
+  --judge-topup <lh>     $LH sent to an under-floor judge wallet before its turn (default 2.0 —
+                         sized to amortize ~4 cycles per top-up instead of 1)
   --ttl <dur>            bounty expiry (1h/7d/30d, 1h…90d, default 7d)
   The worker MUST be a fleet/owned agent whose key is in your keys dir
   (it signs its own claim + submit). The neutral panel makes the reputation signal
@@ -253,9 +258,12 @@ pub(crate) fn parse_judge_rating(reply: &str) -> (u8, String) {
 /// rating (the robust, outlier-resistant centre — one rogue judge can't swing
 /// it the way a mean would). Pure + testable.
 ///
-/// Rule: sort the ratings ascending; **odd N** → the middle element; **even N**
-/// → the LOWER-MIDDLE element (`[n/2 - 1]`) — a deliberately conservative tie
-/// break so a split panel never rounds reputation UP. An EMPTY slice → a neutral
+/// Rule: sort the ratings ascending; **odd N** → the middle element (so a panel
+/// of 1 is its own rating); **even N** → the LOWER-MIDDLE element (`[n/2 - 1]`)
+/// — a deliberately conservative tie break so a split panel never rounds
+/// reputation UP. For the reward-scaled 2-judge panel this means the median is
+/// the MIN of the two: a single generous judge can never force a payment past
+/// the gate on its own. An EMPTY slice → a neutral
 /// `3` (the same default the colony uses when every judge turn fails, so the
 /// cycle completes with an honest, non-inflated rating). The result is always in
 /// `1..=5` given `1..=5` inputs (median of in-range values is in range).
@@ -298,34 +306,130 @@ pub(crate) struct ParsedColonyRun {
     /// An explicit single-judge override (`--judge <agent>`) — a panel of exactly
     /// that one neutral agent. `None` → auto-select a panel of `judges` agents.
     judge: Option<String>,
-    /// Target panel size for the auto-selected NEUTRAL JUDGE PANEL (`--judges N`,
-    /// default [`COLONY_DEFAULT_PANEL`]). Ignored when `judge` is set.
-    judges: usize,
+    /// Explicit target panel size for the auto-selected NEUTRAL JUDGE PANEL
+    /// (`--judges N`). `None` → the REWARD-SCALED default
+    /// ([`judge_panel_size_for_reward`]). Ignored when `judge` is set.
+    judges: Option<usize>,
     /// PAYMENT GATE (`--min-accept-rating N`, default [`COLONY_DEFAULT_MIN_ACCEPT`]):
     /// the caller accepts + pays IFF the panel median is `>= min_accept`. A median
     /// below it is REJECTED (the worker is NOT paid; the escrow is reclaimable after
     /// the ttl). Validated to 1..=5 at parse time.
     min_accept: u8,
+    /// Judge pre-fund amount in wei (`--judge-topup <lh>`, default
+    /// [`JUDGE_TOPUP_DEFAULT_WEI`] = 2 `$LH` — amortizes ~4 cycles per top-up).
+    judge_topup_wei: u128,
     ttl_secs: u64,
 }
 
 /// Judge WALLET-balance floor (0.25 `$LH`) below which the colony tops a judge
 /// up before its turn: a judge under this can't reliably fund the lazy meter
 /// deposit for its metered turn and would 402 out of the panel. When tripped
-/// the colony sends a fixed 0.5 `$LH` top-up (see the `send_lh` call below) —
-/// comfortably above the floor so one top-up covers several turns.
+/// the colony sends a [`JUDGE_TOPUP_DEFAULT_WEI`] top-up (`--judge-topup`
+/// overrides) — sized to AMORTIZE several cycles per top-up.
 pub(crate) const JUDGE_FUND_FLOOR_WEI: u128 = 250_000_000_000_000_000;
 
-/// Default neutral-judge panel size for `colony run` (median of N). Odd so the
+/// One whole `$LH` in wei — the unit for the panel/top-up thresholds below.
+pub(crate) const ONE_LH_WEI: u128 = 1_000_000_000_000_000_000;
+
+/// Default judge top-up (2 `$LH`) sent when a judge is under
+/// [`JUDGE_FUND_FLOOR_WEI`]. Sized to amortize ~4 cycles per top-up at the
+/// ~[`JUDGE_CYCLE_COST_EST_WEI`] per-cycle judge drain — the old fixed 0.5
+/// was consumed EVERY cycle (the recurring drain that made three dogfooded
+/// cycles each cost ~31-40× the reward). Override per-run: `--judge-topup <lh>`.
+pub(crate) const JUDGE_TOPUP_DEFAULT_WEI: u128 = 2 * ONE_LH_WEI;
+
+/// Estimated per-cycle judge drain (~0.5 `$LH`: the metered turn's lazy deposit
+/// + usage) — the divisor for the amortization arithmetic in the transcript.
+pub(crate) const JUDGE_CYCLE_COST_EST_WEI: u128 = ONE_LH_WEI / 2;
+
+/// Pure: how many judge cycles a `topup_wei` top-up covers at a `per_cycle_wei`
+/// drain (`0` on a zero drain estimate — never divides by zero).
+pub(crate) fn judge_topup_cycles(topup_wei: u128, per_cycle_wei: u128) -> u128 {
+    topup_wei.checked_div(per_cycle_wei).unwrap_or(0)
+}
+
+/// Maximum neutral-judge panel size for `colony run` (median of N), used for
+/// rewards above the top [`judge_panel_size_for_reward`] band. Odd so the
 /// median is a clean middle value with no even-split tie.
 pub(crate) const COLONY_DEFAULT_PANEL: usize = 3;
+
+/// PROPORTIONAL JUDGE PANEL (pure): the DEFAULT panel size scales with the
+/// escrowed reward so judging overhead stays proportional to the value at
+/// stake — reward < 0.5 `$LH` → 1 judge; 0.5..=2 `$LH` → 2; > 2 `$LH` → 3
+/// (the original fixed panel). An explicit `--judges N` overrides this. Note
+/// the 2-judge median is the LOWER of the two ([`median_rating`]'s even rule)
+/// — conservative, so a lone generous judge can't buy a payment; the
+/// `--min-accept-rating` gate semantics are unchanged.
+pub(crate) fn judge_panel_size_for_reward(reward_wei: u128) -> usize {
+    if reward_wei < ONE_LH_WEI / 2 {
+        1
+    } else if reward_wei <= 2 * ONE_LH_WEI {
+        2
+    } else {
+        COLONY_DEFAULT_PANEL
+    }
+}
+
+/// Pure: render a wei amount as the exact decimal `$LH` string `send_lh`
+/// parses (`2`, `0.5`, `1.25` — full precision, no trailing zeros;
+/// round-trips through `encoding::parse_token_amount`).
+pub(crate) fn format_lh_amount(wei: u128) -> String {
+    let whole = wei / ONE_LH_WEI;
+    let frac = wei % ONE_LH_WEI;
+    if frac == 0 {
+        whole.to_string()
+    } else {
+        let f = format!("{frac:018}");
+        format!("{whole}.{}", f.trim_end_matches('0'))
+    }
+}
+
+/// Per-message meter estimate for a caller-paid `call` turn (1 `$LH` — the
+/// flat floor the proxy debits per message), used by the economics line.
+pub(crate) const METERED_TURN_EST_WEI: u128 = ONE_LH_WEI;
+
+/// Pure: the end-of-run CYCLE ECONOMICS summary — total spent / reward /
+/// overhead ratio — so every run surfaces its own cost (the ~31-40× overhead
+/// drain was invisible until three cycles had already burned it).
+/// `reward_paid` = the accept branch settled the escrow; `topup_total_wei` =
+/// judge top-ups actually sent this run; `caller_turns` = caller-metered
+/// turns (the WORK call + retries), estimated at [`METERED_TURN_EST_WEI`]
+/// each. Judge turns are paid from the judges' own wallets, so their cost
+/// surfaces through the top-ups, not double-counted here.
+pub(crate) fn colony_economics_line(
+    reward_wei: u128,
+    reward_paid: bool,
+    topup_total_wei: u128,
+    caller_turns: u32,
+) -> String {
+    let work_est = METERED_TURN_EST_WEI * caller_turns as u128;
+    let overhead = topup_total_wei + work_est;
+    let reward_spent = if reward_paid { reward_wei } else { 0 };
+    let total = reward_spent + overhead;
+    // overhead : reward, one decimal place (reward > 0 is parse-enforced).
+    let ratio_x10 = (overhead * 10).checked_div(reward_wei).unwrap_or(0);
+    format!(
+        "=== CYCLE ECONOMICS ===\n  \
+         total spent ≈ {total} = reward {reward} ({paid}) + overhead ≈ {overhead_s}\n  \
+         overhead: {caller_turns} caller-metered turn(s) ≈ {work_s} + judge top-ups {topup_s}\n  \
+         overhead ratio ≈ {w}.{f}× the reward",
+        total = fmt_lh(total),
+        reward = fmt_lh(reward_wei),
+        paid = if reward_paid { "paid" } else { "NOT paid" },
+        overhead_s = fmt_lh(overhead),
+        work_s = fmt_lh(work_est),
+        topup_s = fmt_lh(topup_total_wei),
+        w = ratio_x10 / 10,
+        f = ratio_x10 % 10,
+    )
+}
 
 /// Parse `colony run` flags. Pure/testable — mirrors `parse_bounty_post_args`
 /// plus a `--worker` override.
 pub(crate) fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
-    let ([reward, worker, judge, judges, min_accept, ttl], positional) = collect_flags(
+    let ([reward, worker, judge, judges, min_accept, judge_topup, ttl], positional) = collect_flags(
         rest,
-        ["--reward", "--worker", "--judge", "--judges", "--min-accept-rating", "--ttl"],
+        ["--reward", "--worker", "--judge", "--judges", "--min-accept-rating", "--judge-topup", "--ttl"],
         COLONY_USAGE,
     )?;
     if positional.is_empty() {
@@ -342,11 +446,20 @@ pub(crate) fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, 
         None => INVITE_DEFAULT_TTL_SECS,
         Some(raw) => parse_ttl(&raw)?,
     };
+    // `None` = the reward-scaled default; resolved in `colony_run` where the
+    // reward is known (an explicit `--judges N` always wins).
     let judges = match judges {
-        None => COLONY_DEFAULT_PANEL,
+        None => None,
         Some(raw) => match raw.trim().parse::<usize>() {
-            Ok(n) if n >= 1 => n,
+            Ok(n) if n >= 1 => Some(n),
             _ => return Err(format!("--judges must be a positive integer, got '{raw}'")),
+        },
+    };
+    let judge_topup_wei = match judge_topup {
+        None => JUDGE_TOPUP_DEFAULT_WEI,
+        Some(raw) => match localharness::encoding::parse_token_amount(&raw) {
+            Some(w) if w > 0 => w,
+            _ => return Err(format!("--judge-topup must be a positive $LH amount, got '{raw}'")),
         },
     };
     // The PAYMENT GATE threshold (1..=5). Rejects 0 and out-of-band N so a median
@@ -358,7 +471,7 @@ pub(crate) fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, 
             _ => return Err(format!("--min-accept-rating must be 1..5, got '{raw}'")),
         },
     };
-    Ok(ParsedColonyRun { task, reward_wei, worker, judge, judges, min_accept, ttl_secs })
+    Ok(ParsedColonyRun { task, reward_wei, worker, judge, judges, min_accept, judge_topup_wei, ttl_secs })
 }
 
 /// `localharness colony <subcommand>` — the colony-engine router.
@@ -970,13 +1083,14 @@ async fn colony_step_claim(
 
 /// [4/8] WORK — run the worker's on-chain persona on the task (a headless
 /// `call` turn, paid by the caller key). Retries ONCE on an empty reply or a
-/// transient failure; returns the trimmed result text, or the stage-4 bail
-/// message.
+/// transient failure; returns the trimmed result text plus how many metered
+/// turns actually ran (1, or 2 after a retry — feeds the CYCLE ECONOMICS
+/// line), or the stage-4 bail message.
 async fn colony_step_work(
     caller_key_hex: &str,
     worker_name: &str,
     task: &str,
-) -> Result<String, String> {
+) -> Result<(String, u32), String> {
     println!("[4/8] WORK  — running {worker_name}'s persona on the task (headless `call`) …");
     let work_prompt = format!(
         "{task}\n\nSubmit your concrete result / deliverable as your reply \
@@ -988,6 +1102,7 @@ async fn colony_step_work(
     // the WORK turn return an empty model reply (a transient proxy/model hiccup)
     // that bailed the whole cycle and stranded the claimed bounty. A non-empty
     // result is NEVER retried; a genuine (non-transient) error bails as before.
+    let mut work_turns: u32 = 1;
     let mut work_outcome =
         run_agent_turn(caller_key_hex, worker_name, &work_prompt, None, None).await;
     if work_result_needs_retry(&work_outcome) {
@@ -999,6 +1114,7 @@ async fn colony_step_work(
                 "      ⚠ WORK turn failed transiently ({e}) — retrying once …"
             ),
         }
+        work_turns += 1;
         work_outcome =
             run_agent_turn(caller_key_hex, worker_name, &work_prompt, None, None).await;
     }
@@ -1022,7 +1138,7 @@ async fn colony_step_work(
     }
     println!("      └─────────────────────────────────────────────────────────");
     println!();
-    Ok(result_text)
+    Ok((result_text, work_turns))
 }
 
 /// [5/8] SUBMIT — the worker submits its result (one transient-retry via
@@ -1060,7 +1176,11 @@ async fn colony_step_submit(
 /// (its key is local); the judge agent's PERSONA is embodied but the impartial
 /// PROMPT overrides its framing. A failed judge turn doesn't bail (the payout
 /// still happens) — and if ALL judges fail the median falls back to a neutral 3
-/// so the cycle completes with an honest, non-inflated rating.
+/// so the cycle completes with an honest, non-inflated rating. An under-floor
+/// judge is pre-funded `judge_topup_wei` from the caller (amortized — see
+/// [`JUDGE_TOPUP_DEFAULT_WEI`]). Returns `(median, topup_total_wei)` so the
+/// CYCLE ECONOMICS line can surface what the judging actually cost.
+#[allow(clippy::too_many_arguments)]
 async fn colony_step_judge(
     judge: &Option<String>,
     judges: usize,
@@ -1069,7 +1189,8 @@ async fn colony_step_judge(
     caller_key_hex: &str,
     task: &str,
     result_text: &str,
-) -> u8 {
+    judge_topup_wei: u128,
+) -> (u8, u128) {
     // Build the panel: an explicit `--judge X` = the single agent X; else
     // auto-select up to `judges` neutral local agents (excluding worker + caller).
     let panel: Vec<String> = match judge {
@@ -1101,6 +1222,7 @@ async fn colony_step_judge(
     // fabricated score. The caller key pays the fallback (caller-as-judge) turn.
     let judge_prompt = colony_judge_prompt(task, result_text);
     let mut panel_results: Vec<(String, u8, String)> = Vec::new();
+    let mut topup_total_wei: u128 = 0;
     // The effective panel: the resolved neutral agents, or — when empty — the
     // caller acting as the lone judge (paid by the caller key already loaded).
     let effective_panel: Vec<String> =
@@ -1134,7 +1256,9 @@ async fn colony_step_judge(
                 ) {
                     println!(
                         "      · judge '{judge_name}' wallet is under the metering floor — \
-                         funding 0.5 $LH from {caller_label}"
+                         funding {} (≈{} cycles amortized) from {caller_label}",
+                        fmt_lh(judge_topup_wei),
+                        judge_topup_cycles(judge_topup_wei, JUDGE_CYCLE_COST_EST_WEI)
                     );
                     // Fund the ADDRESS just balance-checked — the local key's,
                     // which signs (and is metered for) the judge turn. Sending
@@ -1146,8 +1270,13 @@ async fn colony_step_judge(
                     // send_lh prints the reason, but the colony ignored it and ran the
                     // judge anyway). A non-zero code means the judge will likely 402
                     // out; the shortfall summary below then explains the shrunk panel.
-                    if credits::send_lh(Some(caller_label), &judge_addr, "0.5").await != 0 {
+                    if credits::send_lh(Some(caller_label), &judge_addr, &format_lh_amount(judge_topup_wei))
+                        .await
+                        != 0
+                    {
                         eprintln!("      ⚠ judge '{judge_name}' top-up did not succeed; it may 402 out of the panel.");
+                    } else {
+                        topup_total_wei += judge_topup_wei;
                     }
                 }
             }
@@ -1200,7 +1329,7 @@ async fn colony_step_judge(
         println!("      ✓ panel: {summary} → median {judged_rating}★");
     }
     println!();
-    judged_rating
+    (judged_rating, topup_total_wei)
 }
 
 /// [7/8] the PAYMENT GATE — ACCEPT (pay) the work or REJECT it, per the
@@ -1366,14 +1495,19 @@ async fn colony_report_outcome(
 /// (exit 0). On any failure mid-cycle the bounty id is surfaced so the escrow is
 /// never silently stranded.
 pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
-    let ParsedColonyRun { task, reward_wei, worker, judge, judges, min_accept, ttl_secs } =
-        match parse_colony_run_args(rest) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("{e}");
-                return 2;
-            }
-        };
+    let ParsedColonyRun {
+        task, reward_wei, worker, judge, judges, min_accept, judge_topup_wei, ttl_secs,
+    } = match parse_colony_run_args(rest) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    // PROPORTIONAL PANEL: an explicit `--judges N` wins; else the panel size
+    // scales with the reward so judging overhead stays proportional.
+    let panel_reward_scaled = judges.is_none();
+    let judges = judges.unwrap_or_else(|| judge_panel_size_for_reward(reward_wei));
     if task.trim().is_empty() {
         eprintln!("colony run: task is empty");
         return 2;
@@ -1406,6 +1540,10 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     println!("  caller (poster): {caller_label}  ({caller_addr})");
     println!("  task:            {task}");
     println!("  reward:          {}", fmt_lh(reward_wei));
+    println!(
+        "  judge panel:     {judges} judge(s){}",
+        if panel_reward_scaled { " (reward-scaled)" } else { "" }
+    );
     println!();
 
     // -- STEP 1: the caller POSTS the bounty (escrows the reward). ----------
@@ -1447,7 +1585,7 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     }
 
     // -- STEP 4: run the WORK — a headless turn as the worker's persona. ----
-    let result_text = match colony_step_work(&caller_key_hex, &worker.name, &task).await {
+    let (result_text, work_turns) = match colony_step_work(&caller_key_hex, &worker.name, &task).await {
         Ok(r) => r,
         Err(e) => bail!("4/8", e),
     };
@@ -1458,7 +1596,7 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     }
 
     // -- STEP 6: a NEUTRAL JUDGE PANEL scores the result; take the MEDIAN. ---
-    let judged_rating = colony_step_judge(
+    let (judged_rating, judge_topup_total) = colony_step_judge(
         &judge,
         judges,
         &worker.name,
@@ -1466,6 +1604,7 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         &caller_key_hex,
         &task,
         &result_text,
+        judge_topup_wei,
     )
     .await;
 
@@ -1501,6 +1640,11 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         &caller_label,
     )
     .await;
+    // -- CYCLE ECONOMICS: every run surfaces its own cost (total / reward /
+    // overhead ratio) so a drain like the 31-40× top-up spiral is visible
+    // on the very first cycle, not after three.
+    println!();
+    println!("{}", colony_economics_line(reward_wei, accept, judge_topup_total, work_turns));
     // A reject is a NORMAL outcome (the colony rationally declined sub-quality
     // work), not an error — exit 0 on both branches.
     0
@@ -1689,15 +1833,110 @@ mod tests {
     #[test]
     fn parse_colony_run_args_judges_flag() {
         let mk = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        // Default panel size when --judges is omitted.
+        // --judges omitted → None = the REWARD-SCALED default (resolved at run time).
         let p = parse_colony_run_args(&mk(&["QA task", "--reward", "0.01"])).unwrap();
-        assert_eq!(p.judges, COLONY_DEFAULT_PANEL);
-        // Explicit --judges.
+        assert_eq!(p.judges, None);
+        // Explicit --judges always wins over the reward-scaled default.
         let p = parse_colony_run_args(&mk(&["QA task", "--reward", "0.01", "--judges", "5"])).unwrap();
-        assert_eq!(p.judges, 5);
+        assert_eq!(p.judges, Some(5));
         // Zero / non-numeric is rejected.
         assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--judges", "0"])).is_err());
         assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--judges", "x"])).is_err());
+    }
+
+    #[test]
+    fn judge_panel_size_scales_with_reward() {
+        // < 0.5 LH → 1 judge (the micro-bounty band where a 3-judge panel cost
+        // 31-40× the reward in overhead).
+        assert_eq!(judge_panel_size_for_reward(0), 1);
+        assert_eq!(judge_panel_size_for_reward(ONE_LH_WEI / 100), 1); // 0.01 LH
+        assert_eq!(judge_panel_size_for_reward(ONE_LH_WEI / 2 - 1), 1); // just under 0.5
+        // 0.5..=2 LH → 2 judges (boundaries inclusive on both ends).
+        assert_eq!(judge_panel_size_for_reward(ONE_LH_WEI / 2), 2); // exactly 0.5
+        assert_eq!(judge_panel_size_for_reward(ONE_LH_WEI), 2);
+        assert_eq!(judge_panel_size_for_reward(2 * ONE_LH_WEI), 2); // exactly 2
+        // > 2 LH → the original 3-judge panel.
+        assert_eq!(judge_panel_size_for_reward(2 * ONE_LH_WEI + 1), 3);
+        assert_eq!(judge_panel_size_for_reward(10 * ONE_LH_WEI), COLONY_DEFAULT_PANEL);
+    }
+
+    #[test]
+    fn median_of_small_panels_is_conservative() {
+        // Panel of 1 (reward < 0.5 LH): the median IS that judge's rating.
+        for r in 1..=5u8 {
+            assert_eq!(median_rating(&[r]), r);
+        }
+        // Panel of 2 (0.5-2 LH): the LOWER of the two — the documented
+        // conservative choice (min), so a single generous judge can never force
+        // a payment past the gate. Order-independent.
+        assert_eq!(median_rating(&[2, 5]), 2);
+        assert_eq!(median_rating(&[5, 2]), 2);
+        assert_eq!(median_rating(&[1, 3]), 1);
+        assert_eq!(median_rating(&[4, 4]), 4);
+        // Gate consequence: a split [2,5] panel with the default min 3 → NOT paid;
+        // min-accept-rating semantics themselves are unchanged.
+        assert!(!should_accept(median_rating(&[2, 5]), COLONY_DEFAULT_MIN_ACCEPT));
+        assert!(should_accept(median_rating(&[3, 5]), COLONY_DEFAULT_MIN_ACCEPT));
+    }
+
+    #[test]
+    fn judge_topup_math_amortizes_cycles() {
+        // The default 2.0 LH top-up covers ~4 cycles at the ~0.5 LH/cycle judge
+        // drain (the old 0.5 top-up covered exactly 1 — the recurring drain).
+        assert_eq!(JUDGE_TOPUP_DEFAULT_WEI, 2 * ONE_LH_WEI);
+        assert_eq!(judge_topup_cycles(JUDGE_TOPUP_DEFAULT_WEI, JUDGE_CYCLE_COST_EST_WEI), 4);
+        assert_eq!(judge_topup_cycles(ONE_LH_WEI / 2, JUDGE_CYCLE_COST_EST_WEI), 1);
+        assert_eq!(judge_topup_cycles(ONE_LH_WEI, 0), 0); // never divides by zero
+        // The amount string handed to send_lh round-trips through the parser
+        // EXACTLY (a lossy format would silently send the wrong top-up).
+        for wei in [JUDGE_TOPUP_DEFAULT_WEI, ONE_LH_WEI / 2, 1_250_000_000_000_000_000u128] {
+            let s = format_lh_amount(wei);
+            assert_eq!(
+                localharness::encoding::parse_token_amount(&s),
+                Some(wei),
+                "round-trip failed for '{s}'"
+            );
+        }
+        assert_eq!(format_lh_amount(2 * ONE_LH_WEI), "2");
+        assert_eq!(format_lh_amount(ONE_LH_WEI / 2), "0.5");
+    }
+
+    #[test]
+    fn parse_colony_run_args_judge_topup_flag() {
+        let mk = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Default when omitted: the amortized 2.0 LH.
+        let p = parse_colony_run_args(&mk(&["t", "--reward", "0.01"])).unwrap();
+        assert_eq!(p.judge_topup_wei, JUDGE_TOPUP_DEFAULT_WEI);
+        // Flag-overridable (e.g. back down to the old 0.5).
+        let p = parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--judge-topup", "0.5"]))
+            .unwrap();
+        assert_eq!(p.judge_topup_wei, ONE_LH_WEI / 2);
+        // Zero / junk / dangling are parse errors.
+        assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--judge-topup", "0"])).is_err());
+        assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--judge-topup", "x"])).is_err());
+        assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--judge-topup"])).is_err());
+    }
+
+    #[test]
+    fn colony_economics_line_surfaces_cost() {
+        // The dogfooded drain shape: 0.02 LH reward paid, one 2.0 LH top-up,
+        // 1 caller-metered work turn → overhead 3.00 LH = 150× the reward.
+        let line = colony_economics_line(20_000_000_000_000_000, true, 2 * ONE_LH_WEI, 1);
+        assert!(line.contains("CYCLE ECONOMICS"), "{line}");
+        assert!(line.contains("0.02 LH"), "{line}"); // the reward
+        assert!(line.contains("(paid)"), "{line}");
+        assert!(line.contains("3.00 LH"), "{line}"); // overhead = 2.0 topups + 1.0 work
+        assert!(line.contains("3.02 LH"), "{line}"); // total = reward + overhead
+        assert!(line.contains("150.0×"), "{line}");
+        // A rejected cycle spends no reward, and a topup-free run's overhead is
+        // just the metered work estimate.
+        let line = colony_economics_line(ONE_LH_WEI, false, 0, 1);
+        assert!(line.contains("(NOT paid)"), "{line}");
+        assert!(line.contains("1.0×"), "{line}"); // overhead 1.0 / reward 1.0
+        // A retried work turn is counted (2 turns ≈ 2.00 LH).
+        let line = colony_economics_line(ONE_LH_WEI, true, 0, 2);
+        assert!(line.contains("2 caller-metered turn(s)"), "{line}");
+        assert!(line.contains("2.0×"), "{line}");
     }
 
     #[test]
