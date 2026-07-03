@@ -149,18 +149,9 @@ pub(crate) fn stake_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
 /// on an Open validation (the counter-stake equals its own stake, read first).
 /// Reuses `registry::challenge_validation_sponsored`.
 pub(crate) fn challenge_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "validation_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the OPEN validation to challenge (from \
-                    get_validation)."
-            }
-        },
-        "required": ["validation_id"]
-    });
+    // Hoisted table: `crate::tool_params::ChallengeValidationParams`,
+    // byte-identity-tested natively.
+    let schema = crate::tool_params::ChallengeValidationParams::schema();
     ClosureTool::new(
         "challenge_validation",
         "Challenge an open validation by counter-staking the OPPOSITE verdict. You \
@@ -170,10 +161,8 @@ pub(crate) fn challenge_validation_tool() -> std::sync::Arc<dyn crate::tools::To
          counter_stake_lh, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let validation_id = args
-                .get("validation_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("validation_id is required"))?;
+            let validation_id =
+                crate::tool_params::ChallengeValidationParams::lenient(&args).validation_id()?;
             // The counter-stake MUST equal the validation's own stake — read it
             // first (and surface a specific cause if it isn't challengeable).
             let v = crate::app::registry::get_validation(validation_id)
@@ -207,22 +196,8 @@ pub(crate) fn challenge_validation_tool() -> std::sync::Arc<dyn crate::tools::To
 /// (resolver-only on chain: the bounty poster or the diamond owner). The named
 /// side is paid BOTH stakes. Reuses `registry::resolve_validation_sponsored`.
 pub(crate) fn resolve_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "validation_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the CHALLENGED validation to resolve."
-            },
-            "winner": {
-                "type": "string",
-                "description": "Who wins, paid BOTH stakes: \"validator\" (the original \
-                    verdict stands) or \"challenger\" (the counter-verdict stands)."
-            }
-        },
-        "required": ["validation_id", "winner"]
-    });
+    // Hoisted table: `crate::tool_params::ResolveValidationParams`.
+    let schema = crate::tool_params::ResolveValidationParams::schema();
     ClosureTool::new(
         "resolve_validation",
         "Resolve a challenged validation, paying both stakes to the winner. RESOLVER-ONLY \
@@ -231,16 +206,9 @@ pub(crate) fn resolve_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool
          { validation_id, winner, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let validation_id = args
-                .get("validation_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("validation_id is required"))?;
-            let winner_raw = args
-                .get("winner")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase();
+            let p = crate::tool_params::ResolveValidationParams::lenient(&args);
+            let validation_id = p.validation_id()?;
+            let winner_raw = p.winner.trim().to_ascii_lowercase();
             let validator_wins = match winner_raw.as_str() {
                 "validator" | "valid" => true,
                 "challenger" | "invalid" => false,
@@ -273,18 +241,8 @@ pub(crate) fn resolve_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool
 /// window. Picks the right path from the record. Reuses
 /// `registry::{reclaim_stake_sponsored, reclaim_unresolved_sponsored}`.
 pub(crate) fn reclaim_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "validation_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the validation to refund (its window must \
-                    have passed)."
-            }
-        },
-        "required": ["validation_id"]
-    });
+    // Hoisted table: `crate::tool_params::ReclaimValidationParams`.
+    let schema = crate::tool_params::ReclaimValidationParams::schema();
     ClosureTool::new(
         "reclaim_validation",
         "Refund a validation whose window has passed. An UNCHALLENGED stake reclaims to \
@@ -294,10 +252,8 @@ pub(crate) fn reclaim_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool
          tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let validation_id = args
-                .get("validation_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("validation_id is required"))?;
+            let validation_id =
+                crate::tool_params::ReclaimValidationParams::lenient(&args).validation_id()?;
             // Pick the path from the record: Open → reclaim stake; Challenged →
             // draw. Surface a specific cause for the already-settled states.
             let v = crate::app::registry::get_validation(validation_id)
@@ -343,17 +299,8 @@ pub(crate) fn reclaim_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool
 /// `get_validation(validation_id)` — read the decoded validation record.
 /// Read-only: reuses `registry::get_validation`.
 pub(crate) fn get_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "validation_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the validation to read."
-            }
-        },
-        "required": ["validation_id"]
-    });
+    // Hoisted table: `crate::tool_params::GetValidationParams`.
+    let schema = crate::tool_params::GetValidationParams::schema();
     ClosureTool::new(
         "get_validation",
         "Read an on-chain validation record: who staked, who challenged, the verdict, the \
@@ -362,10 +309,8 @@ pub(crate) fn get_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          { found: false } for an unknown id.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let validation_id = args
-                .get("validation_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("validation_id is required"))?;
+            let validation_id =
+                crate::tool_params::GetValidationParams::lenient(&args).validation_id()?;
             match crate::app::registry::get_validation(validation_id)
                 .await
                 .map_err(crate::error::Error::other)?

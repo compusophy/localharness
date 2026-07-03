@@ -179,21 +179,9 @@ pub(crate) async fn set_shared_state(
 /// `room set`: derive `K_room`, pick `next_lamport`, seal the op, append it via a
 /// sponsored Tempo tx.
 pub(crate) fn shared_state_set_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "key": {
-                "type": "string",
-                "description": "The key to write in the shared volume, e.g. \
-                    \"task_status\" or \"worker_1/progress\"."
-            },
-            "value": {
-                "type": "string",
-                "description": "The value to store under `key` (UTF-8 text)."
-            }
-        },
-        "required": ["key", "value"]
-    });
+    // Hoisted table: `crate::tool_params::SharedStateSetParams`,
+    // byte-identity-tested natively.
+    let schema = crate::tool_params::SharedStateSetParams::schema();
     ClosureTool::new(
         "shared_state_set",
         "Write a key/value into your SHARED VOLUME — encrypted on-chain state that \
@@ -205,12 +193,12 @@ pub(crate) fn shared_state_set_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
          tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let key = args.get("key").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let p = crate::tool_params::SharedStateSetParams::lenient(&args);
+            let key = p.key.trim();
             if key.is_empty() {
                 return Err(crate::error::Error::other("key cannot be empty"));
             }
-            let value = args.get("value").and_then(|v| v.as_str()).unwrap_or("");
-            let (room_id, tx_hash) = set_shared_state(key, value).await?;
+            let (room_id, tx_hash) = set_shared_state(key, &p.value).await?;
             Ok(serde_json::json!({
                 "key": key,
                 "room_id": room_id,
@@ -223,16 +211,8 @@ pub(crate) fn shared_state_set_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
 /// `shared_state_get(key)` — read the converged value for `key`, or "(unset)".
 /// Mirrors the CLI's `room get`: ops → open → reduce → lookup.
 pub(crate) fn shared_state_get_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "key": {
-                "type": "string",
-                "description": "The key to read from the shared volume."
-            }
-        },
-        "required": ["key"]
-    });
+    // Hoisted table: `crate::tool_params::SharedStateGetParams`.
+    let schema = crate::tool_params::SharedStateGetParams::schema();
     ClosureTool::new(
         "shared_state_get",
         "Read one key from your SHARED VOLUME (the encrypted on-chain state shared \
@@ -242,7 +222,8 @@ pub(crate) fn shared_state_get_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
          \"(unset)\" when the key has never been written (or was deleted).",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let key = args.get("key").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let p = crate::tool_params::SharedStateGetParams::lenient(&args);
+            let key = p.key.trim();
             if key.is_empty() {
                 return Err(crate::error::Error::other("key cannot be empty"));
             }

@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`tool_params!` batch 3 — the straggler sweep: 20 more browser chat tools
+  migrated** to single-table params (lenient mode, tables HOISTED to
+  `src/tool_params.rs` so plain `cargo test` byte-checks their wasm-gated
+  schemas natively). The queued six — set_lessons, create_skill, delete_skill,
+  cancel_task, execute_script, spawn_recursive_subagent — plus 14 sweep finds
+  that fit existing kinds: company_status, shared_state_set, shared_state_get,
+  evm_balance, resolve_ens, challenge_validation, resolve_validation,
+  reclaim_validation, get_validation, join_party, fund_party, complete_party,
+  disband_party, get_party. Same contract as waves 1-2: frozen verbatim copies
+  of the original hand-written schemas with byte-identity tests, lenient-parity
+  tests, call-site swaps only — zero wire/behavior change. Newly
+  skipped-with-reason (no new kinds this batch): stake_validation (needs a
+  required-bool-that-errors kind + field-specific error messages like
+  `"subject (tokenId) is required"` the generated accessor can't reproduce),
+  form_party / evm_call (array fields), discover_parties (literal
+  `"required": []`); everything else still unmigrated was already on the 0.62.0
+  skip list (enum / maximum / arrays / batch / no-arg tools).
+
 ## [0.62.0] - 2026-07-02
 
 ### Changed

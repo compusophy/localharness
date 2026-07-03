@@ -173,17 +173,9 @@ fn resolve_roles(arg: Option<&serde_json::Value>) -> Vec<ResolvedRole> {
 /// the guilds the caller belongs to). Composes existing reads only — no write, no
 /// `$LH`, not confirm-gated.
 pub(crate) fn company_status_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "company": {
-                "type": "string",
-                "description": "Which company/guild to report on — a numeric guild id \
-                    (e.g. \"67\") OR a guild display name you belong to."
-            }
-        },
-        "required": ["company"]
-    });
+    // Hoisted table: `crate::tool_params::CompanyStatusParams`,
+    // byte-identity-tested natively.
+    let schema = crate::tool_params::CompanyStatusParams::schema();
     ClosureTool::new(
         "company_status",
         "Read-only snapshot of a COMPANY (an on-chain guild): its members with their \
@@ -194,10 +186,8 @@ pub(crate) fn company_status_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          members: [ { address, role } ] }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let company = args
-                .get("company")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
+            let company = crate::tool_params::CompanyStatusParams::lenient(&args)
+                .company
                 .trim()
                 .to_string();
             if company.is_empty() {

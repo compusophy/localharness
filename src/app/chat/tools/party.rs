@@ -181,18 +181,9 @@ pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// holds. The last consent flips the party Active. Reuses
 /// `registry::join_party_sponsored`.
 pub(crate) fn join_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "party_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the party to consent to (from \
-                    discover_parties / get_party)."
-            }
-        },
-        "required": ["party_id"]
-    });
+    // Hoisted table: `crate::tool_params::JoinPartyParams`,
+    // byte-identity-tested natively.
+    let schema = crate::tool_params::JoinPartyParams::schema();
     ClosureTool::new(
         "join_party",
         "Consent to a party you've been added to as a member. This marks consented every \
@@ -200,10 +191,7 @@ pub(crate) fn join_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          be funded and completed. Returns { party_id, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let party_id = args
-                .get("party_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("party_id is required"))?;
+            let party_id = crate::tool_params::JoinPartyParams::lenient(&args).party_id()?;
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::join_party_sponsored(&signer, party_id)
             .await
@@ -221,23 +209,8 @@ pub(crate) fn join_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// on complete. Reuses `registry::fund_party_sponsored_bridged` (meter
 /// auto-bridge, the fund_guild precedent).
 pub(crate) fn fund_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "party_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the party whose pot to fund."
-            },
-            "amount_lh": {
-                "type": "string",
-                "description": "Amount of $LH to contribute, as a decimal string (\"5\", \
-                    \"1.5\"). Pulled from YOUR wallet into the party pot; refunded exactly \
-                    on disband/expiry, split to the members on complete. Must be > 0."
-            }
-        },
-        "required": ["party_id", "amount_lh"]
-    });
+    // Hoisted table: `crate::tool_params::FundPartyParams`.
+    let schema = crate::tool_params::FundPartyParams::schema();
     ClosureTool::new(
         "fund_party",
         "Contribute $LH from your wallet into a party's pooled pot. Anyone can fund; the \
@@ -246,16 +219,9 @@ pub(crate) fn fund_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          { party_id, amount_lh, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let party_id = args
-                .get("party_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("party_id is required"))?;
-            let amount_arg = args
-                .get("amount_lh")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let p = crate::tool_params::FundPartyParams::lenient(&args);
+            let party_id = p.party_id()?;
+            let amount_arg = p.amount_lh.trim().to_string();
             let amount_wei = crate::encoding::parse_token_amount(&amount_arg).ok_or_else(|| {
                 crate::error::Error::other(format!(
                     "could not parse amount_lh \"{amount_arg}\" — pass a decimal $LH \
@@ -290,18 +256,8 @@ pub(crate) fn fund_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// member's TBA by the agreed shares and the party dissolves. Reuses
 /// `registry::complete_party_sponsored`.
 pub(crate) fn complete_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "party_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of a party YOU formed (Active, all seats consented) \
-                    whose pot you want to split to the members' TBAs."
-            }
-        },
-        "required": ["party_id"]
-    });
+    // Hoisted table: `crate::tool_params::CompletePartyParams`.
+    let schema = crate::tool_params::CompletePartyParams::schema();
     ClosureTool::new(
         "complete_party",
         "Complete a party you formed — this RELEASES the pooled $LH to the members' TBAs \
@@ -310,10 +266,7 @@ pub(crate) fn complete_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          Returns { party_id, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let party_id = args
-                .get("party_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("party_id is required"))?;
+            let party_id = crate::tool_params::CompletePartyParams::lenient(&args).party_id()?;
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::complete_party_sponsored(&signer, party_id)
             .await
@@ -330,18 +283,8 @@ pub(crate) fn complete_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// exact contribution (creator any time; anyone after expiry). Reuses
 /// `registry::disband_party_sponsored`.
 pub(crate) fn disband_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "party_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the party to disband. As the creator you may \
-                    disband any live party; anyone may once its ttl has expired."
-            }
-        },
-        "required": ["party_id"]
-    });
+    // Hoisted table: `crate::tool_params::DisbandPartyParams`.
+    let schema = crate::tool_params::DisbandPartyParams::schema();
     ClosureTool::new(
         "disband_party",
         "Disband a party — dissolve it and refund every funder their exact contribution. \
@@ -350,10 +293,7 @@ pub(crate) fn disband_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          { party_id, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let party_id = args
-                .get("party_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("party_id is required"))?;
+            let party_id = crate::tool_params::DisbandPartyParams::lenient(&args).party_id()?;
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::disband_party_sponsored(&signer, party_id)
             .await
@@ -404,17 +344,8 @@ pub(crate) fn discover_parties_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
 /// status, members + shares + consents, the pot, expiry. Reuses
 /// `registry::{get_party, party_members_of, party_shares_of, party_consent_of}`.
 pub(crate) fn get_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "party_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the party to inspect."
-            }
-        },
-        "required": ["party_id"]
-    });
+    // Hoisted table: `crate::tool_params::GetPartyParams`.
+    let schema = crate::tool_params::GetPartyParams::schema();
     ClosureTool::new(
         "get_party",
         "Read full detail for one party: creator, status, members with their shares and \
@@ -423,10 +354,7 @@ pub(crate) fn get_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          pot_lh, expiry, members: [ { token_id, bps, consented } ] }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let party_id = args
-                .get("party_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("party_id is required"))?;
+            let party_id = crate::tool_params::GetPartyParams::lenient(&args).party_id()?;
             let p = crate::app::registry::get_party(party_id)
                 .await
                 .map_err(crate::error::Error::other)?;

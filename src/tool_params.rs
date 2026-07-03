@@ -526,6 +526,205 @@ crate::tool_params! {
     }
 }
 
+crate::tool_params! {
+    /// Args for the browser `set_lessons` tool (`src/app/chat/tools/misc.rs`)
+    /// — the guarded WRITE half of a consolidate_lessons pass.
+    pub struct SetLessonsParams: lenient {
+        lessons: req_str = "The FULL replacement lessons list — one lesson \
+                    per line, newline-separated, max 10 lines of max 240 chars \
+                    each. This REPLACES every existing lesson, so it must \
+                    still contain (verbatim or strengthened) every lesson \
+                    worth keeping; anything omitted is forgotten.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `create_skill` tool (`src/app/chat/tools/misc.rs`)
+    /// — the write half of the SKILLS LOOP (upsert by name).
+    pub struct CreateSkillParams: lenient {
+        name: req_str = "A short handle for the skill (e.g. \"summarize\", \
+                    \"daily-standup\"), max 48 chars. Re-using an existing name \
+                    REPLACES that skill's instructions.",
+        instructions: req_str = "The reusable instruction/prompt fragment that defines \
+                    what the skill does when invoked — a focused recipe (max 600 \
+                    chars). Make it self-contained and actionable.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `delete_skill` tool (`src/app/chat/tools/misc.rs`).
+    pub struct DeleteSkillParams: lenient {
+        name: req_str = "The name of the skill to remove (use list_skills to \
+                    see your defined skills).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `cancel_task` tool (`src/app/chat/tools/misc.rs`)
+    /// — off-chain job teardown; the body keeps the trim/empty validation.
+    pub struct CancelTaskParams: lenient {
+        job_id: req_str = "The id of the scheduled job to cancel — the `job_id` \
+                    string schedule_task returned.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `execute_script` tool (`src/app/chat/tools/misc.rs`)
+    /// — one-pass bashlite over the tenant's OPFS sandbox.
+    pub struct ExecuteScriptParams: lenient {
+        source: req_str = "A bashlite script to run over your OPFS sandbox. \
+                    Supports: variables (x=value, x=$(cmd)), $VAR / ${VAR} / $? \
+                    interpolation, pipes (a | b | c), && / || short-circuit \
+                    chaining, if/elif/else/fi, for NAME in WORDS; do …; done \
+                    (`for f in $(…)` splits on whitespace), while …; do …; done, \
+                    [ … ] tests (string =/!=/-z/-n, int -eq/-ne/-lt/-le/-gt/-ge, \
+                    file -e/-f/-d PATH), \
+                    command substitution $(…), and `run FILE.bl` / `source FILE.bl` \
+                    to compose another script. Builtins (filesystem): \
+                    echo, cd, pwd, ls, cat, grep PATTERN (literal substring; \
+                    -i/-v/-c), find [path] [-name GLOB] [-type f|d], wc [-l|-w|-c] \
+                    (of stdin), head/tail [-n N] (first/last N stdin lines), \
+                    mkdir, write/create PATH CONTENT (create-only — \
+                    refuses to overwrite), true/false. NO value-moving / lh-* \
+                    commands, NO networking, NO process spawning.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `spawn_recursive_subagent` tool
+    /// (`src/app/chat/tools/misc.rs`) — reduced-surface tool-bearing subagent.
+    pub struct SpawnRecursiveSubagentParams: lenient {
+        system_instructions: req_str = "System prompt for the subagent — describes its persona, \
+                    scope, and any constraints. Often \"you are a focused worker \
+                    that does X and returns just the result\".",
+        prompt: req_str = "The user message to send to the subagent.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `company_status` tool
+    /// (`src/app/chat/tools/company.rs`) — read-only org snapshot.
+    pub struct CompanyStatusParams: lenient {
+        company: req_str = "Which company/guild to report on — a numeric guild id \
+                    (e.g. \"67\") OR a guild display name you belong to.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `shared_state_set` tool (`src/app/chat/tools/room.rs`).
+    pub struct SharedStateSetParams: lenient {
+        key: req_str = "The key to write in the shared volume, e.g. \
+                    \"task_status\" or \"worker_1/progress\".",
+        value: req_str = "The value to store under `key` (UTF-8 text).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `shared_state_get` tool (`src/app/chat/tools/room.rs`).
+    pub struct SharedStateGetParams: lenient {
+        key: req_str = "The key to read from the shared volume.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `evm_balance` tool (`src/app/chat/tools/evm.rs`)
+    /// — read-only multi-chain native/ERC-20 balance.
+    pub struct EvmBalanceParams: lenient {
+        chain: req_str = "Which chain: ethereum, base, optimism, arbitrum, \
+                    polygon, or tempo (aliases: eth/mainnet, op, arb, matic). Call \
+                    evm_chains() if unsure.",
+        address: req_str = "The 0x… account address to read the balance OF.",
+        token: opt_str = "OPTIONAL ERC-20 token contract address (0x…). Given \
+                    → returns that token's balanceOf(address) with best-effort \
+                    symbol + decimals; omitted → the chain's NATIVE coin balance.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `resolve_ens` tool (`src/app/chat/tools/evm.rs`).
+    pub struct ResolveEnsParams: lenient {
+        name: req_str = "An ENS name to resolve, e.g. \"vitalik.eth\".",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `challenge_validation` tool
+    /// (`src/app/chat/tools/validation.rs`).
+    pub struct ChallengeValidationParams: lenient {
+        validation_id: req_u64 min 0 = "The id of the OPEN validation to challenge (from \
+                    get_validation).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `resolve_validation` tool
+    /// (`src/app/chat/tools/validation.rs`) — resolver-only ruling.
+    pub struct ResolveValidationParams: lenient {
+        validation_id: req_u64 min 0 = "The id of the CHALLENGED validation to resolve.",
+        winner: req_str = "Who wins, paid BOTH stakes: \"validator\" (the original \
+                    verdict stands) or \"challenger\" (the counter-verdict stands).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `reclaim_validation` tool
+    /// (`src/app/chat/tools/validation.rs`).
+    pub struct ReclaimValidationParams: lenient {
+        validation_id: req_u64 min 0 = "The id of the validation to refund (its window must \
+                    have passed).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `get_validation` tool
+    /// (`src/app/chat/tools/validation.rs`) — read-only record fetch.
+    pub struct GetValidationParams: lenient {
+        validation_id: req_u64 min 0 = "The id of the validation to read.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `join_party` tool (`src/app/chat/tools/party.rs`).
+    pub struct JoinPartyParams: lenient {
+        party_id: req_u64 min 0 = "The id of the party to consent to (from \
+                    discover_parties / get_party).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `fund_party` tool (`src/app/chat/tools/party.rs`)
+    /// — escrows $LH, so the parse/positivity body stays unchanged.
+    pub struct FundPartyParams: lenient {
+        party_id: req_u64 min 0 = "The id of the party whose pot to fund.",
+        amount_lh: req_str = "Amount of $LH to contribute, as a decimal string (\"5\", \
+                    \"1.5\"). Pulled from YOUR wallet into the party pot; refunded exactly \
+                    on disband/expiry, split to the members on complete. Must be > 0.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `complete_party` tool (`src/app/chat/tools/party.rs`).
+    pub struct CompletePartyParams: lenient {
+        party_id: req_u64 min 0 = "The id of a party YOU formed (Active, all seats consented) \
+                    whose pot you want to split to the members' TBAs.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `disband_party` tool (`src/app/chat/tools/party.rs`).
+    pub struct DisbandPartyParams: lenient {
+        party_id: req_u64 min 0 = "The id of the party to disband. As the creator you may \
+                    disband any live party; anyone may once its ttl has expired.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `get_party` tool (`src/app/chat/tools/party.rs`).
+    pub struct GetPartyParams: lenient {
+        party_id: req_u64 min 0 = "The id of the party to inspect.",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,6 +812,26 @@ mod tests {
             ("ListProposalsParams", ListProposalsParams::schema()),
             ("WebFetchParams", WebFetchParams::schema()),
             ("SubmitFeedbackParams", SubmitFeedbackParams::schema()),
+            ("SetLessonsParams", SetLessonsParams::schema()),
+            ("CreateSkillParams", CreateSkillParams::schema()),
+            ("DeleteSkillParams", DeleteSkillParams::schema()),
+            ("CancelTaskParams", CancelTaskParams::schema()),
+            ("ExecuteScriptParams", ExecuteScriptParams::schema()),
+            ("SpawnRecursiveSubagentParams", SpawnRecursiveSubagentParams::schema()),
+            ("CompanyStatusParams", CompanyStatusParams::schema()),
+            ("SharedStateSetParams", SharedStateSetParams::schema()),
+            ("SharedStateGetParams", SharedStateGetParams::schema()),
+            ("EvmBalanceParams", EvmBalanceParams::schema()),
+            ("ResolveEnsParams", ResolveEnsParams::schema()),
+            ("ChallengeValidationParams", ChallengeValidationParams::schema()),
+            ("ResolveValidationParams", ResolveValidationParams::schema()),
+            ("ReclaimValidationParams", ReclaimValidationParams::schema()),
+            ("GetValidationParams", GetValidationParams::schema()),
+            ("JoinPartyParams", JoinPartyParams::schema()),
+            ("FundPartyParams", FundPartyParams::schema()),
+            ("CompletePartyParams", CompletePartyParams::schema()),
+            ("DisbandPartyParams", DisbandPartyParams::schema()),
+            ("GetPartyParams", GetPartyParams::schema()),
         ] {
             assert_gemini_safe(&schema, name);
         }
@@ -1352,5 +1571,387 @@ mod tests {
         assert_eq!(WebFetchParams::lenient(&json!({"url": " https://x "})).url.trim(), "https://x");
         assert_eq!(SubmitFeedbackParams::lenient(&json!({"text": 1})).text, "");
         assert_eq!(SubmitFeedbackParams::lenient(&json!({"text": " ok "})).text.trim(), "ok");
+    }
+
+    /// BYTE-IDENTITY for the THIRD chat-tools wave (the straggler sweep):
+    /// each generated schema serializes byte-for-byte equal to the hand-written
+    /// literal it replaced in `src/app/chat/tools/{misc,company,room,evm,
+    /// validation,party}.rs` (frozen verbatim below) — the same migration
+    /// contract as waves 1 and 2.
+    #[test]
+    fn chat_tool_wave3_schemas_are_byte_identical_to_the_frozen_originals() {
+        let cases: [(&str, Value, Value); 20] = [
+            ("set_lessons", SetLessonsParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "lessons": {
+                        "type": "string",
+                        "description": "The FULL replacement lessons list — one lesson \
+                            per line, newline-separated, max 10 lines of max 240 chars \
+                            each. This REPLACES every existing lesson, so it must \
+                            still contain (verbatim or strengthened) every lesson \
+                            worth keeping; anything omitted is forgotten."
+                    }
+                },
+                "required": ["lessons"]
+            })),
+            ("create_skill", CreateSkillParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "A short handle for the skill (e.g. \"summarize\", \
+                            \"daily-standup\"), max 48 chars. Re-using an existing name \
+                            REPLACES that skill's instructions."
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "description": "The reusable instruction/prompt fragment that defines \
+                            what the skill does when invoked — a focused recipe (max 600 \
+                            chars). Make it self-contained and actionable."
+                    }
+                },
+                "required": ["name", "instructions"]
+            })),
+            ("delete_skill", DeleteSkillParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The name of the skill to remove (use list_skills to \
+                            see your defined skills)."
+                    }
+                },
+                "required": ["name"]
+            })),
+            ("cancel_task", CancelTaskParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The id of the scheduled job to cancel — the `job_id` \
+                            string schedule_task returned."
+                    }
+                },
+                "required": ["job_id"]
+            })),
+            ("execute_script", ExecuteScriptParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "A bashlite script to run over your OPFS sandbox. \
+                            Supports: variables (x=value, x=$(cmd)), $VAR / ${VAR} / $? \
+                            interpolation, pipes (a | b | c), && / || short-circuit \
+                            chaining, if/elif/else/fi, for NAME in WORDS; do …; done \
+                            (`for f in $(…)` splits on whitespace), while …; do …; done, \
+                            [ … ] tests (string =/!=/-z/-n, int -eq/-ne/-lt/-le/-gt/-ge, \
+                            file -e/-f/-d PATH), \
+                            command substitution $(…), and `run FILE.bl` / `source FILE.bl` \
+                            to compose another script. Builtins (filesystem): \
+                            echo, cd, pwd, ls, cat, grep PATTERN (literal substring; \
+                            -i/-v/-c), find [path] [-name GLOB] [-type f|d], wc [-l|-w|-c] \
+                            (of stdin), head/tail [-n N] (first/last N stdin lines), \
+                            mkdir, write/create PATH CONTENT (create-only — \
+                            refuses to overwrite), true/false. NO value-moving / lh-* \
+                            commands, NO networking, NO process spawning."
+                    }
+                },
+                "required": ["source"]
+            })),
+            ("spawn_recursive_subagent", SpawnRecursiveSubagentParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "system_instructions": {
+                        "type": "string",
+                        "description": "System prompt for the subagent — describes its persona, \
+                            scope, and any constraints. Often \"you are a focused worker \
+                            that does X and returns just the result\"."
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "The user message to send to the subagent."
+                    }
+                },
+                "required": ["system_instructions", "prompt"]
+            })),
+            ("company_status", CompanyStatusParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "company": {
+                        "type": "string",
+                        "description": "Which company/guild to report on — a numeric guild id \
+                            (e.g. \"67\") OR a guild display name you belong to."
+                    }
+                },
+                "required": ["company"]
+            })),
+            ("shared_state_set", SharedStateSetParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "The key to write in the shared volume, e.g. \
+                            \"task_status\" or \"worker_1/progress\"."
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The value to store under `key` (UTF-8 text)."
+                    }
+                },
+                "required": ["key", "value"]
+            })),
+            ("shared_state_get", SharedStateGetParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "The key to read from the shared volume."
+                    }
+                },
+                "required": ["key"]
+            })),
+            ("evm_balance", EvmBalanceParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "chain": {
+                        "type": "string",
+                        "description": "Which chain: ethereum, base, optimism, arbitrum, \
+                            polygon, or tempo (aliases: eth/mainnet, op, arb, matic). Call \
+                            evm_chains() if unsure."
+                    },
+                    "address": {
+                        "type": "string",
+                        "description": "The 0x… account address to read the balance OF."
+                    },
+                    "token": {
+                        "type": "string",
+                        "description": "OPTIONAL ERC-20 token contract address (0x…). Given \
+                            → returns that token's balanceOf(address) with best-effort \
+                            symbol + decimals; omitted → the chain's NATIVE coin balance."
+                    }
+                },
+                "required": ["chain", "address"]
+            })),
+            ("resolve_ens", ResolveEnsParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "An ENS name to resolve, e.g. \"vitalik.eth\"."
+                    }
+                },
+                "required": ["name"]
+            })),
+            ("challenge_validation", ChallengeValidationParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "validation_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the OPEN validation to challenge (from \
+                            get_validation)."
+                    }
+                },
+                "required": ["validation_id"]
+            })),
+            ("resolve_validation", ResolveValidationParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "validation_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the CHALLENGED validation to resolve."
+                    },
+                    "winner": {
+                        "type": "string",
+                        "description": "Who wins, paid BOTH stakes: \"validator\" (the original \
+                            verdict stands) or \"challenger\" (the counter-verdict stands)."
+                    }
+                },
+                "required": ["validation_id", "winner"]
+            })),
+            ("reclaim_validation", ReclaimValidationParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "validation_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the validation to refund (its window must \
+                            have passed)."
+                    }
+                },
+                "required": ["validation_id"]
+            })),
+            ("get_validation", GetValidationParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "validation_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the validation to read."
+                    }
+                },
+                "required": ["validation_id"]
+            })),
+            ("join_party", JoinPartyParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "party_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the party to consent to (from \
+                            discover_parties / get_party)."
+                    }
+                },
+                "required": ["party_id"]
+            })),
+            ("fund_party", FundPartyParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "party_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the party whose pot to fund."
+                    },
+                    "amount_lh": {
+                        "type": "string",
+                        "description": "Amount of $LH to contribute, as a decimal string (\"5\", \
+                            \"1.5\"). Pulled from YOUR wallet into the party pot; refunded exactly \
+                            on disband/expiry, split to the members on complete. Must be > 0."
+                    }
+                },
+                "required": ["party_id", "amount_lh"]
+            })),
+            ("complete_party", CompletePartyParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "party_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of a party YOU formed (Active, all seats consented) \
+                            whose pot you want to split to the members' TBAs."
+                    }
+                },
+                "required": ["party_id"]
+            })),
+            ("disband_party", DisbandPartyParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "party_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the party to disband. As the creator you may \
+                            disband any live party; anyone may once its ttl has expired."
+                    }
+                },
+                "required": ["party_id"]
+            })),
+            ("get_party", GetPartyParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "party_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the party to inspect."
+                    }
+                },
+                "required": ["party_id"]
+            })),
+        ];
+        for (name, generated, frozen) in cases {
+            assert_eq!(generated.to_string(), frozen.to_string(), "schema drift: {name}");
+        }
+    }
+
+    /// Lenient parity for wave 3: the extraction (plus the `req_u64` accessor)
+    /// feeds each tool's unchanged body validation the same values — and the
+    /// same errors, with the same messages — the old inline chains produced.
+    #[test]
+    fn chat_tool_wave3_lenient_matches_the_old_inline_extraction() {
+        // set_lessons / create_skill / delete_skill: "" defaults keep the
+        // bodies' empty-check error paths reachable; bodies trim, as before.
+        assert_eq!(SetLessonsParams::lenient(&json!({})).lessons, "");
+        assert_eq!(SetLessonsParams::lenient(&json!({"lessons": 3})).lessons, "");
+        assert_eq!(SetLessonsParams::lenient(&json!({"lessons": "a\nb"})).lessons, "a\nb");
+        let p = CreateSkillParams::lenient(&json!({"name": " s ", "instructions": true}));
+        assert_eq!((p.name.trim(), p.instructions.trim()), ("s", ""));
+        assert_eq!(DeleteSkillParams::lenient(&json!({})).name, "");
+
+        // cancel_task: the old `.map(trim).filter(!empty).ok_or_else(..)` chain
+        // errored on missing/wrong-typed/blank — the "" default + the body's
+        // trim/empty check reproduce exactly that (and pass through real ids).
+        assert!(CancelTaskParams::lenient(&json!({})).job_id.trim().is_empty());
+        assert!(CancelTaskParams::lenient(&json!({"job_id": 7})).job_id.trim().is_empty());
+        assert!(CancelTaskParams::lenient(&json!({"job_id": "  "})).job_id.trim().is_empty());
+        assert_eq!(
+            CancelTaskParams::lenient(&json!({"job_id": " j-1 "})).job_id.trim(),
+            "j-1"
+        );
+
+        // execute_script / spawn_recursive_subagent: "" defaults preserved.
+        assert_eq!(ExecuteScriptParams::lenient(&json!({})).source, "");
+        assert_eq!(ExecuteScriptParams::lenient(&json!({"source": "ls | wc -l"})).source, "ls | wc -l");
+        let p = SpawnRecursiveSubagentParams::lenient(&json!({"prompt": 9}));
+        assert_eq!((p.system_instructions.as_str(), p.prompt.as_str()), ("", ""));
+        let p = SpawnRecursiveSubagentParams::lenient(&json!({"system_instructions": "s", "prompt": "p"}));
+        assert_eq!((p.system_instructions.as_str(), p.prompt.as_str()), ("s", "p"));
+
+        // company_status / shared-state: bodies trim keys and re-validate.
+        assert_eq!(CompanyStatusParams::lenient(&json!({"company": 67})).company, "");
+        assert_eq!(CompanyStatusParams::lenient(&json!({"company": " 67 "})).company.trim(), "67");
+        let p = SharedStateSetParams::lenient(&json!({"key": " k ", "value": 1}));
+        assert_eq!((p.key.trim(), p.value.as_str()), ("k", ""));
+        assert_eq!(SharedStateGetParams::lenient(&json!({})).key, "");
+
+        // evm tools: token empty/whitespace filters to the native-balance arm,
+        // exactly like the old `.map(str::trim).filter(!empty)`.
+        let p = EvmBalanceParams::lenient(&json!({"chain": " base ", "address": "0xA", "token": " "}));
+        assert_eq!((p.chain.trim(), p.address.trim()), ("base", "0xA"));
+        assert_eq!(p.token.as_deref().map(str::trim).filter(|s| !s.is_empty()), None);
+        let p = EvmBalanceParams::lenient(&json!({"token": "0xT"}));
+        assert_eq!(p.token.as_deref().map(str::trim).filter(|s| !s.is_empty()), Some("0xT"));
+        assert_eq!(ResolveEnsParams::lenient(&json!({})).name, "");
+
+        // validation ids: the accessor errors with the tools' EXACT historical
+        // message on missing/wrong type; 0 stays a real id.
+        assert_eq!(
+            ChallengeValidationParams::lenient(&json!({})).validation_id().unwrap_err().to_string(),
+            "validation_id is required"
+        );
+        assert_eq!(
+            ChallengeValidationParams::lenient(&json!({"validation_id": 0})).validation_id().unwrap(),
+            0
+        );
+        let p = ResolveValidationParams::lenient(&json!({"validation_id": 4, "winner": " Validator "}));
+        assert_eq!(p.validation_id().unwrap(), 4);
+        assert_eq!(p.winner.trim().to_ascii_lowercase(), "validator");
+        assert!(ResolveValidationParams::lenient(&json!({"validation_id": "4"}))
+            .validation_id()
+            .is_err());
+        assert_eq!(
+            ReclaimValidationParams::lenient(&json!({"validation_id": true}))
+                .validation_id()
+                .unwrap_err()
+                .to_string(),
+            "validation_id is required"
+        );
+        assert_eq!(GetValidationParams::lenient(&json!({"validation_id": 11})).validation_id().unwrap(), 11);
+
+        // party ids share the accessor ("party_id is required"); fund_party's
+        // amount keeps the "" default its parse body re-validates.
+        assert_eq!(
+            JoinPartyParams::lenient(&json!({})).party_id().unwrap_err().to_string(),
+            "party_id is required"
+        );
+        let p = FundPartyParams::lenient(&json!({"party_id": 2, "amount_lh": " 1.5 "}));
+        assert_eq!((p.party_id().unwrap(), p.amount_lh.trim()), (2, "1.5"));
+        assert_eq!(FundPartyParams::lenient(&json!({"party_id": 2})).amount_lh, "");
+        assert_eq!(CompletePartyParams::lenient(&json!({"party_id": 0})).party_id().unwrap(), 0);
+        assert_eq!(
+            DisbandPartyParams::lenient(&json!({"party_id": 1.5})).party_id().unwrap_err().to_string(),
+            "party_id is required"
+        );
+        assert_eq!(GetPartyParams::lenient(&json!({"party_id": 9})).party_id().unwrap(), 9);
     }
 }
