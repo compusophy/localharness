@@ -25,6 +25,7 @@ mod access;
 mod confirm_guard;
 mod dedup;
 mod prompt;
+mod router_wire;
 mod session;
 mod stage;
 mod tools;
@@ -144,6 +145,28 @@ pub(crate) async fn run_send() {
     // deposit tx). Silent — no explanatory validation text. (on-chain feedback)
     let prompt = prompt_area.value().trim().to_string();
     if prompt.is_empty() {
+        return;
+    }
+
+    // INTENT ROUTER (`crate::router` pure core + `router_wire` painting): route
+    // the OBVIOUS zero-model intents (balance/credits reads, open-files/display/
+    // terminal commands, a tiny docs FAQ) to a FREE local answer BEFORE any
+    // metered work — every message that reaches the proxy costs ~1 $LH, and
+    // "show my balance" never needed a model. Runs BEFORE resolve_credit_access
+    // (which mints an auth token / pops the key modal) so a free turn is a true
+    // zero-cost path. CONSERVATIVE by contract: only exact allowlist phrasings
+    // route free; everything else passes through untouched. A leading '!'
+    // always forces the model (stripped here); '/router off' disables the gate
+    // for this session (default ON).
+    let prompt = match router_wire::pre_route(&prompt).await {
+        router_wire::PreRoute::Handled => {
+            prompt_area.set_value("");
+            return;
+        }
+        router_wire::PreRoute::SendToModel(p) => p,
+    };
+    if prompt.is_empty() {
+        // A bare "!" force-prefix with nothing behind it — nothing to send.
         return;
     }
 

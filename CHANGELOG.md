@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **INTENT-ROUTER SEAM — a free/metered cost gate in front of the browser
+  chat's metered model call** (`src/router.rs` pure core, native-tested;
+  wired in `app/chat/router_wire.rs`). Every message that reaches the proxy
+  costs ~1 $LH; the obvious zero-model ones now answer FREE and locally:
+  balance/credits queries (the same wallet+meter data as the credits pill),
+  open-files/display/terminal commands (dispatch the existing toggles), and a
+  small docs FAQ answered from the embedded self-docs facts. CONSERVATIVE by
+  contract — only exact allowlist phrasings route free ("balance my argument"
+  and friends all hit the model untouched); a leading `!` always forces a
+  metered turn, every free card says so, and `/router off` disables the gate
+  per session (default ON). The `IntentClassifier` trait is the seam the
+  in-browser Gemma (`browser-app-local`) can replace the heuristic behind
+  later.
+
 ## [0.64.0] - 2026-07-03
 
 ### Added

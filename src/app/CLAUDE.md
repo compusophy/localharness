@@ -88,7 +88,13 @@ Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
 dispatch arms stay one-line delegations) · `chat/` the turn loop + stage painter (session.rs
 assembles the tool surface ONCE — `chat_toolset()` + `wire_shared_session!` feed
 every backend branch; add new chat tools there, never per-backend; source guard
-`tests/chat_toolset_single_source.rs`) ·
+`tests/chat_toolset_single_source.rs`; router_wire.rs = the INTENT-ROUTER gate:
+`run_send` classifies each message via the `crate::router` pure core BEFORE any
+metered work — exact-allowlist free routes only (balance/credits reads, the
+files/display/terminal toggles, a tiny docs FAQ), everything else untouched;
+'!' prefix always forces the model, `/router off` = per-session kill switch
+(default ON); free turns are transcript-only, never in agent history; widen the
+free tier ONLY by adding exact phrases to `router::FREE_PHRASES`) ·
 `notifications.rs` bell + push (per-device `dev` dedup; enrollment is OFF-CHAIN —
 POST /api/push-sub to the proxy's GitHub store, NEVER a sponsored on-chain write:
 that path failed with "insufficient funds" for unfunded mainnet users) ·

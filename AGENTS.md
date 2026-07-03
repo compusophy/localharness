@@ -69,6 +69,10 @@ src/                  library crate
 │                     from app::chat so its loop-guard tests run natively)
 ├── turn_stage.rs     pure stage state machine for the pending-turn "paying →
 │                     thinking → streaming" line (painted by app/chat/stage.rs)
+├── router.rs         pure INTENT-ROUTER core: exact-allowlist free/metered cost
+│                     gate ahead of the metered chat turn (balance/UI/docs-FAQ
+│                     answered free; '!' forces metered; IntentClassifier trait =
+│                     the local-Gemma seam; wired in app/chat/router_wire.rs)
 ├── tool_params.rs    `tool_params!`: ONE table → typed args struct + Gemini-safe
 │                     input_schema (opt-in per tool; byte-identity-tested; migrated
 │                     chat tools hoist tables here so cargo test covers them)

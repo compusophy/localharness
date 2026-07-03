@@ -248,6 +248,15 @@ pub mod tool_params;
 /// build/debug. Wired into `app::chat` per-turn. See `src/difficulty.rs`.
 pub mod difficulty;
 
+/// Pure INTENT-ROUTER core (native-testable): classifies a chat message as
+/// [`router::Route::Free`] (balance/UI-command/docs-FAQ — answered locally,
+/// zero `$LH`) or `Metered` (the normal ~1 `$LH` model turn). Exact-allowlist
+/// conservative by contract; `'!'` always forces Metered. The
+/// [`router::IntentClassifier`] trait is the seam a local-model classifier
+/// (in-browser Gemma) can slot into later. Wired in `app::chat::router_wire`.
+/// See `src/router.rs`.
+pub mod router;
+
 /// Pure lessons-blob merging + prompt-section composition for the agent
 /// LESSONS LOOP (native-testable). The browser `record_lesson` tool, the
 /// headless CLI `call`, and the proxy scheduler worker all fold its output
