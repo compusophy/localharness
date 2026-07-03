@@ -37,6 +37,9 @@ browser-app,mainnet) → STAMPS the `?v=` cache-buster into boot.js/index.html (
   ABI. Run after touching either side (see `web/CLAUDE.md`).
 - `smoke-cli.sh` (CLI), `test-fleet/` (12 QA personas), `audit-tech-debt.sh`
   (7-stage tech-debt gate).
+- `smoke-money.sh` — OPT-IN live money-path smoke (`--as <name> [--spend]`):
+  spends REAL $LH on mainnet (stage B ~1 $LH), asserts wei-exact balance
+  conservation. NEVER wire into CI; run only with a quiet, funded identity.
 
 ## Doc integrity
 `gen-docs` (cargo bin) fills the GEN blocks in `web/skill.md`/`llms.txt` from

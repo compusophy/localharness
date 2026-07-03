@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/smoke-money.sh` — OPT-IN live money-path smoke** (`--as <name>
+  [--spend]`, mainnet, spends REAL $LH, never CI): stage A proves the bounty
+  post+cancel escrow round-trip leaves the wallet net-zero TO THE WEI; stage B
+  (`--spend`, ~1 $LH) proves a metered `call`'s wallet drop equals the printed
+  x402 amount exactly. Automates the by-hand money-path E2E verification;
+  string big-int math (wei overflows bash's 64-bit ints), every tx hash echoed.
+
 ### Changed
 
 - **Gemini system-instruction rendering unified onto the shared
