@@ -4,10 +4,14 @@
 //!   * the agent's `notify(title, body?, vibrate?)` closure tool
 //!     (`chat::tools::misc::notify_tool`) — in-tab notifications/vibration
 //!     for alarms, message-arrived, job-done;
-//!   * the admin "notifications" row (`Action::EnableNotifications`) —
-//!     subscribes Web Push and publishes the subscription JSON on-chain so
-//!     the proxy's scheduler worker can notify the owner with the tab CLOSED
-//!     (`proxy/api/scheduler.ts` reads it back per job owner).
+//!   * the header notification bell (+ the headless per-load refresh) —
+//!     subscribes Web Push and POSTs the subscription JSON to the proxy's
+//!     OFF-CHAIN push store (`POST /api/push-sub` → GitHub store, keyed by
+//!     this device's address) so the proxy's notify/broadcast/scheduler
+//!     workers can buzz the owner with the tab CLOSED. Enrollment used to be
+//!     a sponsored ON-CHAIN write (`setPushSub`) — on mainnet it bypassed the
+//!     relay and failed with "insufficient funds" for unfunded users; never
+//!     reintroduce an on-chain publish here.
 //!
 //! Notifications are shown through the SERVICE-WORKER registration when one
 //! exists (`registration.showNotification`) — the page-level
@@ -548,7 +552,7 @@ pub(crate) fn clear_all() {
 /// private key must be set on the PROXY Vercel project as
 /// `VAPID_PRIVATE_KEY` (plus `VAPID_PUBLIC_KEY` = this value and
 /// `VAPID_SUBJECT`, e.g. `mailto:compusophy@gmail.com`). Replace BOTH halves
-/// together if you rotate — existing on-chain subscriptions die with the key.
+/// together if you rotate — existing enrolled subscriptions die with the key.
 pub(crate) const VAPID_PUBLIC_KEY: &str =
     "BHtamLu5RHqMWbV3JyyEmQKL-lweTVq3ePiFOHGu_EBzvrz4w0SzpWpBTI02UgWOkFR9sbAqPrvj8LOtF5R5jow";
 
@@ -667,101 +671,80 @@ pub(crate) async fn subscribe_push() -> Result<String, String> {
         .ok_or_else(|| "subscription stringify: empty".to_string())
 }
 
-/// Enable Web Push for THIS DEVICE keyed by its OWN ADDRESS (PushFacet), not a
-/// MAIN tokenId — so ANY visitor (a bare device key, `mainOf == 0`) can receive
+/// POST this device's push-subscription JSON to the proxy's OFF-CHAIN store
+/// (`/api/push-sub`, personal-sign authed, keyed server-side by the signer's
+/// address). The server upserts by the stable `dev` id (else endpoint) into the
+/// address's device array — MULTI-DEVICE safe (a phone and a desktop on the
+/// same seed each keep an entry) and idempotent (an unchanged sub is a no-op).
+/// This REPLACED the sponsored on-chain `setPushSub` publish, which bypassed
+/// the mainnet relay and failed with "insufficient funds" for unfunded users.
+async fn post_push_sub(
+    signer: &k256::ecdsa::SigningKey,
+    sub_json: &str,
+) -> Result<String, String> {
+    let sub: serde_json::Value =
+        serde_json::from_str(sub_json).map_err(|e| format!("subscription JSON: {e}"))?;
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let token = crate::registry::proxy_auth_token(signer, now, "push-sub");
+    let url = format!("{}api/push-sub", crate::registry::CREDIT_PROXY_URL);
+    let send = async {
+        reqwest::Client::new()
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("x-goog-api-key", token)
+            .json(&serde_json::json!({ "sub": sub }))
+            .send()
+            .await
+            .map_err(|e| format!("push-sub request: {e}"))
+    };
+    let resp = crate::app::net::with_timeout(20_000, send).await??;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let detail = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+            .unwrap_or(body);
+        return Err(format!("push-sub {status}: {detail}"));
+    }
+    Ok("registered".to_string())
+}
+
+/// Subscribe this browser to Web Push, stamp the stable `dev` id, and enroll
+/// the subscription in the proxy's off-chain store. Caller has already handled
+/// notification permission; identity comes from `credit_signer` (same as the
+/// old on-chain enroll path — the personal-sign token needs a key).
+pub(crate) async fn register_device_push() -> Result<String, String> {
+    let sub_json = tag_sub_with_dev(&subscribe_push().await?).await;
+    let (signer, _) = crate::app::chat::credit_signer()
+        .await
+        .ok_or_else(|| "no identity on this device yet".to_string())?;
+    post_push_sub(&signer, &sub_json).await
+}
+
+/// Enable Web Push for THIS DEVICE, keyed by its OWN ADDRESS in the proxy's
+/// off-chain store — so ANY visitor (a bare device key, no MAIN) can receive
 /// cross-device pushes. MUST be called from a DIRECT user gesture (the header
 /// notification bell): the cartridge subscribe tap runs through a worker
 /// postMessage that loses user activation, so its `requestPermission` never
 /// prompts on mobile and the device silently never registers — THE
-/// cross-device-push bug. This path prompts, subscribes, and publishes the
-/// address-keyed subscription (signed by the device's credit key, sponsored).
-/// Returns the tx hash. Idempotent — safe to tap again to refresh a stale sub.
+/// cross-device-push bug. Idempotent — safe to tap again to refresh a stale sub.
 pub(crate) async fn enable_device_push() -> Result<String, String> {
     if !ensure_permission().await? {
         return Err("notification permission is blocked — allow notifications for this site in your browser settings, then tap again".to_string());
     }
-    let sub_json = tag_sub_with_dev(&subscribe_push().await?).await;
-    let (signer, addr) = crate::app::chat::credit_signer()
-        .await
-        .ok_or_else(|| "no identity on this device yet".to_string())?;
-    // MULTI-DEVICE: merge into the existing slot (array, upsert by `dev` device
-    // id when present, else endpoint) instead of overwriting — a phone and a
-    // desktop share this address (same seed), and a bare replace silently
-    // de-registered the other device.
-    let addr_hex = crate::encoding::bytes_to_hex_str(&addr);
-    let slot = crate::registry::addr_push_sub_of(&addr_hex).await.ok().flatten();
-    let Some(merged) = crate::registry::merge_push_sub(slot.as_deref(), &sub_json) else {
-        return Ok("already registered".to_string());
-    };
-    crate::registry::set_push_sub_sponsored(&signer, merged.as_bytes()).await
-}
-
-/// Silently refresh a STALE push subscription on app open. Reinstalling the
-/// PWA / clearing site data invalidates the browser's old push endpoint, but
-/// the on-chain slot keeps serving it — every worker push then dies with an
-/// FCM 410 and the owner silently stops getting buzzed (seen live 2026-06-12).
-/// When permission is already granted, re-subscribe (idempotent) and, if the
-/// endpoint differs from the published one, re-publish. Best-effort: any
-/// failure leaves the existing state untouched; never prompts.
-pub(crate) async fn refresh_subscription_if_stale() {
-    if !matches!(
-        web_sys::Notification::permission(),
-        web_sys::NotificationPermission::Granted
-    ) {
-        return;
-    }
-    let Ok(current) = subscribe_push().await else {
-        return;
-    };
-    let current = tag_sub_with_dev(&current).await;
-    let Ok((name, owner)) = crate::app::tenant::current_tenant_owner().await else {
-        return;
-    };
-    let token_id = match crate::registry::main_of(&owner).await {
-        Ok(id) if id != 0 => id,
-        _ => match crate::registry::id_of_name(&name).await {
-            Ok(id) if id != 0 => id,
-            _ => return,
-        },
-    };
-    let published = crate::registry::push_sub_of(token_id).await.ok().flatten();
-    // MULTI-DEVICE merge: only write when THIS device's entry is missing or
-    // stale in the slot array (None = already current, no tx).
-    let Some(merged) = crate::registry::merge_push_sub(published.as_deref(), &current) else {
-        return;
-    };
-    let publish = async {
-        let registry_addr = crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS())?;
-        let call = crate::tempo_tx::TempoCall {
-            to: registry_addr,
-            value_wei: 0,
-            input: crate::registry::encode_set_push_sub(token_id, merged.as_bytes()),
-        };
-        let gas = crate::app::gas::set_metadata_gas(merged.len());
-        crate::app::events::run_sponsored_tempo_call(
-            &owner,
-            vec![call],
-            gas,
-            "refresh push subscription",
-        )
-        .await
-    };
-    match publish.await {
-        Err(e) => web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
-            "push subscription refresh failed: {e}"
-        ))),
-        Ok(_) => web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
-            "stale push subscription refreshed on-chain",
-        )),
-    }
+    register_device_push().await
 }
 
 /// HEADLESS auto-registration: on every app load, if notification permission is
-/// ALREADY granted AND this device already has an identity, (re)publish its
-/// ADDRESS-KEYED Web Push subscription — no gesture, no prompt, works for any
-/// visitor (no MAIN needed). After the ONE-TIME permission grant (via the bell),
-/// this keeps the device registered so a READY-UP broadcast always reaches it.
-/// Idempotent: skips the sponsored write when the on-chain sub already matches.
+/// ALREADY granted AND this device already has an identity, (re)enroll its
+/// current subscription in the off-chain store — no gesture, no prompt. This
+/// both keeps the device registered after the ONE-TIME bell-tap grant AND
+/// self-heals a STALE endpoint (PWA reinstall / cleared site data invalidates
+/// the old one; the store kept serving it → every push died with an FCM 410,
+/// seen live 2026-06-12): re-subscribing yields the fresh endpoint and the
+/// server upserts it over the stale entry by `dev` id. Best-effort; idempotent
+/// (the server skips the write when the stored sub already matches).
 pub(crate) async fn auto_register_device_push() {
     if !matches!(
         web_sys::Notification::permission(),
@@ -773,23 +756,9 @@ pub(crate) async fn auto_register_device_push() {
     if crate::app::chat::credit_address_existing().await.is_none() {
         return;
     }
-    let Some((signer, addr)) = crate::app::chat::credit_signer().await else {
-        return;
-    };
-    let Ok(current) = subscribe_push().await else {
-        return;
-    };
-    let current = tag_sub_with_dev(&current).await;
-    let addr_hex = crate::encoding::bytes_to_hex_str(&addr);
-    let slot = crate::registry::addr_push_sub_of(&addr_hex).await.ok().flatten();
-    // MULTI-DEVICE merge: None = this device is already in the slot array.
-    let Some(merged) = crate::registry::merge_push_sub(slot.as_deref(), &current) else {
-        return; // already up to date
-    };
-    match crate::registry::set_push_sub_sponsored(&signer, merged.as_bytes()).await
-    {
+    match register_device_push().await {
         Ok(_) => web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
-            "[push] device auto-registered (address-keyed)",
+            "[push] device registered (off-chain, address-keyed)",
         )),
         Err(e) => web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
             "[push] auto-register failed: {e}"

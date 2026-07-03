@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cycles amortized per top-up; `--judge-topup <lh>` overrides), and every run
   ends with a CYCLE ECONOMICS line (total spent / reward / overhead ratio) so
   the cost is visible on the first cycle.
+- **Web Push subscriptions are now OFF-CHAIN** — enrolling a device (header
+  bell tap / per-load refresh / cartridge feed subscribe) POSTs the
+  subscription to the proxy's new `/api/push-sub` (personal-sign authed),
+  which upserts it into the GitHub store keyed by the device's address
+  (`push-subs/<address>.json`, same store as jobs/signal/chat). The proxy's
+  notify/broadcast/scheduler resolution reads the store FIRST and falls back
+  to the legacy on-chain slots (MAIN-metadata / `pushSubOf`) read-only, so
+  devices enrolled pre-migration keep working with no migration. CLI `notify`
+  is unchanged (resolution is server-side).
 - **Gemini system-instruction rendering unified onto the shared
   `backends::render_system`** — `gemini/loop.rs::LoopConfig::from_system` carried
   a byte-identical copy of the flattening (wrapped in a wire `Content`); it now
@@ -37,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read the FeedbackFacet via `cast` pinned to the stale TESTNET diamond; the
   shims map `--unresolved`/`-Unresolved` to check-feedback's `--open` and need
   only node (no foundry).
+
+### Fixed
+
+- **On-chain push-subscription publish removed from the browser app** — opening
+  the app / tapping the bell on mainnet fired a SPONSORED `setPushSub` /
+  `setMetadata` write that bypassed the relay and failed with "insufficient
+  funds" for normal (unfunded) users, surfacing a spurious error in the bell.
+  Enrollment is now the free off-chain POST above; no user-facing on-chain
+  write remains in the notifications path.
 
 ### Removed
 

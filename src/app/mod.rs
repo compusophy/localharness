@@ -1074,15 +1074,11 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         // No modal on miss: new accounts default to platform credits and
         // BYOK is opt-in via admin → account.
         let _ = events::try_auto_restore_gemini_key(&name).await;
-        // Self-heal a STALE push subscription (PWA reinstall invalidates the
-        // old endpoint; the chain kept serving it → every push died with an
-        // FCM 410). Background, best-effort, no prompt.
-        wasm_bindgen_futures::spawn_local(async {
-            notifications::refresh_subscription_if_stale().await;
-        });
         // HEADLESS: once permission is granted (one-time bell tap), keep THIS
-        // device's address-keyed push sub published on every load so a READY-UP
-        // broadcast always reaches it — no button needed after the first grant.
+        // device's push sub enrolled in the proxy's OFF-CHAIN store on every
+        // load — no button needed after the first grant, and re-enrolling
+        // self-heals a stale endpoint (PWA reinstall → FCM 410). Background,
+        // best-effort, no prompt, NO on-chain write.
         wasm_bindgen_futures::spawn_local(async {
             notifications::auto_register_device_push().await;
         });

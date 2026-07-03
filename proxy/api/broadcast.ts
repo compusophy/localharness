@@ -49,6 +49,7 @@ import {
   type PushSubscriptionJson,
 } from './_webpush';
 import { SlidingWindow, claimedAddress } from './_ratelimit';
+import { storePushSubs } from './_pushstore';
 
 export const config = { runtime: 'edge' };
 
@@ -183,13 +184,16 @@ function decodeAbiBytesUtf8(resultHex: string): string {
  * ([] when none). Slot rule mirrors notify.ts / scheduler.ts. Best-effort.
  */
 async function pushSubsOf(address: string): Promise<PushSubscriptionJson[]> {
-  // UNION of both slots, ALL device entries (slots hold a JSON array — see
-  // src/registry/push.rs::merge_push_sub; legacy single objects still parse).
+  // OFF-CHAIN store first (the live enroll path), then the UNION of the LEGACY
+  // on-chain slots, ALL device entries (each holds a JSON array; legacy single
+  // objects still parse). Store entries win the dedupe — they're freshest.
   const out: PushSubscriptionJson[] = [];
-  // 1) ADDRESS-KEYED (PushFacet.pushSubOf) — the device self-registered its own
-  //    subscription, keyed by its address. This reaches a bare device key with
-  //    NO registered MAIN identity (mainOf == 0), which the legacy slot below
-  //    could never serve — the cross-device-push fix.
+  // 1) The GitHub push store (`push-subs/<address>.json`) — POST /api/push-sub
+  //    writes it on the bell tap / app open. Never throws ([] on any failure).
+  out.push(...(await storePushSubs(address)));
+  // 2) LEGACY address-keyed (PushFacet.pushSubOf) — devices that self-registered
+  //    on-chain before the off-chain migration. Reaches a bare device key with
+  //    NO registered MAIN identity (mainOf == 0).
   try {
     const data =
       '0x' + selector('pushSubOf(address)') + encodeAddressWord(address);
@@ -198,8 +202,8 @@ async function pushSubsOf(address: string): Promise<PushSubscriptionJson[]> {
     /* best-effort — continue to the MAIN-keyed metadata slot */
   }
 
-  // 2) The subscriber's MAIN tokenId metadata slot (owner-published via
-  //    admin → notifications).
+  // 3) LEGACY MAIN tokenId metadata slot (owner-published via the old
+  //    admin → notifications on-chain flow).
   try {
     const main = BigInt(
       await ethCall('0x' + selector('mainOf(address)') + encodeAddressWord(address)),

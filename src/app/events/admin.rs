@@ -304,16 +304,16 @@ async fn publish_x402_price_onchain(wei: u128) -> Result<bool, String> {
         .map(|_| true)
 }
 
-/// The admin "notifications" row: permission prompt (this click is the user
-/// gesture browsers require) → Web Push subscription → sponsored on-chain
-/// publish under `keccak256("localharness.push_sub")`. After this, the
-/// proxy's scheduler worker can push job results with the tab CLOSED, and
-/// the agent's `notify` tool fires without a mid-turn permission prompt.
 /// The header notification bell — a DIRECT user gesture (unlike the cartridge
 /// subscribe tap, whose worker→main postMessage loses user activation so its
-/// permission prompt never fires on mobile). Enables Web Push for THIS device
-/// keyed by its ADDRESS (works with no MAIN identity) and opens the panel. This
-/// is the path that actually lets a phone register to be pinged.
+/// permission prompt never fires on mobile): permission prompt → Web Push
+/// subscription → enrollment in the proxy's OFF-CHAIN push store (POST
+/// /api/push-sub, keyed by this device's ADDRESS — works with no MAIN
+/// identity, NO on-chain write). After this, the proxy's notify/broadcast/
+/// scheduler workers can push with the tab CLOSED, and the agent's `notify`
+/// tool fires without a mid-turn permission prompt. This is the path that
+/// actually lets a phone register to be pinged.
+///
 /// Whether the bell dropdown is currently showing.
 pub(super) fn notif_panel_open() -> bool {
     dom::by_id("notif-bell-panel")
@@ -439,7 +439,7 @@ pub(super) fn notif_bell_pressed() {
     // gesture the permission prompt needs — the cartridge tap can't prompt).
     // On SUCCESS: silent (the user sees only their log). On FAILURE: surface the
     // reason in the panel + console so a broken link (permission denied / SW /
-    // publish tx) is visible, not swallowed.
+    // store POST) is visible, not swallowed.
     wasm_bindgen_futures::spawn_local(async move {
         if let Err(e) = crate::app::notifications::enable_device_push().await {
             web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(

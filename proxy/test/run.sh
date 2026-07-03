@@ -11,6 +11,7 @@ cd "$(dirname "$0")/.."
 rm -rf .ttest
 ./node_modules/.bin/tsc api/sponsor.ts api/_tempo.ts api/_chain.ts api/_ratelimit.ts \
   api/mpp-onramp.ts api/_mpp.ts api/_stripe.ts api/_auth.ts api/_webpush.ts \
+  api/_pushstore.ts \
   --ignoreConfig --outDir .ttest --target es2022 --module commonjs \
   --moduleResolution node --skipLibCheck --types node --ignoreDeprecations 6.0 \
   --esModuleInterop
@@ -21,6 +22,7 @@ node test/sponsor-handler.mjs
 node test/mpp-onramp.mjs
 node test/auth-parity.mjs
 node test/webpush-dedupe.mjs
+node test/pushstore-merge.mjs
 
 # gemini.ts capOutputTokens (telemetry #38): compile its import graph so the real
 # exported function is testable, then assert the thinking-budget invariant.

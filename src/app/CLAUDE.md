@@ -64,7 +64,7 @@ no `Closure`); the collapsed body stays in the DOM so `header_admin_toggle`'s as
 ids still resolve. Apex `security` is `has_wallet`-gated (it shares `#import-slot` with the
 no-wallet identity path). This REPLACED the old `.admin-tabbed` tabs + `ShowAdminTab` /
 `Reveal`+`HideSecurity` swaps; the on-chain enable-notifications + test buttons and the
-feedback-on-chain toggle were CUT (push still rides the bell pending the off-chain migration).
+feedback-on-chain toggle were CUT (push rides the bell and is fully OFF-CHAIN now).
 
 ## Turn-status / stage painter (`chat/stage.rs` + `turn_stage.rs`)
 Pending-turn cue: ONE pulsing glyph in `#turn-status` (header) + a `data-stage` word
@@ -89,7 +89,10 @@ dispatch arms stay one-line delegations) · `chat/` the turn loop + stage painte
 assembles the tool surface ONCE — `chat_toolset()` + `wire_shared_session!` feed
 every backend branch; add new chat tools there, never per-backend; source guard
 `tests/chat_toolset_single_source.rs`) ·
-`notifications.rs` bell + push (per-device `dev` dedup) · `display/` framebuffer
+`notifications.rs` bell + push (per-device `dev` dedup; enrollment is OFF-CHAIN —
+POST /api/push-sub to the proxy's GitHub store, NEVER a sponsored on-chain write:
+that path failed with "insufficient funds" for unfunded mainnet users) ·
+`display/` framebuffer
 (`mod.rs` run/launch surface + re-exports; `worker.rs` spawn/watchdog/RUN_GEN/
 RUN_OUTCOME + the onmessage router; `surface.rs` canvas mount + overlay chrome +
 pointer state + embed-card plumbing + broadcast-composer UI; `bridge/` one module

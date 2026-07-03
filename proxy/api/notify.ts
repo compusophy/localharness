@@ -13,12 +13,14 @@
 //
 // Target resolution (both modes) is the UNION of every slot a device can
 // enroll under, fanned out to ALL devices (each slot holds a JSON ARRAY of
-// per-device subscriptions — src/registry/push.rs::merge_push_sub):
-//   1. `metadata(mainOf(owner), keccak256("localharness.push_sub"))` — the
-//      admin "enable notifications" flow (src/app/notifications.rs);
-//   2. `metadata(tokenId, ...)` — same slot keyed by the name's own id;
-//   3. `pushSubOf(owner)` — the address-keyed PushFacet slot the header
-//      bell's device self-registration writes.
+// per-device subscriptions), OFF-CHAIN store first:
+//   1. the GitHub push store (`push-subs/<owner>.json`, _pushstore.ts) — the
+//      LIVE enroll path (POST /api/push-sub from the header bell / app open);
+//   2. LEGACY on-chain slots, read-only fallback so devices enrolled before
+//      the off-chain migration keep working with no migration:
+//      `metadata(mainOf(owner), keccak256("localharness.push_sub"))`, the
+//      same slot keyed by the name's own tokenId, and the address-keyed
+//      `pushSubOf(owner)` PushFacet slot.
 //
 // AUTH + BILLING are byte-compatible with api/fetch.ts / api/gemini.ts: the
 // caller sends `<address>:<timestamp>:<signature>` (an Ethereum personal-sign
@@ -70,6 +72,7 @@ import {
   type PushSubscriptionJson,
 } from './_webpush';
 import { recordOnChainMessage } from './_message';
+import { storePushSubs } from './_pushstore';
 import { SlidingWindow, claimedAddress } from './_ratelimit';
 
 export const config = { runtime: 'edge' };
@@ -117,9 +120,9 @@ const NOTIFY_RECIPIENT_PER_MIN = 10;
 const senderWindow = new SlidingWindow(NOTIFY_SENDER_PER_MIN, 60_000);
 const recipientWindow = new SlidingWindow(NOTIFY_RECIPIENT_PER_MIN, 60_000);
 
-// Web Push subscription slot — written by the browser app's admin "enable
-// notifications" flow (src/app/notifications.rs) under the owner's MAIN
-// tokenId, v1 plaintext JSON. Same slot the scheduler worker reads.
+// LEGACY on-chain Web Push subscription slot — what the browser app used to
+// publish under the owner's MAIN tokenId before subs moved to the off-chain
+// store (_pushstore.ts). Read-only fallback now; the scheduler reads it too.
 const PUSH_SUB_KEY = bytesToHex(
   keccak_256(new TextEncoder().encode('localharness.push_sub')),
 );
@@ -198,11 +201,12 @@ async function subsFromAddress(address: string): Promise<PushSubscriptionJson[]>
 
 /**
  * Resolve an OWNER ADDRESS to ALL its enrolled device subscriptions — the
- * UNION of every slot a device registers under (see the header), deduped by
- * endpoint. MULTI-DEVICE by design: a phone and a desktop on the same seed
- * each hold an entry; a push fans out to every one (a first-match rule
- * silently dropped every device but one). `tokenId` is the name's own id
- * when targeting by name (0n when targeting the caller).
+ * OFF-CHAIN store first (the live enroll path), then the UNION of the legacy
+ * on-chain slots (see the header), deduped by device/endpoint (store entries
+ * win the dedupe — they're freshest). MULTI-DEVICE by design: a phone and a
+ * desktop on the same seed each hold an entry; a push fans out to every one
+ * (a first-match rule silently dropped every device but one). `tokenId` is
+ * the name's own id when targeting by name (0n when targeting the caller).
  */
 async function resolveSubsForOwner(
   owner: string,
@@ -211,12 +215,13 @@ async function resolveSubsForOwner(
   const main = BigInt(
     await ethCall('0x' + selector('mainOf(address)') + encodeAddressWord(owner)),
   );
-  const [a, b, c] = await Promise.all([
+  const [store, a, b, c] = await Promise.all([
+    storePushSubs(owner),
     subsFromMetadata(main),
     main === tokenId ? Promise.resolve([]) : subsFromMetadata(tokenId),
     subsFromAddress(owner),
   ]);
-  return dedupeSubs([...a, ...b, ...c]);
+  return dedupeSubs([...store, ...a, ...b, ...c]);
 }
 
 /** The CALLER's own device subscriptions (self-notify). */
@@ -400,7 +405,7 @@ export default async function handler(req: Request): Promise<Response> {
     // next open whether or not they have a Web Push device.
     if (to === '' && subs.length === 0) {
       return json(
-        { error: 'no push subscription on-chain — enable notifications in the app first' },
+        { error: 'no push subscription enrolled — enable notifications in the app first (tap the header bell)' },
         404,
         origin,
       );

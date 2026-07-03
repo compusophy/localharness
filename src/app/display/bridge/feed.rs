@@ -77,11 +77,10 @@ pub(crate) async fn do_feed_subscribe(worker: web_sys::Worker, subscribe: bool) 
         // The SUBSCRIBE gesture is the right (and only) place to ask for
         // notification permission and register THIS device for Web Push — a
         // subscriber only ever RECEIVES a broadcast if their push subscription
-        // is published under their OWN identity's MAIN (the proxy resolves
-        // mainOf(subscriber) → push_sub). Removing this earlier left every
-        // broadcast unreachable AND never prompted for permission, so nothing
-        // ever buzzed. Best-effort: no-ops (silently) for a bare device key
-        // with no MAIN tokenId to hang the subscription on.
+        // is enrolled under their OWN address (the proxy resolves subscriber
+        // address → subs). Removing this earlier left every broadcast
+        // unreachable AND never prompted for permission, so nothing ever
+        // buzzed. Best-effort: logs, never blocks the subscribe.
         if crate::app::notifications::ensure_permission().await.unwrap_or(false) {
             publish_viewer_push_sub().await;
         }
@@ -89,19 +88,15 @@ pub(crate) async fn do_feed_subscribe(worker: web_sys::Worker, subscribe: bool) 
     refresh_feed_context(worker).await;
 }
 
-/// Register the VIEWER's Web Push subscription on-chain keyed by THEIR OWN
-/// ADDRESS (`PushFacet.setPushSub`), signed by the viewer's credit key
-/// (sponsored) — the slot `/api/broadcast` reads to reach this exact device.
-/// Address-keyed so it works for ANY device, INCLUDING a bare device key with
-/// no registered MAIN identity (the old MAIN-tokenId slot left such devices
-/// unreachable — the cross-device-push bug). Permission already ensured by the
-/// caller.
+/// Enroll the VIEWER's Web Push subscription in the proxy's OFF-CHAIN store
+/// keyed by THEIR OWN ADDRESS — what `/api/broadcast` reads (first) to reach
+/// this exact device. Address-keyed so it works for ANY device, INCLUDING a
+/// bare device key with no registered MAIN identity (the old MAIN-tokenId slot
+/// left such devices unreachable — the cross-device-push bug). Permission
+/// already ensured by the caller. NO on-chain write (the sponsored `setPushSub`
+/// publish failed for unfunded users on mainnet).
 async fn publish_viewer_push_sub() {
-    let Ok(sub_json) = crate::app::notifications::subscribe_push().await else { return };
-    let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
-    if let Err(e) = crate::registry::set_push_sub_sponsored(&signer, sub_json.as_bytes())
-    .await
-    {
+    if let Err(e) = crate::app::notifications::register_device_push().await {
         web_sys::console::warn_1(&JsValue::from_str(&format!("publish push_sub: {e}")));
     }
 }

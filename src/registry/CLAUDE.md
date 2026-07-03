@@ -69,11 +69,15 @@ Proxy debits the per-request METER (`creditOf`); `send`/`redeem` fund the WALLET
 x402 `settle` pulls the WALLET. Bridges both ways (`call.rs::ensure_meter_funded`
 wallet→meter; `withdrawCredits` meter→wallet). "has $LH but 402s" = BOTH pots empty.
 
-## Push subscriptions (`push.rs`)
-Each sub carries a stable per-device `"dev"` id; `merge_push_sub` upserts by `dev`
-(falling back to endpoint for legacy subs) so one device's cross-origin endpoints
-collapse to ONE delivery. The proxy dedupes by `dev` too (`_webpush.ts`). Keep
-`push.rs` wasm32-clean.
+## Push subscriptions (`push.rs`) — LEGACY on-chain slots, read-only
+Enrollment moved OFF-CHAIN (proxy `POST /api/push-sub` → GitHub store; the
+sponsored `setPushSub` publish bypassed the mainnet relay and failed for
+unfunded users — don't re-wire an app path to it). The proxy still READS the
+on-chain slots as a fallback for pre-migration devices. Each sub carries a
+stable per-device `"dev"` id; `merge_push_sub` upserts by `dev` (falling back
+to endpoint for legacy subs) so one device's cross-origin endpoints collapse to
+ONE delivery — the proxy store mirrors these semantics (`_pushstore.ts`) and
+dedupes by `dev` too (`_webpush.ts`). Keep `push.rs` wasm32-clean.
 
 ## Feedback resolution is OFF-CHAIN-tracked
 On-chain feedback is an opt-in mirror now (off-chain telemetry is primary). Mark an

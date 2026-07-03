@@ -77,6 +77,7 @@ import {
   sendWebPushAll,
   type PushSubscriptionJson,
 } from './_webpush';
+import { storePushSubs } from './_pushstore';
 import {
   createPublicClient,
   createWalletClient,
@@ -576,18 +577,20 @@ const PUSH_SUB_OF_ABI = [
 ] as const;
 
 /**
- * ALL the job owner's published Web Push subscriptions ([] when none) — the
- * UNION of the MAIN-tokenId metadata slot (falling back to the job's own
- * targetId) and the address-keyed PushFacet slot; each slot holds a JSON
- * array of per-device entries (src/registry/push.rs::merge_push_sub), so a
- * phone AND a desktop both get buzzed. Best-effort: any failure contributes
- * nothing rather than failing the run.
+ * ALL the job owner's enrolled Web Push subscriptions ([] when none) — the
+ * OFF-CHAIN GitHub push store first (the live enroll path, _pushstore.ts),
+ * then the LEGACY on-chain union: the MAIN-tokenId metadata slot (falling
+ * back to the job's own targetId) and the address-keyed PushFacet slot. Each
+ * source holds a JSON array of per-device entries, so a phone AND a desktop
+ * both get buzzed (store entries win the dedupe — they're freshest).
+ * Best-effort: any failure contributes nothing rather than failing the run.
  */
 async function pushSubsOf(
   owner: string,
   fallbackTokenId: bigint,
 ): Promise<PushSubscriptionJson[]> {
   const out: PushSubscriptionJson[] = [];
+  out.push(...(await storePushSubs(owner))); // never throws ([] on failure)
   try {
     let tokenId = (await publicClient().readContract({
       address: REGISTRY as `0x${string}`,

@@ -28,6 +28,12 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   calls `recordRun` (SCHEDULER-ROLE, CAS-guarded). Sub-minute can't ride this.
 - `notify.ts` + `_webpush.ts` — web-push (self or cross-agent `to`), dedup by the
   per-device `dev` field (NOT endpoint — one device's cross-origin endpoints collapse).
+- `push-sub.ts` + `_pushstore.ts` — OFF-CHAIN push-subscription enrollment (POST
+  `{sub}` personal-sign authed → GitHub store `push-subs/<address>.json`; GET
+  `?address=` open). Replaced the browser's sponsored on-chain `setPushSub`
+  publish (bypassed the relay; "insufficient funds" for unfunded users).
+  notify/broadcast/scheduler resolve the store FIRST, then the legacy on-chain
+  slots read-only — pre-migration devices keep working.
 - `telemetry.ts` — files GitHub ISSUES in the private telemetry repo = the off-chain
   feedback/error task list (PRIMARY path now). `MAX_BODY_BYTES` mirrors the Rust clamp
   in `src/app/telemetry.rs` — keep them equal.

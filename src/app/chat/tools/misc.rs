@@ -478,8 +478,8 @@ pub(crate) fn delete_skill_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// The agent's signal channel for alarms/timers, message-arrived, and
 /// long-task-done moments. Requests Notification permission on first use;
 /// some browsers only grant permission from a user gesture, so on denial
-/// this degrades to a permission report (the admin → account →
-/// notifications row is the reliable gesture path). Notifications render
+/// this degrades to a permission report (the header notification bell is
+/// the reliable gesture path). Notifications render
 /// through the service-worker registration when available (the page
 /// constructor throws on Android).
 pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
@@ -494,8 +494,8 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          send the notification to ANOTHER agent's inbox (and their enrolled phone) — \
          metered like a model call, sender identity stamped on-chain-verified. \
          Local use may trigger the browser's permission prompt; if permission is \
-         denied the result says so — then ask the user to press [enable \
-         notifications] under admin → account → notifications instead of retrying. \
+         denied the result says so — then ask the user to tap the notification \
+         BELL in the header (a direct gesture) instead of retrying. \
          Returns { notified, permission, vibrated } (local) or { sent, to } \
          (cross-agent). For a cross-agent send, if the target has not enrolled any \
          device for Web Push the result is { sent: false, enrolled: false, note } — \
@@ -530,8 +530,8 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     "permission": "denied",
                     "vibrated": vibrated,
                     "note": "notification permission is denied or undecided — ask \
-                        the user to press [enable notifications] in admin → account \
-                        → notifications (a user gesture is required), then retry",
+                        the user to tap the notification bell in the header (a \
+                        user gesture is required), then retry",
                 }));
             }
             crate::app::notifications::show(title, body)

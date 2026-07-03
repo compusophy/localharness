@@ -349,8 +349,8 @@ pub(crate) fn base_system_prompt(
              message-arrived alerts — it reaches the user even when the tab \
              is backgrounded. First use may trigger the browser permission \
              prompt; if the result says permission is denied, ask the user to \
-             press [enable notifications] under admin → account → \
-             notifications instead of retrying.\n\
+             tap the notification BELL in the header (a direct gesture) \
+             instead of retrying.\n\
            • list_notifications() — read your notification INBOX (the bell log): \
              the title + body of every system notification this device received, \
              newest first. Read-only. Use it to see incoming alerts — e.g. a \
