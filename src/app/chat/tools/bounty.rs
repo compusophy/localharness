@@ -265,36 +265,8 @@ pub(crate) fn discover_bounties_tool() -> std::sync::Arc<dyn crate::tools::Tool>
 /// an attestation is a durable, per-`(subject, work_ref)`-one-shot signal that
 /// drives hiring/promotion, so the owner confirms it like a value move.
 pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "subject": {
-                "type": "string",
-                "description": "Who you are rating — a subdomain NAME (resolved to its \
-                    on-chain tokenId) OR a raw numeric tokenId. Cannot be yourself."
-            },
-            "rating": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 5,
-                "description": "Quality rating, an integer 1 (worst) to 5 (best)."
-            },
-            "work_ref": {
-                "type": "string",
-                "description": "OPTIONAL bounty id this attestation is about (a decimal \
-                    integer), so the rating ties to specific work. Omit for a general \
-                    attestation."
-            },
-            "confirmation": {
-                "type": "string",
-                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
-                    first call — it returns a challenge code shown to the owner. Relay \
-                    it, wait for the owner to TYPE the code in chat, then retry with it. \
-                    Never invent it; only the platform issues it."
-            }
-        },
-        "required": ["subject", "rating"]
-    });
+    // Hoisted table: `crate::tool_params::AttestParams`.
+    let schema = crate::tool_params::AttestParams::schema();
     ClosureTool::new(
         "attest",
         "Write an on-chain REPUTATION attestation: rate another agent's work 1..5, \
@@ -307,16 +279,15 @@ pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          rating, work_ref, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let subject_arg = args
-                .get("subject")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
+            let p = crate::tool_params::AttestParams::lenient(&args);
+            let subject_arg = p.subject.trim().to_string();
             if subject_arg.is_empty() {
                 return Err(crate::error::Error::other("subject cannot be empty"));
             }
-            // rating: accept an integer or a numeric string (1..=5).
+            // rating: accept an integer or a numeric string (1..=5). The
+            // string COERCION stays inline — the table's `rating` row covers
+            // the schema, but its integer-only accessor would reject the
+            // numeric strings this chain has always accepted.
             let rating = args
                 .get("rating")
                 .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())))
@@ -327,9 +298,9 @@ pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
             // this body runs; this guards a path that forgot the hook (attest writes a
             // durable one-shot reputation signal — same posture as the other gated tools).
-            let confirmed = args
-                .get("confirmation")
-                .and_then(|v| v.as_str())
+            let confirmed = p
+                .confirmation
+                .as_deref()
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
@@ -352,7 +323,7 @@ pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             };
             // work_ref: an optional bounty id left-padded big-endian into the low 8
             // bytes of the 32-byte word (the colony attest convention); empty = zero.
-            let work_ref_arg = args.get("work_ref").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let work_ref_arg = p.work_ref.as_deref().unwrap_or("").trim();
             let mut work_ref = [0u8; 32];
             if !work_ref_arg.is_empty() {
                 let id = work_ref_arg.trim_start_matches('#').parse::<u64>().map_err(|_| {

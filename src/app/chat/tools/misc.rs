@@ -603,42 +603,8 @@ pub(crate) fn clear_notifications_tool() -> std::sync::Arc<dyn crate::tools::Too
 /// The teardown twin is `cancel_task`. (On-chain ScheduleFacet escrow is gone:
 /// it cost ~2.88M gas + locked $LH to push a single notification.)
 pub(crate) fn schedule_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "task": {
-                "type": "string",
-                "description": "What to do each fire. For a REMINDER, the note to push \
-                    you. For an AGENT job, a self-contained prompt. Prefix with \
-                    \"GOAL: \" for a goal-loop that ends early once done."
-            },
-            "interval": {
-                "type": "string",
-                "description": "Delay / cadence: \"60s\", \"15m\", \"1h\" (a bare number \
-                    = seconds; minimum 60s). For a ONE-SHOT (\"in 15 minutes\") set this \
-                    to the delay and `runs` to 1."
-            },
-            "runs": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "How many times to fire (default 1 — a single delayed \
-                    task). Higher = a recurring job."
-            },
-            "kind": {
-                "type": "string",
-                "enum": ["reminder", "agent"],
-                "description": "\"reminder\" (default) = just push you the task text \
-                    (free, no agent run, no $LH). \"agent\" = run an agent each fire \
-                    (bills your meter per run)."
-            },
-            "target": {
-                "type": "string",
-                "description": "AGENT jobs only: the subdomain to run each fire \
-                    (defaults to THIS agent). Ignored for a reminder."
-            }
-        },
-        "required": ["task", "interval"]
-    });
+    // Hoisted table: `crate::tool_params::ScheduleTaskParams`.
+    let schema = crate::tool_params::ScheduleTaskParams::schema();
     ClosureTool::new(
         "schedule_task",
         "Schedule a tab-free task OFF-CHAIN — a REMINDER (push you a note at a future \
@@ -649,34 +615,31 @@ pub(crate) fn schedule_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          { scheduled, job_id, kind, runs }. Tear down with cancel_task.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let p = crate::tool_params::ScheduleTaskParams::lenient(&args);
+            let task = p.task.trim();
             if task.is_empty() {
                 return Err(crate::error::Error::other("schedule_task: task cannot be empty"));
             }
-            let interval_raw = args.get("interval").and_then(|v| v.as_str()).unwrap_or("");
             let interval_secs =
-                crate::app::events::schedule::parse_schedule_interval(interval_raw).ok_or_else(
+                crate::app::events::schedule::parse_schedule_interval(&p.interval).ok_or_else(
                     || {
                         crate::error::Error::other(
                             "interval must be at least 60s — e.g. \"60s\", \"15m\", \"1h\"",
                         )
                     },
                 )?;
-            let runs = args
-                .get("runs")
-                .and_then(|v| v.as_u64())
-                .map(|r| r.max(1) as u32)
-                .unwrap_or(1);
+            let runs = p.runs.map(|r| r.max(1) as u32).unwrap_or(1);
             // "agent" runs an agent each fire (needs a target); anything else is a
-            // free reminder push (no target, no model, no $LH).
-            let kind = if args.get("kind").and_then(|v| v.as_str()) == Some("agent") {
+            // free reminder push (no target, no model, no $LH) — the schema's enum
+            // constrains the model, this classification stays the validation.
+            let kind = if p.kind.as_deref() == Some("agent") {
                 "agent"
             } else {
                 "reminder"
             };
             let target = if kind == "agent" {
-                args.get("target")
-                    .and_then(|v| v.as_str())
+                p.target
+                    .as_deref()
                     .map(|s| s.trim().to_lowercase())
                     .filter(|s| !s.is_empty())
                     .or_else(crate::app::tenant::current_name)
@@ -1484,18 +1447,8 @@ pub(crate) fn execute_script_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// at 300s so a confused model can't park a turn for an hour; not GUARDED
 /// (repeating a wait is legitimate).
 pub(crate) fn dwell_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "seconds": {
-                "type": "integer",
-                "description": "How long to wait, in seconds (1-300).",
-                "minimum": 1,
-                "maximum": 300
-            }
-        },
-        "required": ["seconds"]
-    });
+    // Hoisted table: `crate::tool_params::DwellParams`.
+    let schema = crate::tool_params::DwellParams::schema();
     ClosureTool::new(
         "dwell",
         "WAIT cleanly for `seconds` (max 300) before continuing — use this to \
@@ -1505,9 +1458,11 @@ pub(crate) fn dwell_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          { slept_seconds, interrupted }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let seconds = args
-                .get("seconds")
-                .and_then(|v| v.as_u64())
+            // Field read (not the required-accessor): dwell historically
+            // defaulted a missing/wrong-typed value to 0 and clamped, never
+            // errored — `.unwrap_or(0).clamp(1, 300)` preserves that exactly.
+            let seconds = crate::tool_params::DwellParams::lenient(&args)
+                .seconds
                 .unwrap_or(0)
                 .clamp(1, 300);
             // Sleep in short chunks so the stop button interrupts the wait

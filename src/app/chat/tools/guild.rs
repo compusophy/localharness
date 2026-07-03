@@ -208,35 +208,8 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// AND confirm-gated in-tab (it grants/changes authority over the treasury).
 /// Reuses `registry::set_role_sponsored`.
 pub(crate) fn set_role_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "guild_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the guild you administer."
-            },
-            "member": {
-                "type": "string",
-                "description": "Whose role to set — a raw 0x… address OR a subdomain \
-                    name (resolved to that name's on-chain owner)."
-            },
-            "role": {
-                "type": "string",
-                "enum": ["member", "officer", "admin"],
-                "description": "The rank to assign: \"member\", \"officer\", or \
-                    \"admin\". (\"none\"/removal is not settable here.)"
-            },
-            "confirmation": {
-                "type": "string",
-                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
-                    first call — it returns a challenge code shown to the owner. Relay \
-                    it, wait for the owner to TYPE the code in chat, then retry with it. \
-                    Never invent it; only the platform issues it."
-            }
-        },
-        "required": ["guild_id", "member", "role"]
-    });
+    // Hoisted table: `crate::tool_params::SetRoleParams`.
+    let schema = crate::tool_params::SetRoleParams::schema();
     ClosureTool::new(
         "set_role",
         "Set a member's RANK in a guild you administer — \"member\", \"officer\", or \
@@ -248,25 +221,19 @@ pub(crate) fn set_role_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let guild_id = args
-                .get("guild_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("guild_id is required"))?;
-            let member_arg = args
-                .get("member")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let role_arg = args.get("role").and_then(|v| v.as_str()).unwrap_or("").trim();
-            let role = crate::app::registry::GuildRole::parse(role_arg)
+            let p = crate::tool_params::SetRoleParams::lenient(&args);
+            let guild_id = p.guild_id()?;
+            let member_arg = p.member.trim().to_string();
+            // Body validation unchanged: the schema's enum constrains the
+            // MODEL; an out-of-enum role still hits GuildRole::parse here.
+            let role = crate::app::registry::GuildRole::parse(p.role.trim())
                 .map_err(crate::error::Error::other)?;
             // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
             // this body runs; this guards a path that forgot the hook (set_role is a
             // privilege escalation — same posture as spend_treasury).
-            let confirmed = args
-                .get("confirmation")
-                .and_then(|v| v.as_str())
+            let confirmed = p
+                .confirmation
+                .as_deref()
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {

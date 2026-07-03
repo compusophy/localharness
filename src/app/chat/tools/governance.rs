@@ -99,21 +99,8 @@ pub(crate) fn propose_measure_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// `cast_vote(proposal_id, support)` — vote for or against an open proposal.
 /// Reuses `registry::vote_sponsored`.
 pub(crate) fn cast_vote_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "proposal_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the open proposal to vote on (from list_proposals)."
-            },
-            "support": {
-                "type": "boolean",
-                "description": "true to vote FOR the proposal, false to vote AGAINST it."
-            }
-        },
-        "required": ["proposal_id", "support"]
-    });
+    // Hoisted table: `crate::tool_params::CastVoteParams`.
+    let schema = crate::tool_params::CastVoteParams::schema();
     ClosureTool::new(
         "cast_vote",
         "Cast a vote on an open guild governance proposal: `support` true is a vote FOR, \
@@ -121,14 +108,9 @@ pub(crate) fn cast_vote_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          support, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let proposal_id = args
-                .get("proposal_id")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("proposal_id is required"))?;
-            let support = args
-                .get("support")
-                .and_then(|v| v.as_bool())
-                .ok_or_else(|| crate::error::Error::other("support (true/false) is required"))?;
+            let p = crate::tool_params::CastVoteParams::lenient(&args);
+            let proposal_id = p.proposal_id()?;
+            let support = p.support()?;
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::vote_sponsored(&signer, proposal_id, support)
             .await

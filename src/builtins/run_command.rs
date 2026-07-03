@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -25,13 +24,14 @@ const MAX_TIMEOUT_SEC: u64 = 600;
 
 pub struct RunCommand;
 
-#[derive(Deserialize)]
-struct Args {
-    command: String,
-    #[serde(default)]
-    working_dir: Option<String>,
-    #[serde(default)]
-    timeout_sec: Option<u64>,
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    struct Args: serde {
+        command: req_str = "Shell command line.",
+        working_dir: opt_str = "Optional CWD for the command.",
+        timeout_sec: opt_u64 min 1 max 600 = "Timeout in seconds (default 30, max 600).",
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -48,15 +48,7 @@ impl Tool for RunCommand {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "command":     { "type": "string", "description": "Shell command line." },
-                "working_dir": { "type": "string", "description": "Optional CWD for the command." },
-                "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 600, "description": "Timeout in seconds (default 30, max 600)." }
-            },
-            "required": ["command"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
@@ -156,6 +148,44 @@ async fn read_capped(reader: &mut (impl tokio::io::AsyncRead + Unpin)) -> (Vec<u
         }
     }
     (buf, truncated)
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::Args;
+    use serde_json::json;
+
+    /// BYTE-IDENTITY: the macro-generated schema must serialize byte-for-byte
+    /// equal to the hand-written literal it replaced (frozen verbatim here) —
+    /// the wire shape is model-behavior-load-bearing.
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "command":     { "type": "string", "description": "Shell command line." },
+                "working_dir": { "type": "string", "description": "Optional CWD for the command." },
+                "timeout_sec": { "type": "integer", "minimum": 1, "maximum": 600, "description": "Timeout in seconds (default 30, max 600)." }
+            },
+            "required": ["command"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
+    }
+
+    /// Parse parity with the replaced `#[derive(Deserialize)]` struct: the
+    /// `Option` fields default to `None` on missing (serde's built-in Option
+    /// handling — the old `#[serde(default)]` was redundant), and a missing
+    /// `command` errors naming the field.
+    #[test]
+    fn serde_parse_matches_the_old_derive() {
+        let a: Args = serde_json::from_value(json!({"command": "echo hi"})).unwrap();
+        assert_eq!((a.command.as_str(), a.working_dir, a.timeout_sec), ("echo hi", None, None));
+        let a: Args =
+            serde_json::from_value(json!({"command": "ls", "timeout_sec": 5, "working_dir": "/tmp"}))
+                .unwrap();
+        assert_eq!((a.timeout_sec, a.working_dir.as_deref()), (Some(5), Some("/tmp")));
+        assert!(serde_json::from_value::<Args>(json!({})).is_err());
+    }
 }
 
 #[cfg(test)]

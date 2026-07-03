@@ -25,7 +25,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"subject (tokenId) is required"` the generated accessor can't reproduce),
   form_party / evm_call (array fields), discover_parties (literal
   `"required": []`); everything else still unmigrated was already on the 0.62.0
-  skip list (enum / maximum / arrays / batch / no-arg tools).
+  skip list (enum / maximum / arrays / batch / no-arg tools). PLUS batch 4 —
+  the KIND ADDITIONS: the grammar gains `max N` (JSON-Schema `maximum`), a
+  string `enum ["a", "b"]` modifier (emits the exact allowed-values array —
+  SCHEMA-ONLY: it constrains the model, the lenient parse stays a plain string
+  extraction and out-of-enum validation stays in the tool body, exactly as the
+  hand-written tools behaved), a `req_bool` kind (lenient required boolean;
+  its accessor errors the historical `"<field> (true/false) is required"`),
+  and an `opt_u64` kind (full-range optional integer, no u32 narrowing). That
+  unlocks six more migrations on the same frozen byte-identity +
+  lenient/serde-parity contract: set_role, cast_vote (rides `req_bool`),
+  schedule_task, attest (its rating extraction stays INLINE — the old chain
+  also coerces numeric strings, which the table's integer-only accessor must
+  not replace; the table row covers the schema), dwell (the body reads the
+  FIELD with the historical `.unwrap_or(0).clamp(1, 300)`, never errors), and
+  the native `run_command` builtin (serde mode, in-file table — the 0.62.0
+  `maximum` skip). Newly skipped-with-reason: consult_model (its `enum` list
+  AND description are RUNTIME-derived from the `CONSULT_MODELS` allowlist — a
+  literal table would fork that single source).
 
 ## [0.62.0] - 2026-07-02
 

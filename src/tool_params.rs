@@ -30,18 +30,25 @@
 //!   plain `cargo test` byte-checks their wire schema for the first time.
 //!
 //! Migration is OPT-IN per tool. Tools whose schemas need shapes the grammar
-//! doesn't cover (arrays of objects, enums, maximums) stay hand-written until
-//! a kind is added — the escape hatch is "don't migrate yet", never "bend the
-//! table".
+//! doesn't cover (arrays of objects, runtime-derived enums/descriptions) stay
+//! hand-written until a kind is added — the escape hatch is "don't migrate
+//! yet", never "bend the table".
 //!
 //! Field kinds: `req_str`, `opt_str`, `req_u32`, `req_u64`, `opt_u32`,
-//! `opt_bool`, each optionally followed by `min N` (JSON-Schema `minimum`).
+//! `opt_u64`, `opt_bool`, `req_bool`, each optionally followed by `min N` /
+//! `max N` (JSON-Schema `minimum`/`maximum`) and — for string kinds —
+//! `enum ["a", "b"]`, which emits the schema's exact `"enum": [...]` array.
+//! `enum` shapes only the SCHEMA (it constrains the model); the lenient parse
+//! stays a plain string extraction and out-of-enum validation stays in the
+//! tool body, exactly as the hand-written tools behaved.
 //! `req_*` kinds land in the schema's `required` array in declaration order.
 //! `req_u64` is the LENIENT-mode required integer: stored as `Option<u64>`
 //! and read via a generated `fn <field>() -> Result<u64>` accessor that
 //! errors `"<field> is required"` on a missing or non-integer value instead
 //! of defaulting — a real id 0 must never be conflated with "missing" (the
-//! bounty/guild/proposal id semantics). In serde tables use plain required
+//! bounty/guild/proposal id semantics). `req_bool` is its boolean sibling:
+//! `Option<bool>` + an accessor erroring the tools' historical
+//! `"<field> (true/false) is required"`. In serde tables use plain required
 //! kinds; serde's own missing-field error already covers them.
 //!
 //! ```rust
@@ -68,20 +75,26 @@ macro_rules! tool_params {
     (@ty req_u32) => { u32 };
     (@ty req_u64) => { ::core::option::Option<u64> };
     (@ty opt_u32) => { ::core::option::Option<u32> };
+    (@ty opt_u64) => { ::core::option::Option<u64> };
     (@ty opt_bool) => { ::core::option::Option<bool> };
+    (@ty req_bool) => { ::core::option::Option<bool> };
     // ---------- internal: JSON-Schema "type" per kind ----------
     (@json_ty req_str) => { "string" };
     (@json_ty opt_str) => { "string" };
     (@json_ty req_u32) => { "integer" };
     (@json_ty req_u64) => { "integer" };
     (@json_ty opt_u32) => { "integer" };
+    (@json_ty opt_u64) => { "integer" };
     (@json_ty opt_bool) => { "boolean" };
+    (@json_ty req_bool) => { "boolean" };
     // ---------- internal: required flag per kind ----------
     (@required req_str) => { true };
     (@required req_u32) => { true };
     (@required req_u64) => { true };
+    (@required req_bool) => { true };
     (@required opt_str) => { false };
     (@required opt_u32) => { false };
+    (@required opt_u64) => { false };
     (@required opt_bool) => { false };
     // ---------- internal: lenient extraction per kind (the historical
     // `.get().and_then().unwrap_or()` chat-tool semantics, verbatim) ----------
@@ -107,7 +120,13 @@ macro_rules! tool_params {
             .and_then(|v| v.as_u64())
             .and_then(|n| u32::try_from(n).ok())
     };
+    (@lenient opt_u64, $args:expr, $name:expr) => {
+        $args.get($name).and_then(|v| v.as_u64())
+    };
     (@lenient opt_bool, $args:expr, $name:expr) => {
+        $args.get($name).and_then(|v| v.as_bool())
+    };
+    (@lenient req_bool, $args:expr, $name:expr) => {
         $args.get($name).and_then(|v| v.as_bool())
     };
     // ---------- internal: per-field REQUIRED accessor. `req_u64` generates a
@@ -125,9 +144,22 @@ macro_rules! tool_params {
             })
         }
     };
+    (@req_accessor $vis:vis, req_bool, $field:ident) => {
+        /// Required boolean, lenient-extracted: `Ok` when present and
+        /// bool-typed, else the tools' historical
+        /// `"<field> (true/false) is required"` error — never a silent default.
+        $vis fn $field(&self) -> ::core::result::Result<bool, $crate::error::Error> {
+            self.$field.ok_or_else(|| {
+                $crate::error::Error::other(concat!(
+                    stringify!($field),
+                    " (true/false) is required"
+                ))
+            })
+        }
+    };
     (@req_accessor $vis:vis, $other:ident, $field:ident) => {};
     // ---------- internal: the shared `schema()` body ----------
-    (@schema $vis:vis, $( $field:ident : $kind:ident $(min $min:literal)? = $desc:literal ),+) => {
+    (@schema $vis:vis, $( $field:ident : $kind:ident $(min $min:literal)? $(max $max:literal)? $(enum [$($ev:literal),+ $(,)?])? = $desc:literal ),+) => {
         /// Wire `input_schema`, generated from the SAME table as the struct
         /// fields. Single `type` per property, no unions / `oneOf` /
         /// `additionalProperties` — Gemini-safe by construction.
@@ -141,6 +173,13 @@ macro_rules! tool_params {
                     Value::String($crate::tool_params!(@json_ty $kind).to_string()),
                 );
                 $( f.insert("minimum".to_string(), Value::from($min)); )?
+                $( f.insert("maximum".to_string(), Value::from($max)); )?
+                $(
+                    f.insert(
+                        "enum".to_string(),
+                        Value::Array(vec![ $( Value::String($ev.to_string()) ),+ ]),
+                    );
+                )?
                 f.insert("description".to_string(), Value::String($desc.to_string()));
                 props.insert(stringify!($field).to_string(), Value::Object(f));
             )+
@@ -164,7 +203,7 @@ macro_rules! tool_params {
     (
         $(#[$meta:meta])*
         $vis:vis struct $name:ident : serde {
-            $( $field:ident : $kind:ident $(min $min:literal)? = $desc:literal ),+ $(,)?
+            $( $field:ident : $kind:ident $(min $min:literal)? $(max $max:literal)? $(enum [$($ev:literal),+ $(,)?])? = $desc:literal ),+ $(,)?
         }
     ) => {
         $(#[$meta])*
@@ -173,7 +212,7 @@ macro_rules! tool_params {
             $( #[doc = $desc] $vis $field: $crate::tool_params!(@ty $kind), )+
         }
         impl $name {
-            $crate::tool_params!(@schema $vis, $( $field : $kind $(min $min)? = $desc ),+);
+            $crate::tool_params!(@schema $vis, $( $field : $kind $(min $min)? $(max $max)? $(enum [$($ev),+])? = $desc ),+);
             $( $crate::tool_params!(@req_accessor $vis, $kind, $field); )+
         }
     };
@@ -181,7 +220,7 @@ macro_rules! tool_params {
     (
         $(#[$meta:meta])*
         $vis:vis struct $name:ident : lenient {
-            $( $field:ident : $kind:ident $(min $min:literal)? = $desc:literal ),+ $(,)?
+            $( $field:ident : $kind:ident $(min $min:literal)? $(max $max:literal)? $(enum [$($ev:literal),+ $(,)?])? = $desc:literal ),+ $(,)?
         }
     ) => {
         $(#[$meta])*
@@ -189,7 +228,7 @@ macro_rules! tool_params {
             $( #[doc = $desc] $vis $field: $crate::tool_params!(@ty $kind), )+
         }
         impl $name {
-            $crate::tool_params!(@schema $vis, $( $field : $kind $(min $min)? = $desc ),+);
+            $crate::tool_params!(@schema $vis, $( $field : $kind $(min $min)? $(max $max)? $(enum [$($ev),+])? = $desc ),+);
             $( $crate::tool_params!(@req_accessor $vis, $kind, $field); )+
 
             /// Lenient extraction: a missing or wrong-typed field falls back
@@ -725,6 +764,86 @@ crate::tool_params! {
     }
 }
 
+crate::tool_params! {
+    /// Args for the browser `set_role` tool (`src/app/chat/tools/guild.rs`)
+    /// — privilege escalation, confirm-gated. `role`'s `enum` constrains the
+    /// MODEL only; the body's `GuildRole::parse` validation stays unchanged.
+    pub struct SetRoleParams: lenient {
+        guild_id: req_u64 min 0 = "The id of the guild you administer.",
+        member: req_str = "Whose role to set — a raw 0x… address OR a subdomain \
+                    name (resolved to that name's on-chain owner).",
+        role: req_str enum ["member", "officer", "admin"] = "The rank to assign: \
+                    \"member\", \"officer\", or \
+                    \"admin\". (\"none\"/removal is not settable here.)",
+        confirmation: opt_str = "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. Relay \
+                    it, wait for the owner to TYPE the code in chat, then retry with it. \
+                    Never invent it; only the platform issues it.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `cast_vote` tool (`src/app/chat/tools/governance.rs`)
+    /// — `support` uses the `req_bool` required-accessor (missing/wrong type
+    /// errors the historical `"support (true/false) is required"`).
+    pub struct CastVoteParams: lenient {
+        proposal_id: req_u64 min 0 = "The id of the open proposal to vote on (from list_proposals).",
+        support: req_bool = "true to vote FOR the proposal, false to vote AGAINST it.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `schedule_task` tool (`src/app/chat/tools/misc.rs`)
+    /// — off-chain job creation. `kind`'s `enum` constrains the MODEL only; the
+    /// body's `== Some("agent")` classification (anything else = reminder)
+    /// stays unchanged.
+    pub struct ScheduleTaskParams: lenient {
+        task: req_str = "What to do each fire. For a REMINDER, the note to push \
+                    you. For an AGENT job, a self-contained prompt. Prefix with \
+                    \"GOAL: \" for a goal-loop that ends early once done.",
+        interval: req_str = "Delay / cadence: \"60s\", \"15m\", \"1h\" (a bare number \
+                    = seconds; minimum 60s). For a ONE-SHOT (\"in 15 minutes\") set this \
+                    to the delay and `runs` to 1.",
+        runs: opt_u64 min 1 = "How many times to fire (default 1 — a single delayed \
+                    task). Higher = a recurring job.",
+        kind: opt_str enum ["reminder", "agent"] = "\"reminder\" (default) = just push you the task text \
+                    (free, no agent run, no $LH). \"agent\" = run an agent each fire \
+                    (bills your meter per run).",
+        target: opt_str = "AGENT jobs only: the subdomain to run each fire \
+                    (defaults to THIS agent). Ignored for a reminder.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `attest` tool (`src/app/chat/tools/bounty.rs`)
+    /// — durable one-shot reputation write, confirm-gated. `rating`'s table row
+    /// covers the SCHEMA (`min 1 max 5`); its extraction stays INLINE in the
+    /// body because the historical chain also coerces numeric strings
+    /// (`"3"` → 3), which `req_u64`'s integer-only accessor must not replace.
+    pub struct AttestParams: lenient {
+        subject: req_str = "Who you are rating — a subdomain NAME (resolved to its \
+                    on-chain tokenId) OR a raw numeric tokenId. Cannot be yourself.",
+        rating: req_u64 min 1 max 5 = "Quality rating, an integer 1 (worst) to 5 (best).",
+        work_ref: opt_str = "OPTIONAL bounty id this attestation is about (a decimal \
+                    integer), so the rating ties to specific work. Omit for a general \
+                    attestation.",
+        confirmation: opt_str = "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. Relay \
+                    it, wait for the owner to TYPE the code in chat, then retry with it. \
+                    Never invent it; only the platform issues it.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `dwell` tool (`src/app/chat/tools/misc.rs`) — the
+    /// in-loop wait. The body reads the `Option<u64>` FIELD directly
+    /// (`.unwrap_or(0).clamp(1, 300)` — dwell historically defaulted, never
+    /// errored), so the generated required-accessor goes unused by design.
+    pub struct DwellParams: lenient {
+        seconds: req_u64 min 1 max 300 = "How long to wait, in seconds (1-300).",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,9 +951,72 @@ mod tests {
             ("CompletePartyParams", CompletePartyParams::schema()),
             ("DisbandPartyParams", DisbandPartyParams::schema()),
             ("GetPartyParams", GetPartyParams::schema()),
+            ("SetRoleParams", SetRoleParams::schema()),
+            ("CastVoteParams", CastVoteParams::schema()),
+            ("ScheduleTaskParams", ScheduleTaskParams::schema()),
+            ("AttestParams", AttestParams::schema()),
+            ("DwellParams", DwellParams::schema()),
         ] {
             assert_gemini_safe(&schema, name);
         }
+    }
+
+    crate::tool_params! {
+        /// Exercises the batch-4 kind additions: `max`, string `enum` on both
+        /// required and optional strings, `opt_u64`, and `req_bool`.
+        struct NewKinds: lenient {
+            level: req_u64 min 1 max 5 = "A bounded required integer.",
+            mode: req_str enum ["fast", "slow"] = "A required enum string.",
+            hint: opt_str enum ["a", "b", "c"] = "An optional enum string.",
+            budget: opt_u64 min 1 = "An optional u64.",
+            yes: req_bool = "A required boolean.",
+        }
+    }
+
+    /// `max` emits JSON-Schema `maximum`, `enum` emits the exact allowed-values
+    /// array (on required AND optional strings), and both stay Gemini-safe.
+    /// The LENIENT parse is untouched by the modifiers: enum fields extract as
+    /// plain strings (out-of-enum values pass through to the tool body's own
+    /// validation, exactly like the hand-written schemas behaved) and bounded
+    /// integers are NOT clamped by the parse.
+    #[test]
+    fn max_and_enum_shape_the_schema_without_touching_the_parse() {
+        let s = NewKinds::schema();
+        assert_eq!(s["properties"]["level"]["minimum"], 1);
+        assert_eq!(s["properties"]["level"]["maximum"], 5);
+        assert_eq!(s["properties"]["mode"]["enum"], json!(["fast", "slow"]));
+        assert_eq!(s["properties"]["mode"]["type"], "string");
+        assert_eq!(s["properties"]["hint"]["enum"], json!(["a", "b", "c"]));
+        assert_eq!(s["properties"]["budget"]["type"], "integer");
+        assert_eq!(s["properties"]["budget"]["minimum"], 1);
+        assert!(s["properties"]["budget"].get("maximum").is_none());
+        assert_eq!(s["properties"]["yes"]["type"], "boolean");
+        assert_eq!(s["required"], json!(["level", "mode", "yes"]));
+        // Parse side: an out-of-enum string and an out-of-range integer both
+        // pass through untouched — the schema constrains the MODEL, the body
+        // validates.
+        let p = NewKinds::lenient(&json!({"level": 99, "mode": "warp", "hint": "z"}));
+        assert_eq!(p.level().unwrap(), 99);
+        assert_eq!(p.mode, "warp");
+        assert_eq!(p.hint.as_deref(), Some("z"));
+    }
+
+    /// `opt_u64`: full-u64-range optional integer (no u32 narrowing — the
+    /// historical `.and_then(as_u64)` chains the kind replaces); `req_bool`:
+    /// the required-accessor errors the tools' exact historical
+    /// `"<field> (true/false) is required"` on missing/wrong type, while both
+    /// real values round-trip.
+    #[test]
+    fn opt_u64_and_req_bool_match_the_historical_semantics() {
+        let p = NewKinds::lenient(&json!({}));
+        assert_eq!(p.budget, None);
+        assert_eq!(p.yes().unwrap_err().to_string(), "yes (true/false) is required");
+        assert!(NewKinds::lenient(&json!({"yes": "true"})).yes().is_err());
+        assert!(NewKinds::lenient(&json!({"yes": 1})).yes().is_err());
+        assert!(!NewKinds::lenient(&json!({"yes": false})).yes().unwrap());
+        assert!(NewKinds::lenient(&json!({"yes": true})).yes().unwrap());
+        assert_eq!(NewKinds::lenient(&json!({"budget": u64::MAX})).budget, Some(u64::MAX));
+        assert_eq!(NewKinds::lenient(&json!({"budget": "7"})).budget, None);
     }
 
     crate::tool_params! {
@@ -1953,5 +2135,217 @@ mod tests {
             "party_id is required"
         );
         assert_eq!(GetPartyParams::lenient(&json!({"party_id": 9})).party_id().unwrap(), 9);
+    }
+
+    /// BYTE-IDENTITY for the FOURTH chat-tools wave (the `max`/`enum`/`req_bool`
+    /// unlock): each generated schema serializes byte-for-byte equal to the
+    /// hand-written literal it replaced in `src/app/chat/tools/{guild,
+    /// governance,misc,bounty}.rs` (frozen verbatim below) — the same migration
+    /// contract as waves 1-3.
+    #[test]
+    fn chat_tool_wave4_schemas_are_byte_identical_to_the_frozen_originals() {
+        let cases: [(&str, Value, Value); 5] = [
+            ("set_role", SetRoleParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "guild_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the guild you administer."
+                    },
+                    "member": {
+                        "type": "string",
+                        "description": "Whose role to set — a raw 0x… address OR a subdomain \
+                            name (resolved to that name's on-chain owner)."
+                    },
+                    "role": {
+                        "type": "string",
+                        "enum": ["member", "officer", "admin"],
+                        "description": "The rank to assign: \"member\", \"officer\", or \
+                            \"admin\". (\"none\"/removal is not settable here.)"
+                    },
+                    "confirmation": {
+                        "type": "string",
+                        "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                            first call — it returns a challenge code shown to the owner. Relay \
+                            it, wait for the owner to TYPE the code in chat, then retry with it. \
+                            Never invent it; only the platform issues it."
+                    }
+                },
+                "required": ["guild_id", "member", "role"]
+            })),
+            ("cast_vote", CastVoteParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "proposal_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The id of the open proposal to vote on (from list_proposals)."
+                    },
+                    "support": {
+                        "type": "boolean",
+                        "description": "true to vote FOR the proposal, false to vote AGAINST it."
+                    }
+                },
+                "required": ["proposal_id", "support"]
+            })),
+            ("schedule_task", ScheduleTaskParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "What to do each fire. For a REMINDER, the note to push \
+                            you. For an AGENT job, a self-contained prompt. Prefix with \
+                            \"GOAL: \" for a goal-loop that ends early once done."
+                    },
+                    "interval": {
+                        "type": "string",
+                        "description": "Delay / cadence: \"60s\", \"15m\", \"1h\" (a bare number \
+                            = seconds; minimum 60s). For a ONE-SHOT (\"in 15 minutes\") set this \
+                            to the delay and `runs` to 1."
+                    },
+                    "runs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "How many times to fire (default 1 — a single delayed \
+                            task). Higher = a recurring job."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["reminder", "agent"],
+                        "description": "\"reminder\" (default) = just push you the task text \
+                            (free, no agent run, no $LH). \"agent\" = run an agent each fire \
+                            (bills your meter per run)."
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "AGENT jobs only: the subdomain to run each fire \
+                            (defaults to THIS agent). Ignored for a reminder."
+                    }
+                },
+                "required": ["task", "interval"]
+            })),
+            ("attest", AttestParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": "Who you are rating — a subdomain NAME (resolved to its \
+                            on-chain tokenId) OR a raw numeric tokenId. Cannot be yourself."
+                    },
+                    "rating": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5,
+                        "description": "Quality rating, an integer 1 (worst) to 5 (best)."
+                    },
+                    "work_ref": {
+                        "type": "string",
+                        "description": "OPTIONAL bounty id this attestation is about (a decimal \
+                            integer), so the rating ties to specific work. Omit for a general \
+                            attestation."
+                    },
+                    "confirmation": {
+                        "type": "string",
+                        "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                            first call — it returns a challenge code shown to the owner. Relay \
+                            it, wait for the owner to TYPE the code in chat, then retry with it. \
+                            Never invent it; only the platform issues it."
+                    }
+                },
+                "required": ["subject", "rating"]
+            })),
+            ("dwell", DwellParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "integer",
+                        "description": "How long to wait, in seconds (1-300).",
+                        "minimum": 1,
+                        "maximum": 300
+                    }
+                },
+                "required": ["seconds"]
+            })),
+        ];
+        for (name, generated, frozen) in cases {
+            assert_eq!(generated.to_string(), frozen.to_string(), "schema drift: {name}");
+        }
+    }
+
+    /// Lenient parity for wave 4: the extraction (plus the `req_u64`/`req_bool`
+    /// accessors) feeds each tool's unchanged body validation the same values —
+    /// and the same errors, with the same messages — the old inline chains
+    /// produced. The enum'd string fields stay PLAIN extractions: out-of-enum
+    /// values reach the bodies' own validation exactly as before.
+    #[test]
+    fn chat_tool_wave4_lenient_matches_the_old_inline_extraction() {
+        // set_role: guild_id accessor message matches the old inline
+        // `ok_or_else`; role/member keep the "" defaults the body re-validates
+        // (an out-of-enum role still reaches GuildRole::parse).
+        let p = SetRoleParams::lenient(&json!({"member": " Alice ", "role": "emperor"}));
+        assert_eq!(p.guild_id().unwrap_err().to_string(), "guild_id is required");
+        assert_eq!(p.member.trim(), "Alice"); // body trims
+        assert_eq!(p.role.trim(), "emperor"); // body's GuildRole::parse rejects
+        let p = SetRoleParams::lenient(&json!({"guild_id": 0, "role": " Officer "}));
+        assert_eq!(p.guild_id().unwrap(), 0); // 0 stays a real id
+        assert_eq!(p.role.trim(), "Officer");
+        assert!(!p.confirmation.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false));
+
+        // cast_vote: both accessors error the EXACT historical messages;
+        // support=false is a REAL vote, never conflated with "missing".
+        let p = CastVoteParams::lenient(&json!({}));
+        assert_eq!(p.proposal_id().unwrap_err().to_string(), "proposal_id is required");
+        assert_eq!(p.support().unwrap_err().to_string(), "support (true/false) is required");
+        let p = CastVoteParams::lenient(&json!({"proposal_id": 3, "support": false}));
+        assert_eq!((p.proposal_id().unwrap(), p.support().unwrap()), (3, false));
+        assert!(CastVoteParams::lenient(&json!({"support": "true"})).support().is_err());
+
+        // schedule_task: task/interval "" defaults keep the body's error arms;
+        // runs reproduces `.map(|r| r.max(1) as u32).unwrap_or(1)`; kind's
+        // `== Some("agent")` classification (anything else = reminder) and
+        // target's trim/lowercase/filter chain see identical values.
+        let p = ScheduleTaskParams::lenient(&json!({}));
+        assert!(p.task.trim().is_empty());
+        assert_eq!(p.interval, "");
+        assert_eq!(p.runs.map(|r| r.max(1) as u32).unwrap_or(1), 1);
+        assert_ne!(p.kind.as_deref(), Some("agent")); // → "reminder"
+        let p = ScheduleTaskParams::lenient(
+            &json!({"task": " t ", "interval": "15m", "runs": 0, "kind": "AGENT", "target": " Bob "}),
+        );
+        assert_eq!(p.task.trim(), "t");
+        assert_eq!(p.runs.map(|r| r.max(1) as u32).unwrap_or(1), 1); // 0 → max(1)
+        assert_ne!(p.kind.as_deref(), Some("agent")); // case-sensitive, as before
+        assert_eq!(
+            p.target.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()),
+            Some("bob".to_string())
+        );
+        let p = ScheduleTaskParams::lenient(&json!({"kind": "agent", "runs": 5, "target": "  "}));
+        assert_eq!(p.kind.as_deref(), Some("agent"));
+        assert_eq!(p.runs.map(|r| r.max(1) as u32).unwrap_or(1), 5);
+        assert_eq!(
+            p.target.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()),
+            None // blank target → the body's current_name fallback, as before
+        );
+
+        // attest: subject/work_ref/confirmation ride the table; the rating
+        // COERCION (int OR numeric string) deliberately stays inline in the
+        // body — the table's Option<u64> only mirrors the integer case.
+        let p = AttestParams::lenient(&json!({"subject": " dex ", "rating": "4"}));
+        assert_eq!(p.subject.trim(), "dex");
+        assert_eq!(p.rating, None); // string "4" → the body's inline parse
+        assert_eq!(p.work_ref.as_deref().unwrap_or("").trim(), "");
+        assert!(!p.confirmation.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false));
+        let p = AttestParams::lenient(&json!({"rating": 5, "work_ref": " #12 "}));
+        assert_eq!(p.rating, Some(5));
+        assert_eq!(p.work_ref.as_deref().unwrap_or("").trim(), "#12");
+
+        // dwell: the body reads the FIELD (`.unwrap_or(0).clamp(1, 300)`) —
+        // missing/wrong-typed → 0 → clamped to 1, oversized → 300, exactly the
+        // historical `.and_then(as_u64).unwrap_or(0).clamp(1, 300)`.
+        assert_eq!(DwellParams::lenient(&json!({})).seconds.unwrap_or(0).clamp(1, 300), 1);
+        assert_eq!(DwellParams::lenient(&json!({"seconds": "9"})).seconds.unwrap_or(0).clamp(1, 300), 1);
+        assert_eq!(DwellParams::lenient(&json!({"seconds": 30})).seconds.unwrap_or(0).clamp(1, 300), 30);
+        assert_eq!(DwellParams::lenient(&json!({"seconds": 9999})).seconds.unwrap_or(0).clamp(1, 300), 300);
     }
 }
