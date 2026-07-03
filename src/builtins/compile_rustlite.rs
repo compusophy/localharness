@@ -14,6 +14,18 @@ use crate::tools::{Tool, ToolContext};
 
 pub struct CompileRustlite;
 
+crate::tool_params! {
+    /// ONE table generates both this struct and `input_schema` (see
+    /// `crate::tool_params`); the schema byte-identity test is below.
+    /// Lenient mode — the historical body defaulted missing/wrong-typed args
+    /// (`""` source, `"handle"` function, empty `args`).
+    struct Args: lenient {
+        source: req_str = "Rustlite source code to compile",
+        function: opt_str = "Function name to call after compilation (default: 'handle')",
+        args: opt_i64_array = "i32 arguments to pass to the function",
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Tool for CompileRustlite {
@@ -37,46 +49,18 @@ impl Tool for CompileRustlite {
     }
 
     fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "source": {
-                    "type": "string",
-                    "description": "Rustlite source code to compile"
-                },
-                "function": {
-                    "type": "string",
-                    "description": "Function name to call after compilation (default: 'handle')"
-                },
-                "args": {
-                    "type": "array",
-                    "items": { "type": "integer" },
-                    "description": "i32 arguments to pass to the function"
-                }
-            },
-            "required": ["source"]
-        })
+        Args::schema()
     }
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
-        let source = args
-            .get("source")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let function = args
-            .get("function")
-            .and_then(|v| v.as_str())
-            .unwrap_or("handle")
-            .to_string();
-        let fn_args: Vec<i32> = args
-            .get("args")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_i64().map(|n| n as i32))
-                    .collect()
-            })
+        let p = Args::lenient(&args);
+        let source = p.source;
+        let function = p.function.as_deref().unwrap_or("handle").to_string();
+        // Historical `filter_map(as_i64 → as i32)` — the table's `opt_i64_array`
+        // is the same filter_map; only the i32 narrowing stays here.
+        let fn_args: Vec<i32> = p
+            .args
+            .map(|v| v.into_iter().map(|n| n as i32).collect())
             .unwrap_or_default();
 
         if source.is_empty() {
@@ -142,5 +126,55 @@ impl Tool for CompileRustlite {
                 "note": "execution requires a browser — compiled successfully but cannot instantiate on native"
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BYTE-IDENTITY: the generated schema serializes byte-for-byte equal to
+    /// the original hand-written literal it replaced (frozen verbatim below).
+    #[test]
+    fn schema_is_byte_identical_to_the_frozen_original() {
+        let frozen = json!({
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "Rustlite source code to compile"
+                },
+                "function": {
+                    "type": "string",
+                    "description": "Function name to call after compilation (default: 'handle')"
+                },
+                "args": {
+                    "type": "array",
+                    "items": { "type": "integer" },
+                    "description": "i32 arguments to pass to the function"
+                }
+            },
+            "required": ["source"]
+        });
+        assert_eq!(Args::schema().to_string(), frozen.to_string());
+    }
+
+    /// Lenient parity: the table feeds the body the same values the old
+    /// inline `.get().and_then().unwrap_or()` chains produced.
+    #[test]
+    fn lenient_matches_the_old_inline_extraction() {
+        let p = Args::lenient(&serde_json::json!({}));
+        assert_eq!((p.source.as_str(), p.function, p.args), ("", None, None));
+        let p = Args::lenient(&serde_json::json!({
+            "source": "fn handle() -> i32 { 1 }",
+            "function": 7,                 // wrong type → the "handle" default
+            "args": [1, -2, "3", 4.5],     // non-i64 entries drop, sign kept
+        }));
+        assert_eq!(p.function.as_deref().unwrap_or("handle"), "handle");
+        let fn_args: Vec<i32> = p
+            .args
+            .map(|v| v.into_iter().map(|n| n as i32).collect())
+            .unwrap_or_default();
+        assert_eq!(fn_args, vec![1, -2]);
     }
 }

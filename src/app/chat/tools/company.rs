@@ -250,51 +250,10 @@ pub(crate) fn company_status_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// subdomain (+ TBA) so a later Model-B (TBA-as-member) cut can seat them as
 /// distinct voters. Governance is single-controller until then — named, not faked.
 pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "The company's display name (also the guild name). A \
-                    subdomain slug is derived from it for each role, e.g. \"acme\" → \
-                    acme-exec, acme-pm, …"
-            },
-            "mission": {
-                "type": "string",
-                "description": "One or two sentences: what the company exists to do. \
-                    Seeded into the shared backlog so every role works to the same plan."
-            },
-            "roles": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "OPTIONAL list of roles to staff, e.g. [\"executive\", \
-                    \"coder\", \"reviewer\"]. Omit for the seven defaults (executive, pm, \
-                    coder, reviewer, accounting, hr, marketing). Unknown roles are \
-                    slugified with a generic persona."
-            },
-            "seed_treasury_lh": {
-                "type": "string",
-                "description": "OPTIONAL $LH to deposit into the company treasury from YOUR \
-                    wallet at founding, as a decimal string (\"10\", \"2.5\"). Omit or \
-                    \"0\" to skip."
-            },
-            "prefund_each_lh": {
-                "type": "string",
-                "description": "OPTIONAL $LH to prefund EACH role's token-bound account \
-                    (its own spendable wallet) with, as a decimal string. Total pulled = \
-                    this × number of roles, from YOUR wallet. Omit or \"0\" to skip."
-            },
-            "confirmation": {
-                "type": "string",
-                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
-                    first call — it returns a challenge code shown to the owner. State the \
-                    company name, roles, and any $LH it will spend, ask the owner to TYPE \
-                    the code in chat, then retry with it. Never invent it; only the \
-                    platform issues it."
-            }
-        },
-        "required": ["name", "mission"]
-    });
+    // Hoisted table: `crate::tool_params::FoundCompanyParams`,
+    // byte-identity-tested natively. `roles` stays a raw-args read below
+    // (`resolve_roles` owns that parse).
+    let schema = crate::tool_params::FoundCompanyParams::schema();
     ClosureTool::new(
         "found_company",
         "Found a whole COMPANY in one call: create an on-chain GUILD (org identity + \
@@ -312,8 +271,9 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          backlog_seeded, tx_hashes }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let mission = args.get("mission").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let p = crate::tool_params::FoundCompanyParams::lenient(&args);
+            let name = p.name.trim().to_string();
+            let mission = p.mission.trim().to_string();
             if name.is_empty() {
                 return Err(crate::error::Error::other("name cannot be empty"));
             }
@@ -324,9 +284,9 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // call before this body runs; this guards a path that forgot the hook
             // (same posture as send_lh / spend_treasury). found_company mints +
             // spends, so it must never execute without the owner's typed code.
-            let confirmed = args
-                .get("confirmation")
-                .and_then(|v| v.as_str())
+            let confirmed = p
+                .confirmation
+                .as_deref()
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
@@ -386,7 +346,7 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 
             // STEP 2 (optional) — seed the treasury from the founder's wallet.
             // Mirrors fund_guild_tool (meter-credit auto-bridge in the same tx).
-            if let Some(seed) = args.get("seed_treasury_lh").and_then(|v| v.as_str()) {
+            if let Some(seed) = p.seed_treasury_lh.as_deref() {
                 let seed = seed.trim();
                 if !seed.is_empty() && seed != "0" {
                     let amount_wei = crate::encoding::parse_token_amount(seed).ok_or_else(|| {
@@ -432,9 +392,9 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // optionally prefund its TBA, batched into ONE sponsored tx. Best-effort:
             // a role whose tokenId isn't visible yet is skipped (recorded), never
             // sinking a founding that already created the guild + subdomains.
-            let prefund_each = args
-                .get("prefund_each_lh")
-                .and_then(|v| v.as_str())
+            let prefund_each = p
+                .prefund_each_lh
+                .as_deref()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty() && s != "0");
             let mut role_entries: Vec<serde_json::Value> = Vec::new();

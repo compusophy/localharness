@@ -1266,27 +1266,9 @@ async fn drain_final_text(
 /// runs them off-main-thread in the WASI worker (`web/wasi-worker.js`) with a
 /// watchdog, paints the terminal overlay, and returns the structured run.
 pub(crate) fn run_wasm_cli_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "OPFS path to a compiled `.wasm` CLI module — a \
-                    wasm32-wasi COMMAND that exports `_start` (the standard output \
-                    of `clang --target=wasm32-wasi`, `rustc --target wasm32-wasi`, \
-                    TinyGo, etc.). The committed demo is \"examples/cli/hello.wasm\" \
-                    if present in OPFS; otherwise point at a `.wasm` you placed in \
-                    OPFS."
-            },
-            "args": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "OPTIONAL command-line arguments passed as argv \
-                    (argv[0] is a synthetic program name; these follow it)."
-            }
-        },
-        "required": ["path"]
-    });
+    // Hoisted table: `crate::tool_params::RunWasmCliParams`,
+    // byte-identity-tested natively.
+    let schema = crate::tool_params::RunWasmCliParams::schema();
     ClosureTool::new(
         "run_wasm_cli",
         "Run a compiled wasm CLI program (a wasm32-wasi COMMAND that exports \
@@ -1303,19 +1285,12 @@ pub(crate) fn run_wasm_cli_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          missing file / instantiate failure / trap / timeout.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let p = crate::tool_params::RunWasmCliParams::lenient(&args);
+            let path = p.path.trim();
             if path.is_empty() {
                 return Err(crate::error::Error::other("run_wasm_cli: path cannot be empty"));
             }
-            let argv: Vec<String> = args
-                .get("args")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let argv: Vec<String> = p.args.unwrap_or_default();
             // Read the module bytes from OPFS via the shared filesystem (the same
             // one the fs builtins write to), so a file created/fetched in-app runs.
             let fs = crate::app::shared_opfs();

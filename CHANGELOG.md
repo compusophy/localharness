@@ -43,6 +43,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `maximum` skip). Newly skipped-with-reason: consult_model (its `enum` list
   AND description are RUNTIME-derived from the `CONSULT_MODELS` allowlist — a
   literal table would fork that single source).
+- **`tool_params!` batch 5 — the FLAT ARRAY kinds, and the sweep is COMPLETE.**
+  The grammar gains `req_str_array` / `opt_str_array` / `opt_i64_array`
+  (JSON-Schema `"type":"array"` with a single-type `items`; `min`/`max` bound
+  the ITEMS; lenient parse = the historical `.as_array()` + `filter_map`
+  element extraction — deliberately NOT a general array grammar: no items
+  descriptions, no nested objects, no `minItems`). That unlocks the final
+  seven migrations on the same frozen byte-identity + parity contract:
+  compile_rustlite + configure_agent (builtins, in-file tables;
+  configure_agent's absent-vs-`null` presence checks stay on the raw args)
+  and form_party, evm_call, batch_create_subdomains, run_wasm_cli,
+  found_company (hoisted chat tables — fields whose historical parses differ
+  from the generic extraction, like evm_call's stringify-not-drop `args` and
+  form_party's error-ordered `shares`, stay INLINE while the table owns the
+  schema). END STATE: **71 of the 90 tool schemas are generated from
+  `tool_params!` tables; every remaining hand-written schema is a documented
+  PERMANENT RESIDENT** (nested-object arrays: ask_question / batch_send_lh;
+  literal `"required": []`: discover_bounties / discover_parties /
+  list_my_guilds / bulk_release_subdomains; runtime-derived enum:
+  consult_model; field-specific error messages: stake_validation; any-typed
+  `output`: finish; and the zero-arg tools) — the roster + reasons live at
+  the top of `src/tool_params.rs`. The sweep is DECLARED COMPLETE; new tools
+  declare params via `tool_params!` FIRST and hand-write only resident-class
+  shapes.
 
 ## [0.62.0] - 2026-07-02
 

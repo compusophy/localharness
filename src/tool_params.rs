@@ -34,9 +34,50 @@
 //! hand-written until a kind is added — the escape hatch is "don't migrate
 //! yet", never "bend the table".
 //!
+//! # Permanent residents (the sweep is COMPLETE — these stay hand-written BY DESIGN)
+//!
+//! The migration sweep is DONE. Every tool below keeps its hand-written
+//! `input_schema` deliberately; do NOT "finish" migrating them without first
+//! removing the blocking reason (usually by changing the wire schema — which
+//! is a model-behavior change, not a refactor):
+//!
+//! * `ask_question` (builtin) — `options` is an array of NESTED OBJECTS
+//!   (`{label, description}`); the grammar has no object-items kind.
+//! * `batch_send_lh` (chat) — `transfers` is an array of NESTED OBJECTS
+//!   (`{recipient, amount}` with its own `required`).
+//! * `finish` (builtin) — its `output` property is deliberately TYPE-LESS
+//!   (accepts any JSON); every table kind emits a single `type`.
+//! * `consult_model` (chat) — the `model` enum AND the tool description are
+//!   RUNTIME-derived from the `CONSULT_MODELS` allowlist; a literal table
+//!   would fork that single source.
+//! * `stake_validation` (chat) — its required-arg errors are FIELD-SPECIFIC
+//!   (`"subject (tokenId) is required"`, `"valid (true/false verdict) is
+//!   required"`); the generated accessors can only say `"<field> is required"`.
+//! * `discover_bounties`, `discover_parties`, `list_my_guilds`,
+//!   `bulk_release_subdomains` (chat) — their hand-written schemas carry a
+//!   LITERAL `"required": []`, which can never byte-match the macro's
+//!   omit-when-empty rule.
+//! * The zero-arg tools (`{"type":"object","properties":{}}` — no table to
+//!   declare): `current_time` + `read_self_docs`, `list_subdomains`,
+//!   `check_balances`, `evm_chains`, `clear_context`, `compact_context`,
+//!   `clear_notifications`, `list_notifications`, `consolidate_lessons`,
+//!   `list_skills`, `shared_state_list`.
+//!
+//! Partially-inline extractions (migrated, but one field's PARSE deliberately
+//! stays in the tool body while the table owns its schema): `attest.rating`
+//! (numeric-string coercion), `evm_call.args` (non-string entries are
+//! STRINGIFIED, not dropped), `form_party.shares` (error ORDER/messages over
+//! the raw array), `found_company.roles` (`resolve_roles` reads the raw
+//! `Value`), `configure_agent` (absent-vs-`null` distinctions need the raw
+//! args).
+//!
 //! Field kinds: `req_str`, `opt_str`, `req_u32`, `req_u64`, `opt_u32`,
-//! `opt_u64`, `opt_bool`, `req_bool`, each optionally followed by `min N` /
-//! `max N` (JSON-Schema `minimum`/`maximum`) and — for string kinds —
+//! `opt_u64`, `opt_bool`, `req_bool`, plus the flat array kinds
+//! `req_str_array`, `opt_str_array`, `opt_i64_array` (JSON-Schema
+//! `"type":"array"` with single-type `items`; lenient parse = the historical
+//! `.as_array()` + `filter_map` element extraction). Each kind is optionally
+//! followed by `min N` / `max N` (JSON-Schema `minimum`/`maximum` — on the
+//! ITEMS for array kinds, on the field for scalars) and — for string kinds —
 //! `enum ["a", "b"]`, which emits the schema's exact `"enum": [...]` array.
 //! `enum` shapes only the SCHEMA (it constrains the model); the lenient parse
 //! stays a plain string extraction and out-of-enum validation stays in the
@@ -78,6 +119,9 @@ macro_rules! tool_params {
     (@ty opt_u64) => { ::core::option::Option<u64> };
     (@ty opt_bool) => { ::core::option::Option<bool> };
     (@ty req_bool) => { ::core::option::Option<bool> };
+    (@ty req_str_array) => { ::std::vec::Vec<::std::string::String> };
+    (@ty opt_str_array) => { ::core::option::Option<::std::vec::Vec<::std::string::String>> };
+    (@ty opt_i64_array) => { ::core::option::Option<::std::vec::Vec<i64>> };
     // ---------- internal: JSON-Schema "type" per kind ----------
     (@json_ty req_str) => { "string" };
     (@json_ty opt_str) => { "string" };
@@ -92,10 +136,13 @@ macro_rules! tool_params {
     (@required req_u32) => { true };
     (@required req_u64) => { true };
     (@required req_bool) => { true };
+    (@required req_str_array) => { true };
     (@required opt_str) => { false };
     (@required opt_u32) => { false };
     (@required opt_u64) => { false };
     (@required opt_bool) => { false };
+    (@required opt_str_array) => { false };
+    (@required opt_i64_array) => { false };
     // ---------- internal: lenient extraction per kind (the historical
     // `.get().and_then().unwrap_or()` chat-tool semantics, verbatim) ----------
     (@lenient req_str, $args:expr, $name:expr) => {
@@ -129,6 +176,32 @@ macro_rules! tool_params {
     (@lenient req_bool, $args:expr, $name:expr) => {
         $args.get($name).and_then(|v| v.as_bool())
     };
+    (@lenient req_str_array, $args:expr, $name:expr) => {
+        $args
+            .get($name)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(::std::string::ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    (@lenient opt_str_array, $args:expr, $name:expr) => {
+        $args.get($name).and_then(|v| v.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(::std::string::ToString::to_string)
+                .collect()
+        })
+    };
+    (@lenient opt_i64_array, $args:expr, $name:expr) => {
+        $args
+            .get($name)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
+    };
     // ---------- internal: per-field REQUIRED accessor. `req_u64` generates a
     // method (field-named — methods and fields share no namespace) that errors
     // on missing/non-integer instead of defaulting, reproducing the historical
@@ -158,6 +231,49 @@ macro_rules! tool_params {
         }
     };
     (@req_accessor $vis:vis, $other:ident, $field:ident) => {};
+    // ---------- internal: per-field schema map. The three array kinds emit
+    // `"type":"array","items":{"type":...}` and route `min`/`max` into the
+    // ITEMS (JSON-Schema bounds on each element — the form_party `shares`
+    // shape); scalar kinds keep them on the field itself. NOTHING else about
+    // items is expressible (no descriptions, no nested objects, no minItems) —
+    // deliberately, so the grammar stays Gemini-safe and small. ----------
+    (@field_map req_str_array $(, min $min:literal)? $(, max $max:literal)?) => {
+        $crate::tool_params!(@array_field_map "string" $(, min $min)? $(, max $max)?)
+    };
+    (@field_map opt_str_array $(, min $min:literal)? $(, max $max:literal)?) => {
+        $crate::tool_params!(@array_field_map "string" $(, min $min)? $(, max $max)?)
+    };
+    (@field_map opt_i64_array $(, min $min:literal)? $(, max $max:literal)?) => {
+        $crate::tool_params!(@array_field_map "integer" $(, min $min)? $(, max $max)?)
+    };
+    (@field_map $kind:ident $(, min $min:literal)? $(, max $max:literal)?) => {{
+        let mut f = $crate::__private::serde_json::Map::new();
+        f.insert(
+            "type".to_string(),
+            $crate::__private::serde_json::Value::String(
+                $crate::tool_params!(@json_ty $kind).to_string(),
+            ),
+        );
+        $( f.insert("minimum".to_string(), $crate::__private::serde_json::Value::from($min)); )?
+        $( f.insert("maximum".to_string(), $crate::__private::serde_json::Value::from($max)); )?
+        f
+    }};
+    (@array_field_map $item_ty:literal $(, min $min:literal)? $(, max $max:literal)?) => {{
+        let mut items = $crate::__private::serde_json::Map::new();
+        items.insert(
+            "type".to_string(),
+            $crate::__private::serde_json::Value::String($item_ty.to_string()),
+        );
+        $( items.insert("minimum".to_string(), $crate::__private::serde_json::Value::from($min)); )?
+        $( items.insert("maximum".to_string(), $crate::__private::serde_json::Value::from($max)); )?
+        let mut f = $crate::__private::serde_json::Map::new();
+        f.insert(
+            "type".to_string(),
+            $crate::__private::serde_json::Value::String("array".to_string()),
+        );
+        f.insert("items".to_string(), $crate::__private::serde_json::Value::Object(items));
+        f
+    }};
     // ---------- internal: the shared `schema()` body ----------
     (@schema $vis:vis, $( $field:ident : $kind:ident $(min $min:literal)? $(max $max:literal)? $(enum [$($ev:literal),+ $(,)?])? = $desc:literal ),+) => {
         /// Wire `input_schema`, generated from the SAME table as the struct
@@ -167,13 +283,7 @@ macro_rules! tool_params {
             use $crate::__private::serde_json::{Map, Value};
             let mut props = Map::new();
             $(
-                let mut f = Map::new();
-                f.insert(
-                    "type".to_string(),
-                    Value::String($crate::tool_params!(@json_ty $kind).to_string()),
-                );
-                $( f.insert("minimum".to_string(), Value::from($min)); )?
-                $( f.insert("maximum".to_string(), Value::from($max)); )?
+                let mut f = $crate::tool_params!(@field_map $kind $(, min $min)? $(, max $max)?);
                 $(
                     f.insert(
                         "enum".to_string(),
@@ -844,6 +954,103 @@ crate::tool_params! {
     }
 }
 
+crate::tool_params! {
+    /// Args for the browser `form_party` tool (`src/app/chat/tools/party.rs`)
+    /// — propose a squad + fixed bps split. `shares` rides `opt_i64_array`
+    /// for the SCHEMA only (items bounded 1..10000); its extraction stays
+    /// INLINE in the body, which validates length/sum over the RAW array so
+    /// the historical error order + messages survive.
+    pub struct FormPartyParams: lenient {
+        members: req_str_array = "The member identities — subdomain names (\"alice\") or \
+                    token ids (\"#7\" / \"7\"). Each becomes a seat that must consent \
+                    (via join_party) before the party can complete.",
+        shares: opt_i64_array min 1 max 10000 = "OPTIONAL parallel array of each member's share in basis \
+                    points (1..10000), in the SAME order as `members`; MUST sum to \
+                    10000. Omit entirely for an equal split (remainder to the first \
+                    member). If given, its length must match `members`.",
+        ttl_hours: opt_str = "OPTIONAL lifetime in hours before the party expires \
+                    (decimal). Omit for the 168h (7d) default.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `evm_call` tool (`src/app/chat/tools/evm.rs`)
+    /// — generic read-only eth_call. `args` rides `opt_str_array` for the
+    /// SCHEMA only: the body's historical extraction STRINGIFIES non-string
+    /// entries (`x.to_string()`, e.g. a numeric arg still encodes) where the
+    /// lenient kind would drop them, so it stays inline.
+    pub struct EvmCallParams: lenient {
+        chain: req_str = "Which chain to call on (see evm_chains): ethereum, \
+                    base, optimism, arbitrum, polygon, tempo.",
+        to: req_str = "The 0x… contract address to call.",
+        function_signature: req_str = "The view/pure function as a human signature, e.g. \
+                    \"balanceOf(address)\", \"totalSupply()\", \"ownerOf(uint256)\". \
+                    Supported arg types: address, bool, uintN/intN (decimal or 0x), \
+                    bytes32. NO dynamic types (string/bytes/arrays) as args.",
+        args: opt_str_array = "OPTIONAL args, one string per parameter, in order \
+                    (e.g. [\"0xabc…\"] for balanceOf(address)). Omit for a no-arg call.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `batch_create_subdomains` tool
+    /// (`src/app/chat/tools/platform.rs`) — N registrations in ONE sponsored
+    /// tx. The body keeps its own trim/empty/cap validation.
+    pub struct BatchCreateSubdomainsParams: lenient {
+        names: req_str_array = "Subdomain names to register in ONE tx, e.g. \
+                    [\"alice\",\"bob\"] -> alice.localharness.xyz, \
+                    bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
+                    digits, hyphens. Already-taken or invalid names are skipped \
+                    and reported back. Max 20 per call.",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `run_wasm_cli` tool (`src/app/chat/tools/misc.rs`)
+    /// — the WASI-subset CLI sandbox. Fully table-parsed (`args` is the plain
+    /// filter-map string-array extraction, exactly the historical chain).
+    pub struct RunWasmCliParams: lenient {
+        path: req_str = "OPFS path to a compiled `.wasm` CLI module — a \
+                    wasm32-wasi COMMAND that exports `_start` (the standard output \
+                    of `clang --target=wasm32-wasi`, `rustc --target wasm32-wasi`, \
+                    TinyGo, etc.). The committed demo is \"examples/cli/hello.wasm\" \
+                    if present in OPFS; otherwise point at a `.wasm` you placed in \
+                    OPFS.",
+        args: opt_str_array = "OPTIONAL command-line arguments passed as argv \
+                    (argv[0] is a synthetic program name; these follow it).",
+    }
+}
+
+crate::tool_params! {
+    /// Args for the browser `found_company` tool
+    /// (`src/app/chat/tools/company.rs`) — guild + role subdomains + personas
+    /// in one confirm-gated founding. `roles` rides `opt_str_array` for the
+    /// SCHEMA only; `resolve_roles` keeps reading the raw `Value` (its
+    /// None/empty → seven-defaults arm predates the table).
+    pub struct FoundCompanyParams: lenient {
+        name: req_str = "The company's display name (also the guild name). A \
+                    subdomain slug is derived from it for each role, e.g. \"acme\" → \
+                    acme-exec, acme-pm, …",
+        mission: req_str = "One or two sentences: what the company exists to do. \
+                    Seeded into the shared backlog so every role works to the same plan.",
+        roles: opt_str_array = "OPTIONAL list of roles to staff, e.g. [\"executive\", \
+                    \"coder\", \"reviewer\"]. Omit for the seven defaults (executive, pm, \
+                    coder, reviewer, accounting, hr, marketing). Unknown roles are \
+                    slugified with a generic persona.",
+        seed_treasury_lh: opt_str = "OPTIONAL $LH to deposit into the company treasury from YOUR \
+                    wallet at founding, as a decimal string (\"10\", \"2.5\"). Omit or \
+                    \"0\" to skip.",
+        prefund_each_lh: opt_str = "OPTIONAL $LH to prefund EACH role's token-bound account \
+                    (its own spendable wallet) with, as a decimal string. Total pulled = \
+                    this × number of roles, from YOUR wallet. Omit or \"0\" to skip.",
+        confirmation: opt_str = "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. State the \
+                    company name, roles, and any $LH it will spend, ask the owner to TYPE \
+                    the code in chat, then retry with it. Never invent it; only the \
+                    platform issues it.",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,9 +1163,65 @@ mod tests {
             ("ScheduleTaskParams", ScheduleTaskParams::schema()),
             ("AttestParams", AttestParams::schema()),
             ("DwellParams", DwellParams::schema()),
+            ("FormPartyParams", FormPartyParams::schema()),
+            ("EvmCallParams", EvmCallParams::schema()),
+            ("BatchCreateSubdomainsParams", BatchCreateSubdomainsParams::schema()),
+            ("RunWasmCliParams", RunWasmCliParams::schema()),
+            ("FoundCompanyParams", FoundCompanyParams::schema()),
         ] {
             assert_gemini_safe(&schema, name);
         }
+    }
+
+    crate::tool_params! {
+        /// Exercises the batch-5 (FINAL) kind additions: the three flat array
+        /// kinds, including `min`/`max` routed into the ITEMS.
+        struct ArrayKinds: lenient {
+            tags: req_str_array = "A required string array.",
+            extras: opt_str_array = "An optional string array.",
+            weights: opt_i64_array min 1 max 10000 = "Bounded integer items.",
+            plain: opt_i64_array = "Unbounded integer items.",
+        }
+    }
+
+    /// Array kinds emit `"type":"array"` + a single-type `items` map, route
+    /// `min`/`max` into the ITEMS (never the field), and stay Gemini-safe.
+    /// The lenient parse is the historical `.as_array()` + `filter_map`
+    /// element extraction: missing/wrong-typed → default (`[]` for the
+    /// required kind, `None` for optionals), non-conforming ELEMENTS drop.
+    #[test]
+    fn array_kinds_shape_schema_and_lenient_parse() {
+        let s = ArrayKinds::schema();
+        assert_eq!(s["properties"]["tags"]["type"], "array");
+        assert_eq!(s["properties"]["tags"]["items"], json!({"type": "string"}));
+        assert!(s["properties"]["tags"].get("minimum").is_none());
+        assert_eq!(s["properties"]["extras"]["items"], json!({"type": "string"}));
+        assert_eq!(
+            s["properties"]["weights"]["items"],
+            json!({"type": "integer", "minimum": 1, "maximum": 10000})
+        );
+        assert!(s["properties"]["weights"].get("minimum").is_none());
+        assert_eq!(s["properties"]["plain"]["items"], json!({"type": "integer"}));
+        assert_eq!(s["required"], json!(["tags"]));
+
+        let p = ArrayKinds::lenient(&json!({}));
+        assert_eq!(p.tags, Vec::<String>::new());
+        assert_eq!(p.extras, None);
+        assert_eq!(p.weights, None);
+        assert_eq!(p.plain, None);
+        let p = ArrayKinds::lenient(&json!({
+            "tags": ["a", 7, "b"],          // non-string element drops
+            "extras": "not-an-array",       // wrong type → None
+            "weights": [1, "2", 3.5, -4],   // non-i64 elements drop
+        }));
+        assert_eq!(p.tags, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(p.extras, None);
+        assert_eq!(p.weights, Some(vec![1, -4]));
+        // Out-of-bounds ELEMENTS pass the parse untouched — items `min`/`max`
+        // constrain the MODEL; the tool body validates (form_party's sum/range
+        // checks stay in the body).
+        let p = ArrayKinds::lenient(&json!({"weights": [99999]}));
+        assert_eq!(p.weights, Some(vec![99999]));
     }
 
     crate::tool_params! {
@@ -2347,5 +2610,223 @@ mod tests {
         assert_eq!(DwellParams::lenient(&json!({"seconds": "9"})).seconds.unwrap_or(0).clamp(1, 300), 1);
         assert_eq!(DwellParams::lenient(&json!({"seconds": 30})).seconds.unwrap_or(0).clamp(1, 300), 30);
         assert_eq!(DwellParams::lenient(&json!({"seconds": 9999})).seconds.unwrap_or(0).clamp(1, 300), 300);
+    }
+
+    /// BYTE-IDENTITY for the FIFTH — FINAL — chat-tools wave (the array-kinds
+    /// unlock): each generated schema serializes byte-for-byte equal to the
+    /// hand-written literal it replaced in `src/app/chat/tools/{party,evm,
+    /// platform,misc,company}.rs` (frozen verbatim below) — the same migration
+    /// contract as waves 1-4.
+    #[test]
+    fn chat_tool_wave5_schemas_are_byte_identical_to_the_frozen_originals() {
+        let cases: [(&str, Value, Value); 5] = [
+            ("form_party", FormPartyParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "members": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "The member identities — subdomain names (\"alice\") or \
+                            token ids (\"#7\" / \"7\"). Each becomes a seat that must consent \
+                            (via join_party) before the party can complete."
+                    },
+                    "shares": {
+                        "type": "array",
+                        "items": { "type": "integer", "minimum": 1, "maximum": 10000 },
+                        "description": "OPTIONAL parallel array of each member's share in basis \
+                            points (1..10000), in the SAME order as `members`; MUST sum to \
+                            10000. Omit entirely for an equal split (remainder to the first \
+                            member). If given, its length must match `members`."
+                    },
+                    "ttl_hours": {
+                        "type": "string",
+                        "description": "OPTIONAL lifetime in hours before the party expires \
+                            (decimal). Omit for the 168h (7d) default."
+                    }
+                },
+                "required": ["members"]
+            })),
+            ("evm_call", EvmCallParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "chain": {
+                        "type": "string",
+                        "description": "Which chain to call on (see evm_chains): ethereum, \
+                            base, optimism, arbitrum, polygon, tempo."
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "The 0x… contract address to call."
+                    },
+                    "function_signature": {
+                        "type": "string",
+                        "description": "The view/pure function as a human signature, e.g. \
+                            \"balanceOf(address)\", \"totalSupply()\", \"ownerOf(uint256)\". \
+                            Supported arg types: address, bool, uintN/intN (decimal or 0x), \
+                            bytes32. NO dynamic types (string/bytes/arrays) as args."
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "OPTIONAL args, one string per parameter, in order \
+                            (e.g. [\"0xabc…\"] for balanceOf(address)). Omit for a no-arg call."
+                    }
+                },
+                "required": ["chain", "to", "function_signature"]
+            })),
+            ("batch_create_subdomains", BatchCreateSubdomainsParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "names": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Subdomain names to register in ONE tx, e.g. \
+                            [\"alice\",\"bob\"] -> alice.localharness.xyz, \
+                            bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
+                            digits, hyphens. Already-taken or invalid names are skipped \
+                            and reported back. Max 20 per call."
+                    }
+                },
+                "required": ["names"]
+            })),
+            ("run_wasm_cli", RunWasmCliParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "OPFS path to a compiled `.wasm` CLI module — a \
+                            wasm32-wasi COMMAND that exports `_start` (the standard output \
+                            of `clang --target=wasm32-wasi`, `rustc --target wasm32-wasi`, \
+                            TinyGo, etc.). The committed demo is \"examples/cli/hello.wasm\" \
+                            if present in OPFS; otherwise point at a `.wasm` you placed in \
+                            OPFS."
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "OPTIONAL command-line arguments passed as argv \
+                            (argv[0] is a synthetic program name; these follow it)."
+                    }
+                },
+                "required": ["path"]
+            })),
+            ("found_company", FoundCompanyParams::schema(), json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The company's display name (also the guild name). A \
+                            subdomain slug is derived from it for each role, e.g. \"acme\" → \
+                            acme-exec, acme-pm, …"
+                    },
+                    "mission": {
+                        "type": "string",
+                        "description": "One or two sentences: what the company exists to do. \
+                            Seeded into the shared backlog so every role works to the same plan."
+                    },
+                    "roles": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "OPTIONAL list of roles to staff, e.g. [\"executive\", \
+                            \"coder\", \"reviewer\"]. Omit for the seven defaults (executive, pm, \
+                            coder, reviewer, accounting, hr, marketing). Unknown roles are \
+                            slugified with a generic persona."
+                    },
+                    "seed_treasury_lh": {
+                        "type": "string",
+                        "description": "OPTIONAL $LH to deposit into the company treasury from YOUR \
+                            wallet at founding, as a decimal string (\"10\", \"2.5\"). Omit or \
+                            \"0\" to skip."
+                    },
+                    "prefund_each_lh": {
+                        "type": "string",
+                        "description": "OPTIONAL $LH to prefund EACH role's token-bound account \
+                            (its own spendable wallet) with, as a decimal string. Total pulled = \
+                            this × number of roles, from YOUR wallet. Omit or \"0\" to skip."
+                    },
+                    "confirmation": {
+                        "type": "string",
+                        "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                            first call — it returns a challenge code shown to the owner. State the \
+                            company name, roles, and any $LH it will spend, ask the owner to TYPE \
+                            the code in chat, then retry with it. Never invent it; only the \
+                            platform issues it."
+                    }
+                },
+                "required": ["name", "mission"]
+            })),
+        ];
+        for (name, generated, frozen) in cases {
+            assert_eq!(generated.to_string(), frozen.to_string(), "schema drift: {name}");
+        }
+    }
+
+    /// Lenient parity for wave 5: the extraction feeds each tool's unchanged
+    /// body validation the same values the old inline chains produced. The
+    /// deliberately-INLINE fields (form_party.shares, evm_call.args,
+    /// found_company.roles) are exercised here only as far as the tables
+    /// carry them; their raw-`Value` parses stay in the tool bodies.
+    #[test]
+    fn chat_tool_wave5_lenient_matches_the_old_inline_extraction() {
+        // form_party: members historically trimmed + dropped empties INSIDE
+        // the extraction; the table yields the raw strings and the body now
+        // applies the identical trim/filter — same final vec, same empty-error.
+        let p = FormPartyParams::lenient(&json!({"members": [" alice ", 7, "", "#9"]}));
+        let members_arg: Vec<String> = p
+            .members
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(members_arg, vec!["alice".to_string(), "#9".to_string()]);
+        assert!(FormPartyParams::lenient(&json!({})).members.is_empty());
+        // ttl_hours blank → the body's 168h default arm, exactly as before.
+        let p = FormPartyParams::lenient(&json!({"ttl_hours": "  "}));
+        assert!(!matches!(p.ttl_hours.as_deref(), Some(s) if !s.trim().is_empty()));
+
+        // evm_call: the three strings ride the table ("" defaults keep the
+        // body's error arms); `args` deliberately does NOT — the historical
+        // chain STRINGIFIES non-string entries instead of dropping them.
+        let p = EvmCallParams::lenient(&json!({"chain": " base ", "to": "0xC"}));
+        assert_eq!((p.chain.trim(), p.to.trim(), p.function_signature.as_str()), ("base", "0xC", ""));
+
+        // batch_create_subdomains: raw strings out, body trims/filters/caps.
+        let p = BatchCreateSubdomainsParams::lenient(&json!({"names": [" a ", "", 3, "bob"]}));
+        let requested: Vec<String> = p
+            .names
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(requested, vec!["a".to_string(), "bob".to_string()]);
+        assert!(BatchCreateSubdomainsParams::lenient(&json!({})).names.is_empty());
+
+        // run_wasm_cli: path "" default keeps the empty-error reachable; argv
+        // is the plain filter-map — non-strings drop, exactly as before.
+        let p = RunWasmCliParams::lenient(&json!({"args": ["-v", 2, "x"]}));
+        assert_eq!(p.path, "");
+        assert_eq!(p.args, Some(vec!["-v".to_string(), "x".to_string()]));
+        assert_eq!(RunWasmCliParams::lenient(&json!({})).args, None);
+
+        // found_company: strings match the historical
+        // `.and_then(as_str).unwrap_or("").trim()` / optional chains.
+        let p = FoundCompanyParams::lenient(&json!({
+            "name": " Acme ", "mission": 7, "seed_treasury_lh": " 10 ",
+        }));
+        assert_eq!((p.name.trim(), p.mission.trim()), ("Acme", ""));
+        assert_eq!(p.seed_treasury_lh.as_deref().map(str::trim), Some("10"));
+        // prefund: `.map(trim.to_string()).filter(!empty && != "0")` parity.
+        let p = FoundCompanyParams::lenient(&json!({"prefund_each_lh": " 0 "}));
+        let prefund = p
+            .prefund_each_lh
+            .as_deref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "0");
+        assert_eq!(prefund, None);
+        assert!(!FoundCompanyParams::lenient(&json!({}))
+            .confirmation
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false));
     }
 }

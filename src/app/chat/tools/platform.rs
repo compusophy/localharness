@@ -960,21 +960,9 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
 /// reported. Capped at MAX_BATCH_CREATE to bound a confused model. Not
 /// granted to subagents (same restraint as bulk_release).
 pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "names": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Subdomain names to register in ONE tx, e.g. \
-                    [\"alice\",\"bob\"] -> alice.localharness.xyz, \
-                    bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
-                    digits, hyphens. Already-taken or invalid names are skipped \
-                    and reported back. Max 20 per call."
-            }
-        },
-        "required": ["names"]
-    });
+    // Hoisted table: `crate::tool_params::BatchCreateSubdomainsParams`,
+    // byte-identity-tested natively.
+    let schema = crate::tool_params::BatchCreateSubdomainsParams::schema();
     ClosureTool::new(
         "batch_create_subdomains",
         "Register MANY <name>.localharness.xyz subdomains on-chain in a SINGLE \
@@ -987,17 +975,12 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
         schema,
         |args: serde_json::Value, _ctx| async move {
             const MAX_BATCH_CREATE: usize = 20;
-            let requested: Vec<String> = args
-                .get("names")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default();
+            let requested: Vec<String> = crate::tool_params::BatchCreateSubdomainsParams::lenient(&args)
+                .names
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
             if requested.is_empty() {
                 return Err(crate::error::Error::other("names cannot be empty"));
             }

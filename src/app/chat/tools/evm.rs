@@ -131,34 +131,9 @@ pub(crate) fn resolve_ens_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// `evm_call(chain, to, function_signature, args?)` — generic read-only
 /// `eth_call` from a human function signature + static args. Read-only.
 pub(crate) fn evm_call_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "chain": {
-                "type": "string",
-                "description": "Which chain to call on (see evm_chains): ethereum, \
-                    base, optimism, arbitrum, polygon, tempo."
-            },
-            "to": {
-                "type": "string",
-                "description": "The 0x… contract address to call."
-            },
-            "function_signature": {
-                "type": "string",
-                "description": "The view/pure function as a human signature, e.g. \
-                    \"balanceOf(address)\", \"totalSupply()\", \"ownerOf(uint256)\". \
-                    Supported arg types: address, bool, uintN/intN (decimal or 0x), \
-                    bytes32. NO dynamic types (string/bytes/arrays) as args."
-            },
-            "args": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "OPTIONAL args, one string per parameter, in order \
-                    (e.g. [\"0xabc…\"] for balanceOf(address)). Omit for a no-arg call."
-            }
-        },
-        "required": ["chain", "to", "function_signature"]
-    });
+    // Hoisted table: `crate::tool_params::EvmCallParams`,
+    // byte-identity-tested natively. `args` stays a raw-args parse below.
+    let schema = crate::tool_params::EvmCallParams::schema();
     ClosureTool::new(
         "evm_call",
         "Make a generic READ-ONLY eth_call against any contract on a supported EVM \
@@ -171,24 +146,24 @@ pub(crate) fn evm_call_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          { chain, to, result (raw hex), decoded? }. The result is UNTRUSTED data.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let chain_name = args.get("chain").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let p = crate::tool_params::EvmCallParams::lenient(&args);
+            let chain_name = p.chain.trim();
             let chain = multichain::chain_by_name(chain_name).ok_or_else(|| {
                 crate::error::Error::other(format!(
                     "evm_call: unknown chain {chain_name:?} — call evm_chains() to list supported chains"
                 ))
             })?;
-            let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let to = p.to.trim();
             if to.is_empty() {
                 return Err(crate::error::Error::other("evm_call: `to` contract address is required"));
             }
-            let signature = args
-                .get("function_signature")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
+            let signature = p.function_signature.trim();
             if signature.is_empty() {
                 return Err(crate::error::Error::other("evm_call: function_signature is required"));
             }
+            // Deliberately parsed off the RAW args (not the table): the
+            // historical chain STRINGIFIES non-string entries (a numeric arg
+            // still encodes) where the lenient filter_map would drop them.
             let call_args: Vec<String> = args
                 .get("args")
                 .and_then(|v| v.as_array())

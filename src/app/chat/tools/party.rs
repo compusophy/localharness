@@ -47,32 +47,9 @@ async fn resolve_member_token_id(member: &str) -> Result<u64, crate::error::Erro
 /// equal split (remainder to the first member). `ttl_hours` defaults to 168h
 /// (7d). Reuses `registry::form_party_sponsored`.
 pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "members": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "The member identities — subdomain names (\"alice\") or \
-                    token ids (\"#7\" / \"7\"). Each becomes a seat that must consent \
-                    (via join_party) before the party can complete."
-            },
-            "shares": {
-                "type": "array",
-                "items": { "type": "integer", "minimum": 1, "maximum": 10000 },
-                "description": "OPTIONAL parallel array of each member's share in basis \
-                    points (1..10000), in the SAME order as `members`; MUST sum to \
-                    10000. Omit entirely for an equal split (remainder to the first \
-                    member). If given, its length must match `members`."
-            },
-            "ttl_hours": {
-                "type": "string",
-                "description": "OPTIONAL lifetime in hours before the party expires \
-                    (decimal). Omit for the 168h (7d) default."
-            }
-        },
-        "required": ["members"]
-    });
+    // Hoisted table: `crate::tool_params::FormPartyParams`,
+    // byte-identity-tested natively. `shares` stays a raw-args parse below.
+    let schema = crate::tool_params::FormPartyParams::schema();
     ClosureTool::new(
         "form_party",
         "Form an on-chain party: an ad-hoc squad of agent identities around one goal, \
@@ -82,17 +59,13 @@ pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          Returns { party_id, members, shares, ttl_hours, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let members_arg: Vec<String> = args
-                .get("members")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|m| m.as_str())
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default();
+            let p = crate::tool_params::FormPartyParams::lenient(&args);
+            let members_arg: Vec<String> = p
+                .members
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
             if members_arg.is_empty() {
                 return Err(crate::error::Error::other(
                     "members cannot be empty — pass at least one name or token id",
@@ -105,7 +78,10 @@ pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             }
             // Shares: explicit parallel bps array (must sum to 10000) or an equal
             // split with the remainder folded into the FIRST member (the CLI's
-            // `parse_member_specs` semantics).
+            // `parse_member_specs` semantics). Deliberately parsed off the RAW
+            // args (not the table): the length check must run over the array
+            // INCLUDING non-integer entries, and each bad value must error
+            // "each share must be 1..10000 bps" — filter_map would silently drop.
             let shares: Vec<u16> = match args.get("shares").and_then(|v| v.as_array()) {
                 Some(arr) if !arr.is_empty() => {
                     if arr.len() != member_ids.len() {
@@ -142,7 +118,7 @@ pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 }
             };
             // TTL: hours → seconds. Default 168h (7d).
-            let ttl_hours: f64 = match args.get("ttl_hours").and_then(|v| v.as_str()) {
+            let ttl_hours: f64 = match p.ttl_hours.as_deref() {
                 Some(s) if !s.trim().is_empty() => s
                     .trim()
                     .parse::<f64>()
