@@ -745,16 +745,22 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                             &format!("tool-{tool_seg_id}-card"),
                             &card.into_string(),
                         );
-                        // embed_app AND run_cartridge (#52a) paint a canvas
-                        // card and stashed cartridge bytes; now that the canvas
-                        // is in the DOM, launch the cartridge into THIS card's
-                        // canvas (scoped — older/replayed cards have their own
-                        // canvases). No-op for every other tool / on replay (no
-                        // stash). run_cartridge renders INLINE by default now,
-                        // with a [fullscreen] button on the card.
-                        if matches!(call.name.as_str(), "embed_app" | "run_cartridge")
-                            && result.error.is_none()
-                        {
+                        // embed_app, run_cartridge (#52a) AND
+                        // create_and_publish_app (close the cartridge loop)
+                        // paint a canvas card and stashed cartridge bytes; now
+                        // that the canvas is in the DOM, launch the cartridge
+                        // into THIS card's canvas (scoped — older/replayed
+                        // cards have their own canvases). No-op for every other
+                        // tool / on replay (no stash). Gate = the SAME
+                        // native-tested predicate the card renderer uses
+                        // (`turn_flow::tool_result_embeds_cartridge`), so the
+                        // embed is deterministic on tool success — never
+                        // reliant on the model calling embed_app afterwards.
+                        if crate::turn_flow::tool_result_embeds_cartridge(
+                            &call.name,
+                            result.result.as_ref(),
+                            result.error.is_some(),
+                        ) {
                             super::display::launch_pending_embed(&format!(
                                 "tool-{tool_seg_id}-card"
                             ))

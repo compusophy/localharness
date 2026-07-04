@@ -576,6 +576,11 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 // (Removed the top context/token bar entirely per repeated user
                 // feedback (krafto) — it read as clutter; the chat workspace is
                 // maximized. Auto-compaction still runs silently.)
+                // OWNER-LANDING app slot: `mod.rs::mount_studio_app_card`
+                // swaps a playable [`studio_app_card`] in here when the
+                // subdomain has an app, so the owner's creation heads the
+                // feed. Stays empty (renders nothing) on every other surface.
+                div #studio-app-slot {}
                 // Live region: streamed assistant turns are appended/swapped
                 // into here as the model replies, so screen readers must be
                 // told to announce mutations. `role=log` + `aria-live=polite`
@@ -927,11 +932,23 @@ pub(crate) fn inline_result_card(
             // overlay. `chat::stream_turn` launches the stashed cartridge into
             // THIS card's canvas after it swaps in (the SAME path embed_app
             // uses). Replay paints the same canvas, which stays black.
-            // Gate on the browser success shape so a failed run gets no card.
-            if value.get("error").is_some() || value.get("status").is_none() {
+            // Success gate = the shared native-tested auto-embed predicate,
+            // so the card and the launch site can never disagree.
+            if !crate::turn_flow::tool_result_embeds_cartridge(name, Some(value), false) {
                 return None;
             }
             Some(cartridge_card())
+        }
+        "create_and_publish_app" => {
+            // Close the cartridge loop: a successful build/publish ends with
+            // the cartridge PLAYING inline (the tool stashed the compiled
+            // wasm; `chat::stream_turn` launches it into this card), not
+            // prose + a URL. Same predicate/launch plumbing as run_cartridge.
+            if !crate::turn_flow::tool_result_embeds_cartridge(name, Some(value), false) {
+                return None;
+            }
+            let app = value.get("name").and_then(|v| v.as_str()).unwrap_or("app");
+            Some(published_app_card(app))
         }
         "render_html" => {
             // render_html paints the framebuffer synchronously, so it gets a
@@ -947,7 +964,7 @@ pub(crate) fn inline_result_card(
             // `#embed-canvas` that `chat::stream_turn` launches the stashed
             // cartridge into right after this swaps in. Replay (no stashed
             // bytes) paints the same canvas, which simply stays black.
-            if value.get("embedded").and_then(|v| v.as_bool()) != Some(true) {
+            if !crate::turn_flow::tool_result_embeds_cartridge(name, Some(value), false) {
                 return None;
             }
             let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("app");
@@ -1060,6 +1077,51 @@ fn cartridge_card() -> Markup {
         div.inline-card.embed-app-card {
             div.ic-head {
                 span.ic-title { "▶ cartridge" }
+                button.ghost type="button" data-action="run-in-display" { "fullscreen" }
+            }
+            div.embed-app-stage {
+                canvas id=(crate::app::display::next_embed_canvas_id()) .embed-app-canvas {}
+            }
+        }
+    }
+}
+
+/// Live inline card for a `create_and_publish_app` result: the just-published
+/// cartridge PLAYS right here (close-the-loop feedback — a successful build
+/// must end embedded in the feed, not as prose + a URL). Name header links to
+/// the live subdomain; [fullscreen] relaunches the same bytes into the overlay
+/// (the tool stashed them via `run_wasm_inline`). Replay paints the same card
+/// (dead canvas) and `history.rs` re-derives the wasm from the recorded
+/// `source` to resume it, like run_cartridge.
+fn published_app_card(name: &str) -> Markup {
+    html! {
+        div.inline-card.embed-app-card {
+            div.ic-head {
+                span.ic-title { "▶ " (name) }
+                a.ghost href=(format!("https://{name}.localharness.xyz/"))
+                    target="_blank" rel="noopener" { "open" }
+                button.ghost type="button" data-action="run-in-display" { "fullscreen" }
+            }
+            div.embed-app-stage {
+                canvas id=(crate::app::display::next_embed_canvas_id()) .embed-app-canvas {}
+            }
+        }
+    }
+}
+
+/// The OWNER-LANDING app card: when the studio mounts and this subdomain HAS
+/// an app (local `app.rl` working copy or published `app.wasm` — the same
+/// resolution the cartridge public face uses), ONE playable embed of it is
+/// pinned into `#studio-app-slot` above the chat history, so the owner's
+/// creation is visible the moment they land (never auto-fullscreen).
+/// [fullscreen] relaunches into the overlay; `?view=public` previews the real
+/// public face. Same canvas/launch plumbing as the embed cards.
+pub(crate) fn studio_app_card(name: &str) -> Markup {
+    html! {
+        div.inline-card.embed-app-card.studio-app-card {
+            div.ic-head {
+                span.ic-title { "▶ " (name) }
+                a.ghost href="?view=public" { "public view" }
                 button.ghost type="button" data-action="run-in-display" { "fullscreen" }
             }
             div.embed-app-stage {

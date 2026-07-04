@@ -537,6 +537,10 @@ pub(crate) fn base_system_prompt(
            when you actually need to know.\n\
          • Don't blindly call tools when the user is just chatting. \"hi\" / \
            \"what can you do?\" don't need a tool call.\n\
+         • Registry/name lookups (discover_agents, list_subdomains, resolving \
+           or checking subdomains) are ONLY for questions actually about \
+           agents or subdomains on THIS platform — answer a general-knowledge \
+           question (\"who is Monet?\") directly, no lookups.\n\
          • When you do call a tool, lead with a short one-line note on what \
            you're about to do (e.g. \"checking your files…\") so the turn is \
            never silent — but don't re-narrate the call's args or dump its \

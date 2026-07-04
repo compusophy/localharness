@@ -222,14 +222,16 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
 /// On-chain `setMetadata` publishing cost ~$0.32–$2.80/cart and drained the gas
 /// sponsor; this kills that. A NON-EOA owner (TBA consolidation) or absent local
 /// signer falls back to the legacy on-chain `setMetadata` batch (the agent tools
-/// never had a TBA path, so this is unchanged for them). `Ok(Some(tx))` when it
-/// went on-chain; `Ok(None)` when published off-chain.
+/// never had a TBA path, so this is unchanged for them). Returns
+/// `(tx, wasm)`: `tx` is `Some` when the publish went on-chain, `None` when
+/// off-chain; `wasm` is the compiled cartridge so callers can auto-embed the
+/// just-published app inline (close the cartridge loop) without recompiling.
 async fn publish_app_face(
     name: &str,
     token_id: u64,
     source: &str,
     owner: &str,
-) -> Result<Option<String>, crate::error::Error> {
+) -> Result<(Option<String>, Vec<u8>), crate::error::Error> {
     if source.trim().is_empty() {
         return Err(crate::error::Error::other("source cannot be empty"));
     }
@@ -262,7 +264,7 @@ async fn publish_app_face(
             crate::app::registry::publish_app_to_store(name, &token, &wasm, source)
                 .await
                 .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-            return Ok(None);
+            return Ok((None, wasm));
         }
     }
     // ON-CHAIN fallback — reached only when the owner ISN'T this device's master
@@ -290,7 +292,7 @@ async fn publish_app_face(
     let tx = crate::app::events::run_sponsored_tempo_call(owner, calls, gas, "publish app")
         .await
         .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-    Ok(Some(tx))
+    Ok((Some(tx), wasm))
 }
 
 /// Publish an HTML page as `name`'s public face — the HTML-face sibling of
@@ -382,6 +384,20 @@ async fn owned_token_for_publish(
     Ok(Some((token_id, owner)))
 }
 
+/// AUTO-EMBED on a successful `create_and_publish_app` (close the cartridge
+/// loop): stash the just-published cartridge for the transcript card
+/// `chat::stream_turn` paints for THIS tool result — the SAME
+/// stash-then-`launch_pending_embed` path embed_app/run_cartridge use, so the
+/// build ends with the cartridge PLAYING inline, deterministically (never
+/// reliant on the model calling embed_app). `run_wasm_inline` also remembers
+/// the bytes for the card's [fullscreen] relaunch. One stash per build; a
+/// re-publish paints a fresh card and overwrites the stash (debounced by the
+/// launch path's take()).
+fn stash_published_app_embed(name: &str, wasm: Vec<u8>) {
+    crate::app::display::set_cartridge_ref(Some(format!("published app: {name}")));
+    crate::app::display::run_wasm_inline(&wasm);
+}
+
 /// `create_and_publish_app(name, source)` — OWNERSHIP-AWARE one-shot publish:
 /// - `name` UNREGISTERED → register `<name>.localharness.xyz` + publish the
 ///   compiled cartridge as its public face (a fresh subdomain for the app).
@@ -455,7 +471,8 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
             // NO re-register (which would fail), NO persona/prefund (those are
             // spawn-time actor setup). One sponsored setMetadata batch.
             if let Some((token_id, owner)) = existing {
-                let tx = publish_app_face(&cleaned, token_id, source, &owner).await?;
+                let (tx, wasm) = publish_app_face(&cleaned, token_id, source, &owner).await?;
+                stash_published_app_embed(&cleaned, wasm);
                 let off_chain = tx.is_none();
                 return Ok(serde_json::json!({
                     "name": cleaned,
@@ -491,7 +508,8 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
             };
             // Publish the app OFF-CHAIN (free) to the app store — the owner's
             // master wallet (just minted the name) signs the proxy auth token.
-            let app_tx = publish_app_face(&cleaned, token_id, source, &owner).await?;
+            let (app_tx, wasm) = publish_app_face(&cleaned, token_id, source, &owner).await?;
+            stash_published_app_embed(&cleaned, wasm);
             // ACTOR MODEL: persona + prefund stay ON-CHAIN (they're identity /
             // economy primitives, and small/cheap unlike the app bytes). Submit
             // them as their own sponsored batch only if either was requested.
@@ -601,7 +619,9 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                          mint and publish a new subdomain"
                     ))
                 })?;
-            let tx = publish_app_face(&cleaned, token_id, source, &owner).await?;
+            // (No auto-embed here: the target is a DIFFERENT subdomain being
+            // updated from MAIN; the wasm is dropped.)
+            let (tx, _wasm) = publish_app_face(&cleaned, token_id, source, &owner).await?;
             let off_chain = tx.is_none();
             Ok(serde_json::json!({
                 "name": cleaned,
@@ -758,7 +778,7 @@ pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Too
                             ))
                         }
                     };
-                    let tx = publish_app_face(&name, token_id, &src, &owner).await?;
+                    let (tx, _wasm) = publish_app_face(&name, token_id, &src, &owner).await?;
                     let off_chain = tx.is_none();
                     return Ok(serde_json::json!({
                         "choice": choice,

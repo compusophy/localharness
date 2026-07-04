@@ -1067,6 +1067,17 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     wasm_bindgen_futures::spawn_local(notifications::notify_resolved_feedback());
     opfs::refresh().await;
 
+    // OWNER LANDING: if this subdomain HAS an app, surface it as ONE playable
+    // card pinned above the chat history (the owner's creation was invisible
+    // in a bare studio). Background so the studio paints instantly; strictly
+    // a no-op when no app resolves. Never auto-fullscreen.
+    {
+        let n = name.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            mount_studio_app_card(&n).await;
+        });
+    }
+
     if !has_key {
         // Best-effort: restore the owner's MAIN Gemini key from chain for
         // BYOK users that hold the seed (a new subdomain on the same device
@@ -1739,6 +1750,32 @@ async fn resolve_public_face(name: &str, is_owner_preview: bool) -> PublicFace {
             None => PublicFace::Directory,
         },
     }
+}
+
+/// OWNER LANDING (studio): if this subdomain has an app — the device's local
+/// `app.rl` working copy or the published `app.wasm`, the SAME resolution the
+/// cartridge public face uses ([`resolve_cartridge`] with prefer-local) —
+/// embed ONE playable card of it into the chrome's `#studio-app-slot`, above
+/// the chat history. The launch reuses the embed-card plumbing
+/// (`run_wasm_inline` stash + `launch_pending_embed`), so the card gets the
+/// [fullscreen] relaunch for free; the `?view=public` preview link sits in
+/// its header. No app → the slot stays empty and nothing changes. Never
+/// auto-fullscreen; visitors never reach this path (they get the public
+/// face). v1 single-worker caveat: a cartridge resumed from the transcript
+/// (or run later in chat) supersedes this card's live frame — expected, one
+/// live cartridge at a time.
+async fn mount_studio_app_card(name: &str) {
+    let Some(wasm) = resolve_cartridge(name, true).await else { return };
+    if dom::by_id("studio-app-slot").is_none() {
+        return; // chrome replaced (e.g. demoted to the public face) meanwhile
+    }
+    dom::swap_inner(
+        "studio-app-slot",
+        &templates::studio_app_card(name).into_string(),
+    );
+    display::set_cartridge_ref(Some(format!("studio app card: {name}")));
+    display::run_wasm_inline(&wasm);
+    display::launch_pending_embed("studio-app-slot").await;
 }
 
 /// Paint `app_fullscreen` chrome and run a cartridge into the root canvas.

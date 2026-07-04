@@ -25,6 +25,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in-browser Gemma (`browser-app-local`) can replace the heuristic behind
   later.
 
+- **CLOSE THE CARTRIDGE LOOP — successful builds auto-embed playable in the
+  feed** (live user feedback): a successful `create_and_publish_app` now ends
+  with the just-published cartridge PLAYING as an inline card under the tool
+  result (canvas + [fullscreen] + the live-subdomain link), the same embed
+  plumbing `run_cartridge`/`embed_app` use — deterministic at the tool success
+  path, never reliant on the model calling `embed_app` afterwards. The one
+  success gate is a new native-tested predicate
+  (`turn_flow::tool_result_embeds_cartridge`) shared by the card renderer and
+  the launch site; history replay resumes the published cartridge from its
+  recorded `source` like `run_cartridge`.
+
+- **Owner landing embeds the app**: an owner opening their subdomain's studio
+  now sees ONE playable card of their app pinned above the chat history
+  (`#studio-app-slot`, filled by `mount_studio_app_card`) — resolution matches
+  the cartridge public face (local `app.rl` working copy first, else the
+  published `app.wasm`), with [fullscreen] and the `?view=public` preview link
+  in its header. Never auto-fullscreen; visitor behavior unchanged; no app →
+  nothing changes.
+
+### Changed
+
+- Browser session prompt: registry/name lookups (discover_agents,
+  list_subdomains, subdomain checks) are scoped to questions actually about
+  agents/subdomains on the platform — general-knowledge questions are answered
+  directly, no lookups.
+
 ## [0.64.0] - 2026-07-03
 
 ### Added

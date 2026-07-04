@@ -81,6 +81,20 @@ the 9:16 `preview-mobile` column; real <=600px phones + signer/rpc excluded).
 Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
 (visualViewport → `--lh-vh`/`--lh-vv-top`/`.lh-kb`).
 
+## Cartridge loop (auto-embed — the build must END playable)
+- A SUCCESSFUL `run_cartridge` / `embed_app` / `create_and_publish_app` auto-embeds
+  the cartridge as a playable inline card under its tool result — DETERMINISTIC,
+  wired at the tool success path (the tool stashes the wasm; `chat::stream_turn`
+  launches it into the card via `launch_pending_embed`), never reliant on the model
+  calling embed_app. The ONE success gate is the native-tested
+  `crate::turn_flow::tool_result_embeds_cartridge` predicate — the card renderer
+  (`templates::inline_result_card`) and the launch site share it; don't fork the check.
+- OWNER LANDING: the studio pins ONE playable card of this subdomain's own app at
+  the top of the feed (`#studio-app-slot` in `templates::chrome`, filled by
+  `mod.rs::mount_studio_app_card`; resolution = the cartridge public face's — local
+  `app.rl` draft first, else published `app.wasm`). [fullscreen] + `?view=public`
+  in its header; never auto-fullscreen; visitors unaffected; no app → empty slot.
+
 ## Files (orientation)
 `mod.rs` mount/routing · `templates.rs` ALL maud HTML · `dom.rs` swap shims ·
 `events/` the delegated listeners + `Action` enum + per-domain handlers

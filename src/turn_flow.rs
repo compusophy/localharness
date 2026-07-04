@@ -112,6 +112,39 @@ pub fn empty_message(kind: EmptyKind) -> &'static str {
     }
 }
 
+/// Should this tool result AUTO-EMBED a playable cartridge card in the
+/// transcript? THE one decision point for the cartridge loop (close-the-loop
+/// feedback: a successful build must end with the cartridge PLAYING inline,
+/// not prose) — shared by the card renderer (`app::templates::
+/// inline_result_card`) and the launch site (`app::chat::stream_turn`), so
+/// the card and the cartridge launch can never disagree. Pure over the tool
+/// name + result payload; native-tested here per the turn_flow pattern.
+///
+/// Success shapes (each tool's own contract):
+/// - `run_cartridge` — Ok payload with `status` and no `error` key (compile
+///   failures come back as Ok-with-`error`).
+/// - `embed_app` — `embedded: true` (failures are Err, but defend the gate).
+/// - `create_and_publish_app` — Ok payload with `url` and no `error` key
+///   (failures are Err; the tool stashes the compiled wasm on success).
+pub fn tool_result_embeds_cartridge(
+    name: &str,
+    result: Option<&serde_json::Value>,
+    errored: bool,
+) -> bool {
+    if errored {
+        return false;
+    }
+    let Some(value) = result else { return false };
+    match name {
+        "run_cartridge" => value.get("error").is_none() && value.get("status").is_some(),
+        "embed_app" => value.get("embedded").and_then(|v| v.as_bool()) == Some(true),
+        "create_and_publish_app" => {
+            value.get("error").is_none() && value.get("url").is_some()
+        }
+        _ => false,
+    }
+}
+
 /// Decide how a completed (non-cancelled) turn ended, for the
 /// continuous-execution loop. Pure over the signals tracked while
 /// streaming so it can be unit-tested without a browser:
@@ -165,7 +198,71 @@ pub fn classify_turn(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_empty, classify_turn, EmptyKind, TurnOutcome, MAX_AUTO_CONTINUATIONS};
+    use super::{
+        classify_empty, classify_turn, tool_result_embeds_cartridge, EmptyKind, TurnOutcome,
+        MAX_AUTO_CONTINUATIONS,
+    };
+
+    // --- Auto-embed predicate (the cartridge close-the-loop decision) --------
+
+    /// Each cartridge-producing tool's SUCCESS shape auto-embeds; its failure
+    /// shape (and any other tool) does not. This is the deterministic wiring —
+    /// the embed must not depend on the model calling embed_app afterwards.
+    #[test]
+    fn cartridge_tool_success_shapes_auto_embed() {
+        let j = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        // run_cartridge: Ok-with-status embeds; Ok-with-`error` does not.
+        assert!(tool_result_embeds_cartridge(
+            "run_cartridge",
+            Some(&j(r#"{"status":"running on display","wasm_size":10}"#)),
+            false
+        ));
+        assert!(!tool_result_embeds_cartridge(
+            "run_cartridge",
+            Some(&j(r#"{"error":"run failed","detail":"boom"}"#)),
+            false
+        ));
+        // embed_app: only `embedded: true` embeds.
+        assert!(tool_result_embeds_cartridge(
+            "embed_app",
+            Some(&j(r#"{"name":"pong","embedded":true}"#)),
+            false
+        ));
+        assert!(!tool_result_embeds_cartridge(
+            "embed_app",
+            Some(&j(r#"{"name":"pong"}"#)),
+            false
+        ));
+        // create_and_publish_app: the Ok shape (has `url`) embeds — fresh AND
+        // update (the update payload differs only in `updated: true`).
+        assert!(tool_result_embeds_cartridge(
+            "create_and_publish_app",
+            Some(&j(r#"{"name":"pong","url":"https://pong.localharness.xyz/","updated":true}"#)),
+            false
+        ));
+    }
+
+    #[test]
+    fn errored_missing_or_foreign_results_never_embed() {
+        let ok = serde_json::json!({"status": "running on display"});
+        // A ToolResult-level error wins over a success-shaped payload.
+        assert!(!tool_result_embeds_cartridge("run_cartridge", Some(&ok), true));
+        // No payload at all.
+        assert!(!tool_result_embeds_cartridge("run_cartridge", None, false));
+        // Non-cartridge tools never embed, whatever their payload says.
+        assert!(!tool_result_embeds_cartridge(
+            "create_file",
+            Some(&serde_json::json!({"url": "x", "status": "ok", "embedded": true})),
+            false
+        ));
+        // publish_app_to targets a DIFFERENT subdomain — deliberately not
+        // auto-embedded here.
+        assert!(!tool_result_embeds_cartridge(
+            "publish_app_to",
+            Some(&serde_json::json!({"url": "x"})),
+            false
+        ));
+    }
 
     // --- Turn classification (the continuous-execution loop's decision) -----
     //

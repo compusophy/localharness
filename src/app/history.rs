@@ -299,7 +299,9 @@ fn render_tool_block(tc: &crate::types::TranscriptToolCall) -> String {
     // paint) re-derives the wasm from the transcript input and relaunches it.
     if tc.error.is_none() && tc.result.is_some() {
         let card_id = format!("tool-{seg_id}-card");
-        if tc.name == "run_cartridge" {
+        // create_and_publish_app replays like run_cartridge: its card auto-
+        // embeds the built cartridge and the durable input is the SOURCE arg.
+        if tc.name == "run_cartridge" || tc.name == "create_and_publish_app" {
             if let Some(src) = tc.args.get("source").and_then(|v| v.as_str()) {
                 if !src.trim().is_empty() {
                     REPLAY_RESUME.with(|c| {
@@ -688,6 +690,49 @@ mod tests {
             "embed_app",
             &serde_json::json!({"name": "pong"}),
             &not_embedded,
+            None
+        )
+        .is_none());
+    }
+
+    /// Close the cartridge loop: a successful create_and_publish_app cards a
+    /// playable embed (canvas + [fullscreen] + the live-subdomain link) — the
+    /// deterministic auto-embed under the tool result.
+    #[test]
+    fn create_and_publish_app_card_carries_a_live_canvas() {
+        let ok = ok_result(
+            "create_and_publish_app",
+            serde_json::json!({
+                "name": "pong",
+                "url": "https://pong.localharness.xyz/",
+                "tx_hash": "off-chain",
+                "off_chain": true,
+                "updated": false
+            }),
+        );
+        let card = super::templates::inline_result_card(
+            "create_and_publish_app",
+            &serde_json::json!({"name": "pong", "source": "fn render() {}"}),
+            &ok,
+            None,
+        )
+        .expect("publish success should card")
+        .into_string();
+        assert!(card.contains("id=\"embed-canvas-"), "no embed canvas: {card}");
+        assert!(card.contains("class=\"embed-app-canvas\""), "no canvas class: {card}");
+        assert!(card.contains("data-action=\"run-in-display\""), "no fullscreen: {card}");
+        assert!(card.contains("https://pong.localharness.xyz/"), "no live link: {card}");
+
+        // The tool fails as Err (ToolResult.error) — an errored result never cards.
+        let failed = crate::types::ToolResult::err(
+            "create_and_publish_app",
+            None,
+            "compile failed",
+        );
+        assert!(super::templates::inline_result_card(
+            "create_and_publish_app",
+            &serde_json::json!({"name": "pong", "source": "fn x("}),
+            &failed,
             None
         )
         .is_none());
