@@ -264,6 +264,12 @@ pub const BACKEND_NETWORK: u16 = 3007;
 /// `LH3008` — request auth went stale: the device clock is off by more than the
 /// proxy's freshness window (a `stale or future timestamp` rejection).
 pub const BACKEND_STALE_AUTH: u16 = 3008;
+/// `LH3009` — the request POST failed at the transport layer with NO response
+/// (reqwest's bare "error sending request" — on wasm a rejected `fetch()`,
+/// flaky mobile networks; telemetry #41). Unlike `LH3007`'s named causes, this
+/// wording is ambiguous about whether the request reached the server, so the
+/// stream-open retry treats it more conservatively (ONE retry).
+pub const BACKEND_SEND: u16 = 3009;
 
 // ── LH4xxx — SDK CORE codes (one per `Error` variant) ───────────────────────
 /// `LH4001` — `Error::Io`: an OS-level I/O error.
@@ -431,6 +437,8 @@ pub const REGISTRY: &[ErrorCode] = &[
        "couldn't reach the backend or proxy — check connectivity and retry"),
     ec(BACKEND_STALE_AUTH, Family::Backend, "request auth went stale (device clock skew)",
        "your device clock is off by more than ~5 minutes — sync it and retry"),
+    ec(BACKEND_SEND, Family::Backend, "request POST failed in transit (no response)",
+       "the network dropped the request before a response arrived — usually a flaky connection; retry"),
     // LH4xxx SDK core
     ec(CORE_IO, Family::Core, "I/O error",
        "an OS-level read/write failed — check paths and permissions"),
@@ -614,6 +622,15 @@ pub fn classify(s: &str) -> Option<u16> {
     {
         return Some(BACKEND_NETWORK);
     }
+    // reqwest's opaque transport wording for a POST that produced NO response
+    // (telemetry #41: "gemini POST: error sending request" on mobile — on wasm
+    // a rejected fetch() carries no detail). Checked AFTER the named-cause
+    // classes above: a message that also says connection/dns/tls names a
+    // definitive pre-send failure and stays LH3007; the bare form can't prove
+    // the request never reached the server, hence its own code.
+    if l.contains("error sending request") {
+        return Some(BACKEND_SEND);
+    }
     None
 }
 
@@ -714,6 +731,25 @@ mod tests {
         assert_eq!(classify("failed to fetch: network down"), Some(BACKEND_NETWORK));
         assert_eq!(classify("stale or future timestamp"), Some(BACKEND_STALE_AUTH));
         assert_eq!(classify("a perfectly ordinary message"), None);
+    }
+
+    /// Telemetry #41: reqwest's bare transport failure ("error sending
+    /// request" — a rejected fetch() on wasm/mobile) must classify as the
+    /// retryable send class, NOT fall through to CORE_OTHER (which made the
+    /// stream-open retry fail fast and surfaced a hard turn error).
+    #[test]
+    fn classify_maps_bare_send_failure_to_backend_send() {
+        assert_eq!(classify("gemini POST: error sending request"), Some(BACKEND_SEND));
+        assert_eq!(classify("anthropic POST: error sending request"), Some(BACKEND_SEND));
+        assert_eq!(classify("openai POST: error sending request"), Some(BACKEND_SEND));
+        // A named cause wins over the bare wording: still LH3007 (network).
+        assert_eq!(
+            classify("error sending request: tcp connect error: Connection refused"),
+            Some(BACKEND_NETWORK)
+        );
+        assert_eq!(classify("error sending request: dns error"), Some(BACKEND_NETWORK));
+        // A send timeout stays a timeout.
+        assert_eq!(classify("error sending request: operation timed out"), Some(BACKEND_TIMEOUT));
     }
 
     #[test]

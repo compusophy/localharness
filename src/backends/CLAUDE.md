@@ -62,6 +62,10 @@ Browser fetch surfaces Gemini SSE with `\r\n\r\n`. `GeminiSseStream::take_frame`
 A backend surfaces the RAW provider error; `classify` maps it to `LH3xxx`. A 429 /
 quota / spend-cap is `BACKEND_RATE_LIMIT`, NOT out-of-credits (`BACKEND_CREDITS`) —
 don't re-conflate them in a backend. The chat surface + telemetry read the code.
+The stream-OPEN retry (`retry.rs`, #29) keys off these codes — a transport wording
+`classify` misses fails a turn HARD (#41 was the bare "error sending request" on
+mobile → `BACKEND_SEND`, retried ONCE/500ms; a retry past the response can double-
+bill since the proxy floor-debits after upstream 2xx, so it's capped tighter).
 External Gemini spend-cap 429s are suppressed from telemetry in `app/chat`.
 
 ## wasm: every `#[async_trait]` is `cfg_attr`'d `?Send`; `StepStream` is Box vs

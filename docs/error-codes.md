@@ -170,6 +170,7 @@ error string to one of these; the `.turn-error` chat line shows `LH3xxx · <mean
 | `LH3006` | model backend error (5xx) | a provider server error | transient — retry shortly |
 | `LH3007` | network / transport failure | couldn't reach the backend/proxy | check connectivity and retry |
 | `LH3008` | request auth went stale (device clock skew) | clock off by > ~5 min | sync the device clock and retry |
+| `LH3009` | request POST failed in transit (no response) | a flaky connection dropped the request (mobile radio blip) | auto-retried once; retry if it persists |
 
 ---
 
