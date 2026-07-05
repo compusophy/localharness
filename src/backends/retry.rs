@@ -16,6 +16,10 @@
 //! (which floor-debits after a 2xx upstream — retrying a lost RESPONSE bills
 //! twice; one retry bounds that to one message).
 
+use std::pin::pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::backends::stream_timeout::CANCEL_POLL_MS;
 use crate::error_codes::{BACKEND_NETWORK, BACKEND_SEND, BACKEND_SERVER, BACKEND_TIMEOUT};
 
 /// Total tries (1 initial + retries) for opening a model stream.
@@ -92,6 +96,98 @@ where
                 crate::runtime::sleep_ms(backoff_ms(e.code(), attempt)).await;
             }
             Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Outcome of a CANCEL-AWARE stream open (see
+/// [`open_stream_with_retry_or_cancel`]).
+pub(crate) enum OpenOutcome<S> {
+    /// The stream opened (possibly after retries).
+    Opened(S),
+    /// The cooperative cancel flag flipped while the open (or a retry
+    /// backoff) was pending. The in-flight open future was DROPPED — which
+    /// aborts the HTTP request (reqwest-wasm's AbortGuard rides inside the
+    /// response future; native drops the hyper connection) — and NO retry
+    /// was attempted.
+    Cancelled,
+    /// The open failed with a non-retryable error (or exhausted its attempts).
+    Failed(crate::error::Error),
+}
+
+/// Await `fut`, re-checking `cancel` every [`CANCEL_POLL_MS`] while it is
+/// pending (the same sliced-select polling as
+/// `stream_timeout::next_with_idle_timeout_or_cancel`). On cancel, `fut` is
+/// dropped (aborting the request) and `None` returns. `select` polls `fut`
+/// first, so a ready result always wins over a co-ready timer slice.
+async fn await_or_cancel<S, Fut>(fut: Fut, cancel: &AtomicBool) -> Option<crate::error::Result<S>>
+where
+    Fut: core::future::Future<Output = crate::error::Result<S>>,
+{
+    let mut fut = pin!(fut);
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return None;
+        }
+        let sleep = pin!(crate::runtime::sleep_ms(CANCEL_POLL_MS));
+        match futures_util::future::select(fut.as_mut(), sleep).await {
+            futures_util::future::Either::Left((res, _sleep)) => return Some(res),
+            // Slice elapsed with the open still pending — loop re-checks cancel.
+            futures_util::future::Either::Right((_elapsed, _fut)) => {}
+        }
+    }
+}
+
+/// Sleep `ms` in [`CANCEL_POLL_MS`] slices, bailing early (returning `false`)
+/// if `cancel` flips — so a Stop pressed during a retry BACKOFF doesn't fire
+/// another attempt.
+async fn sleep_or_cancel(ms: u32, cancel: &AtomicBool) -> bool {
+    let mut waited = 0u32;
+    while waited < ms {
+        if cancel.load(Ordering::Acquire) {
+            return false;
+        }
+        let slice = CANCEL_POLL_MS.min(ms - waited).max(1);
+        crate::runtime::sleep_ms(slice).await;
+        waited = waited.saturating_add(slice);
+    }
+    !cancel.load(Ordering::Acquire)
+}
+
+/// [`open_stream_with_retry`] that ALSO honours the cooperative `cancel` flag
+/// while the open itself is pending (tick-6 E2E corner: Stop during the
+/// stream-OPEN await — POST sent, no response headers yet — used to hang the
+/// turn until the open resolved or timed out; the 100ms cancel poll only
+/// covered the chunk-await phase). Cancel is observed within one
+/// [`CANCEL_POLL_MS`] slice at every pending point: before the first attempt,
+/// while an attempt is in flight (the open future is DROPPED, aborting the
+/// request), and during a retry backoff. A cancel NEVER triggers a retry —
+/// the wrapper returns [`OpenOutcome::Cancelled`] immediately instead of
+/// swallowing it and reopening. The turn engine rides this; the subagent loop
+/// (no stop button) keeps the plain wrapper.
+pub(crate) async fn open_stream_with_retry_or_cancel<S, F, Fut>(
+    mut open: F,
+    cancel: &AtomicBool,
+) -> OpenOutcome<S>
+where
+    F: FnMut() -> Fut,
+    Fut: core::future::Future<Output = crate::error::Result<S>>,
+{
+    let mut attempt = 0u32;
+    loop {
+        if cancel.load(Ordering::Acquire) {
+            return OpenOutcome::Cancelled;
+        }
+        attempt += 1;
+        match await_or_cancel(open(), cancel).await {
+            None => return OpenOutcome::Cancelled,
+            Some(Ok(s)) => return OpenOutcome::Opened(s),
+            Some(Err(e)) if should_retry(e.code(), attempt) => {
+                if !sleep_or_cancel(backoff_ms(e.code(), attempt), cancel).await {
+                    return OpenOutcome::Cancelled;
+                }
+            }
+            Some(Err(e)) => return OpenOutcome::Failed(e),
         }
     }
 }
@@ -205,6 +301,112 @@ mod tests {
         .expect_err("still-dead network surfaces the error");
         assert_eq!(err.code(), crate::error_codes::BACKEND_SEND);
         assert_eq!(calls.load(Ordering::SeqCst), SEND_MAX_ATTEMPTS, "exactly one retry");
+    }
+
+    /// Tick-6 E2E corner: Stop during the stream-OPEN await (POST sent, no
+    /// response headers yet). A NEVER-resolving open future + the cancel flag
+    /// flipping → `Cancelled` promptly (within a poll slice, not a timeout),
+    /// with the open future dropped and exactly ONE attempt made.
+    #[tokio::test]
+    async fn cancel_during_a_pending_open_returns_cancelled_promptly() {
+        use std::sync::atomic::AtomicU32;
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flip = cancel.clone();
+        tokio::spawn(async move {
+            crate::runtime::sleep_ms(30).await;
+            flip.store(true, Ordering::Release);
+        });
+        let attempts = AtomicU32::new(0);
+        let t0 = std::time::Instant::now();
+        let out = open_stream_with_retry_or_cancel(
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async {
+                    std::future::pending::<()>().await;
+                    Ok::<_, crate::error::Error>("never")
+                }
+            },
+            &cancel,
+        )
+        .await;
+        assert!(matches!(out, OpenOutcome::Cancelled), "cancel must break a pending open");
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(5),
+            "cancel latency is bounded by the poll slice"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "the open is never re-attempted");
+    }
+
+    /// A cancel must NOT be swallowed into a retry: an open that fails with a
+    /// TRANSIENT error while the cancel flag is set returns `Cancelled` after
+    /// exactly one attempt — the backoff never fires a reopen.
+    #[tokio::test]
+    async fn cancel_suppresses_the_transient_retry() {
+        use std::sync::atomic::AtomicU32;
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let attempts = AtomicU32::new(0);
+        let out = open_stream_with_retry_or_cancel(
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                let cancel = cancel.clone();
+                async move {
+                    // Stop pressed just as the transient failure surfaces.
+                    cancel.store(true, Ordering::Release);
+                    Err::<(), _>(crate::error::Error::other("HTTP 503 internal server error"))
+                }
+            },
+            &cancel,
+        )
+        .await;
+        assert!(matches!(out, OpenOutcome::Cancelled), "cancelled, not retried/failed");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "attempt count stays 1 on cancel");
+    }
+
+    /// Uncancelled, the cancel-aware wrapper keeps the plain policy exactly:
+    /// transient failures retry to success; non-transient fails fast.
+    #[tokio::test]
+    async fn uncancelled_open_or_cancel_matches_the_plain_policy() {
+        use std::sync::atomic::AtomicU32;
+        let cancel = AtomicBool::new(false);
+        let attempts = AtomicU32::new(0);
+        let out = open_stream_with_retry_or_cancel(
+            || {
+                let n = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                async move {
+                    if n < MAX_STREAM_ATTEMPTS {
+                        Err(crate::error::Error::other("HTTP 503 internal server error"))
+                    } else {
+                        Ok("stream")
+                    }
+                }
+            },
+            &cancel,
+        )
+        .await;
+        match out {
+            OpenOutcome::Opened(s) => assert_eq!(s, "stream"),
+            _ => panic!("transient failures must still retry to success"),
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), MAX_STREAM_ATTEMPTS);
+
+        let attempts = AtomicU32::new(0);
+        let out = open_stream_with_retry_or_cancel(
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err::<(), _>(crate::error::Error::other("HTTP 401 Unauthorized: bad API key"))
+                }
+            },
+            &cancel,
+        )
+        .await;
+        match out {
+            OpenOutcome::Failed(e) => assert_eq!(e.code(), BACKEND_AUTH),
+            _ => panic!("auth must fail fast, not cancel/retry"),
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     /// A persistent transient failure exhausts the cap and returns the error.

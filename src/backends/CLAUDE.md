@@ -66,6 +66,10 @@ The stream-OPEN retry (`retry.rs`, #29) keys off these codes — a transport wor
 `classify` misses fails a turn HARD (#41 was the bare "error sending request" on
 mobile → `BACKEND_SEND`, retried ONCE/500ms; a retry past the response can double-
 bill since the proxy floor-debits after upstream 2xx, so it's capped tighter).
+The engine opens via `open_stream_with_retry_or_cancel`: the OPEN await itself
+races the cancel flag (100ms slices) — Stop while the POST is in flight drops
+the open future (aborts the request) and NEVER retries; a cancel is a distinct
+`OpenOutcome::Cancelled`, not an error the retry loop could swallow.
 External Gemini spend-cap 429s are suppressed from telemetry in `app/chat`.
 
 ## wasm: every `#[async_trait]` is `cfg_attr`'d `?Send`; `StepStream` is Box vs

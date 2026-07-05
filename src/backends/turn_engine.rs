@@ -313,14 +313,26 @@ where
             let request = P::build_request(&deps.config, &deps.state.history.lock());
             // Retry the stream OPEN on a transient transport/5xx/timeout (ONE
             // shared policy+wrapper, #29). A mid-stream error and
-            // auth/credits/rate-limit still fail fast.
-            let mut stream = match crate::backends::retry::open_stream_with_retry(|| {
-                open(request.clone())
-            })
+            // auth/credits/rate-limit still fail fast. The open ALSO races the
+            // cancel flag (tick-6): a Stop pressed while the POST is in flight
+            // (no response headers yet) drops the open future — aborting the
+            // request, same drop semantics as the mid-stream cancel (#33) —
+            // and NEVER retries; the turn then ends exactly like a mid-stream
+            // cancel (nothing streamed, no tools pending).
+            let mut stream = match crate::backends::retry::open_stream_with_retry_or_cancel(
+                || open(request.clone()),
+                &deps.state.cancel,
+            )
             .await
             {
-                Ok(s) => s,
-                Err(e) => return Err(turn_fail(&deps.state, e)),
+                crate::backends::retry::OpenOutcome::Opened(s) => s,
+                crate::backends::retry::OpenOutcome::Cancelled => {
+                    debug!("turn cancelled during stream open — dropping the request");
+                    break 'request false;
+                }
+                crate::backends::retry::OpenOutcome::Failed(e) => {
+                    return Err(turn_fail(&deps.state, e))
+                }
             };
 
             // Idle-stall guard: a fresh `idle_ms` timer is armed for EACH
@@ -918,6 +930,58 @@ mod tests {
             "cancel must interrupt the silent stream promptly (not the idle window)"
         );
         assert!(state.idle.load(Ordering::Acquire), "idle guard released");
+    }
+
+    /// Tick-6 E2E corner: cancel fires during the stream-OPEN await (POST
+    /// sent, no response headers yet — before any chunk phase exists). The
+    /// engine must end the turn promptly, drop the open future, make exactly
+    /// ONE open attempt (a cancel never retries the open), and release the
+    /// idle guard — exactly like a mid-stream cancel.
+    #[tokio::test]
+    async fn cancel_during_stream_open_ends_the_turn_without_retry() {
+        let (tx, _rx) = broadcast::channel::<Step>(64);
+        let state = Arc::new(LoopState::new(tx));
+        let deps = EngineDeps::<MockProvider> {
+            config: (),
+            state: state.clone(),
+            tool_runner: None,
+            hook_runner: None,
+            session_ctx: None,
+        };
+        let cancel = state.cancel.clone();
+        tokio::spawn(async move {
+            crate::runtime::sleep_ms(30).await;
+            cancel.store(true, Ordering::Release);
+        });
+        let opens = std::sync::atomic::AtomicU32::new(0);
+        let t0 = std::time::Instant::now();
+        run_turn::<MockProvider, _, _, _, _, _>(
+            deps,
+            "user:hi".to_string(),
+            Content::text("hi"),
+            |_req| {
+                opens.fetch_add(1, Ordering::SeqCst);
+                async {
+                    // The open never resolves — no headers ever arrive.
+                    std::future::pending::<()>().await;
+                    Ok(futures_util::stream::iter(std::iter::empty::<Result<Ev>>()))
+                }
+            },
+            || async {},
+        )
+        .await
+        .expect("a turn cancelled during open ends Ok, not Err");
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(30),
+            "cancel must interrupt the pending open promptly"
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 1, "cancel must not retry the open");
+        assert!(state.idle.load(Ordering::Acquire), "idle guard released");
+        assert_eq!(
+            state.history.lock().clone(),
+            vec!["user:hi".to_string()],
+            "nothing streamed — no assistant message persisted"
+        );
     }
 
     /// Telemetry #33 (long tool calls): cancel fires WHILE a tool runs. The
