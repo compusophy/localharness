@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`status --as <name>` no longer claims "no registered identity" for a
+  registered non-MAIN identity** — self-status keyed only on `mainOf`; it now
+  falls back to `ownerOfName(--as name)` == the key's address, and reports
+  owned-but-no-MAIN honestly (`status.rs` pure core, fleet-found).
+- **Stop during the stream-OPEN await ends the turn promptly** — the open
+  future now races the cancel flag (100ms slices) and is dropped on cancel
+  (aborting the request); a cancel can never be swallowed by the transient
+  retry (`retry.rs::open_stream_with_retry_or_cancel`).
+
+### Added
+
+- **`scripts/tab-e2e/` — the headless-Chrome browser E2E harness** (router
+  free-routing, bell states, display overlay, Stop mid-stream via a local
+  fake-SSE fixture) as a permanent, documented repo asset.
+
 - **Host::Other (localhost / Vercel preview) metered sends no longer fail
   closed forever** — `kick_verification` never runs without a tenant, so the
   pricing gate's `None` state was permanent there and its "retry in a moment"
