@@ -61,6 +61,37 @@ window.addEventListener("appinstalled", () => {
   } catch {}
 })();
 
+// Seed-pull fast bounce (apex `?seed_export=1` leg). A subdomain with no
+// local seed navigated this tab here to fetch the master seed (seed_pull.rs).
+// For a PURE VISITOR the apex has no identity at all, so there is nothing to
+// seal — go history.back() immediately, BEFORE the wasm loads: the
+// subdomain's already-painted face restores from bfcache with zero repaint
+// (or its clean URL reloads), and its one-shot sessionStorage guard stops a
+// re-kick. ONLY the definitive miss takes the shortcut: `.lh_wallet` is the
+// exact OPFS file wallet_store.rs reads (plaintext, EXEMPT from at-rest
+// encryption; parity-guarded by tests/seed_pull_boot_parity.rs), and only a
+// NotFoundError counts. The file existing, an unrelated error, a missing
+// OPFS API, or a tab with no history entry behind it all fall through to the
+// wasm path, which owns the real seal/ownership decision — an owner's seed
+// adoption never rides this branch. Returns true iff the tab is navigating
+// back (the wasm boot below must then be skipped: a second history.back()
+// from the wasm path would race past the subdomain entry).
+async function lhSeedExportFastBounce() {
+  try {
+    if (new URLSearchParams(location.search).get("seed_export") !== "1") return false;
+    if (!(history.length > 1)) return false; // nothing behind us — wasm path forward-bounces
+    const opfs = await navigator.storage.getDirectory();
+    await opfs.getFileHandle(".lh_wallet"); // exists → possibly an owner: wasm decides
+    return false;
+  } catch (e) {
+    if (e && e.name === "NotFoundError") {
+      history.back();
+      return true;
+    }
+    return false; // any doubt → the wasm path owns the decision
+  }
+}
+
 // Per-build cache-buster. Chrome's WebAssembly compiled-module code cache is
 // keyed on the wasm URL, and serves a STALE compiled module for the unchanged
 // /pkg/localharness_bg.wasm path even under `max-age=0, must-revalidate` — so a
@@ -71,7 +102,11 @@ window.addEventListener("appinstalled", () => {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "c6c2769b637e";
+const LH_BUILD = "29535e0a8323";
+if (await lhSeedExportFastBounce()) {
+  // The tab is navigating back to the subdomain — leave the static shell up
+  // for the instant the frame is still visible; do NOT boot the wasm.
+} else {
 try {
   const mod = await import("./pkg/localharness.js?v=" + LH_BUILD);
   // Object form (not a bare string) — the bare-path arg is deprecated in this
@@ -112,4 +147,5 @@ try {
   document.documentElement.dataset.lhError = "1";
   const root = document.getElementById("root");
   if (root) root.textContent = "failed to load — reload to retry";
+}
 }

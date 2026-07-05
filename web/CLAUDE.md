@@ -33,6 +33,11 @@ stricter referrer was the suspected breaker of BYOK Gemini keys that carry
 HTTP-referrer restrictions (commit c0393e0). Don't re-add without testing that path.
 
 ## Other
+- `boot.js` seed-pull fast bounce: on the apex `?seed_export=1` leg with NO
+  `.lh_wallet` in OPFS (definitive NotFoundError only), `history.back()` BEFORE the
+  wasm loads — the visitor's subdomain face restores from bfcache with zero repaint.
+  `.lh_wallet` mirrors `wallet_store.rs`; parity guard `tests/seed_pull_boot_parity.rs`.
+  Any doubt falls through to the wasm path (owner adoption never rides this branch).
 - `sw.js` — service worker: push → `push_arrived` → bell; ALWAYS `stashPending` so a
   closed-tab push still lands in the inbox.
 - Design tokens come from `src/app/style.rs` (Rust SSOT), injected as `:root` — use

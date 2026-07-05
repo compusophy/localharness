@@ -48,6 +48,21 @@ fake-Gemini SSE endpoint), and the tenant-sim aborts all RPC/proxy/apex requests
     (`chat::stream_turn` → `launch_pending_embed` needs a real model turn
     calling the tool) and the tenant-only `#studio-app-slot` owner pin.
 
+- **`seedpull-e2e.mjs`** — the seed-pull apex round-trip must not repaint a
+  pure visitor's public face. Serves the bundle over LOCAL https on 443 with
+  the REAL production URL shapes (`https://localharness.xyz` + a tenant, no
+  ports — `seed_pull.rs` hardcodes them; throwaway openssl cert +
+  `--ignore-certificate-errors`, hosts resolver-mapped to 127.0.0.1, chain RPC
+  faked with the synthetic all-1s owner word, NO request interception — that
+  would disable the bfcache under test, and prod-parity `must-revalidate`
+  headers — `no-store` would too). Asserts: auto-kick → apex `?seed_export=1`
+  → `history.back()` restore with the ORIGINAL face DOM untouched
+  (`pageshow.persisted` + a data-stamp; zero repaint, no `?seed_import=none`
+  leg, no "setting up this device…" interstitial), and that the boot.js fast
+  bounce DEFERS to the wasm whenever an apex `.lh_wallet` exists (the
+  owner-adoption safety property). `LH_E2E_EXPECT=baseline` flips the
+  assertions to document the pre-fix behavior against an old bundle.
+
 Helpers: `serve.mjs` (static web/ server with wasm MIME, READ-ONLY),
 `fake-gemini.mjs` (one SSE chunk then silence), `lib.mjs` (browser discovery,
 bundle check, pass/fail tally).

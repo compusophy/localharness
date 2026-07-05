@@ -776,23 +776,32 @@ fn mount() -> Result<(), JsValue> {
             return Ok(());
         }
         tenant::Host::Tenant(name) => {
-            // Seed-pull return leg: apex sealed the master seed to this
-            // origin's ephemeral key. Import it into THIS origin's OPFS, then
-            // paint the tenant normally — now with a LOCAL seed, so every
-            // seed op runs locally and the iframe (dead on mobile) is unused.
-            if read_query_param("seed_import").is_some() {
-                root.set_inner_html(
-                    "<main style=\"padding:48px;text-align:center;color:#7a8493;\
-                     font:14px ui-monospace,Menlo,Consolas,monospace\">\
-                     setting up this device…</main>",
-                );
-                let name = name.clone();
-                let host_for_import = host_for_listeners.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    seed_pull::handle_tenant_import().await;
-                    paint_tenant(host_for_import, name).await;
-                });
-                return Ok(());
+            // Seed-pull return leg. Only a return carrying an ACTUAL sealed
+            // seed (`?seed_import=1#s=…`) takes the import interstitial +
+            // repaint path (the mobile-owner adoption/upgrade — unchanged).
+            // An empty `?seed_import=none` return (pure visitor; normally
+            // prevented at the source by the apex history.back() bounce, but
+            // deploy skew / hand-typed URLs can still land here) must NOT
+            // detour the paint: scrub the URL now and fall through to the
+            // ONE normal tenant paint below. Decision core:
+            // `crate::seed_flow::should_repaint` (native-tested).
+            if let Some(mode) = read_query_param("seed_import") {
+                let has_payload = read_fragment_param("s").is_some();
+                if crate::seed_flow::should_repaint(Some(mode.as_str()), has_payload) {
+                    root.set_inner_html(
+                        "<main style=\"padding:48px;text-align:center;color:#7a8493;\
+                         font:14px ui-monospace,Menlo,Consolas,monospace\">\
+                         setting up this device…</main>",
+                    );
+                    let name = name.clone();
+                    let host_for_import = host_for_listeners.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        seed_pull::handle_tenant_import().await;
+                        paint_tenant(host_for_import, name).await;
+                    });
+                    return Ok(());
+                }
+                seed_pull::finish_none_return();
             }
             // Tenant subdomain — defer the chrome choice until we've
             // peeked at the ownership marker (async).

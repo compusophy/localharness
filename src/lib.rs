@@ -257,6 +257,13 @@ pub mod difficulty;
 /// See `src/router.rs`.
 pub mod router;
 
+/// Pure decision core for the seed-pull apex round-trip (native-testable):
+/// only a return leg carrying an actual sealed seed repaints; an empty
+/// `?seed_import=none` bounce scrubs the URL without touching the painted
+/// face, and the apex bounces BACK in history (bfcache) when it has nothing
+/// to hand over. Wired in `app::seed_pull` + `app::mount`. See `src/seed_flow.rs`.
+pub mod seed_flow;
+
 /// Pure Web Push enrollment-verification core (native-testable; telemetry
 /// #40): confirm a POSTed push subscription actually LANDED in the proxy
 /// store + compose the bell panel's enrolled/not-enrolled status line.

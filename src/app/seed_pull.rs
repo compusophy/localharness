@@ -19,10 +19,19 @@
 //!    `apex/?seed_export=1&to=<name>#epk=<ephemeral_pub>`.
 //! 2. apex (first-party storage) reads its seed, confirms it actually owns
 //!    `<name>` on-chain, ECIES-seals the mnemonic to `epk`, and navigates
-//!    back to `<name>.localharness.xyz/?seed_import=1#s=<ct>` (or
-//!    `?seed_import=none` if it has no matching seed).
+//!    back to `<name>.localharness.xyz/?seed_import=1#s=<ct>`. With NO
+//!    matching seed (every pure visitor) it goes `history.back()` instead:
+//!    a bfcache restore resumes the subdomain's already-painted face with
+//!    ZERO repaint, and a cache miss reloads the clean URL. Decision core:
+//!    [`crate::seed_flow::none_bounce`]; the forward `?seed_import=none`
+//!    nav survives only for a tab with nothing to go back to. `web/boot.js`
+//!    short-circuits the definitive no-`.lh_wallet` case before the wasm
+//!    even loads (parity guard: `tests/seed_pull_boot_parity.rs`).
 //! 3. subdomain decrypts `s` with its stashed ephemeral key, imports the
-//!    mnemonic into this origin's OPFS, and scrubs the URL.
+//!    mnemonic into this origin's OPFS, and scrubs the URL. A stray
+//!    `?seed_import=none` return (deploy skew / hand-typed) scrubs WITHOUT
+//!    the import interstitial or an extra repaint
+//!    ([`crate::seed_flow::should_repaint`], wired in `mount`).
 //!
 //! The sealed mnemonic rides a URL fragment (never sent to a server) and is
 //! decryptable ONLY by the ephemeral key held in the subdomain's
@@ -85,8 +94,11 @@ pub(crate) async fn maybe_auto_kick(name: &str) -> bool {
 /// Apex side (`?seed_export=1&to=<name>#epk=<hex>`). Seal the local seed to
 /// the subdomain's ephemeral pubkey and navigate back — but ONLY if this
 /// device's seed actually owns `<name>` on-chain. Otherwise (no seed, or a
-/// visitor's unrelated identity) bounce back with `seed_import=none` so the
-/// subdomain stops waiting and learns nothing.
+/// visitor's unrelated identity) go BACK in history: the subdomain's
+/// already-painted face restores from bfcache with zero repaint (or the
+/// clean URL reloads on a cache miss), and its one-shot GUARD stops a
+/// re-kick. The forward `?seed_import=none` nav is only the fallback for a
+/// tab with no entry to go back to (`crate::seed_flow::none_bounce`).
 pub(crate) async fn handle_apex_export() {
     let to = super::read_query_param("to")
         .map(|s| super::decode_uri_component(&s))
@@ -102,12 +114,35 @@ pub(crate) async fn handle_apex_export() {
     }
 
     let sealed_hex = seal_seed_for(&to, &epk_hex).await;
-    let url = match sealed_hex {
-        Some(ct_hex) => format!("https://{to}.localharness.xyz/?seed_import=1#s={ct_hex}"),
-        None => format!("https://{to}.localharness.xyz/?seed_import=none"),
-    };
-    if let Some(window) = web_sys::window() {
-        let _ = window.location().set_href(&url);
+    let Some(window) = web_sys::window() else { return };
+    match sealed_hex {
+        Some(ct_hex) => {
+            let url = format!("https://{to}.localharness.xyz/?seed_import=1#s={ct_hex}");
+            let _ = window.location().set_href(&url);
+        }
+        None => {
+            let history_len = window
+                .history()
+                .ok()
+                .and_then(|h| h.length().ok())
+                .unwrap_or(1);
+            match crate::seed_flow::none_bounce(history_len) {
+                crate::seed_flow::NoneBounce::Back => {
+                    if let Ok(history) = window.history() {
+                        if history.back().is_ok() {
+                            return;
+                        }
+                    }
+                    // back() itself failed — fall through to the forward nav.
+                    let url = format!("https://{to}.localharness.xyz/?seed_import=none");
+                    let _ = window.location().set_href(&url);
+                }
+                crate::seed_flow::NoneBounce::ForwardNone => {
+                    let url = format!("https://{to}.localharness.xyz/?seed_import=none");
+                    let _ = window.location().set_href(&url);
+                }
+            }
+        }
     }
 }
 
@@ -127,10 +162,12 @@ async fn seal_seed_for(to: &str, epk_hex: &str) -> Option<String> {
     Some(hex(&ct))
 }
 
-/// Subdomain side (`?seed_import=1#s=<ct>` or `?seed_import=none`). On a
-/// `1` with a decryptable blob, import the seed into THIS origin's OPFS.
-/// Always scrubs the URL + clears the ephemeral key afterward. Returns
-/// `true` iff a seed was imported (caller repaints with a local wallet).
+/// Subdomain side of a PAYLOAD-BEARING return (`?seed_import=1#s=<ct>` —
+/// `mount` routes only `crate::seed_flow::should_repaint` legs here; an
+/// empty `none` return takes [`finish_none_return`] instead). Imports the
+/// seed into THIS origin's OPFS, scrubs the URL + clears the ephemeral key.
+/// Returns `true` iff a seed was imported (caller repaints with a local
+/// wallet). Tolerates a junk mode defensively (no import, same scrub).
 pub(crate) async fn handle_tenant_import() -> bool {
     let mode = super::read_query_param("seed_import").unwrap_or_default();
     let imported = if mode == "1" { try_import().await } else { false };
@@ -139,6 +176,17 @@ pub(crate) async fn handle_tenant_import() -> bool {
     }
     scrub_url();
     imported
+}
+
+/// Subdomain side of an EMPTY return leg (`?seed_import=none`, or a
+/// payload-less `1`): nothing to import, so do NOT touch the paint flow —
+/// just drop the ephemeral key and scrub the URL (history.replaceState),
+/// synchronously, and let the caller fall through to the ONE normal paint.
+pub(crate) fn finish_none_return() {
+    if let Some(storage) = session() {
+        let _ = storage.remove_item(EPH_KEY);
+    }
+    scrub_url();
 }
 
 async fn try_import() -> bool {

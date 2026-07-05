@@ -93,6 +93,14 @@ The pure state machine is `crate::turn_stage` (native-tested).
 ## Mount routing (`mod.rs::mount`) — brief (full detail in root CLAUDE.md)
 `?signer=1`/`?rpc=1` → headless chromes (early return; NOT framed). Else classify via
 `tenant::current()` → Apex (identity-gated) / Tenant (owner-verify) / Other.
+**Seed-pull round-trip must not flash a pure visitor's face**: only a payload-bearing
+return (`?seed_import=1#s=…`) takes the "setting up this device…" interstitial +
+repaint (mobile-owner adoption, unchanged); an empty return scrubs the URL and falls
+through to the ONE normal paint, and the apex bounces a no-seed export leg via
+`history.back()` (bfcache restore = zero repaint) — decision core `crate::seed_flow`
+(native-tested), fast pre-wasm bounce in `web/boot.js`
+(`tests/seed_pull_boot_parity.rs`). Don't reintroduce a forward `?seed_import=none`
+nav as the primary bounce.
 `apply_render_modes` runs first: theme + the MOBILE-FIRST frame (desktop defaults to
 the 9:16 `preview-mobile` column; real <=600px phones + signer/rpc excluded).
 Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
