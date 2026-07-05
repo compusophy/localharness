@@ -156,8 +156,8 @@ pub(crate) async fn run_send() {
     // (which mints an auth token / pops the key modal) so a free turn is a true
     // zero-cost path. CONSERVATIVE by contract: only exact allowlist phrasings
     // route free; everything else passes through untouched. A leading '!'
-    // always forces the model (stripped here); the gate defaults OFF (opt-in
-    // per session via '/router on') until the browser paths are tab-E2E'd.
+    // always forces the model (stripped here); the gate is ON by default
+    // (tab-E2E'd), '/router off' opts the session out.
     let prompt = match router_wire::pre_route(&prompt).await {
         router_wire::PreRoute::Handled => {
             prompt_area.set_value("");

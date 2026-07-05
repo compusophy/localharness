@@ -106,10 +106,10 @@ every backend branch; add new chat tools there, never per-backend; source guard
 `run_send` classifies each message via the `crate::router` pure core BEFORE any
 metered work — exact-allowlist free routes only (balance/credits reads, the
 files/display/terminal toggles, a tiny docs FAQ), everything else untouched;
-'!' prefix always forces the model; the gate is DEFAULT OFF (opt-in per
-session via `/router on`, sessionStorage `lh_router_on`, default pinned by
-`router::router_enabled` natively) until a browser tab-E2E pass; free turns
-are transcript-only, never in agent history; widen the
+'!' prefix always forces the model; the gate is DEFAULT ON (tab-E2E'd
+2026-07-05; per-session opt-out via `/router off`, sessionStorage
+`lh_router`="0", default pinned by `router::router_enabled` natively); free
+turns are transcript-only, never in agent history; widen the
 free tier ONLY by adding exact phrases to `router::FREE_PHRASES`) ·
 `notifications.rs` bell + push (per-device `dev` dedup; enrollment is OFF-CHAIN —
 POST /api/push-sub to the proxy's GitHub store, NEVER a sponsored on-chain write:

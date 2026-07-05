@@ -187,21 +187,22 @@ pub fn strip_bang(input: &str) -> &str {
 /// The `/router` chat command — the per-session switch for the gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouterCmd {
-    /// `/router on` — enable the free tiers for this session (OPT-IN; the
-    /// gate defaults OFF until the browser paths are tab-E2E'd).
+    /// `/router on` — re-enable the free tiers for this session (the
+    /// default; only needed after a `/router off`).
     On,
-    /// `/router off` — every message goes to the model (the default).
+    /// `/router off` — opt this session OUT: every message goes to the model.
     Off,
     /// `/router` / `/router status` — report the current state.
     Status,
 }
 
-/// The gate's enable decision from the stored opt-in flag (sessionStorage
-/// `lh_router_on` in the browser wiring). **Default OFF** — the free tiers are
-/// OPT-IN via `/router on` until the browser paths get a tab E2E pass; only an
-/// explicit `"1"` enables the gate. Pure so the default is pinned natively.
-pub fn router_enabled(opt_in_flag: Option<&str>) -> bool {
-    matches!(opt_in_flag, Some("1"))
+/// The gate's enable decision from the stored per-session flag (sessionStorage
+/// `lh_router` in the browser wiring). **Default ON** (browser paths tab-E2E'd
+/// 2026-07-05) — only an explicit `"0"` (written by `/router off`) disables the
+/// gate; unset/anything else leaves it on. Pure so the default is pinned
+/// natively.
+pub fn router_enabled(opt_out_flag: Option<&str>) -> bool {
+    !matches!(opt_out_flag, Some("0"))
 }
 
 /// Parse a `/router …` chat command. `None` for anything else (including
@@ -469,14 +470,14 @@ mod tests {
     }
 
     #[test]
-    fn router_default_is_off_opt_in_only() {
-        // DEFAULT OFF until a browser tab-E2E pass: no flag / anything but an
-        // explicit "1" leaves the gate disabled.
-        assert!(!router_enabled(None));
-        assert!(!router_enabled(Some("")));
-        assert!(!router_enabled(Some("0")));
-        assert!(!router_enabled(Some("true")));
+    fn router_default_is_on_opt_out_only() {
+        // DEFAULT ON (tab-E2E'd): only an explicit "0" (written by
+        // `/router off`) disables the gate; unset/anything else leaves it on.
+        assert!(router_enabled(None));
+        assert!(router_enabled(Some("")));
         assert!(router_enabled(Some("1")));
+        assert!(router_enabled(Some("true")));
+        assert!(!router_enabled(Some("0")));
     }
 
     // ── allowlist hygiene: every entry must be its own normalized form ───

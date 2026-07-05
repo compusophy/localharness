@@ -224,11 +224,18 @@ pub(crate) fn show_terminal(argv: &str, run: &CliRun) {
     dom::focus_first_in("terminal-overlay");
 }
 
+/// Whether the terminal overlay is currently up (the toggle's own check;
+/// also read by `chat::router_wire` so its answer card reports honestly).
+pub(crate) fn terminal_open() -> bool {
+    dom::by_id("terminal-surface").is_some()
+}
+
 /// `Action::ToggleTerminal` (terminal card [show] / overlay ×): tear down the
 /// overlay if open, else re-open the LAST run from its stashed snapshot. The
 /// snapshot lets the [show] button on an old transcript card re-open that run.
+/// NO-OP when closed with nothing to show (no CLI run yet this session).
 pub(crate) fn toggle_terminal() {
-    if dom::by_id("terminal-surface").is_some() {
+    if terminal_open() {
         close_terminal();
     } else if let Some((argv, run)) = LAST_RUN.with(|c| c.borrow().clone()) {
         show_terminal(&argv, &run);

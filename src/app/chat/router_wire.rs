@@ -11,8 +11,8 @@
 //! the [`crate::router::FREE_ROUTE_FOOTER`] on every card tells the user how
 //! to reach the model instead.
 //!
-//! Per-session opt-in: `/router on` (sessionStorage `lh_router_on`; default
-//! OFF until the browser paths get a tab-E2E pass — `/router off` reverts).
+//! Per-session opt-OUT: `/router off` (sessionStorage `lh_router` = `"0"`;
+//! the gate is ON by default — tab-E2E'd — and `/router on` re-enables).
 
 use maud::html;
 
@@ -23,8 +23,9 @@ use crate::router::{
 
 use super::super::{dom, templates, APP};
 
-/// sessionStorage key for the per-session opt-IN ("1" = router enabled).
-const ROUTER_ON_KEY: &str = "lh_router_on";
+/// sessionStorage key for the per-session flag: `"0"` (written by
+/// `/router off`) = opted out; absent/anything else = ON, the default.
+const ROUTER_FLAG_KEY: &str = "lh_router";
 
 /// What `run_send` should do with the message after the gate.
 pub(super) enum PreRoute {
@@ -55,12 +56,14 @@ pub(super) async fn pre_route(prompt: &str) -> PreRoute {
     }
 }
 
-/// Is the gate on for this session? **Default OFF** (opt-in via `/router on`)
-/// until the browser paths are tab-E2E'd; the decision itself is the pure
+/// Is the gate on for this session? **Default ON** (opt-out via `/router
+/// off`); the raw flag passes straight through to the pure
 /// [`crate::router::router_enabled`] so the default is pinned natively.
 fn enabled() -> bool {
-    let Ok(Some(storage)) = dom::session_storage() else { return false };
-    let flag = storage.get_item(ROUTER_ON_KEY).ok().flatten();
+    let flag = dom::session_storage()
+        .ok()
+        .flatten()
+        .and_then(|s| s.get_item(ROUTER_FLAG_KEY).ok().flatten());
     crate::router::router_enabled(flag.as_deref())
 }
 
@@ -71,27 +74,27 @@ fn apply_cmd(cmd: RouterCmd) {
     match cmd {
         RouterCmd::Off => {
             if let Some(s) = &storage {
-                let _ = s.remove_item(ROUTER_ON_KEY);
+                let _ = s.set_item(ROUTER_FLAG_KEY, "0");
             }
             dom::set_status(
-                "intent router OFF (the default) — every message goes to the model \
-                 (metered). '/router on' opts this session in.",
+                "intent router OFF for this session — every message goes to the model \
+                 (metered). '/router on' reverts to the default (on).",
                 false,
             );
         }
         RouterCmd::On => {
             if let Some(s) = &storage {
-                let _ = s.set_item(ROUTER_ON_KEY, "1");
+                let _ = s.remove_item(ROUTER_FLAG_KEY);
             }
             dom::set_status(
-                "intent router ON for this session — obvious balance/files/display/docs \
+                "intent router ON (the default) — obvious balance/files/display/docs \
                  messages are answered free. '!' prefix forces the model; '/router off' \
-                 reverts to the default (off).",
+                 opts this session out.",
                 false,
             );
         }
         RouterCmd::Status => {
-            let state = if enabled() { "ON (opted in this session)" } else { "OFF (the default)" };
+            let state = if enabled() { "ON (the default)" } else { "OFF (opted out this session)" };
             dom::set_status(
                 &format!(
                     "intent router: {state}. Free tiers when on: balance/credits, open \
@@ -182,12 +185,32 @@ async fn run_ui_command(cmd: UiCommand) -> String {
                 .to_string()
         }
         UiCommand::OpenDisplay => {
+            // The display overlay is FULLSCREEN — while it's up the chat input
+            // is unreachable, so "say it again to close" would be a lie here
+            // (tab-E2E); × / ESC are the real close paths.
+            let was_open = crate::app::dom::by_id("display-canvas").is_some();
             crate::app::opfs::toggle_display();
-            "Toggled the display overlay (× or the same command closes it).".to_string()
+            if was_open {
+                "Closed the display overlay.".to_string()
+            } else {
+                "Opened the display overlay (× or ESC closes it).".to_string()
+            }
         }
         UiCommand::OpenTerminal => {
+            // toggle_terminal is a NO-OP when closed with no CLI run stashed —
+            // probe before/after so the card never claims a toggle that didn't
+            // happen (found by the router tab-E2E).
+            let was_open = crate::app::cli::terminal_open();
             crate::app::cli::toggle_terminal();
-            "Toggled the terminal overlay (× or the same command closes it).".to_string()
+            if crate::app::cli::terminal_open() {
+                "Opened the terminal overlay (× or ESC closes it).".to_string()
+            } else if was_open {
+                "Closed the terminal overlay.".to_string()
+            } else {
+                "No terminal run to show yet — the overlay replays the last CLI run; \
+                 ask the model to run a command first."
+                    .to_string()
+            }
         }
     }
 }
