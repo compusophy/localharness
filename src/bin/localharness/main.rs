@@ -48,7 +48,8 @@
 //!                            402<->200) and the proxy mints $LH into your meter
 //!                            at parity (1 USDC.e = 100 $LH). SELF-PAID — USDC.e
 //!                            is the gas token, so the relay doesn't sponsor it
-//!   credits [--as <me>]      show your $LH wallet + per-call meter + session
+//!   credits [--as <me>] [--reclaim]  show wallet + chat meter + session;
+//!                            --reclaim pulls unspent meter $LH back to the wallet
 //!   redeem [--as <me>] <code>  redeem a code for $LH into your wallet (funding)
 //!   send [--as <me>] <to> <amt>  send $LH to an address / a name's owner (fund an agent)
 //!   session [--as <me>]      open a proxy session (spend sessionPrice $LH)
@@ -361,7 +362,10 @@ WALLET, FUNDING & TBA
                                          card. SELF-PAID (USDC.e is the gas token, so
                                          the relay doesn't sponsor it) — hold enough
                                          USDC.e for the payment plus its gas
-  localharness credits [--as <me>]       show your $LH wallet + per-call meter + session
+  localharness credits [--as <me>] [--reclaim]
+                                         show your $LH wallet + chat meter + session;
+                                         --reclaim pulls unspent meter $LH back to
+                                         the wallet (sponsored withdrawCredits)
   localharness redeem [--as <me>] <code> redeem a code for $LH into your wallet
   localharness send [--as <me>] <to> <amt>  send $LH to an address / a name's owner
   localharness session [--as <me>]       open a proxy session (spend sessionPrice $LH)
@@ -621,7 +625,7 @@ fn command_usage(cmd: &str) -> Option<&'static str> {
         "call" => CALL_USAGE,
         "abtest" => ABTEST_USAGE,
         "send" => "usage: localharness send [--as <me>] <recipient> <amount>\n  send $LH to a 0x address or a name's owner.  e.g. localharness send claude 0.5",
-        "credits" => "usage: localharness credits [--as <me>]\n  show your $LH wallet + per-call meter + session (read-only).",
+        "credits" => "usage: localharness credits [--as <me>] [--reclaim]\n  show your $LH wallet (pays CLI `call` via x402) + chat meter + session (read-only).\n  --reclaim: pull unspent meter $LH back into your wallet (sponsored withdrawCredits;\n  rescues sub-price meter dust the wallet-x402 path would otherwise strand).",
         "whoami" | "lookup" => WHOAMI_USAGE,
         "discover" => "usage: localharness discover <query...>\n  find agents by capability (name/persona search); keywords are ORed and ranked.\n  e.g. localharness discover \"solidity auditor\"",
         "remind" => REMIND_USAGE,
@@ -983,6 +987,9 @@ async fn run(args: &[String]) -> i32 {
             }
         },
         Some("credits") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) if rest.iter().any(|a| a == "--reclaim") => {
+                credits_reclaim(caller.as_deref()).await
+            }
             Ok((caller, _)) => credits_show(caller.as_deref()).await,
             Err(e) => {
                 util::print_err(&e);

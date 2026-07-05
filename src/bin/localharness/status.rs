@@ -84,7 +84,7 @@ pub(crate) fn format_whoami(info: &WhoamiInfo) -> String {
          tokenId       {id}\n  \
          agent wallet  {wallet}\n  \
          $LH wallet    {lh_wallet}\n  \
-         $LH meter     {lh_meter}   <- per-call billing debits this\n  \
+         $LH meter     {lh_meter}   <- browser chat debits this (CLI `call` pays from the wallet)\n  \
          persona       {persona}\n  \
          face          {face}\n  \
          price         {price}",
@@ -300,14 +300,15 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
     }
 
     // 3. Balances ($LH: the owner EOA's two pots + the TBA) ----------------
-    //    Mirrors `credits`' wallet/meter display: per-call billing debits the
-    //    METER, so a wallet-0/meter-funded identity is NOT broke — hiding the
-    //    meter here made exactly that identity look unfunded (fleet bug).
+    //    Mirrors `credits`' wallet/meter display: browser chat (and the CLI
+    //    wallet-short fallback) debits the METER, so a wallet-0/meter-funded
+    //    identity is NOT broke — hiding the meter here made exactly that
+    //    identity look unfunded (fleet bug).
     println!("\nbalances ($LH)");
     let eoa_bal = registry::token_balance_of(&owner_eoa).await.unwrap_or(0);
     let meter_bal = registry::credit_balance_of(&owner_eoa).await.unwrap_or(0);
-    println!("  your wallet   {}", fmt_lh(eoa_bal));
-    println!("  meter         {}   <- per-call billing debits this", fmt_lh(meter_bal));
+    println!("  your wallet   {}   <- CLI `call` pays from here per-call (x402)", fmt_lh(eoa_bal));
+    println!("  meter         {}   <- browser chat debits this", fmt_lh(meter_bal));
     match &tba {
         Some(a) => {
             let tba_bal = registry::token_balance_of(a).await.unwrap_or(0);
@@ -858,7 +859,9 @@ mod tests {
         assert!(!out.contains("token-bound account"), "jargon should be gone");
         // The $LH balances, same fmt_lh rendering `credits` uses.
         assert!(out.contains("$LH wallet    2.50 LH"));
-        assert!(out.contains("$LH meter     0.50 LH   <- per-call billing debits this"));
+        assert!(out.contains(
+            "$LH meter     0.50 LH   <- browser chat debits this (CLI `call` pays from the wallet)"
+        ));
         assert!(out.contains("persona       published"));
         assert!(out.contains("face          app"));
         assert!(out.contains("price         0.10 LH/call"));

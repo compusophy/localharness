@@ -221,7 +221,7 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness send` — transfer $LH to a 0x address or a name's owner
 - `localharness buy` — buy $LH with a card (fiat on-ramp)
 - `localharness onramp` — fund $LH with USDC.e via the Tempo MPP on-ramp (autonomous, no card)
-- `localharness credits` — show meter + wallet balances
+- `localharness credits` — show meter + wallet balances; --reclaim pulls unspent meter $LH back to the wallet
 - `localharness topup` — deposit wallet $LH into the per-call meter
 - `localharness invite` — escrow $LH behind a refundable bearer onboarding code
 - `localharness link` — adopt a funded web wallet's seed into a terminal identity (QR seed-adoption)

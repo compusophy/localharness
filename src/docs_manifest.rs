@@ -190,7 +190,7 @@ pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("send", "transfer $LH to a 0x address or a name's owner"),
     ("buy", "buy $LH with a card (fiat on-ramp)"),
     ("onramp", "fund $LH with USDC.e via the Tempo MPP on-ramp (autonomous, no card)"),
-    ("credits", "show meter + wallet balances"),
+    ("credits", "show meter + wallet balances; --reclaim pulls unspent meter $LH back to the wallet"),
     ("topup", "deposit wallet $LH into the per-call meter"),
     ("invite", "escrow $LH behind a refundable bearer onboarding code"),
     ("link", "adopt a funded web wallet's seed into a terminal identity (QR seed-adoption)"),

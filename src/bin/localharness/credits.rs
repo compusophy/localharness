@@ -1,8 +1,30 @@
 use crate::{bytes_to_hex_str, fmt_lh, load_signer, registry, wallet};
 
+/// Render the `credits` balance lines. Pure (testable). The labels state which
+/// pot ACTUALLY pays which flow (dogfood: the old meter label "per-call billing
+/// debits this" contradicted `call`'s "paid from your WALLET" x402 line):
+/// browser chat debits the METER; CLI `call` pays per-call from the WALLET via
+/// x402 (`try_build_x402_payment`) and only falls back to the meter when the
+/// wallet can't cover the price. A non-empty meter gets the `--reclaim` hint so
+/// sub-price dust is never stranded.
+pub(crate) fn format_credits(addr: &str, wallet_wei: u128, meter_wei: u128) -> String {
+    let mut out = format!(
+        "{addr}\n  wallet   {}   <- CLI `call` pays from here per-call (x402); send/escrow too\n  meter    {}   <- browser chat debits this; CLI `call` falls back here if the wallet is short",
+        fmt_lh(wallet_wei),
+        fmt_lh(meter_wei)
+    );
+    if meter_wei > 0 {
+        out.push_str(
+            "\n  (pull unspent meter $LH back into the wallet: `localharness credits --reclaim`)",
+        );
+    }
+    out
+}
+
 /// `localharness credits [--as <me>]` — show the caller's billing state: wallet
-/// `$LH`, the per-request meter (`creditOf`, what per-call billing debits), and
-/// any session window. Read-only; these are the exact numbers the proxy gates on.
+/// `$LH` (pays CLI `call` via x402 + transfers/escrow), the per-request meter
+/// (`creditOf`, what browser chat / the meter fallback debits), and any session
+/// window. Read-only; these are the exact numbers the proxy gates on.
 pub(crate) async fn credits_show(caller_name: Option<&str>) -> i32 {
     let signer = match load_signer(caller_name) {
         Ok(s) => s,
@@ -16,9 +38,7 @@ pub(crate) async fn credits_show(caller_name: Option<&str>) -> i32 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    println!("{addr}");
-    println!("  wallet   {}", fmt_lh(token));
-    println!("  meter    {}   <- per-call billing debits this", fmt_lh(meter));
+    println!("{}", format_credits(&addr, token, meter));
     if expiry > now {
         println!(
             "  session  active ~{}min left (proxy access without per-call metering)",
@@ -28,6 +48,60 @@ pub(crate) async fn credits_show(caller_name: Option<&str>) -> i32 {
         println!("  session  none  (open one with `localharness session`, or just `topup` for per-call billing)");
     }
     0
+}
+
+/// `localharness credits --reclaim [--as <me>]` — the DUST-RECOVERY path: pull
+/// the caller's whole withdrawable meter balance back into the wallet via a
+/// sponsored `withdrawCredits`. Sub-price meter balance (e.g. 0.99 $LH under a
+/// 1 $LH call price) was otherwise stranded once the wallet-x402 path took over
+/// billing. Uses `withdrawableOf` (NOT `creditOf`): the still-locked fiat-minted
+/// portion can't be withdrawn (spend-only on inference) and is reported, not
+/// attempted — so the on-chain call never reverts `InsufficientCredits`.
+pub(crate) async fn credits_reclaim(caller_name: Option<&str>) -> i32 {
+    let signer = match load_signer(caller_name) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
+    let meter = registry::credit_balance_of(&addr).await.unwrap_or(0);
+    let withdrawable = match registry::withdrawable_credit_of(&addr).await {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("reclaim: RPC error reading withdrawable balance: {e}");
+            return 1;
+        }
+    };
+    if withdrawable == 0 {
+        if meter > 0 {
+            println!(
+                "meter holds {} but none is withdrawable — fiat-minted $LH stays locked \
+                 (it still pays for chat/inference until its lock clears)",
+                fmt_lh(meter)
+            );
+        } else {
+            println!("meter is empty — nothing to reclaim");
+        }
+        return 0;
+    }
+    match registry::withdraw_credits_sponsored(&signer, withdrawable).await {
+        Ok(tx) => {
+            println!(
+                "reclaimed {} from the meter into your wallet  tx: {tx}",
+                fmt_lh(withdrawable)
+            );
+            if meter > withdrawable {
+                println!(
+                    "  ({} stays in the meter — locked fiat-minted $LH, spend-only on inference)",
+                    fmt_lh(meter - withdrawable)
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("reclaim failed: {e}");
+            1
+        }
+    }
 }
 
 /// `localharness topup [--as <me>]` — fund the caller for PER-CALL billing:
@@ -276,6 +350,23 @@ pub(crate) async fn topup(caller_name: Option<&str>, parsed: TopupArgs) -> i32 {
 mod tests {
     use super::*;
     use crate::args;
+
+    #[test]
+    fn format_credits_labels_the_pots_by_who_actually_debits_them() {
+        // The dogfood contradiction: `credits` said the METER pays per-call
+        // billing while `call` said "paying … from your WALLET (x402 …; the
+        // meter is untouched)". The labels must match the real flows: CLI
+        // call = wallet x402 (meter fallback); browser chat = meter.
+        let out = format_credits("0xabc", 2_500_000_000_000_000_000, 990_000_000_000_000_000);
+        assert!(out.starts_with("0xabc\n"));
+        assert!(out.contains("wallet   2.50 LH   <- CLI `call` pays from here per-call (x402)"));
+        assert!(out.contains("meter    0.99 LH   <- browser chat debits this"));
+        assert!(!out.contains("per-call billing debits this"), "the old lie is gone");
+        // Sub-price meter dust (0.99 < the 1 $LH call price) gets the recovery hint…
+        assert!(out.contains("credits --reclaim"));
+        // …but an empty meter doesn't nag.
+        assert!(!format_credits("0xabc", 1, 0).contains("--reclaim"));
+    }
 
     #[test]
     fn parse_topup_args_amount_all_and_inspect() {
