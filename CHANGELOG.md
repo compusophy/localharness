@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **T7 (TIP-1067 dynamic base fee) pre-flight: sponsored writes no longer set
+  `max_fee == priority == spot gas price`** — all four 0x76 builder sites
+  (`registry/tx.rs` self-paid/sponsored/create, the browser's
+  `run_sponsored_tempo_call`) now send `max_fee = 2× spot, priority = 0`.
+  Under T6's fixed base fee the old form was exact; under T7 (mainnet
+  2026-07-09) the base fee moves ±12.5%/block, so a spot-priced tx could be
+  rejected with "gas price is less than basefee" on every sponsored path.
+  Behavior-identical fees today; rides the swing after activation.
+
 ### Added
 
 - **INTENT-ROUTER SEAM — a free/metered cost gate in front of the browser

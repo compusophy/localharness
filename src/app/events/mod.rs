@@ -1116,8 +1116,8 @@ pub(crate) async fn run_sponsored_tempo_call(
         .map_err(|e| format!("gas price: {e}"))?;
 
     let tx = crate::tempo_tx::TempoTxBuilder::new(super::registry::CHAIN_ID())
-        .max_priority_fee_per_gas(gas_price)
-        .max_fee_per_gas(gas_price)
+        .max_priority_fee_per_gas(0)
+        .max_fee_per_gas(gas_price * 2)
         .gas_limit(gas_limit)
         .nonce(nonce)
         .calls(calls)

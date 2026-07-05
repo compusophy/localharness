@@ -60,6 +60,11 @@ pub const MAX_GAS_LIMIT: u128 = 50_000_000;
 /// Current `eth_gasPrice` reported by the node, in wei — REFUSING (Err) when it
 /// exceeds [`MAX_GAS_PRICE_WEI`], so every sponsored builder that prices off the
 /// node can't be tricked into an absurd fee by a compromised RPC.
+///
+/// Builders set `max_fee = 2 × this` with `priority_fee = 0` (T7/TIP-1067
+/// dynamic base fee: the spot read can be outrun by up to +12.5%/block, and
+/// `max_fee < base_fee` is a hard node rejection; the 2× headroom rides the
+/// swing while the zero tip pays only the actual base fee).
 pub async fn current_gas_price() -> Result<u128, String> {
     let price = eth_gas_price().await?;
     clamp_gas_price(price)
@@ -176,8 +181,8 @@ pub async fn submit_tempo_self_paid(
     for attempt in 0..2 {
         let nonce = eth_get_transaction_count(&sender_hex).await?;
         let mut builder = TempoTxBuilder::new(CHAIN_ID())
-            .max_priority_fee_per_gas(gas_price)
-            .max_fee_per_gas(gas_price)
+            .max_priority_fee_per_gas(0)
+            .max_fee_per_gas(gas_price * 2)
             .gas_limit(gas_limit)
             .nonce(nonce)
             .calls(calls.clone());
@@ -257,8 +262,8 @@ pub async fn submit_tempo_sponsored(
     for attempt in 0..2 {
         let nonce = eth_get_transaction_count(&sender_hex).await?;
         let tx = TempoTxBuilder::new(CHAIN_ID())
-            .max_priority_fee_per_gas(gas_price)
-            .max_fee_per_gas(gas_price)
+            .max_priority_fee_per_gas(0)
+            .max_fee_per_gas(gas_price * 2)
             .gas_limit(gas_limit)
             .nonce(nonce)
             .calls(calls.clone())
@@ -307,8 +312,8 @@ pub async fn create_sponsored(
     for attempt in 0..2 {
         let nonce = eth_get_transaction_count(&sender_hex).await?;
         let tx = TempoTxBuilder::new(CHAIN_ID())
-            .max_priority_fee_per_gas(gas_price)
-            .max_fee_per_gas(gas_price)
+            .max_priority_fee_per_gas(0)
+            .max_fee_per_gas(gas_price * 2)
             .gas_limit(gas_limit)
             .nonce(nonce)
             .call(TempoCall { to: [0u8; 20], value_wei: 0, input: init_code.clone() })
