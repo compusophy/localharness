@@ -257,6 +257,64 @@ pub(crate) fn status_more_note(total: usize, hint: &str) -> String {
     }
 }
 
+/// What a SELF-status (no positional name) resolved for the caller's key.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SelfIdentity {
+    /// Key the dashboard on this tokenId (the MAIN, or the `--as` name the
+    /// key provably owns on-chain).
+    Token(u64),
+    /// The key owns registered names, but none is its MAIN — report that
+    /// honestly instead of "no registered identity".
+    OwnedNoMain(Vec<String>),
+    /// Nothing registered for this key.
+    Unregistered,
+}
+
+/// Decide which identity a self-status shows. Pure + testable. Priority:
+/// 1. the key's MAIN tokenId;
+/// 2. the `--as <name>`'s tokenId — the name IS known from `--as`, so a
+///    registered non-MAIN identity must not report "no registered identity"
+///    (fleet bug: `status --as nova-qa` said exactly that for tokenId #28) —
+///    but ONLY when `ownerOfName(name)` == the key's derived address
+///    (case-insensitive hex: derivation lowercases, RPC may checksum);
+/// 3. names the key owns with no MAIN set → honest [`SelfIdentity::OwnedNoMain`];
+/// 4. nothing → [`SelfIdentity::Unregistered`].
+pub(crate) fn resolve_self_identity(
+    main_id: u64,
+    as_name_id: u64,
+    as_name_owner: Option<&str>,
+    key_addr: &str,
+    owned: &[String],
+) -> SelfIdentity {
+    if main_id != 0 {
+        return SelfIdentity::Token(main_id);
+    }
+    let as_name_is_mine =
+        as_name_owner.is_some_and(|o| o.eq_ignore_ascii_case(key_addr));
+    if as_name_is_mine && as_name_id != 0 {
+        return SelfIdentity::Token(as_name_id);
+    }
+    if !owned.is_empty() {
+        return SelfIdentity::OwnedNoMain(owned.to_vec());
+    }
+    SelfIdentity::Unregistered
+}
+
+/// The identity `tokenId` value for a status that resolved NO token: honest
+/// about "owns names, none MAIN" vs "nothing registered". Pure + testable.
+pub(crate) fn format_no_token_note(owned_no_main: &[String]) -> String {
+    if owned_no_main.is_empty() {
+        return "— (no registered identity)".to_string();
+    }
+    let shown: Vec<&str> = owned_no_main.iter().take(3).map(|s| s.as_str()).collect();
+    let more = if owned_no_main.len() > 3 {
+        format!(" +{} more", owned_no_main.len() - 3)
+    } else {
+        String::new()
+    };
+    format!("— (no MAIN identity set; owns {}{more})", shown.join(", "))
+}
+
 /// `status [--as <me>] [<name>]` — the unified read-only economy dashboard.
 /// Resolves the target identity (explicit `<name>` = any agent, pure read; else
 /// the caller's own key), then prints Identity / Balances / Reputation / Guilds /
@@ -264,7 +322,7 @@ pub(crate) fn status_more_note(total: usize, hint: &str) -> String {
 pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
     // 1. Resolve the target: a name is a pure read of any agent; no name
     //    resolves the caller's own identity from their local key.
-    let (label, owner_eoa, token_id) = match name {
+    let (label, owner_eoa, token_id, owned_no_main) = match name {
         Some(n) => {
             let owner = match registry::owner_of_name(n).await {
                 Ok(Some(o)) => o,
@@ -280,7 +338,7 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
             // Reuses the owner just fetched — no extra RPC, local FS only.
             warn_if_stale_local_key(n, &owner);
             let id = registry::id_of_name(n).await.unwrap_or(0);
-            (n.to_string(), owner, id)
+            (n.to_string(), owner, id, Vec::new())
         }
         None => {
             let signer = match load_signer(caller) {
@@ -288,19 +346,50 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
                 Err(code) => return code,
             };
             let addr = bytes_to_hex_str(&wallet::address(&signer));
-            // Prefer the caller's MAIN identity for the tokenId-keyed sections;
-            // fall back to the key-file stem as the display label.
+            // Prefer the caller's MAIN identity for the tokenId-keyed sections.
+            // A registered NON-MAIN identity has an empty mainOf() — but with
+            // `--as <name>` the name IS known, so verify ownerOfName(name)
+            // against this key before declaring "no registered identity"
+            // (fleet bug: `status --as nova-qa` reported exactly that for the
+            // registered #28). Extra RPC only on the main_id==0 paths.
             let main_id = registry::main_of(&addr).await.unwrap_or(0);
-            let label = if main_id != 0 {
-                registry::name_of_id(main_id)
-                    .await
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| resolve_caller_label(caller).unwrap_or_else(|_| addr.clone()))
-            } else {
-                resolve_caller_label(caller).unwrap_or_else(|_| addr.clone())
+            let (as_name_id, as_name_owner) = match caller {
+                Some(n) if main_id == 0 => (
+                    registry::id_of_name(n).await.unwrap_or(0),
+                    registry::owner_of_name(n).await.ok().flatten(),
+                ),
+                _ => (0, None),
             };
-            (label, addr, main_id)
+            let owned: Vec<String> = if main_id == 0
+                && !(as_name_id != 0
+                    && as_name_owner
+                        .as_deref()
+                        .is_some_and(|o| o.eq_ignore_ascii_case(&addr)))
+            {
+                registry::list_owned_tokens(&addr)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| t.name)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let fallback_label =
+                || resolve_caller_label(caller).unwrap_or_else(|_| addr.clone());
+            match resolve_self_identity(main_id, as_name_id, as_name_owner.as_deref(), &addr, &owned)
+            {
+                SelfIdentity::Token(id) => {
+                    let label = registry::name_of_id(id)
+                        .await
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(fallback_label);
+                    (label, addr, id, Vec::new())
+                }
+                SelfIdentity::OwnedNoMain(names) => (fallback_label(), addr, 0, names),
+                SelfIdentity::Unregistered => (fallback_label(), addr, 0, Vec::new()),
+            }
         }
     };
 
@@ -317,7 +406,7 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
     if token_id != 0 {
         println!("  tokenId   #{token_id}");
     } else {
-        println!("  tokenId   — (no registered identity)");
+        println!("  tokenId   {}", format_no_token_note(&owned_no_main));
     }
     // MAIN identity, shown only when it differs from this token (so a sub-name
     // surfaces its primary). owner_eoa here is the holder address.
@@ -994,6 +1083,63 @@ mod tests {
         assert!(v["walletLhWei"].is_null());
         assert!(v["meterLhWei"].is_null());
         assert_eq!(v["persona"], false);
+    }
+
+    #[test]
+    fn self_identity_prefers_main_then_as_name_then_owned() {
+        let none: &[String] = &[];
+        // MAIN set → always the MAIN token, even with an --as name given.
+        assert_eq!(
+            resolve_self_identity(7, 28, Some("0xAAA"), "0xaaa", none),
+            SelfIdentity::Token(7)
+        );
+        // The fleet bug: no MAIN, but the --as name is registered (#28) and
+        // ownerOfName == the key's derived address → that token, NOT
+        // "no registered identity". Case-insensitive hex match.
+        assert_eq!(
+            resolve_self_identity(0, 28, Some("0xAbC1"), "0xabc1", none),
+            SelfIdentity::Token(28)
+        );
+        // --as name owned by SOMEONE ELSE → never adopt its token.
+        assert_eq!(
+            resolve_self_identity(0, 28, Some("0x9999"), "0xabc1", none),
+            SelfIdentity::Unregistered
+        );
+        // --as name unregistered (id 0) → not a token either.
+        assert_eq!(
+            resolve_self_identity(0, 0, Some("0xabc1"), "0xabc1", none),
+            SelfIdentity::Unregistered
+        );
+        // Key owns names but none is MAIN and --as didn't resolve → honest list.
+        let owned = vec!["nova-qa".to_string(), "probe".to_string()];
+        assert_eq!(
+            resolve_self_identity(0, 0, None, "0xabc1", &owned),
+            SelfIdentity::OwnedNoMain(owned.clone())
+        );
+        // Nothing at all → unregistered.
+        assert_eq!(
+            resolve_self_identity(0, 0, None, "0xabc1", none),
+            SelfIdentity::Unregistered
+        );
+    }
+
+    #[test]
+    fn no_token_note_distinguishes_owned_from_unregistered() {
+        // Nothing owned → the original honest one-liner.
+        assert_eq!(format_no_token_note(&[]), "— (no registered identity)");
+        // Owned-but-no-MAIN names its holdings instead of lying.
+        let owned = vec!["nova-qa".to_string()];
+        assert_eq!(
+            format_no_token_note(&owned),
+            "— (no MAIN identity set; owns nova-qa)"
+        );
+        // Caps at 3 shown + an overflow count.
+        let many: Vec<String> =
+            ["a", "b", "c", "d", "e"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            format_no_token_note(&many),
+            "— (no MAIN identity set; owns a, b, c +2 more)"
+        );
     }
 
     #[test]
