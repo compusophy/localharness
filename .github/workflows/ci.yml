@@ -99,3 +99,76 @@ jobs:
         run: npx tsc --noEmit
       - name: proxy test suite (auth-parity / sponsor / mpp / webpush)
         run: bash test/run.sh
+
+  tab-e2e:
+    # Browser tab-E2E of the SHIPPED bundle (scripts/tab-e2e/): boots the real
+    # wasm app in a headless Chrome tab and asserts what a user actually sees —
+    # boot, the intent router's free path, the bell, the display overlay,
+    # Stop/TURN_ACTIVE mid-stream (as a tenant), and the cartridge loop (embed
+    # card, history resume, app.rl public face, overlay worker kill). Zero
+    # network spend: model calls are stalled or rerouted to the local
+    # fake-Gemini SSE endpoint and the tenant-sim aborts all RPC/proxy requests.
+    #
+    # Deliberately NOT done here: building the release CLI for cartridge-e2e's
+    # fixture compile gate (LH_CLI). `cargo build --release --features wallet
+    # --bin localharness` would add several uncached minutes for ONE duplicate
+    # check — the same fixture is compiled in-browser by the app anyway, and the
+    # suite logs the skip honestly when no binary exists. Set LH_CLI later if
+    # that trade-off changes.
+    name: tab-e2e — browser regression (headless Chrome)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Prebuilt binary via the official installer (`cargo install wasm-pack`
+      # costs minutes). No binaryen/wasm-opt setup: this repo DISABLES wasm-opt
+      # (Cargo.toml [package.metadata.wasm-pack.profile.release] wasm-opt=false
+      # — the bundled wasm-opt rejects post-MVP features modern rustc emits).
+      - name: install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+
+      # The real deploy build: gen-docs → wasm-pack (release, browser-app,
+      # mainnet) → cache-buster stamp. bash-clean on Linux (the cygpath calls
+      # are ||-guarded; gen-feedback-resolutions is best-effort by design).
+      # Cold-cache this is the long pole; rust-cache keeps warm runs short.
+      - name: build web bundle (./scripts/build-web.sh)
+        timeout-minutes: 35
+        run: ./scripts/build-web.sh
+
+      # puppeteer-core is pinned in scripts/tab-e2e/package.json (no lockfile
+      # there, so npm install not ci). It drives the runner's EXISTING Chrome —
+      # downloads no browser.
+      - name: install puppeteer-core
+        run: npm install --prefix scripts/tab-e2e --no-audit --no-fund
+
+      # ubuntu runners ship Google Chrome at /usr/bin/google-chrome (a path
+      # lib.mjs::findBrowser probes itself); CHROME_PATH just pins the choice.
+      # This step fails loudly if the runner image ever drops Chrome.
+      - name: chrome sanity
+        run: google-chrome --version
+
+      # Suite failures fail the job (each suite exits 1 on any FAIL check); the
+      # per-step timeouts only bound a hung browser/server — no retries.
+      - name: tab-e2e-main (boot / router / bell / display / Stop turn-guard)
+        timeout-minutes: 8
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node scripts/tab-e2e/tab-e2e-main.mjs
+      - name: stop-e2e (tenant, Stop genuinely mid-stream)
+        timeout-minutes: 8
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node scripts/tab-e2e/stop-e2e.mjs
+      - name: cartridge-e2e (embed card / history resume / app.rl face / overlay)
+        timeout-minutes: 8
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node scripts/tab-e2e/cartridge-e2e.mjs
