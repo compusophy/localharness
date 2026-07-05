@@ -504,6 +504,22 @@ where
             });
         }
 
+        // Stop pressed mid-dispatch: fold every never-dispatched call into the
+        // SAME results batch as a synthetic error result, so ONE
+        // `tool_result_messages` covers every functionCall in the model turn.
+        // A separate balance append left gemini (whose
+        // `on_cancel_with_pending_calls` is the empty engine default) with an
+        // unbalanced call/response turn that 400s every later message — and
+        // the unbalanced history PERSISTS to OPFS, bricking the chat.
+        let cancelled_mid_dispatch = !undispatched.is_empty();
+        for call in undispatched.drain(..) {
+            results.push(DispatchedResult {
+                call,
+                value: json!({ "error": "cancelled" }),
+                is_error: true,
+            });
+        }
+
         // Push the tool results back into history in the provider's shape.
         // Guarded on non-empty: a cancel on the FIRST iteration dispatches
         // nothing, and an empty batch could shape into an empty (wire-invalid)
@@ -515,12 +531,8 @@ where
                 .extend(P::tool_result_messages(results));
         }
 
-        // Stop pressed mid-dispatch: balance the never-dispatched calls (same
-        // provider hook as the pre-dispatch cancel) and end the turn.
-        if !undispatched.is_empty() {
+        if cancelled_mid_dispatch {
             debug!("turn cancelled between tool dispatches");
-            let balance = P::on_cancel_with_pending_calls(&undispatched);
-            deps.state.history.lock().extend(balance);
             break;
         }
 
@@ -963,9 +975,9 @@ mod tests {
                 "user:hi".to_string(),
                 "assistant::2".to_string(),
                 "tool:c1:{\"ok\":true}".to_string(),
-                "cancelled:c2".to_string(),
+                "tool:c2:{\"error\":\"cancelled\"}".to_string(),
             ],
-            "c1 dispatched (its result persisted); c2 skipped and balanced"
+            "c1 dispatched (its result persisted); c2 skipped, folded into the same results batch"
         );
         assert!(state.idle.load(Ordering::Acquire));
     }
