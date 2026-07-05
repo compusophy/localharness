@@ -20,10 +20,13 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   `min(cost,balance)` (a positive balance spends to zero). 1 `$LH`/message; fiat
   gross-mints at $1 = 100 `$LH`.
 - `sponsor.ts` — the KEYLESS mainnet fee-payer RELAY: selector allowlist +
-  onboarding-only gate (funded callers refused value-sponsorship → `LH_RELAY_FUNDED`)
-  + `ALWAYS_FREE_SELECTORS` (gas-only, no-value: submitFeedback/register/releaseName/
-  settle/transfer/setPushSub) + rate window + float breaker. The TS tx wire-port is
-  PINNED to Rust golden vectors — keep them in sync.
+  onboarding-only gate (funded callers → `LH_RELAY_FUNDED`) + rate window + float
+  breaker. Gate-EXEMPT (funded callers still relayed): `ALWAYS_FREE_SELECTORS`
+  (submitFeedback/register/releaseName/setPushSub), `SELF_PAY_SELECTORS` (settle/
+  approve(diamond)/transfer/createInvite/withdrawCredits — caller's OWN $LH),
+  `BOUNTY_LIFECYCLE_SELECTORS`, and `setMetadata` ≤4096B self-edits (live-probed:
+  1KB→200, 5KB→`LH_RELAY_FUNDED`; `test/relay-gate-probe.mjs`). The TS tx
+  wire-port is PINNED to Rust golden vectors — keep them in sync.
 - `scheduler.ts` — Vercel-Cron no-tab job worker (`vercel.json` `* * * * *`, 1-min);
   calls `recordRun` (SCHEDULER-ROLE, CAS-guarded). Sub-minute can't ride this.
 - `notify.ts` + `_webpush.ts` — web-push (self or cross-agent `to`), dedup by the

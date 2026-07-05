@@ -567,10 +567,14 @@ localharnesslite** (CLI `sh` + browser `execute_script`; design/bashlite.md). Op
 - **Browser relay E2E + web redeploy** — the keyless bundle routes onboarding
   through the relay (committed); needs an in-browser onboarding test, then a
   deliberate `build-web.sh` + deploy.
-- **Relay funded-agent writes (PARTIAL)** — a funded agent CAN now spend its own $LH
-  on mainnet via the relay (`SELF_PAY_SELECTORS`: transfer/settle/approve/createInvite
-  are gate-exempt). OPEN: its other writes (publish/schedule `setMetadata`) still gate
-  to `LH_RELAY_FUNDED`, and it can't self-pay gas (holds $LH, never the AlphaUSD fee token).
+- **Relay funded-agent writes (CLOSED; residual gate is POLICY)** — a funded agent
+  relays its own-$LH moves (`SELF_PAY_SELECTORS` + the bounty/attest lifecycle), the
+  always-free set, and `setMetadata` self-edits ≤4096B (persona/lessons/price/face
+  choice) — live-probed 2026-07-05. Cartridge publish + scheduling are OFF-CHAIN
+  (proxy `publish.ts` / `api/schedule`), never gated. Still `LH_RELAY_FUNDED` by
+  DESIGN: `setMetadata` >4096B (~7.6k gas/byte cap) + non-exempt diamond writes
+  (guild/party/voting/room/…); no agent self-pays gas (holds $LH, never the fee
+  token — USDC.e on mainnet).
 - **SessionRoom phase 2** — multi-identity rooms: ECIES-grant `K_room` (v1 live).
 - **P2P teams** — 2-device E2E, mutable shared-FS, team UI.
 - **Local Gemma** — shipped behind `browser-app-local`; a live WebGPU run pending.
