@@ -1,11 +1,13 @@
 //! Idle (stall) timeout for model response streams.
 //!
-//! A streaming model response is consumed chunk-by-chunk in the backend
-//! turn loops (`gemini/loop.rs`, `anthropic/loop.rs`). The UI stop button
-//! is *cooperative* — it's only checked between chunks — so a stream parked
-//! on a silent socket (a black-holed proxy, a model that opened the
-//! connection and then went away) never reaches a cancel boundary and the
-//! turn hangs forever, holding the one-turn-at-a-time guard.
+//! A streaming model response is consumed chunk-by-chunk in the shared turn
+//! engine (`turn_engine.rs`). The UI stop button is *cooperative*, and a
+//! stream parked on a silent socket (a black-holed proxy, a model that opened
+//! the connection and then went away) produces no chunks — so this module
+//! provides both an idle deadline AND a cancel-aware wrapper
+//! ([`next_with_idle_timeout_or_cancel`]) that re-checks the stop flag every
+//! [`CANCEL_POLL_MS`] while the stream is silent (telemetry #33: Stop used to
+//! wait for the next chunk).
 //!
 //! This module wraps the per-chunk `stream.next().await` in an IDLE-based
 //! deadline: each awaited chunk races a fresh [`sleep_ms`] of
@@ -18,6 +20,7 @@
 //! guard releases. No panic; recoverable.
 
 use std::pin::pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_core::Stream;
 use futures_util::stream::StreamExt;
@@ -58,6 +61,56 @@ pub(crate) enum NextChunk<T> {
     End,
     /// No data arrived for the whole idle window — the stream stalled.
     IdleTimeout,
+    /// The cancel flag flipped while the stream was silent (the stop button).
+    Cancelled,
+}
+
+/// How often a SILENT stream re-checks the cancel flag, in milliseconds.
+///
+/// This bounds the stop button's worst-case latency while the model is between
+/// chunks (thinking, network stall): before this existed, cancel was only
+/// observed when the NEXT chunk arrived — a long pre-answer think meant Stop
+/// did nothing for seconds (telemetry #33). A chunk that IS ready still wins
+/// instantly ([`next_with_idle_timeout`] polls the stream first), so a steady
+/// stream pays nothing for the polling.
+pub(crate) const CANCEL_POLL_MS: u32 = 100;
+
+/// Await the next item of `stream` under the idle deadline, ALSO honouring a
+/// cooperative `cancel` flag while the stream is silent.
+///
+/// Implementation: the idle window is consumed in [`CANCEL_POLL_MS`] slices;
+/// between slices the flag is re-read. Dropping the intermediate `next()`
+/// future between slices is safe — the stream itself retains all progress
+/// (an item is only moved out on `Poll::Ready`). The idle semantics are
+/// unchanged: only `idle_ms` of TOTAL silence returns `IdleTimeout`, and any
+/// arriving item re-arms the window (the caller re-invokes per chunk).
+pub(crate) async fn next_with_idle_timeout_or_cancel<S, T>(
+    stream: &mut S,
+    idle_ms: u32,
+    cancel: &AtomicBool,
+) -> NextChunk<T>
+where
+    S: Stream<Item = T> + Unpin,
+{
+    let mut waited: u32 = 0;
+    loop {
+        // Checked BEFORE each poll slice: a stop pressed while the stream is
+        // silent is seen within one slice, and a stop pressed between chunks
+        // is seen on the next invocation's first check.
+        if cancel.load(Ordering::Acquire) {
+            return NextChunk::Cancelled;
+        }
+        let slice = CANCEL_POLL_MS.min(idle_ms - waited).max(1);
+        match next_with_idle_timeout(stream, slice).await {
+            NextChunk::IdleTimeout => {
+                waited = waited.saturating_add(slice);
+                if waited >= idle_ms {
+                    return NextChunk::IdleTimeout;
+                }
+            }
+            other => return other,
+        }
+    }
 }
 
 /// Await the next item of `stream`, racing it against a freshly-armed
@@ -125,5 +178,69 @@ mod tests {
     #[test]
     fn idle_window_is_two_minutes() {
         assert_eq!(STREAM_IDLE_TIMEOUT_MS, 120_000);
+    }
+
+    /// A cancel flag that is ALREADY set returns `Cancelled` immediately — even
+    /// with a ready item queued. Cancel means "drop everything", not "finish
+    /// reading first".
+    #[tokio::test]
+    async fn preset_cancel_wins_over_a_ready_item() {
+        let cancel = AtomicBool::new(true);
+        let mut s = stream::iter(vec![42i32]);
+        assert!(matches!(
+            next_with_idle_timeout_or_cancel(&mut s, 60_000, &cancel).await,
+            NextChunk::Cancelled
+        ));
+    }
+
+    /// The stop button pressed while the stream is SILENT (mid-think / stalled
+    /// socket) is observed within roughly one poll slice — the telemetry #33
+    /// fix: cancel no longer waits for the next chunk to arrive.
+    #[tokio::test]
+    async fn cancel_mid_silence_interrupts_promptly() {
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flip = cancel.clone();
+        tokio::spawn(async move {
+            crate::runtime::sleep_ms(30).await;
+            flip.store(true, Ordering::Release);
+        });
+        let mut s = stream::pending::<i32>();
+        let t0 = std::time::Instant::now();
+        let out = next_with_idle_timeout_or_cancel(&mut s, 60_000, &cancel).await;
+        assert!(matches!(out, NextChunk::Cancelled), "cancel must break a silent stream");
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(5),
+            "cancel latency is bounded by the poll slice, not the 60s idle window"
+        );
+    }
+
+    /// Uncancelled behavior is unchanged: a ready item still wins, EOF is
+    /// still `End`, and total silence still trips `IdleTimeout` (the window
+    /// accumulates across poll slices).
+    #[tokio::test]
+    async fn uncancelled_semantics_match_the_plain_helper() {
+        let cancel = AtomicBool::new(false);
+        let mut s = stream::iter(vec![7i32]);
+        assert!(matches!(
+            next_with_idle_timeout_or_cancel(&mut s, 60_000, &cancel).await,
+            NextChunk::Item(7)
+        ));
+        assert!(matches!(
+            next_with_idle_timeout_or_cancel(&mut s, 60_000, &cancel).await,
+            NextChunk::End
+        ));
+        // idle_ms smaller than one poll slice: the slice clamps to it.
+        let mut p = stream::pending::<i32>();
+        assert!(matches!(
+            next_with_idle_timeout_or_cancel(&mut p, 25, &cancel).await,
+            NextChunk::IdleTimeout
+        ));
+        // idle_ms spanning multiple slices still times out (accumulation).
+        let mut p2 = stream::pending::<i32>();
+        assert!(matches!(
+            next_with_idle_timeout_or_cancel(&mut p2, 220, &cancel).await,
+            NextChunk::IdleTimeout
+        ));
     }
 }

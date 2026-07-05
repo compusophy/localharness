@@ -94,12 +94,28 @@ pub(crate) fn set_pending_compact() {
 /// `agent.cancel_turn()` stops the *producer* — the detached task driving
 /// the agent loop — so it stops calling the model and running tools
 /// instead of finishing the turn in the background while the UI moves on.
+/// The engine observes the flag within its cancel poll slice (~100ms — see
+/// `backends::stream_timeout::CANCEL_POLL_MS`) and drops the in-flight HTTP
+/// response; only a tool call already mid-execution runs to its end. The FIRST
+/// click also paints an optimistic acknowledgment (telemetry #33: the button
+/// looked dead, so users hammered it): the pulsing stage cue stops and the
+/// status line reads "stopping…" immediately; the transcript's "Stopped." note
+/// reconciles when the turn actually ends (`TurnGuard` restores the button).
 pub(crate) fn request_stop_turn() {
-    TURN_CANCEL.with(|c| c.set(true));
+    let already_requested = TURN_CANCEL.with(|c| c.replace(true));
     if let Some(agent) = APP.with(|cell| cell.borrow().agent.clone()) {
         agent.cancel_turn();
     }
+    if already_requested || !TURN_ACTIVE.with(|c| c.get()) {
+        return;
+    }
+    stage::end();
+    dom::set_status(STOPPING_STATUS, false);
 }
+
+/// The optimistic status painted on the FIRST stop click; `TurnGuard` clears
+/// it (by exact match, so real errors are never wiped) when the turn ends.
+const STOPPING_STATUS: &str = "stopping…";
 
 /// Whether the running turn has been asked to stop (the stop button). Tools
 /// that wait (e.g. `dwell`) poll this between chunks so Stop interrupts them
@@ -121,6 +137,15 @@ impl Drop for TurnGuard {
         stage::end();
         if dom::by_id("terminal-stop").is_some() {
             dom::swap_outer("terminal-stop", &templates::send_button().into_string());
+        }
+        // Reconcile the optimistic stop acknowledgment: clear the status line
+        // ONLY if it still reads the exact "stopping…" request_stop_turn
+        // painted — the transcript's "Stopped." note supersedes it, and a real
+        // error status set during the turn must survive.
+        if let Some(el) = dom::by_id("system-status") {
+            if el.text_content().as_deref() == Some(STOPPING_STATUS) {
+                dom::set_status("", false);
+            }
         }
     }
 }

@@ -34,6 +34,7 @@
 //! phase 3 gemini (the always-on default path). All three streaming backends
 //! ride this one loop — a scaffold fix lands HERE, once.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -47,7 +48,9 @@ use crate::backends::dispatch::{dispatch_post_turn, dispatch_tool_call, gate_pre
 use crate::builtins::FINISH_TOOL_NAME;
 use crate::backends::loop_util::extract_canonical_path;
 use crate::backends::state::LoopState;
-use crate::backends::stream_timeout::{idle_timeout_ms, next_with_idle_timeout, NextChunk};
+use crate::backends::stream_timeout::{
+    idle_timeout_ms, next_with_idle_timeout_or_cancel, NextChunk,
+};
 use crate::content::Content;
 use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
@@ -328,9 +331,28 @@ where
             // cooperative cancel can't reach).
             let idle_ms = idle_timeout_ms();
             loop {
-                let ev_res = match next_with_idle_timeout(&mut stream, idle_ms).await {
+                // The cancel flag is honoured even while the stream is SILENT
+                // (model thinking, stalled socket): the helper re-checks it
+                // every `CANCEL_POLL_MS`, so the stop button no longer waits
+                // for the next chunk to arrive (telemetry #33).
+                let ev_res = match next_with_idle_timeout_or_cancel(
+                    &mut stream,
+                    idle_ms,
+                    &deps.state.cancel,
+                )
+                .await
+                {
                     NextChunk::Item(item) => item,
                     NextChunk::End => break,
+                    // Stop pressed: break NOW. `stream` drops at the end of
+                    // this 'request pass, which ABORTS the in-flight HTTP
+                    // request — reqwest-wasm's AbortGuard rides inside
+                    // `bytes_stream` (drop → AbortController.abort()); native
+                    // drops the hyper body/connection.
+                    NextChunk::Cancelled => {
+                        debug!("turn cancelled mid-stream — dropping the in-flight response");
+                        break;
+                    }
                     NextChunk::IdleTimeout => {
                         let e = Error::other(format!(
                             "model stream stalled — no data for {}s",
@@ -339,10 +361,6 @@ where
                         return Err(turn_fail(&deps.state, e));
                     }
                 };
-                // Cooperative stop: drop the rest of this streamed response.
-                if deps.state.cancel.load(Ordering::Acquire) {
-                    break;
-                }
                 let ev = match ev_res {
                     Ok(c) => c,
                     Err(e) => return Err(turn_fail(&deps.state, e)),
@@ -402,10 +420,20 @@ where
         }
 
         // Dispatch every tool call; results are shaped back onto the wire by
-        // the provider at the end of the round.
+        // the provider at the end of the round. The cancel flag is re-checked
+        // BETWEEN dispatches (telemetry #33): a stop pressed while one tool
+        // runs skips the remaining calls instead of executing them all —
+        // the skipped calls are balanced below so history stays wire-valid.
         let mut results: Vec<DispatchedResult> = Vec::with_capacity(pending_calls.len());
         let mut saw_finish = false;
-        for call in pending_calls {
+        let mut undispatched: Vec<ResolvedCall> = Vec::new();
+        let mut queue: VecDeque<ResolvedCall> = pending_calls.into();
+        while let Some(call) = queue.pop_front() {
+            if deps.state.cancel.load(Ordering::Acquire) {
+                undispatched.push(call);
+                undispatched.extend(queue);
+                break;
+            }
             // Streamed args failed to parse — surface a clear tool error to
             // the model instead of running the tool with `{}`. Skip execution.
             if let Some(msg) = call.parse_error.clone() {
@@ -477,10 +505,24 @@ where
         }
 
         // Push the tool results back into history in the provider's shape.
-        deps.state
-            .history
-            .lock()
-            .extend(P::tool_result_messages(results));
+        // Guarded on non-empty: a cancel on the FIRST iteration dispatches
+        // nothing, and an empty batch could shape into an empty (wire-invalid)
+        // tool-results message on some providers.
+        if !results.is_empty() {
+            deps.state
+                .history
+                .lock()
+                .extend(P::tool_result_messages(results));
+        }
+
+        // Stop pressed mid-dispatch: balance the never-dispatched calls (same
+        // provider hook as the pre-dispatch cancel) and end the turn.
+        if !undispatched.is_empty() {
+            debug!("turn cancelled between tool dispatches");
+            let balance = P::on_cancel_with_pending_calls(&undispatched);
+            deps.state.history.lock().extend(balance);
+            break;
+        }
 
         if saw_finish {
             finished_turn = true;
@@ -825,6 +867,105 @@ mod tests {
                 "cancelled:c1".to_string(),
             ],
             "the pending call is balanced, never dispatched"
+        );
+        assert!(state.idle.load(Ordering::Acquire));
+    }
+
+    /// Telemetry #33 (stalled stream): cancel fires while the model stream is
+    /// SILENT (no chunk to piggyback the check on). The engine must observe it
+    /// within the cancel poll slice — dropping the in-flight response — instead
+    /// of waiting out the 120s idle window / the next chunk.
+    #[tokio::test]
+    async fn cancel_breaks_a_silent_stream_without_waiting_for_a_chunk() {
+        let (tx, _rx) = broadcast::channel::<Step>(64);
+        let state = Arc::new(LoopState::new(tx));
+        let deps = EngineDeps::<MockProvider> {
+            config: (),
+            state: state.clone(),
+            tool_runner: None,
+            hook_runner: None,
+            session_ctx: None,
+        };
+        let cancel = state.cancel.clone();
+        tokio::spawn(async move {
+            crate::runtime::sleep_ms(30).await;
+            cancel.store(true, Ordering::Release);
+        });
+        let t0 = std::time::Instant::now();
+        run_turn::<MockProvider, _, _, _, _, _>(
+            deps,
+            "user:hi".to_string(),
+            Content::text("hi"),
+            |_req| async { Ok(futures_util::stream::pending::<Result<Ev>>()) },
+            || async {},
+        )
+        .await
+        .expect("a cancelled turn ends Ok, not Err");
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(30),
+            "cancel must interrupt the silent stream promptly (not the idle window)"
+        );
+        assert!(state.idle.load(Ordering::Acquire), "idle guard released");
+    }
+
+    /// Telemetry #33 (long tool calls): cancel fires WHILE a tool runs. The
+    /// remaining calls of the round are skipped and balanced via the provider
+    /// hook — Stop no longer executes the whole batch to completion.
+    #[tokio::test]
+    async fn cancel_during_a_tool_call_skips_and_balances_the_rest() {
+        let (tx, _rx) = broadcast::channel::<Step>(64);
+        let state = Arc::new(LoopState::new(tx));
+        let runner = Arc::new(ToolRunner::new());
+        let cancel = state.cancel.clone();
+        runner.register(crate::tools::ClosureTool::new(
+            "stopper",
+            "flips cancel mid-run (simulates Stop during a long tool call)",
+            json!({"type": "object", "properties": {}}),
+            move |_args, _ctx| {
+                let cancel = cancel.clone();
+                async move {
+                    cancel.store(true, Ordering::Release);
+                    Ok(json!({ "ok": true }))
+                }
+            },
+        ));
+        let deps = EngineDeps::<MockProvider> {
+            config: (),
+            state: state.clone(),
+            tool_runner: Some(runner),
+            hook_runner: None,
+            session_ctx: None,
+        };
+        let script = Mutex::new(VecDeque::from(vec![vec![
+            Ev::Call { id: "c1", name: "stopper", args: "{}" },
+            Ev::Call { id: "c2", name: "stopper", args: "{}" },
+        ]]));
+        run_turn::<MockProvider, _, _, _, _, _>(
+            deps,
+            "user:hi".to_string(),
+            Content::text("hi"),
+            |_req| {
+                let evs = script.lock().pop_front().unwrap_or_default();
+                async move {
+                    Ok(futures_util::stream::iter(
+                        evs.into_iter().map(Ok::<_, Error>),
+                    ))
+                }
+            },
+            || async {},
+        )
+        .await
+        .expect("turn ok");
+        let hist = state.history.lock().clone();
+        assert_eq!(
+            hist,
+            vec![
+                "user:hi".to_string(),
+                "assistant::2".to_string(),
+                "tool:c1:{\"ok\":true}".to_string(),
+                "cancelled:c2".to_string(),
+            ],
+            "c1 dispatched (its result persisted); c2 skipped and balanced"
         );
         assert!(state.idle.load(Ordering::Acquire));
     }
