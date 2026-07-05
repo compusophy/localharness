@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **First-time visitors no longer see the seed-pull face flash** — the apex
+  round-trip's empty return (`?seed_import=none`, every pure visitor) used to
+  load a second full tenant document and repaint the face (~0.7s visible).
+  Now: apex bounces back via bfcache (`history.back()`, original face
+  restored untouched, ~23ms away-window measured), boot.js fast-bounces
+  identity-less visitors before the wasm even loads, and only a real
+  imported seed repaints (pure `seed_flow::should_repaint` core). Owner
+  seed-adoption semantics byte-identical; drift guard
+  `tests/seed_pull_boot_parity.rs`; proof `scripts/tab-e2e/seedpull-e2e.mjs`.
 - **In-browser Gemma (`browser-app-local`) actually generates** — first live
   WebGPU proof ("Hello, I'm Gemma.", 9.08 tok/s, RTX 3090 headless Chrome)
   flushed out four fixes: wasm needs `init_setup_async::<WebGpu>` before the
