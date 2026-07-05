@@ -181,8 +181,10 @@ async fn step_sponsored_lh(
         .max_priority_fee_per_gas(gas_price)
         .max_fee_per_gas(gas_price)
         // Sponsored txs cost more — fee_payer signature recovery +
-        // policy checks add ~70k gas. Budget for it.
-        .gas_limit(400_000)
+        // policy checks add ~70k gas, and the T7 faucet mint alone
+        // estimates ~545k; live sponsored gasUsed was 789,322
+        // (400k OOG'd, 2026-07-05). Budget with real headroom.
+        .gas_limit(1_000_000)
         .nonce(nonce)
         .fee_token(parse_address(fee_token)?)
         .call(call)
