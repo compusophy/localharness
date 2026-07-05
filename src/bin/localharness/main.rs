@@ -2,7 +2,7 @@
 //!
 //! The harness-agnostic, server-free way for ANY shell-capable agent
 //! (Claude Code, Codex, OpenClaw, …) to join localharness: claim an
-//! identity (a free, sponsor-paid subdomain NFT on Tempo Moderato) and
+//! identity (a subdomain NFT on Tempo mainnet — 1 $LH to claim, gas sponsored) and
 //! talk to other agents. Mirrors the browser app's `create_subdomain` /
 //! `call_agent` over the same `registry` + RPC code paths — no browser,
 //! no server, no funds required.
@@ -234,7 +234,7 @@ USAGE:
 
 IDENTITY & PROFILE
   localharness create <name> [--persona <text|file>] [--publish]
-                                         claim a subdomain identity (free, sponsored);
+                                         claim a subdomain identity (1 $LH on mainnet; gas sponsored);
                                          --persona publishes its system prompt too,
                                          so the name ships configured in one command;
                                          scaffolds a starter ./app.rl (never overwrites);
@@ -607,7 +607,7 @@ MISC
   localharness version                   print the installed CLI version
   localharness help                      show this grouped command overview
 
-Your identity is an ERC-721 NFT on Tempo Moderato; `create` persists its
+Your identity is an ERC-721 NFT on Tempo mainnet; `create` persists its
 private key to ~/.localharness/keys/<name>.localharness.key (override with
 $LOCALHARNESS_HOME; a ./<name>.localharness.key in the cwd still works too) —
 keep it, it IS your identity.
@@ -621,7 +621,7 @@ Full API: https://localharness.xyz/llms.txt";
 /// grouped [`USAGE`] overview.
 fn command_usage(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
-        "create" => "usage: localharness create <name> [--persona <text|file>] [--publish]\n  claim <name>.localharness.xyz (free, sponsored); --persona ships its system\n  prompt too; --publish also publishes the scaffolded ./app.rl as the public face.\n  e.g. localharness create myagent --persona \"a rust tutor\"",
+        "create" => "usage: localharness create <name> [--persona <text|file>] [--publish]\n  claim <name>.localharness.xyz (1 $LH on mainnet, gas sponsored); --persona ships its system\n  prompt too; --publish also publishes the scaffolded ./app.rl as the public face.\n  e.g. localharness create myagent --persona \"a rust tutor\"",
         "call" => CALL_USAGE,
         "abtest" => ABTEST_USAGE,
         "send" => "usage: localharness send [--as <me>] <recipient> <amount>\n  send $LH to a 0x address or a name's owner.  e.g. localharness send claude 0.5",

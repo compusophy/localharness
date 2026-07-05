@@ -215,6 +215,11 @@ const SELF_PAY_SELECTORS = new Set([
   // this set exists for. Without it, `credits --reclaim` hits LH_RELAY_FUNDED
   // for precisely its target audience (a funded-wallet user with meter dust).
   selector('withdrawCredits(uint256)'),
+  // reclaimInvite refunds the invite's FUNDER no matter who calls (the
+  // permissionless expiry poke) — it can only move escrow back where it came
+  // from. Without this, a funded operator could createInvite but never take
+  // it back (LH_RELAY_FUNDED on reclaim — found by the 2026-07-05 fleet).
+  selector('reclaimInvite(bytes32)'),
 ]);
 
 // ALWAYS-FREE writes — sponsored regardless of the caller's $LH balance because

@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`invite reclaim` works for funded operators** — `reclaimInvite(bytes32)`
+  joins the relay's self-pay exemptions (it can only refund the invite's own
+  funder, no matter who calls); a funded agent could create an invite but
+  never take it back (fleet-found). CLI help drift fixed alongside: `create`
+  costs 1 $LH on mainnet (help claimed "free"), "Tempo Moderato" → mainnet,
+  and `whoami`'s unset face now says what visitors actually see.
 - **Local Gemma implements Gemma 3's sliding-window attention** — 15 of 18
   layers are sliding (W=512, per the model's own config.json); full attention
   everywhere made outputs beyond the window deviate from the reference model.

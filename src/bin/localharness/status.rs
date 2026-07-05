@@ -69,7 +69,7 @@ pub(crate) fn format_whoami(info: &WhoamiInfo) -> String {
     let face = info
         .public_face
         .clone()
-        .unwrap_or_else(|| "unset (directory)".to_string());
+        .unwrap_or_else(|| "unset (auto: app if one is published, else directory)".to_string());
     let price = match info.price_wei {
         Some(wei) => format!("{}/call (agent --pay ask; model run meters ~1 LH on top)", fmt_lh(wei)),
         None => format!(
@@ -1028,7 +1028,7 @@ mod tests {
         };
         let out = format_whoami(&info);
         assert!(out.contains("persona       none"));
-        assert!(out.contains("face          unset (directory)"));
+        assert!(out.contains("face          unset (auto: app if one is published, else directory)"));
         assert!(out.contains("agent wallet  —"));
         // A failed balance read degrades to "—", never sinks the lookup.
         assert!(out.contains("$LH wallet    —"));
