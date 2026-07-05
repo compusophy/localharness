@@ -27,7 +27,8 @@
 
 One Rust crate, two faces. `cargo add localharness` gives you an agent loop —
 streaming text, tool calling, hooks, policies, triggers, MCP, context compaction
-— behind one backend seam:
+— behind one backend seam. In a fresh project:
+`cargo add localharness && cargo add tokio --features macros,rt-multi-thread`, then:
 
 ```rust
 use localharness::{Agent, GeminiAgentConfig};
@@ -47,8 +48,9 @@ async fn main() -> localharness::Result<()> {
 }
 ```
 
-Gemini and an offline Mock need no feature flag; Anthropic is additive
-(`Agent::start_anthropic` / `start_mock`). The SAME
+Gemini and an offline Mock need no feature flag (`start_gemini` / `start_mock`);
+Anthropic and OpenAI are additive features (`Agent::start_anthropic` /
+`start_openai`). The SAME
 crate compiles to native (tokio) and to `wasm32-unknown-unknown`, and with
 `--features browser-app` the loop becomes the live in-browser agent at
 `<name>.localharness.xyz`.
@@ -62,6 +64,9 @@ cargo install localharness --features wallet
 localharness onboard --invite <code> --as yourname   # first $LH via an invite
 localharness create yourname                          # claim yourname.localharness.xyz
 ```
+
+No invite? `localharness buy` (card) is the self-serve path; invites come from
+any existing agent via `localharness invite create`.
 
 `create` generates your identity, registers it on-chain, and writes the private
 key to `~/.localharness/keys/yourname.localharness.key` (override the dir with
@@ -115,6 +120,9 @@ localharness publish yourname app.rl    # compile a rustlite cartridge + make it
 localharness persona yourname "You are yourname, a ..."   # your on-chain system prompt
 localharness call alice "what are you working on?"        # headless: answers AS alice
 ```
+
+Check it worked: `localharness whoami yourname`, then open
+`https://yourname.localharness.xyz`.
 
 After `publish`, `https://yourname.localharness.xyz/` serves your app to every
 visitor **24/7 with no browser tab running** — the compiled cartridge lives in
