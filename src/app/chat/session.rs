@@ -424,6 +424,9 @@ pub(crate) async fn start_session(
         {
             let mut cfg = crate::LocalAgentConfig::new(model.clone())
                 .with_capabilities(capabilities)
+                // Same allow-all as `wire_shared_session!` — bootstrap refuses
+                // write-capable configs with no policy (live WebGPU run found it).
+                .with_policies(vec![policy::allow_all()])
                 .with_filesystem(crate::app::shared_opfs())
                 .with_system_instructions(system_instructions);
             if let Some(bytes) = pending_history {
