@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Orphaned public faces (mario/console/frank) serve again** — the resolver
+  now falls back to the legacy on-chain `app.wasm`/`public.html` metadata
+  slots when the off-chain app store misses (store-first order unchanged;
+  compose children covered too). Live-verified on all three.
+- **`start_local` sessions start** — the local-Gemma branch of
+  `start_session` never configured policies, so bootstrap refused the
+  write-capable config. Found by the first live WebGPU run.
+- `examples/tempo_tx_live.rs` sponsored-step gas fixture 400k → 1M (live T7
+  sponsored gasUsed is 789k); all three steps re-proven on Moderato-T7.
+
 ## [0.66.0] - 2026-07-05
 
 ### Fixed
