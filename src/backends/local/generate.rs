@@ -511,6 +511,156 @@ mod tests {
         assert!(!cached.is_empty(), "no tokens generated");
     }
 
+    /// Load the real checkpoint + tokenizer from `GEMMA_DIR` (shared by the
+    /// ignored native proofs below).
+    fn load_real_model(
+        device: &burn::backend::wgpu::WgpuDevice,
+    ) -> (
+        super::super::gemma::GemmaModel<super::super::LocalBackend>,
+        super::super::tokenizer::GemmaTokenizer,
+    ) {
+        let dir = std::env::var("GEMMA_DIR")
+            .expect("set GEMMA_DIR to a folder with model.safetensors + tokenizer.json");
+        let weights = std::fs::read(format!("{dir}/model.safetensors")).expect("read weights");
+        let tok_bytes =
+            std::fs::read(format!("{dir}/tokenizer.json")).expect("read tokenizer.json");
+        let model = super::super::gemma::GemmaModel::<super::super::LocalBackend>::init(
+            super::super::gemma::GemmaConfig::gemma_3_270m(),
+            device,
+        );
+        let model =
+            super::super::weights::load_gemma(model, &weights, device).expect("load_gemma");
+        let tok = super::super::tokenizer::GemmaTokenizer::from_bytes(&tok_bytes)
+            .expect("load tokenizer");
+        (model, tok)
+    }
+
+    /// Greedy decode via full recompute every step (`forward` — throwaway
+    /// cache, offset 0, mask rebuilt at full length). Returns generated ids.
+    async fn greedy_uncached(
+        model: &super::super::gemma::GemmaModel<super::super::LocalBackend>,
+        mut tokens: Vec<i64>,
+        max_new: usize,
+        device: &burn::backend::wgpu::WgpuDevice,
+    ) -> Vec<i64> {
+        let mut out = Vec::new();
+        for _ in 0..max_new {
+            if at_context_limit(tokens.len()) {
+                break;
+            }
+            let seq = tokens.len();
+            let input = Tensor::<super::super::LocalBackend, 1, Int>::from_data(
+                TensorData::from(tokens.as_slice()),
+                device,
+            )
+            .reshape([1, seq]);
+            let data = model.forward(input).argmax(2).into_data_async().await.expect("read-back");
+            let next = data.iter::<i64>().last().expect("nonempty");
+            if next == EOS_ID {
+                break;
+            }
+            tokens.push(next);
+            out.push(next);
+        }
+        out
+    }
+
+    /// Greedy decode via the shipped KV-cached path (prefill + 1 token/step,
+    /// offset masks, sliding-layer cache trim). Returns generated ids.
+    async fn greedy_cached(
+        model: &super::super::gemma::GemmaModel<super::super::LocalBackend>,
+        prompt_tokens: Vec<i64>,
+        max_new: usize,
+        device: &burn::backend::wgpu::WgpuDevice,
+    ) -> Vec<i64> {
+        let mut cache = model.new_cache();
+        let mut pending = prompt_tokens;
+        let mut total_len = pending.len();
+        let mut out = Vec::new();
+        for _ in 0..max_new {
+            if at_context_limit(total_len) {
+                break;
+            }
+            let seq = pending.len();
+            let input = Tensor::<super::super::LocalBackend, 1, Int>::from_data(
+                TensorData::from(pending.as_slice()),
+                device,
+            )
+            .reshape([1, seq]);
+            let data = model
+                .forward_cached(input, &mut cache)
+                .argmax(2)
+                .into_data_async()
+                .await
+                .expect("read-back");
+            let next = data.iter::<i64>().last().expect("nonempty");
+            if next == EOS_ID {
+                break;
+            }
+            pending = vec![next];
+            total_len += 1;
+            out.push(next);
+        }
+        out
+    }
+
+    /// NATIVE sliding-window parity — real weights, real GPU. Ignored by
+    /// default (needs the ~536MB checkpoint). Run with:
+    ///   GEMMA_DIR=target/gemma-test cargo test --release --features local --lib -- --ignored --nocapture gemma_sliding_window_parity
+    /// The prompt is built to exceed the 512-token sliding window, so prefill
+    /// exercises the within-window mask on the 15 sliding layers and every
+    /// decode step runs off their TRIMMED caches. The uncached path rebuilds
+    /// full-length masks from scratch each step; the cached path uses offset
+    /// masks + trimmed caches. Identical greedy sequences prove the
+    /// incremental window math — including that absolute-position RoPE
+    /// survives the cache trim.
+    #[tokio::test]
+    #[ignore]
+    async fn gemma_sliding_window_parity() {
+        let device = burn::backend::wgpu::WgpuDevice::default();
+        let (model, tok) = load_real_model(&device);
+
+        let w = super::super::gemma::GemmaConfig::gemma_3_270m().sliding_window;
+        let mut prompt = String::from("A guide to the cities of Europe. ");
+        for i in 0..45 {
+            prompt.push_str(&format!(
+                "City number {i} has a river, a market square, an old stone bridge, and {i} towers. "
+            ));
+        }
+        let tokens = tok.encode(&prompt);
+        assert!(
+            tokens.len() > w + 32,
+            "prompt must cross the sliding window: {} <= {}",
+            tokens.len(),
+            w + 32
+        );
+        let max_new: usize = std::env::var("GEMMA_MAX_NEW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(24);
+
+        let t0 = std::time::Instant::now();
+        let uncached = greedy_uncached(&model, tokens.clone(), max_new, &device).await;
+        let dt0 = t0.elapsed().as_secs_f64();
+        let t1 = std::time::Instant::now();
+        let cached = greedy_cached(&model, tokens.clone(), max_new, &device).await;
+        let dt1 = t1.elapsed().as_secs_f64();
+        println!(
+            "\n=== GEMMA SLIDING-WINDOW PARITY ===\nprompt: {} tokens (window {w})\n\
+             uncached: {} tokens in {dt0:.2}s · cached: {} tokens in {dt1:.2}s\n\
+             text: {:?}\n===================================\n",
+            tokens.len(),
+            uncached.len(),
+            cached.len(),
+            tok.decode(&cached),
+        );
+        assert_eq!(
+            uncached, cached,
+            "greedy sequences must match across the window boundary"
+        );
+        assert!(!cached.is_empty(), "no tokens generated");
+    }
+
     /// Holdback floors to a char boundary — no slice panic on multibyte tails.
     #[test]
     fn emitter_holdback_respects_char_boundaries() {

@@ -8,14 +8,23 @@
 //! **STATUS — honest scope.** The model is written and COMPILES (native +
 //! wasm32). It is **NOT yet forward-pass-validated against reference logits** —
 //! that is the next milestone and needs (a) the weights + tokenizer wired in and
-//! (b) two convention checks that only a reference comparison can settle:
+//! (b) a convention check that only a reference comparison can settle:
 //!   1. **RoPE pairing.** Burn's [`RotaryEncoding`] and HF Gemma may pair
 //!      rotation dimensions differently (interleaved `(i, i+1)` vs split
 //!      `(i, i+d/2)`). If they differ, the loaded q/k projections need a
 //!      permutation. This is THE classic "compiles but outputs garbage" trap.
-//!   2. **Sliding-window mask.** Only the causal mask is applied here; the
-//!      512-token sliding window is a no-op for prompts shorter than 512 (fine
-//!      for first validation) but must be added for long contexts.
+//!
+//! **Sliding-window attention IS implemented** (it was gap 2 of the original
+//! STATUS note): per `config.json`, 15 of the 18 layers are `sliding_attention`
+//! (`layer_types`; every 6th — indices 5/11/17 — is `full_attention`) with
+//! `"sliding_window": 512`. The mask semantics mirror HF `transformers`
+//! `masking_utils.py` (`sliding_window_causal_mask_function`): a query at
+//! absolute position `q` attends keys `k` with `k <= q && k > q - 512` — the
+//! last 512 positions including itself ([`attn_blocked`]). Sliding layers also
+//! TRIM their KV cache to the last `window - 1` entries ([`kept_cache_len`]) —
+//! older keys can never be attended again, so per-layer KV memory is capped.
+//! RoPE stays ABSOLUTE throughout: keys are rotated at their absolute positions
+//! when first cached, and trimming only drops tensor rows — no re-rotation.
 //! Gemma-specific details already baked in: GQA (4 q-heads / 1 kv-head),
 //! per-head QK-norm (Gemma 3, replacing Gemma 2's attention softcapping),
 //! dual-θ RoPE (1e6 global / 1e4 sliding), 4 norms per layer, GeGLU MLP, tied
@@ -28,7 +37,7 @@ use burn::nn::{
     Embedding, EmbeddingConfig, Linear, LinearConfig, RmsNorm, RmsNormConfig, RotaryEncoding,
     RotaryEncodingConfig,
 };
-use burn::tensor::{activation, backend::Backend, Int, Tensor};
+use burn::tensor::{activation, backend::Backend, Int, Tensor, TensorData};
 
 /// Cap on the precomputed RoPE frequency cache. The model's true context is
 /// `max_position_embeddings` (32768), but a full 32768×256×2 f32 cache is ~64MB
@@ -87,11 +96,62 @@ impl GemmaConfig {
         (layer + 1) % self.sliding_window_pattern == 0
     }
 
+    /// The attention window for layer `layer`: `None` on `full_attention`
+    /// layers (global causal), `Some(sliding_window)` on `sliding_attention`
+    /// layers (causal AND within the last `sliding_window` positions).
+    pub fn layer_window(&self, layer: usize) -> Option<usize> {
+        if self.is_full_attention(layer) {
+            None
+        } else {
+            Some(self.sliding_window)
+        }
+    }
+
     /// Attention score scale: `1/√query_pre_attn_scalar` (Gemma scales queries,
     /// not by `1/√head_dim`). Equal here only because the scalar == head_dim.
     fn attn_scale(&self) -> f64 {
         1.0 / self.query_pre_attn_scalar.sqrt()
     }
+}
+
+/// Whether the key at absolute position `k_abs` is MASKED for the query at
+/// absolute position `q_abs`. This is THE mask predicate — the tensor masks in
+/// [`GemmaModel::forward_cached`] are built from it, so its unit tests cover
+/// the shipped math. Semantics match HF `transformers` `masking_utils.py`:
+/// causal (`k <= q`) on every layer, AND-ed with the sliding overlay
+/// (`k > q - window`) on sliding layers — a query sees exactly the last
+/// `window` positions including itself. `k_abs + w <= q_abs` is the
+/// underflow-safe form of `k_abs <= q_abs - w`.
+pub(crate) fn attn_blocked(q_abs: usize, k_abs: usize, window: Option<usize>) -> bool {
+    k_abs > q_abs || window.is_some_and(|w| k_abs + w <= q_abs)
+}
+
+/// How many cached positions a layer must RETAIN after having processed
+/// `processed` total positions. Global layers keep everything; a sliding layer
+/// keeps the last `window - 1` (the next query at position `processed` attends
+/// `(processed - window, processed]` — `window - 1` cached keys plus itself),
+/// so its KV cache never grows past `window - 1` entries.
+pub(crate) fn kept_cache_len(processed: usize, window: Option<usize>) -> usize {
+    match window {
+        Some(w) => processed.min(w - 1),
+        None => processed,
+    }
+}
+
+/// Whether an additive mask is needed at all for a forward of `seq` new
+/// positions over `kv_len` total keys. `seq == 1` skips the causal mask (all
+/// keys are past); a sliding layer additionally needs `kv_len <= window` (with
+/// the [`kept_cache_len`] trim that always holds on 1-token decode steps, so
+/// decode stays mask-free on every layer).
+pub(crate) fn needs_mask(seq: usize, kv_len: usize, window: Option<usize>) -> bool {
+    seq > 1 || window.is_some_and(|w| kv_len > w)
+}
+
+/// Keep the last `keep` rows of a `[batch, heads, seq, head_dim]` tensor along
+/// the sequence dim (the sliding-layer KV-cache trim).
+fn trim_to_last<B: Backend>(t: Tensor<B, 4>, keep: usize) -> Tensor<B, 4> {
+    let [b, h, s, d] = t.dims();
+    t.slice([0..b, 0..h, s - keep..s, 0..d])
 }
 
 /// Gated MLP (GeGLU): `down(gelu(gate(x)) ⊙ up(x))`. `gelu` is the tanh
@@ -150,12 +210,16 @@ impl<B: Backend> Attention<B> {
     }
 
     /// Attention over the layer's KV cache. `x` holds the `seq` NEW positions
-    /// starting at absolute position `offset` (`=` the cached length); the new
-    /// keys/values are RoPE'd at their absolute positions, appended to
-    /// `cache`, and the queries attend over the FULL cached sequence. `mask`
-    /// is the additive causal mask over `[seq, offset+seq]` — `None` for a
-    /// single-token decode step (every cached key is in the past, so the mask
-    /// would be all zeros).
+    /// starting at absolute position `offset` (`=` the processed count); the
+    /// new keys/values are RoPE'd at their ABSOLUTE positions, appended to
+    /// `cache`, and the queries attend over the whole cached tensor. `mask` is
+    /// the additive mask over `[seq, cached+seq]` (causal, AND within-window on
+    /// sliding layers) — `None` when nothing would be masked (see
+    /// [`needs_mask`]). `window` is `Some(w)` on sliding layers: after
+    /// attending, the stored cache is TRIMMED to its last `w - 1` rows
+    /// ([`kept_cache_len`]) — those keys keep the absolute-position RoPE they
+    /// were written with, so trimming never touches position math.
+    #[allow(clippy::too_many_arguments)]
     fn forward(
         &self,
         x: Tensor<B, 3>,
@@ -164,6 +228,7 @@ impl<B: Backend> Attention<B> {
         mask: Option<Tensor<B, 4>>,
         cache: &mut Option<(Tensor<B, 4>, Tensor<B, 4>)>,
         offset: usize,
+        window: Option<usize>,
     ) -> Tensor<B, 3> {
         let [batch, seq, _] = x.dims();
         let (h, kv, hd) = (cfg.num_heads, cfg.num_kv_heads, cfg.head_dim);
@@ -187,7 +252,20 @@ impl<B: Backend> Attention<B> {
             Some((ck, cv)) => (Tensor::cat(vec![ck, k], 2), Tensor::cat(vec![cv, v], 2)),
             None => (k, v),
         };
-        *cache = Some((k_all.clone(), v_all.clone()));
+        // Store the cache, trimmed on sliding layers: keys older than the
+        // window can never be attended by any FUTURE query, so only the last
+        // `window - 1` rows are kept. The trimmed rows retain their absolute-
+        // position RoPE — no recomputation.
+        let kv_len = k_all.dims()[2];
+        let keep = kept_cache_len(offset + seq, window);
+        *cache = Some(if keep < kv_len {
+            (
+                trim_to_last(k_all.clone(), keep),
+                trim_to_last(v_all.clone(), keep),
+            )
+        } else {
+            (k_all.clone(), v_all.clone())
+        });
 
         // GQA: repeat the kv heads up to the query-head count.
         let k_all = k_all.repeat_dim(1, h / kv);
@@ -238,6 +316,7 @@ impl<B: Backend> DecoderLayer<B> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn forward(
         &self,
         x: Tensor<B, 3>,
@@ -246,10 +325,13 @@ impl<B: Backend> DecoderLayer<B> {
         mask: Option<Tensor<B, 4>>,
         cache: &mut Option<(Tensor<B, 4>, Tensor<B, 4>)>,
         offset: usize,
+        window: Option<usize>,
     ) -> Tensor<B, 3> {
         // h = x + post_attn_norm(attn(input_norm(x)))
         let normed = self.input_layernorm.forward(x.clone());
-        let attn = self.self_attn.forward(normed, cfg, rope, mask, cache, offset);
+        let attn = self
+            .self_attn
+            .forward(normed, cfg, rope, mask, cache, offset, window);
         let h = x + self.post_attention_layernorm.forward(attn);
         // out = h + post_ff_norm(mlp(pre_ff_norm(h)))
         let normed = self.pre_feedforward_layernorm.forward(h.clone());
@@ -322,9 +404,13 @@ impl<B: Backend> GemmaModel<B> {
     /// each decode step is O(seq_total) instead of the O(seq_total²) full
     /// recompute.
     ///
-    /// Attends over the WHOLE cache on every layer — same semantics as
-    /// [`Self::forward`], which applies only the causal mask (the 512-token
-    /// sliding window is not yet implemented on either path).
+    /// Per-layer masking (same semantics as [`Self::forward`], which delegates
+    /// here): `full_attention` layers get the plain causal mask; the
+    /// `sliding_attention` layers get causal AND within the last
+    /// `sliding_window` positions ([`attn_blocked`]), and their KV caches are
+    /// trimmed to the last `sliding_window - 1` entries ([`kept_cache_len`]).
+    /// All positions are ABSOLUTE (`offset + i`) — the trim drops rows, never
+    /// re-indexes RoPE.
     pub fn forward_cached(&self, tokens: Tensor<B, 2, Int>, cache: &mut KvCache<B>) -> Tensor<B, 3> {
         let cfg = &self.config;
         let [batch, seq] = tokens.dims();
@@ -335,30 +421,45 @@ impl<B: Backend> GemmaModel<B> {
         let scale = (cfg.hidden_size as f64).sqrt();
         let mut x = self.embed.forward(tokens).mul_scalar(scale);
 
-        // Additive causal mask [1, 1, seq, offset+seq]: query row i sits at
-        // absolute position offset+i; keys cover 0..offset+seq; -inf where
-        // k > q (future). Broadcasts over batch and heads. A single-token
-        // step attends only to past keys — the mask would be all zeros, so
-        // it is skipped entirely (`None`).
-        let total = offset + seq;
-        let mask = (seq > 1).then(|| {
-            let q_idx =
-                Tensor::<B, 1, Int>::arange(offset as i64..total as i64, &device).reshape([seq, 1]);
-            let k_idx = Tensor::<B, 1, Int>::arange(0..total as i64, &device).reshape([1, total]);
-            let future = k_idx.greater(q_idx); // bool [seq, total], true where k>q
-            Tensor::<B, 2>::zeros([seq, total], &device)
-                .mask_fill(future, f32::NEG_INFINITY)
-                .reshape([1, 1, seq, total])
-        });
+        // Additive masks [1, 1, seq, kv_len], built from THE predicate
+        // ([`attn_blocked`]) over absolute positions; -inf where blocked.
+        // Broadcast over batch and heads. Two variants per forward: global
+        // (causal only, kv_len = offset+seq) and sliding (causal AND
+        // within-window, kv_len = trimmed cache + seq — sliding layers all
+        // share one cache length by construction). `None` when nothing would
+        // be masked ([`needs_mask`]) — in particular every 1-token decode
+        // step, on BOTH layer kinds (the sliding trim keeps kv_len <= window).
+        let build_mask = |window: Option<usize>| -> Option<Tensor<B, 4>> {
+            let kv_len = kept_cache_len(offset, window) + seq;
+            needs_mask(seq, kv_len, window).then(|| {
+                let kv_start = offset + seq - kv_len; // abs position of key col 0
+                let mut rows = vec![0f32; seq * kv_len];
+                for i in 0..seq {
+                    for j in 0..kv_len {
+                        if attn_blocked(offset + i, kv_start + j, window) {
+                            rows[i * kv_len + j] = f32::NEG_INFINITY;
+                        }
+                    }
+                }
+                Tensor::<B, 1>::from_data(TensorData::from(rows.as_slice()), &device)
+                    .reshape([1, 1, seq, kv_len])
+            })
+        };
+        let mask_global = build_mask(None);
+        let mask_sliding = build_mask(Some(cfg.sliding_window));
         let _ = batch;
 
         for (i, layer) in self.layers.iter().enumerate() {
-            let rope = if cfg.is_full_attention(i) {
-                &self.rope_global
+            let (rope, mask, window) = if cfg.is_full_attention(i) {
+                (&self.rope_global, mask_global.clone(), None)
             } else {
-                &self.rope_local
+                (
+                    &self.rope_local,
+                    mask_sliding.clone(),
+                    Some(cfg.sliding_window),
+                )
             };
-            x = layer.forward(x, cfg, rope, mask.clone(), &mut cache.layers[i], offset);
+            x = layer.forward(x, cfg, rope, mask, &mut cache.layers[i], offset, window);
         }
         cache.len += seq;
         let x = self.norm.forward(x);
@@ -370,19 +471,24 @@ impl<B: Backend> GemmaModel<B> {
 }
 
 /// Per-layer key/value cache for incremental decode. One `(k, v)` pair per
-/// decoder layer, each `[batch, kv_heads, cached_seq, head_dim]`, plus the
-/// cached position count (identical across layers). Build via
-/// [`GemmaModel::new_cache`]; feed to [`GemmaModel::forward_cached`].
+/// decoder layer, each `[batch, kv_heads, cached_seq, head_dim]`. `len` is the
+/// number of positions PROCESSED (the next token's absolute position) — the
+/// physical `cached_seq` equals it only on `full_attention` layers; sliding
+/// layers are trimmed to at most `sliding_window - 1` rows
+/// ([`kept_cache_len`]). Build via [`GemmaModel::new_cache`]; feed to
+/// [`GemmaModel::forward_cached`].
 ///
-/// Memory: 270M has 18 layers × 1 kv-head × 256 dims × 2 tensors × 4 bytes
-/// ≈ 36KB per cached token (~147MB at the full `ROPE_CACHE_LEN` context).
+/// Memory: 1 kv-head × 256 dims × 2 tensors × 4 bytes = 2KB per token per
+/// layer. Past 511 tokens only the 3 global layers keep growing (~6KB/token);
+/// the 15 sliding layers are capped at ~15.7MB total.
 pub struct KvCache<B: Backend> {
     layers: Vec<Option<(Tensor<B, 4>, Tensor<B, 4>)>>,
     len: usize,
 }
 
 impl<B: Backend> KvCache<B> {
-    /// Number of positions currently cached.
+    /// Number of positions processed so far (see the type doc — sliding
+    /// layers physically retain fewer).
     pub fn len(&self) -> usize {
         self.len
     }
@@ -390,5 +496,120 @@ impl<B: Backend> KvCache<B> {
     /// True when nothing has been cached yet.
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sliding mask matches the HF `transformers` truth table
+    /// (`masking_utils.py` docstring, `sliding_window=3`, 5 positions):
+    /// allowed = `kv_idx <= q_idx && kv_idx > q_idx - sliding_window`.
+    #[test]
+    fn sliding_mask_matches_hf_truth_table() {
+        #[rustfmt::skip]
+        let allowed = [
+            [true,  false, false, false, false],
+            [true,  true,  false, false, false],
+            [true,  true,  true,  false, false],
+            [false, true,  true,  true,  false],
+            [false, false, true,  true,  true ],
+        ];
+        for (q, row) in allowed.iter().enumerate() {
+            for (k, &want) in row.iter().enumerate() {
+                assert_eq!(!attn_blocked(q, k, Some(3)), want, "q={q} k={k}");
+            }
+        }
+    }
+
+    /// Global layers: plain causal — blocked iff the key is in the future.
+    #[test]
+    fn global_mask_is_plain_causal() {
+        for q in 0..8 {
+            for k in 0..8 {
+                assert_eq!(attn_blocked(q, k, None), k > q, "q={q} k={k}");
+            }
+        }
+    }
+
+    /// THE regression guard: below the window the sliding mask is IDENTICAL to
+    /// the causal mask — windowing must be a no-op for short contexts, so a
+    /// sub-512-token decode is bit-for-bit what it was before windowing landed.
+    #[test]
+    fn windowing_is_noop_below_the_window() {
+        let w = GemmaConfig::gemma_3_270m().sliding_window;
+        for q in 0..w {
+            for k in 0..w {
+                assert_eq!(attn_blocked(q, k, Some(w)), attn_blocked(q, k, None));
+            }
+        }
+        // ...and the first position past the window is where they diverge.
+        assert!(attn_blocked(w, 0, Some(w)));
+        assert!(!attn_blocked(w, 0, None));
+        // A query attends exactly `w` keys: (q-w, q].
+        let q = 3 * w + 7;
+        let attended = (0..=q).filter(|&k| !attn_blocked(q, k, Some(w))).count();
+        assert_eq!(attended, w);
+        assert!(!attn_blocked(q, q, Some(w)), "self is always attended");
+        assert!(!attn_blocked(q, q + 1 - w, Some(w)), "oldest in-window key");
+        assert!(attn_blocked(q, q - w, Some(w)), "first out-of-window key");
+    }
+
+    /// The layer pattern matches `config.json` `layer_types`: 18 layers,
+    /// `full_attention` at 5/11/17, `sliding_attention` (window 512) elsewhere.
+    #[test]
+    fn layer_pattern_matches_config_layer_types() {
+        let cfg = GemmaConfig::gemma_3_270m();
+        let full: Vec<usize> = (0..cfg.num_layers)
+            .filter(|&l| cfg.is_full_attention(l))
+            .collect();
+        assert_eq!(full, [5, 11, 17]);
+        for l in 0..cfg.num_layers {
+            let want = if full.contains(&l) { None } else { Some(512) };
+            assert_eq!(cfg.layer_window(l), want, "layer {l}");
+        }
+    }
+
+    /// Cache-trim math: sliding layers cap at `window - 1` retained rows, and
+    /// with that trim a 1-token decode step NEVER needs a mask (kv_len <= w),
+    /// while an untrimmed-length step past the window would.
+    #[test]
+    fn cache_trim_caps_and_keeps_decode_mask_free() {
+        let w = 512;
+        assert_eq!(kept_cache_len(0, Some(w)), 0);
+        assert_eq!(kept_cache_len(w - 1, Some(w)), w - 1);
+        assert_eq!(kept_cache_len(w, Some(w)), w - 1); // capped
+        assert_eq!(kept_cache_len(10_000, Some(w)), w - 1);
+        assert_eq!(kept_cache_len(10_000, None), 10_000); // global: keep all
+        for offset in [0, 1, w - 1, w, w + 1, 4 * w] {
+            assert!(!needs_mask(1, kept_cache_len(offset, Some(w)) + 1, Some(w)));
+            assert!(!needs_mask(1, offset + 1, None));
+        }
+        assert!(needs_mask(1, w + 1, Some(w))); // untrimmed past-window step would
+        assert!(needs_mask(2, 2, None)); // any multi-token prefill masks
+        assert!(needs_mask(2, 2, Some(w)));
+    }
+
+    /// Trim consistency: across any (offset, seq) schedule, the concatenated
+    /// kv tensor (`trimmed cache + seq`) always holds at least the rows the
+    /// post-store trim keeps (`trim_to_last` can't underflow), and the mask
+    /// builder's assumed cache length matches what the previous call stored.
+    #[test]
+    fn trim_and_mask_builder_agree_on_cache_length() {
+        let w = 512;
+        for window in [Some(w), None] {
+            let mut cached = 0usize; // physical rows actually stored
+            let mut offset = 0usize; // processed positions
+            for seq in [600usize, 1, 1, 1, 300, 1] {
+                // forward_cached's build_mask assumes this cache length:
+                assert_eq!(cached, kept_cache_len(offset, window), "pre @{offset}");
+                let kv_len = cached + seq;
+                let keep = kept_cache_len(offset + seq, window);
+                assert!(keep <= kv_len, "trim would underflow @{offset}+{seq}");
+                cached = keep; // what Attention::forward stores
+                offset += seq;
+            }
+        }
     }
 }

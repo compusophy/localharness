@@ -60,8 +60,14 @@ Browser fetch surfaces Gemini SSE with `\r\n\r\n`. `GeminiSseStream::take_frame`
   KV-CACHED (`GemmaModel::forward_cached`; `forward` delegates over a throwaway
   cache — ONE attention codepath) and STREAMS text-delta Steps per token
   (`generate_streamed`; StreamEmitter holds back a partial `"\nUser:"` marker and
-  goes quiet on non-prefix-stable decodes). Parity/speed proofs: ignored tests
-  `gemma_kv_parity_and_speed` / `gemma_native_stream` (GEMMA_DIR=weights dir).
+  goes quiet on non-prefix-stable decodes). SLIDING-WINDOW attention per
+  `config.json` `layer_types` (15 sliding layers, `sliding_window=512`; layers
+  5/11/17 global): mask = HF `masking_utils.py` semantics (`k <= q && k > q-512`,
+  pure predicate `gemma::attn_blocked`); sliding KV caches TRIM to the last 511
+  rows (`kept_cache_len`) — keys keep their ABSOLUTE-position RoPE, trimming
+  only drops rows. Parity/speed proofs: ignored tests `gemma_kv_parity_and_speed`
+  / `gemma_native_stream` / `gemma_sliding_window_parity` (>512-token prompt;
+  GEMMA_DIR=weights dir).
 
 ## Error classification is OWNED by `crate::error_codes::classify`, not here
 A backend surfaces the RAW provider error; `classify` maps it to `LH3xxx`. A 429 /
