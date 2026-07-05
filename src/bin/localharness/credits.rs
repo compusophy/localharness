@@ -9,7 +9,7 @@ use crate::{bytes_to_hex_str, fmt_lh, load_signer, registry, wallet};
 /// sub-price dust is never stranded.
 pub(crate) fn format_credits(addr: &str, wallet_wei: u128, meter_wei: u128) -> String {
     let mut out = format!(
-        "{addr}\n  wallet   {}   <- CLI `call` pays from here per-call (x402); send/escrow too\n  meter    {}   <- browser chat debits this; CLI `call` falls back here if the wallet is short",
+        "{addr}\n  wallet   {}   <- CLI `call` pays from here per-call (x402); send/escrow too\n  meter    {}   <- browser chat + scheduled runs debit this; CLI `call` falls back here if the wallet is short",
         fmt_lh(wallet_wei),
         fmt_lh(meter_wei)
     );
@@ -360,7 +360,7 @@ mod tests {
         let out = format_credits("0xabc", 2_500_000_000_000_000_000, 990_000_000_000_000_000);
         assert!(out.starts_with("0xabc\n"));
         assert!(out.contains("wallet   2.50 LH   <- CLI `call` pays from here per-call (x402)"));
-        assert!(out.contains("meter    0.99 LH   <- browser chat debits this"));
+        assert!(out.contains("meter    0.99 LH   <- browser chat + scheduled runs debit this"));
         assert!(!out.contains("per-call billing debits this"), "the old lie is gone");
         // Sub-price meter dust (0.99 < the 1 $LH call price) gets the recovery hint…
         assert!(out.contains("credits --reclaim"));

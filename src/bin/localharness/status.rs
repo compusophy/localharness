@@ -84,7 +84,7 @@ pub(crate) fn format_whoami(info: &WhoamiInfo) -> String {
          tokenId       {id}\n  \
          agent wallet  {wallet}\n  \
          $LH wallet    {lh_wallet}\n  \
-         $LH meter     {lh_meter}   <- browser chat debits this (CLI `call` pays from the wallet)\n  \
+         $LH meter     {lh_meter}   <- browser chat + scheduled runs debit this (CLI `call` pays from the wallet)\n  \
          persona       {persona}\n  \
          face          {face}\n  \
          price         {price}",
@@ -308,7 +308,7 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
     let eoa_bal = registry::token_balance_of(&owner_eoa).await.unwrap_or(0);
     let meter_bal = registry::credit_balance_of(&owner_eoa).await.unwrap_or(0);
     println!("  your wallet   {}   <- CLI `call` pays from here per-call (x402)", fmt_lh(eoa_bal));
-    println!("  meter         {}   <- browser chat debits this", fmt_lh(meter_bal));
+    println!("  meter         {}   <- browser chat + scheduled runs debit this", fmt_lh(meter_bal));
     match &tba {
         Some(a) => {
             let tba_bal = registry::token_balance_of(a).await.unwrap_or(0);
@@ -860,7 +860,7 @@ mod tests {
         // The $LH balances, same fmt_lh rendering `credits` uses.
         assert!(out.contains("$LH wallet    2.50 LH"));
         assert!(out.contains(
-            "$LH meter     0.50 LH   <- browser chat debits this (CLI `call` pays from the wallet)"
+            "$LH meter     0.50 LH   <- browser chat + scheduled runs debit this (CLI `call` pays from the wallet)"
         ));
         assert!(out.contains("persona       published"));
         assert!(out.contains("face          app"));

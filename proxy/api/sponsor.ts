@@ -210,6 +210,11 @@ const SELF_PAY_SELECTORS = new Set([
   // invite IS funded by definition, so the onboarding-only gate must not block it
   // (it did — LH_RELAY_FUNDED on `invite create`, breaking the documented flow).
   selector('createInvite(bytes32,uint256,uint64)'),
+  // withdrawCredits moves the caller's OWN escrowed meter $LH back to the
+  // caller's wallet (msg.sender both sides) — the exact settle/transfer shape
+  // this set exists for. Without it, `credits --reclaim` hits LH_RELAY_FUNDED
+  // for precisely its target audience (a funded-wallet user with meter dust).
+  selector('withdrawCredits(uint256)'),
 ]);
 
 // ALWAYS-FREE writes — sponsored regardless of the caller's $LH balance because
