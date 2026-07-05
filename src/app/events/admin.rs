@@ -429,27 +429,40 @@ pub(super) fn notif_bell_pressed() {
     }
     close_all_header_overlays(); // mutually exclusive — close feedback/admin/brand first
     // The bell is the notification LOG. Tap = open the log + clear the badge.
+    // The status line surfaces the push enrolled/not-enrolled state up front
+    // (telemetry #40: silent enrollment left users with no way to see that
+    // closed-tab pushes were never going to arrive).
     let items = crate::app::notifications::bell_items();
     dom::swap_outer(
         "notif-bell-panel",
-        &templates::notif_list_panel(&items, None, false, false).into_string(),
+        &templates::notif_list_panel(
+            &items,
+            Some(crate::app::notifications::bell_status_line()),
+            false,
+            false,
+        )
+        .into_string(),
     );
     crate::app::notifications::clear_bell_badge();
     // Register this device for Web Push as a side effect of this real tap (the
     // gesture the permission prompt needs — the cartridge tap can't prompt).
-    // On SUCCESS: silent (the user sees only their log). On FAILURE: surface the
-    // reason in the panel + console so a broken link (permission denied / SW /
-    // store POST) is visible, not swallowed.
+    // The enroll now VERIFIES the sub landed in the store; surface the verified
+    // outcome (enrolled ✓ / ⚠ reason) in the panel if it's still open.
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) = crate::app::notifications::enable_device_push().await {
-            web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(
-                "[push] device registration failed: {e}"
-            )));
+        let note = match crate::app::notifications::enable_device_push().await {
+            Ok(msg) => msg,
+            Err(e) => {
+                web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "[push] device registration failed: {e}"
+                )));
+                format!("⚠ {e}")
+            }
+        };
+        if notif_panel_open() {
             let items = crate::app::notifications::bell_items();
             dom::swap_outer(
                 "notif-bell-panel",
-                &templates::notif_list_panel(&items, Some(&format!("⚠ {e}")), false, false)
-                    .into_string(),
+                &templates::notif_list_panel(&items, Some(&note), false, false).into_string(),
             );
         }
     });

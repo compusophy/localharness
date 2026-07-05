@@ -710,16 +710,82 @@ async fn post_push_sub(
     Ok("registered".to_string())
 }
 
-/// Subscribe this browser to Web Push, stamp the stable `dev` id, and enroll
-/// the subscription in the proxy's off-chain store. Caller has already handled
-/// notification permission; identity comes from `credit_signer` (same as the
-/// old on-chain enroll path — the personal-sign token needs a key).
+/// Cached "this device verified an enrollment" flag (localStorage) — the
+/// INSTANT bell-panel status line reads it; only [`register_device_push`]'s
+/// verified outcome writes it. A hint, never a source of truth.
+fn set_enrolled_hint(on: bool) {
+    if let Some(s) = local_storage() {
+        if on {
+            let _ = s.set_item("lh_push_enrolled", "1");
+        } else {
+            let _ = s.remove_item("lh_push_enrolled");
+        }
+    }
+}
+
+fn enrolled_hint() -> bool {
+    local_storage()
+        .and_then(|s| s.get_item("lh_push_enrolled").ok().flatten())
+        .as_deref()
+        == Some("1")
+}
+
+/// The bell panel's push-state line (permission + cached enrolled hint) for
+/// the instant paint on open; the async enroll result then overwrites it.
+pub(crate) fn bell_status_line() -> &'static str {
+    let perm = match web_sys::Notification::permission() {
+        web_sys::NotificationPermission::Granted => "granted",
+        web_sys::NotificationPermission::Denied => "denied",
+        _ => "default",
+    };
+    crate::push_enroll::bell_status(perm, enrolled_hint())
+}
+
+/// Subscribe this browser to Web Push, stamp the stable `dev` id, enroll the
+/// subscription in the proxy's off-chain store, and VERIFY it actually landed
+/// (telemetry #40: enrollment was fire-and-forget — a sub that silently never
+/// landed meant every closed-tab push died while the user believed they were
+/// enrolled). Caller has already handled notification permission; identity
+/// comes from `credit_signer` (the personal-sign token needs a key).
 pub(crate) async fn register_device_push() -> Result<String, String> {
     let sub_json = tag_sub_with_dev(&subscribe_push().await?).await;
-    let (signer, _) = crate::app::chat::credit_signer()
+    let (signer, addr) = crate::app::chat::credit_signer()
         .await
         .ok_or_else(|| "no identity on this device yet".to_string())?;
-    post_push_sub(&signer, &sub_json).await
+    if let Err(e) = post_push_sub(&signer, &sub_json).await {
+        set_enrolled_hint(false);
+        return Err(e);
+    }
+    // Read the store back and require THIS device's entry (endpoint or `dev`).
+    let address = crate::encoding::bytes_to_hex_str(&addr);
+    let endpoint = serde_json::from_str::<serde_json::Value>(&sub_json)
+        .ok()
+        .and_then(|v| v.get("endpoint").and_then(|e| e.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    let dev = device_id().await;
+    let url = format!("{}api/push-sub?address={address}", crate::registry::CREDIT_PROXY_URL);
+    let fetch = async {
+        let resp = reqwest::Client::new()
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("push-sub verify: {e}"))?;
+        resp.text().await.map_err(|e| format!("push-sub verify: {e}"))
+    };
+    let body = crate::app::net::with_timeout(20_000, fetch).await??;
+    match crate::push_enroll::verify_enrolled(&body, &endpoint, &dev) {
+        Some(n) => {
+            set_enrolled_hint(true);
+            Ok(format!(
+                "push: enrolled — {n} device{} will get alerts with the tab closed",
+                if n == 1 { "" } else { "s" }
+            ))
+        }
+        None => {
+            set_enrolled_hint(false);
+            Err("enrollment did not land in the push store — closed-tab pushes will NOT reach this device; tap the bell to retry".to_string())
+        }
+    }
 }
 
 /// Enable Web Push for THIS DEVICE, keyed by its OWN ADDRESS in the proxy's
@@ -731,6 +797,7 @@ pub(crate) async fn register_device_push() -> Result<String, String> {
 /// cross-device-push bug. Idempotent — safe to tap again to refresh a stale sub.
 pub(crate) async fn enable_device_push() -> Result<String, String> {
     if !ensure_permission().await? {
+        set_enrolled_hint(false);
         return Err("notification permission is blocked — allow notifications for this site in your browser settings, then tap again".to_string());
     }
     register_device_push().await

@@ -22,6 +22,13 @@
 //      same slot keyed by the name's own tokenId, and the address-keyed
 //      `pushSubOf(owner)` PushFacet slot.
 //
+// DEAD-SUB PRUNING (telemetry #40): a push service 404/410 means the
+// subscription is expired/unsubscribed — it is PRUNED from the store blob
+// (best-effort, store entries only; legacy on-chain slots are read-only) and,
+// when NO endpoint accepted, the caller gets an honest "no live push
+// subscription … re-enroll" instead of a generic send failure. Without this a
+// stale endpoint was re-served forever and every closed-tab push died silently.
+//
 // AUTH + BILLING are byte-compatible with api/fetch.ts / api/gemini.ts: the
 // caller sends `<address>:<timestamp>:<signature>` (an Ethereum personal-sign
 // over `localharness-proxy:<address>:<timestamp>`) in `x-goog-api-key` (or
@@ -68,11 +75,11 @@ import { bytesToHex } from '@noble/hashes/utils';
 import {
   parsePushSubs,
   dedupeSubs,
-  sendWebPushAll,
+  sendWebPushAllDetailed,
   type PushSubscriptionJson,
 } from './_webpush';
 import { recordOnChainMessage } from './_message';
-import { storePushSubs } from './_pushstore';
+import { storePushSubs, pruneStorePushSubs } from './_pushstore';
 import { SlidingWindow, claimedAddress } from './_ratelimit';
 
 export const config = { runtime: 'edge' };
@@ -238,10 +245,11 @@ class NoSuchAgentError extends Error {}
  * `subs` is [] when the agent exists but no device ever enrolled. `toId` is the
  * recipient's tokenId — kept so a no-subscription delivery can still RECORD the
  * note on-chain (MessageFacet inbox) for the recipient to read at boot (#35).
+ * `owner` is kept so dead store subs discovered at send time can be PRUNED.
  */
 async function pushSubsOfName(
   name: string,
-): Promise<{ subs: PushSubscriptionJson[]; toId: bigint }> {
+): Promise<{ subs: PushSubscriptionJson[]; toId: bigint; owner: string }> {
   const id = BigInt(
     await ethCall('0x' + selector('idOfName(string)') + encodeStringArg(name)),
   );
@@ -250,7 +258,7 @@ async function pushSubsOfName(
     '0x' + selector('ownerOf(uint256)') + id.toString(16).padStart(64, '0'),
   );
   const owner = '0x' + stripHex(ownerWord).slice(-40);
-  return { subs: await resolveSubsForOwner(owner, id), toId: id };
+  return { subs: await resolveSubsForOwner(owner, id), toId: id, owner };
 }
 
 /**
@@ -383,11 +391,13 @@ export default async function handler(req: Request): Promise<Response> {
     // the recipient's tokenId so a no-push note can still be RECORDED on-chain.
     let subs: PushSubscriptionJson[];
     let recipientId = 0n; // recipient tokenId (cross-agent only); 0 = self/none
+    let subsOwner = address; // whose store blob holds the subs (for pruning)
     try {
       if (to) {
         const r = await pushSubsOfName(to);
         subs = r.subs;
         recipientId = r.toId;
+        subsOwner = r.owner;
       } else {
         subs = await pushSubsOfCaller(address);
       }
@@ -477,6 +487,7 @@ export default async function handler(req: Request): Promise<Response> {
       // for the in-app log; the push alone is enough for the live banner).
       let recorded = false;
       let sent = 0;
+      let gone: string[] = [];
       await Promise.all([
         recordOnChainMessage(recipientId, payload)
           .then(() => {
@@ -489,34 +500,67 @@ export default async function handler(req: Request): Promise<Response> {
             );
           }),
         subs.length > 0
-          ? sendWebPushAll(subs, payload, { publicKey, privateKey, subject })
-              .then((n) => {
-                sent = n;
+          ? sendWebPushAllDetailed(subs, payload, { publicKey, privateKey, subject })
+              .then((r) => {
+                sent = r.sent;
+                gone = r.gone;
               })
               .catch(() => {})
           : Promise.resolve(),
       ]);
+      // Dead subscriptions (push service 404/410): prune them from the store
+      // so the next notify doesn't ship to a corpse (#40). Best-effort.
+      const pruned = gone.length ? await pruneStorePushSubs(subsOwner, gone) : 0;
       if (!recorded && sent === 0) {
         return json(
-          { error: 'could not deliver: on-chain record and push both failed' },
+          {
+            error:
+              gone.length > 0
+                ? `could not deliver: on-chain record failed and the recipient's ${gone.length} push endpoint(s) are expired (pruned) — they must re-open the app to re-enroll`
+                : 'could not deliver: on-chain record and push both failed',
+          },
           502,
           origin,
         );
       }
       return json(
-        { sent: true, recorded, delivered: sent > 0, devices: sent, enrolled: subs.length > 0, to },
+        {
+          sent: true,
+          recorded,
+          delivered: sent > 0,
+          devices: sent,
+          enrolled: subs.length > 0,
+          to,
+          ...(pruned > 0 ? { pruned } : {}),
+        },
         200,
         origin,
       );
     }
 
     // SELF-notify: the caller's own devices — push only. FAN-OUT to every
-    // enrolled device; success = at least one push service accepted.
-    const sent = await sendWebPushAll(subs, payload, { publicKey, privateKey, subject });
+    // enrolled device; success = at least one push service accepted. Dead
+    // subscriptions (404/410) are pruned and reported HONESTLY: "you have no
+    // live subscription" beats a generic send failure (#40).
+    const { sent, gone } = await sendWebPushAllDetailed(subs, payload, {
+      publicKey,
+      privateKey,
+      subject,
+    });
+    const pruned = gone.length ? await pruneStorePushSubs(address, gone) : 0;
     if (sent === 0) {
-      return json({ error: 'push send failed (service rejected or timed out)' }, 502, origin);
+      return json(
+        {
+          error:
+            gone.length > 0
+              ? `no live push subscription — ${gone.length} enrolled endpoint(s) expired (pruned); open the app on the device and tap the bell to re-enroll`
+              : 'push send failed (service rejected or timed out)',
+        },
+        502,
+        origin,
+      );
     }
-    return json({ sent: true, devices: sent }, 200, origin);
+    return json({ sent: true, devices: sent, ...(pruned > 0 ? { pruned } : {}) }, 200, origin);
   } catch (e) {
     return json({ error: (e as Error).message }, 500, origin);
   }

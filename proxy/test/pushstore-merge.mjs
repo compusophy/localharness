@@ -82,6 +82,32 @@ const sub = (ep, dev, key = 'k') => ({
   );
 }
 
+// --- pruneSubsFromList (telemetry #40: dead-sub pruning) ----------------------
+const { pruneSubsFromList } = pushstoreMod;
+{
+  const list = [sub('live', 'dev-1'), sub('dead', 'dev-2')];
+  const kept = pruneSubsFromList(list, ['https://push.example/dead']);
+  ok(
+    'prune: dead endpoint dropped, live kept',
+    kept.length === 1 && kept[0].dev === 'dev-1',
+    JSON.stringify(kept),
+  );
+}
+{
+  ok(
+    'prune: no match -> null (no write)',
+    pruneSubsFromList([sub('live', 'dev-1')], ['https://push.example/other']) === null,
+  );
+  ok('prune: empty dead list -> null', pruneSubsFromList([sub('live')], []) === null);
+}
+{
+  const kept = pruneSubsFromList([sub('a'), sub('b')], [
+    'https://push.example/a',
+    'https://push.example/b',
+  ]);
+  ok('prune: all dead -> empty list (store emptied, not left stale)', kept !== null && kept.length === 0);
+}
+
 if (failed) {
   console.error('\npushstore-merge test FAILED');
   process.exit(1);

@@ -257,6 +257,12 @@ pub mod difficulty;
 /// See `src/router.rs`.
 pub mod router;
 
+/// Pure Web Push enrollment-verification core (native-testable; telemetry
+/// #40): confirm a POSTed push subscription actually LANDED in the proxy
+/// store + compose the bell panel's enrolled/not-enrolled status line.
+/// Consumed by `app::notifications`. See `src/push_enroll.rs`.
+pub mod push_enroll;
+
 /// Pure lessons-blob merging + prompt-section composition for the agent
 /// LESSONS LOOP (native-testable). The browser `record_lesson` tool, the
 /// headless CLI `call`, and the proxy scheduler worker all fold its output

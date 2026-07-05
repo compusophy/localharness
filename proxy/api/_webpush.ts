@@ -83,6 +83,32 @@ export function dedupeSubs(subs: PushSubscriptionJson[]): PushSubscriptionJson[]
   });
 }
 
+/** Per-subscription send outcome: `gone` = the push service said 404/410 —
+ *  the subscription is DEAD (expired/unsubscribed) and should be pruned from
+ *  the store, not retried forever (telemetry #40). */
+export type PushSendOutcome = 'ok' | 'gone' | 'fail';
+
+/**
+ * Fan a payload out to EVERY subscription (one POST per device, concurrent).
+ * Returns the accepted count plus the endpoints the push service reported
+ * DEAD (404/410) so the caller can prune them. Never throws.
+ */
+export async function sendWebPushAllDetailed(
+  subs: PushSubscriptionJson[],
+  payload: string,
+  vapid: VapidEnv,
+): Promise<{ sent: number; gone: string[] }> {
+  const deduped = dedupeSubs(subs);
+  const results = await Promise.all(deduped.map((s) => sendWebPushDetailed(s, payload, vapid)));
+  const gone: string[] = [];
+  let sent = 0;
+  results.forEach((r, i) => {
+    if (r === 'ok') sent++;
+    else if (r === 'gone') gone.push(deduped[i].endpoint);
+  });
+  return { sent, gone };
+}
+
 /**
  * Fan a payload out to EVERY subscription (one POST per device, concurrent).
  * Returns the number of pushes the services accepted. Never throws.
@@ -92,10 +118,7 @@ export async function sendWebPushAll(
   payload: string,
   vapid: VapidEnv,
 ): Promise<number> {
-  const results = await Promise.all(
-    dedupeSubs(subs).map((s) => sendWebPush(s, payload, vapid)),
-  );
-  return results.filter(Boolean).length;
+  return (await sendWebPushAllDetailed(subs, payload, vapid)).sent;
 }
 
 // ---- base64url <-> bytes ----------------------------------------------------
@@ -265,19 +288,29 @@ export interface VapidEnv {
   subject: string; // mailto: or https: contact, e.g. mailto:ops@example.com
 }
 
-/**
- * Encrypt `payload` to `sub` and POST it to the push service. NEVER throws —
- * returns true when the push service accepted (HTTP 201), false on any
- * failure (logged). Bounded by a 5s timeout so a slow push service can't eat
- * the Edge wall-clock budget of the scheduled run it decorates.
- */
+/** Boolean convenience over [`sendWebPushDetailed`]: true = accepted. */
 export async function sendWebPush(
   sub: PushSubscriptionJson,
   payload: string,
   vapid: VapidEnv,
 ): Promise<boolean> {
+  return (await sendWebPushDetailed(sub, payload, vapid)) === 'ok';
+}
+
+/**
+ * Encrypt `payload` to `sub` and POST it to the push service. NEVER throws —
+ * 'ok' when the push service accepted (HTTP 201), 'gone' on 404/410 (the
+ * subscription is dead — prune it), 'fail' on anything else (logged). Bounded
+ * by a 5s timeout so a slow push service can't eat the Edge wall-clock budget
+ * of the scheduled run it decorates.
+ */
+export async function sendWebPushDetailed(
+  sub: PushSubscriptionJson,
+  payload: string,
+  vapid: VapidEnv,
+): Promise<PushSendOutcome> {
   try {
-    if (!sub?.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) return false;
+    if (!sub?.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) return 'fail';
     const body = await encryptPayload(sub, utf8(payload));
     const authorization = await vapidAuthHeader(
       sub.endpoint,
@@ -292,20 +325,26 @@ export async function sendWebPush(
         'content-encoding': 'aes128gcm',
         'content-type': 'application/octet-stream',
         ttl: '86400',
-        urgency: 'normal',
+        // 'high' wakes a dozing Android device; 'normal' lets FCM defer
+        // delivery until the device wakes on its own — which reads exactly as
+        // "I only get notifications when I open the app" (telemetry #40/#35).
+        // Every push here is a user-visible banner, so high is appropriate.
+        urgency: 'high',
       },
       body: body as BodyInit,
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) {
-      // 404/410 = subscription expired/unsubscribed (stale on-chain blob);
-      // anything else = push-service hiccup. Either way: log + move on.
+      // 404/410 = subscription expired/unsubscribed — report 'gone' so the
+      // caller can PRUNE it from the store (a stale sub kept being served and
+      // every closed-tab push died silently, telemetry #40); anything else =
+      // push-service hiccup. Either way: log + move on.
       console.warn(`[webpush] push service ${res.status} for ${new URL(sub.endpoint).origin}`);
-      return false;
+      return res.status === 404 || res.status === 410 ? 'gone' : 'fail';
     }
-    return true;
+    return 'ok';
   } catch (e) {
     console.warn(`[webpush] send failed: ${(e as Error).message}`);
-    return false;
+    return 'fail';
   }
 }

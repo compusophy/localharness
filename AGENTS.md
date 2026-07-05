@@ -100,7 +100,8 @@ src/                  library crate
 ├── raster.rs html_fb.rs(pure HTML→framebuffer rasterizer, hoisted from
 │                     app::display) compose.rs sharedfs_reconcile.rs
 │                     signaling_seal.rs kv_reduce.rs
-│                     kv_room.rs lessons.rs confirm.rs cut_guard.rs(static
+│                     kv_room.rs lessons.rs push_enroll.rs(pure push-enroll
+│                     verify + bell status, telemetry #40) confirm.rs cut_guard.rs(static
 │                     facet-cut safety lint, reserved selectors) keeper.rs(pure
 │                     decentralized-scheduler keeper decision core) qr.rs(inline
 │                     SVG QR, browser-app) skills.rs(SKILLS LOOP blob core)

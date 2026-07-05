@@ -113,7 +113,10 @@ turns are transcript-only, never in agent history; widen the
 free tier ONLY by adding exact phrases to `router::FREE_PHRASES`) ·
 `notifications.rs` bell + push (per-device `dev` dedup; enrollment is OFF-CHAIN —
 POST /api/push-sub to the proxy's GitHub store, NEVER a sponsored on-chain write:
-that path failed with "insufficient funds" for unfunded mainnet users) ·
+that path failed with "insufficient funds" for unfunded mainnet users; enroll is
+VERIFIED — read the store back, require this device's entry (`crate::push_enroll`,
+telemetry #40) — and the bell panel surfaces the enrolled/blocked/enrolling state
+via `bell_status_line`) ·
 `display/` framebuffer
 (`mod.rs` run/launch surface + re-exports; `worker.rs` spawn/watchdog/RUN_GEN/
 RUN_OUTCOME + the onmessage router; `surface.rs` canvas mount + overlay chrome +

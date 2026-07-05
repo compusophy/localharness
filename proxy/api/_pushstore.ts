@@ -115,6 +115,55 @@ export function mergeSubIntoList(
 }
 
 /**
+ * PURE removal of dead subscriptions from a stored list (exported for the unit
+ * test): drop every entry whose endpoint the push service reported 404/410.
+ * Returns `null` when nothing matched — no write needed.
+ */
+export function pruneSubsFromList(
+  list: PushSubscriptionJson[],
+  deadEndpoints: string[],
+): PushSubscriptionJson[] | null {
+  const dead = new Set(deadEndpoints);
+  const kept = list.filter((e) => !dead.has(e.endpoint));
+  return kept.length === list.length ? null : kept;
+}
+
+/**
+ * Remove DEAD subscriptions (push service said 404/410) from `address`'s store
+ * blob so the store stops serving corpses (telemetry #40: a stale endpoint was
+ * re-served forever and every closed-tab push died silently). Best-effort —
+ * returns the pruned count, NEVER throws (a failed prune must not fail the
+ * notify that discovered the corpse); one retry on a sha conflict.
+ */
+export async function pruneStorePushSubs(
+  address: string,
+  deadEndpoints: string[],
+): Promise<number> {
+  if (!GH_TOKEN || !isStoreAddress(address) || deadEndpoints.length === 0) return 0;
+  const path = pathFor(address);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const hit = await ghGet(path);
+      if (!hit) return 0;
+      const list = parsePushSubs(hit.text.trim());
+      const kept = pruneSubsFromList(list, deadEndpoints);
+      if (kept === null) return 0;
+      await ghPut(
+        path,
+        JSON.stringify(kept),
+        `push-prune ${address.toLowerCase()} (-${list.length - kept.length})`,
+        hit.sha,
+      );
+      return list.length - kept.length;
+    } catch (e) {
+      // sha conflict (concurrent enroll) — re-read + retry once, then give up.
+      if (attempt === 1) console.warn(`[pushstore] prune failed for ${address}: ${(e as Error).message}`);
+    }
+  }
+  return 0;
+}
+
+/**
  * ALL device subscriptions stored off-chain for `address` ([] when none /
  * store unconfigured / any error — NEVER throws: resolution falls back to the
  * legacy on-chain slots and a push miss must never fail the caller's request).

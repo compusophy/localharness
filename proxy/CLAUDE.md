@@ -28,6 +28,8 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   calls `recordRun` (SCHEDULER-ROLE, CAS-guarded). Sub-minute can't ride this.
 - `notify.ts` + `_webpush.ts` — web-push (self or cross-agent `to`), dedup by the
   per-device `dev` field (NOT endpoint — one device's cross-origin endpoints collapse).
+  Push-service 404/410 = DEAD sub → pruned from the store + honest "no live push
+  subscription … re-enroll" when nothing accepted (telemetry #40).
 - `push-sub.ts` + `_pushstore.ts` — OFF-CHAIN push-subscription enrollment (POST
   `{sub}` personal-sign authed → GitHub store `push-subs/<address>.json`; GET
   `?address=` open). Replaced the browser's sponsored on-chain `setPushSub`
