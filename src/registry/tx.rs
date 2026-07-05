@@ -43,11 +43,14 @@ pub fn set_metadata_gas(byte_len: usize) -> u128 {
 }
 
 /// Absolute ceiling on the per-gas price we'll authorize for a sponsored tx,
-/// in wei. Tempo gas prices sit around 1 gwei; 1000 gwei is ~1000x headroom yet
-/// caps a hostile/MITM'd RPC from inflating `gas_limit * price` to drain the
-/// embedded sponsor's fee-token float (the price is taken verbatim from the
-/// node). Refuse rather than clamp — never silently authorize an absurd fee.
-pub const MAX_GAS_PRICE_WEI: u128 = 1_000_000_000_000; // 1000 gwei
+/// in wei. T7/TIP-1067 hard-caps the base fee at 12 gwei, and our builders set
+/// `max_fee = 2 × spot` (≤24 gwei worst case); 50 gwei leaves ~2x margin over
+/// that yet caps a hostile/MITM'd RPC from inflating `gas_limit * price` to
+/// drain the embedded sponsor's fee-token float (the price is taken verbatim
+/// from the node). Refuse rather than clamp — never silently authorize an
+/// absurd fee. MIRRORS `proxy/api/sponsor.ts::MAX_GAS_PRICE_WEI` — keep the
+/// two in lockstep.
+pub const MAX_GAS_PRICE_WEI: u128 = 50_000_000_000; // 50 gwei
 
 /// Absolute ceiling on the `gas_limit` we'll authorize for a sponsored tx. Block
 /// limit is ~500M; 50M is generous headroom for the largest real write (a big
@@ -175,11 +178,12 @@ pub async fn submit_tempo_self_paid(
     let sender_addr = wallet::address(sender);
     let sender_hex = address_to_hex(&sender_addr);
     let fee_token_addr = fee_token.map(parse_eth_address).transpose()?;
-    let gas_price = current_gas_price().await?;
-    // See `submit_tempo_sponsored` for the stale-nonce resubmit rationale.
+    // See `submit_tempo_sponsored` for the retry rationale (stale nonce +
+    // basefee both re-read chain state before rebuilding).
     let mut last_err = String::new();
     for attempt in 0..2 {
         let nonce = eth_get_transaction_count(&sender_hex).await?;
+        let gas_price = current_gas_price().await?;
         let mut builder = TempoTxBuilder::new(CHAIN_ID())
             .max_priority_fee_per_gas(0)
             .max_fee_per_gas(gas_price * 2)
@@ -196,7 +200,7 @@ pub async fn submit_tempo_self_paid(
                 wait_for_receipt(&tx_hash).await?;
                 return Ok(tx_hash);
             }
-            Err(e) if e.starts_with(STALE_NONCE_ERR) && attempt == 0 => {
+            Err(e) if is_retryable_submit(&e) && attempt == 0 => {
                 last_err = e;
                 continue;
             }
@@ -250,17 +254,19 @@ pub async fn submit_tempo_sponsored(
     let sender_addr = wallet::address(sender);
     let sender_hex = address_to_hex(&sender_addr);
     let fee_token_addr = parse_eth_address(fee_token)?;
-    let gas_price = current_gas_price().await?;
-    // Build + sign + submit with a freshly-read nonce; on a STALE-nonce
-    // rejection (a "pending" read that lagged a just-submitted sibling tx —
-    // e.g. the meter→wallet bridge that runs right before the x402 approve)
-    // re-read the live nonce and resubmit ONCE. Without this the colliding
-    // tx either timed out (the fabricated-hash receipt poll — meter-bridge
-    // "timed out on-chain" report) or surfaced a raw node decode/nonce error
-    // to the user (the call_agent "$LH approve: …" report).
+    // Build + sign + submit with freshly-read chain state; on a RETRYABLE
+    // rejection, re-read and resubmit ONCE:
+    // - STALE nonce (a "pending" read that lagged a just-submitted sibling tx —
+    //   e.g. the meter→wallet bridge that runs right before the x402 approve).
+    //   Without this the colliding tx either timed out (the fabricated-hash
+    //   receipt poll — meter-bridge "timed out on-chain" report) or surfaced a
+    //   raw node decode/nonce error (the call_agent "$LH approve: …" report).
+    // - BASEFEE (T7 dynamic base fee outran the spot `eth_gasPrice` read).
+    // The gas price is read INSIDE the loop so the retry reprices the rebuild.
     let mut last_err = String::new();
     for attempt in 0..2 {
         let nonce = eth_get_transaction_count(&sender_hex).await?;
+        let gas_price = current_gas_price().await?;
         let tx = TempoTxBuilder::new(CHAIN_ID())
             .max_priority_fee_per_gas(0)
             .max_fee_per_gas(gas_price * 2)
@@ -279,7 +285,7 @@ pub async fn submit_tempo_sponsored(
                 wait_for_receipt(&tx_hash).await?;
                 return Ok(tx_hash);
             }
-            Err(e) if e.starts_with(STALE_NONCE_ERR) && attempt == 0 => {
+            Err(e) if is_retryable_submit(&e) && attempt == 0 => {
                 last_err = e;
                 continue;
             }
@@ -307,10 +313,10 @@ pub async fn create_sponsored(
     let sender_addr = wallet::address(sender);
     let sender_hex = address_to_hex(&sender_addr);
     let fee_token_addr = parse_eth_address(fee_token)?;
-    let gas_price = current_gas_price().await?;
     let mut last_err = String::new();
     for attempt in 0..2 {
         let nonce = eth_get_transaction_count(&sender_hex).await?;
+        let gas_price = current_gas_price().await?;
         let tx = TempoTxBuilder::new(CHAIN_ID())
             .max_priority_fee_per_gas(0)
             .max_fee_per_gas(gas_price * 2)
@@ -330,7 +336,7 @@ pub async fn create_sponsored(
                 wait_for_receipt(&tx_hash).await?;
                 return receipt_contract_address(&tx_hash).await;
             }
-            Err(e) if e.starts_with(STALE_NONCE_ERR) && attempt == 0 => {
+            Err(e) if is_retryable_submit(&e) && attempt == 0 => {
                 last_err = e;
                 continue;
             }

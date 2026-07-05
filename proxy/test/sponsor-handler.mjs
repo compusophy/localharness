@@ -384,8 +384,8 @@ function setMetadataCalldata(valueLenBytes) {
 {
   stubBalance('0');
   const cd = registerCalldata('relaytest');
-  // maxFeePerGas just over the 1000-gwei ceiling (MAX_GAS_PRICE_WEI = 1e12).
-  const intent = { ...makeIntent(DIAMOND, cd), maxFeePerGas: 1_000_000_000_001n };
+  // maxFeePerGas just over the 50-gwei ceiling (MAX_GAS_PRICE_WEI = 5e10).
+  const intent = { ...makeIntent(DIAMOND, cd), maxFeePerGas: 50_000_000_001n };
   const res = await handler(makeReq(bodyFromIntent(intent), token));
   const j = await res.json();
   ok('over-ceiling gas price refused 400 LH_RELAY_GAS', res.status === 400 && j.code === 'LH_RELAY_GAS', `status=${res.status} code=${j.code}`);

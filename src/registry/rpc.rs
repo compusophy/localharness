@@ -455,6 +455,10 @@ pub(crate) async fn eth_send_raw_transaction(raw_hex: &str) -> Result<String, St
             // "timed out on-chain" report). Tag it so `submit_tempo_*`
             // re-reads the live nonce and resubmits once.
             SubmitError::StaleNonce => Err(format!("{STALE_NONCE_ERR}: {err}")),
+            // Our max_fee was outrun by the T7/TIP-1067 dynamic base fee
+            // between the spot `eth_gasPrice` read and submission. Tag it so
+            // `submit_tempo_*` re-reads the gas price and resubmits once.
+            SubmitError::BasefeeTooLow => Err(format!("{BASEFEE_ERR}: {err}")),
             SubmitError::Other => Err(err),
         },
     }
@@ -467,6 +471,17 @@ pub(crate) async fn eth_send_raw_transaction(raw_hex: &str) -> Result<String, St
 /// sponsored sends collide; re-reading the nonce and re-signing clears it.
 pub(crate) const STALE_NONCE_ERR: &str = "stale-nonce";
 
+/// Marker prefix for a basefee rejection (`max_fee < block base fee`). The T7
+/// dynamic base fee can outrun a spot `eth_gasPrice` read by +12.5%/block; the
+/// submit wrappers retry ONCE, re-reading the gas price before rebuilding.
+pub(crate) const BASEFEE_ERR: &str = "basefee-too-low";
+
+/// `true` for a submit rejection the tx builders should retry ONCE after
+/// re-reading fresh chain state (nonce AND gas price) and rebuilding the tx.
+pub(crate) fn is_retryable_submit(err: &str) -> bool {
+    err.starts_with(STALE_NONCE_ERR) || err.starts_with(BASEFEE_ERR)
+}
+
 /// How `eth_sendRawTransaction` should treat a node rejection.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SubmitError {
@@ -474,7 +489,10 @@ pub(crate) enum SubmitError {
     Duplicate,
     /// A different tx holds this nonce → resubmit with a fresh nonce.
     StaleNonce,
-    /// Anything else (basefee, revert-on-estimate, malformed, …) → surface.
+    /// `max_fee` below the current block base fee (the T7 dynamic base fee
+    /// outran the spot read) → re-read the gas price and resubmit.
+    BasefeeTooLow,
+    /// Anything else (revert-on-estimate, malformed, …) → surface.
     Other,
 }
 
@@ -492,6 +510,12 @@ pub(crate) fn classify_submit_error(err: &str) -> SubmitError {
         || lower.contains("already imported")
     {
         SubmitError::StaleNonce
+    } else if (lower.contains("basefee") || lower.contains("base fee"))
+        && (lower.contains("less than") || lower.contains("below") || lower.contains("too low"))
+    {
+        // "gas price is less than basefee" + close phrasings ("max fee per gas
+        // less than block base fee", "fee cap below base fee", …).
+        SubmitError::BasefeeTooLow
     } else {
         SubmitError::Other
     }
@@ -878,7 +902,28 @@ mod tests {
             classify_submit_error("failed to decode signed transaction"),
             SubmitError::Other
         );
-        assert_eq!(classify_submit_error("gas price is less than basefee"), SubmitError::Other);
+        // Basefee outran our max_fee (T7 dynamic base fee) → retryable with a
+        // fresh gas-price read, in every close phrasing the nodes emit.
+        assert_eq!(
+            classify_submit_error("gas price is less than basefee"),
+            SubmitError::BasefeeTooLow
+        );
+        assert_eq!(
+            classify_submit_error("max fee per gas less than block base fee"),
+            SubmitError::BasefeeTooLow
+        );
+        assert_eq!(
+            classify_submit_error("fee cap below base fee"),
+            SubmitError::BasefeeTooLow
+        );
+        // ...but a basefee mention WITHOUT an underpriced phrasing surfaces.
+        assert_eq!(
+            classify_submit_error("basefee calculation overflow"),
+            SubmitError::Other
+        );
+        assert!(is_retryable_submit(&format!("{BASEFEE_ERR}: gas price is less than basefee")));
+        assert!(is_retryable_submit(&format!("{STALE_NONCE_ERR}: nonce too low")));
+        assert!(!is_retryable_submit("rpc error: execution reverted"));
     }
 
     #[test]

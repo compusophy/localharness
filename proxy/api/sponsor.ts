@@ -55,9 +55,11 @@ export const config = { runtime: 'edge' };
 // --- constants -------------------------------------------------------------
 
 // Absolute per-gas price ceiling, mirroring `src/registry/tx.rs::MAX_GAS_PRICE_WEI`
-// (1000 gwei). A hostile/MITM'd CLI RPC could otherwise submit an inflated price
-// to drain the sponsor's fee-token float — we refuse rather than clamp.
-const MAX_GAS_PRICE_WEI = 1_000_000_000_000n;
+// (50 gwei — T7 hard-caps the base fee at 12 gwei and clients bid 2x spot, so
+// legit prices stay <=24 gwei). A hostile/MITM'd CLI RPC could otherwise submit
+// an inflated price to drain the sponsor's fee-token float — we refuse rather
+// than clamp. Keep the two constants in lockstep.
+const MAX_GAS_PRICE_WEI = 50_000_000_000n;
 // Bound the per-tx gas LIMIT. A 2KB on-chain setMetadata is ~18M gas
 // (7.6k/byte); 50M leaves headroom for the largest legitimate onboarding write
 // while refusing an absurd limit. (Real cost is gas USED, but a sane ceiling

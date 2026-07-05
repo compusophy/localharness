@@ -6,11 +6,15 @@
 //! 1. **Self-paid native** — `fee_token = None`. Deployer wallet
 //!    pays its own fees in native. Verifies the basic 0x76 envelope
 //!    + sender signature.
-//! 2. **Self-paid $LH** — `fee_token = LOCALHARNESS_TOKEN_ADDRESS()`.
-//!    Deployer pays its own fees in $LH. Verifies the fee_token slot.
-//! 3. **Sponsored $LH** — fresh sender with zero balance; deployer
-//!    signs as fee_payer; fees paid in $LH from the deployer's
-//!    balance. Verifies the dual-sign flow.
+//! 2. **Self-paid, explicit fee_token** — a USD-currency TIP-20
+//!    DISCOVERED live via `currency()` (T7 rejects anything else, and
+//!    fixture addresses go stale). Verifies the fee_token slot.
+//! 3. **Sponsored** — fresh sender with zero balance; deployer signs as
+//!    fee_payer; fees paid in the discovered fee_token from the
+//!    deployer's balance. Verifies the dual-sign flow.
+//!
+//! If NO candidate reports `currency() == "USD"`, steps 2/3 are skipped
+//! with an honest message (step 1 still proves the envelope).
 //!
 //! Run with:
 //!   EVM_PRIVATE_KEY=0x...  cargo run --example tempo_tx_live --features wallet
@@ -26,10 +30,17 @@ use localharness::wallet;
 use sha3::{Digest, Keccak256};
 
 const TOKEN_ADDRESS: &str = "0xcC8A300658dC8d0648D984A5066Af3F8E75e0936";
-// Tempo's native TIP-20 stablecoins (Moderato testnet). Auto-funded by
-// `tempo_fundAddress`. Used as fee_token candidates — $LH is NOT TIP-20
-// and the chain rejects it with FeeTokenNotTip20Error.
-const ALPHA_USD: &str = "0x20c0000000000000000000000000000000000001";
+// TIP-20 fee_token CANDIDATES, probed live via `currency()` at startup: T7
+// requires a fee_token to be TIP-20 with `currency() == "USD"`, and the old
+// hardcoded Moderato AlphaUSD slot (0x20c0…0001) now returns an EMPTY currency
+// under T7 (FeeTokenNotUsdError) — so steps 2/3 discover a valid token instead
+// of hard-failing on a stale fixture. First hit wins; none → honest skip.
+// Candidates: the active chain's configured fee_token (chain.rs) is tried
+// first, then these knowns (Moderato AlphaUSD, mainnet USDC.e).
+const FEE_TOKEN_CANDIDATES: &[&str] = &[
+    "0x20c0000000000000000000000000000000000001", // AlphaUSD (Moderato)
+    "0x20c000000000000000000000b9537d11c60e8b50", // USDC.e (mainnet)
+];
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,24 +60,98 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nonce = step_self_paid_native(&signer, &address_hex, nonce, gas_price).await?;
     println!("[step 1 ok] next nonce: {nonce}");
 
-    // Step 2 — self-paid $LH. The deployer holds $LH (faucet'd) so
-    // this should work if Tempo accepts the token as fee_token.
-    println!("\n=== step 2: self-paid $LH ===");
-    step_self_paid_lh(&signer, &address_hex, nonce, gas_price).await?;
+    // Steps 2/3 need a USD-currency TIP-20 fee_token. Discover one live —
+    // the fixture list goes stale (T7 emptied the old AlphaUSD slot's
+    // `currency()`), and a stale candidate must not hard-fail the example.
+    let fee_token = match discover_usd_fee_token().await {
+        Some(token) => token,
+        None => {
+            println!(
+                "\nno USD-currency TIP-20 fee_token found among the candidates on this chain \
+                 (T7 rejects non-USD fee tokens with FeeTokenNotUsdError) — \
+                 skipping steps 2/3 (fee_token + sponsored flows). Step 1 verified the envelope."
+            );
+            return Ok(());
+        }
+    };
+    println!("fee_token (currency()==\"USD\"): {fee_token}");
+
+    // Step 2 — self-paid with an explicit fee_token slot. The deployer pays
+    // its own fees in the discovered USD stablecoin.
+    println!("\n=== step 2: self-paid, explicit fee_token ===");
+    step_self_paid_lh(&signer, &address_hex, nonce, gas_price, &fee_token).await?;
     println!("[step 2 ok]");
 
     // Step 3 — sponsored: a fresh keypair (zero balance) is the
-    // sender; the deployer signs as fee_payer; fees paid in AlphaUSD
-    // from the deployer's stash. The call: faucet our LH token to
-    // the fresh sender so they end up with $LH afterward.
+    // sender; the deployer signs as fee_payer; fees paid in the discovered
+    // USD fee_token from the deployer's stash. The call: faucet our LH token
+    // to the fresh sender so they end up with $LH afterward.
     println!("\n=== step 3: sponsored (fresh sender + deployer fee_payer) ===");
-    step_sponsored_lh(&signer).await?;
+    step_sponsored_lh(&signer, &fee_token).await?;
     println!("[step 3 ok]");
     Ok(())
 }
 
+/// Probe the fee_token candidates (the active chain's configured one first,
+/// then the known stablecoin slots) via `currency()` and return the first
+/// that reports "USD" — the T7 fee_token eligibility rule. `None` when no
+/// candidate qualifies (each miss is printed honestly, never a hard fail).
+async fn discover_usd_fee_token() -> Option<String> {
+    let mut candidates = vec![registry::ALPHA_USD_ADDRESS().to_string()];
+    for c in FEE_TOKEN_CANDIDATES {
+        if !candidates.iter().any(|k| k.eq_ignore_ascii_case(c)) {
+            candidates.push((*c).to_string());
+        }
+    }
+    for candidate in candidates {
+        match token_currency(&candidate).await {
+            Ok(cur) if cur == "USD" => return Some(candidate),
+            Ok(cur) => println!("candidate {candidate}: currency()={cur:?} (not \"USD\") — skip"),
+            Err(e) => println!("candidate {candidate}: currency() call failed ({e}) — skip"),
+        }
+    }
+    None
+}
+
+/// `currency()` on a TIP-20 token via `eth_call`, ABI-decoded as a string.
+async fn token_currency(token: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let mut hasher = Keccak256::new();
+    hasher.update(b"currency()");
+    let digest = hasher.finalize();
+    let calldata = format!("0x{}", hex(&digest[..4]));
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_call",
+        "params": [{"to": token, "data": calldata}, "latest"],
+    });
+    let resp: serde_json::Value = client
+        .post(registry::RPC_URL())
+        .json(&body)
+        .send()
+        .await?
+        .json()
+        .await?;
+    if let Some(err) = resp.get("error") {
+        return Err(format!("rpc error: {err}").into());
+    }
+    let result = resp.get("result").and_then(|v| v.as_str()).ok_or("no result field")?;
+    let bytes = hex_decode(result.trim_start_matches("0x"))?;
+    // ABI `string` return: word 0 = offset, word 1 = length, then the bytes.
+    if bytes.len() < 64 {
+        return Err(format!("return too short for a string ({} bytes)", bytes.len()).into());
+    }
+    let len = usize::try_from(u64::from_be_bytes(bytes[56..64].try_into()?))?;
+    if bytes.len() < 64 + len {
+        return Err("string length exceeds returndata".into());
+    }
+    Ok(String::from_utf8_lossy(&bytes[64..64 + len]).into_owned())
+}
+
 async fn step_sponsored_lh(
     fee_payer_signer: &SigningKey,
+    fee_token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Generate a brand-new sender with zero of everything. Verifies
     // the user truly doesn't need any balance — fee_payer's
@@ -99,7 +184,7 @@ async fn step_sponsored_lh(
         // policy checks add ~70k gas. Budget for it.
         .gas_limit(400_000)
         .nonce(nonce)
-        .fee_token(parse_address(ALPHA_USD)?)
+        .fee_token(parse_address(fee_token)?)
         .call(call)
         .sponsored()
         .build();
@@ -186,6 +271,7 @@ async fn step_self_paid_lh(
     address_hex: &str,
     nonce: u128,
     gas_price: u128,
+    fee_token: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let calldata = encode_balance_of(&parse_address(address_hex)?);
     let call = TempoCall {
@@ -199,10 +285,10 @@ async fn step_self_paid_lh(
         .max_fee_per_gas(gas_price)
         .gas_limit(100_000)
         .nonce(nonce)
-        // AlphaUSD is a native TIP-20 stablecoin Tempo accepts as
-        // fee_token. $LH is not TIP-20 — chain returns
-        // FeeTokenNotTip20Error if used.
-        .fee_token(parse_address(ALPHA_USD)?)
+        // The discovered USD-currency TIP-20 (probed via `currency()` at
+        // startup). $LH is not eligible — its currency() is "credits", and
+        // the chain rejects non-USD fee tokens (FeeTokenNotUsdError).
+        .fee_token(parse_address(fee_token)?)
         .call(call)
         .build();
 
