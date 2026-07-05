@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Local Gemma streams live and runs at flat ~26 tok/s** — per-token
+  text-delta Steps ride the shared streaming path (transcript paints tokens
+  as they generate; Stop now cancels mid-generation), and a per-layer KV
+  cache (`gemma.rs::forward_cached`, RoPE at absolute positions, one
+  attention codepath) replaces O(n²) re-forwarding: 0.69 → 7.08 tok/s at a
+  1k-token prompt, exact greedy parity with the uncached path.
+
 ### Fixed
 
 - **In-browser Gemma (`browser-app-local`) actually generates** — first live
