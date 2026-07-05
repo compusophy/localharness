@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Local Gemma implements Gemma 3's sliding-window attention** — 15 of 18
+  layers are sliding (W=512, per the model's own config.json); full attention
+  everywhere made outputs beyond the window deviate from the reference model.
+  One codepath (`forward_cached`) builds causal vs causal∧window masks from a
+  pure tested predicate at absolute positions; sliding layers' KV caches TRIM
+  to the window (cap ~15.7MB total; only the 3 global layers grow). Proven:
+  below-window output byte-identical (regression guard), cached==uncached
+  greedy parity across a 1070-token prompt with real weights.
 - **First-time visitors no longer see the seed-pull face flash** — the apex
   round-trip's empty return (`?seed_import=none`, every pure visitor) used to
   load a second full tenant document and repaint the face (~0.7s visible).
