@@ -98,3 +98,10 @@ printf "\n${G}PROOF-OF-SPEC OK${N} — all 10 stages passed.\n"
 #                              invite / send) against the live chain + credit proxy,
 #                              asserting each result via the CLI output or `cast call`.
 #                              Self-cleaning + idempotent; tiny live $LH spend.
+#   scripts/tab-e2e/           browser tab-E2E of the SHIPPED bundle (headless
+#                              Chrome/Edge via puppeteer-core; zero network spend —
+#                              model calls stalled/faked locally). Not a stage here
+#                              because browser availability varies by machine.
+#                              Needs a built web/pkg (build-web.sh); see its README:
+#                                node scripts/tab-e2e/tab-e2e-main.mjs
+#                                node scripts/tab-e2e/stop-e2e.mjs

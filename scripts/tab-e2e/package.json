@@ -1,0 +1,9 @@
+{
+  "name": "lh-tab-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser tab-E2E harness for the localharness web bundle (see README.md)",
+  "dependencies": {
+    "puppeteer-core": "^23.11.1"
+  }
+}
