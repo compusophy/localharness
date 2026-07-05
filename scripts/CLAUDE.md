@@ -40,8 +40,9 @@ browser-app,mainnet) → STAMPS the `?v=` cache-buster into boot.js/index.html (
 - `tab-e2e/` — OPT-IN browser tab-E2E of the SHIPPED bundle (headless Chrome/Edge
   via puppeteer-core; zero spend — model calls stalled/faked locally, tenant-sim
   aborts RPC/proxy). Needs a built `web/pkg` + a local browser, so NOT a verify.sh
-  stage; run after touching the chat turn loop / router / Stop / bell / display.
-  See `tab-e2e/README.md`.
+  stage; run after touching the chat turn loop / router / Stop / bell / display
+  / the cartridge loop (`cartridge-e2e.mjs`: embed card + history resume +
+  app.rl face + overlay worker stop — no chain write). See `tab-e2e/README.md`.
 - `smoke-money.sh` — OPT-IN live money-path smoke (`--as <name> [--spend]`):
   spends REAL $LH on mainnet (stage B ~1 $LH), asserts wei-exact balance
   conservation. NEVER wire into CI; run only with a quiet, funded identity.

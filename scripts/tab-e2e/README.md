@@ -29,6 +29,24 @@ fake-Gemini SSE endpoint), and the tenant-sim aborts all RPC/proxy/apex requests
   transiently (optimistic studio kept), then streams one chunk from the local
   fake-Gemini endpoint and stops the turn mid-stream. Same ack/release/
   reconcile assertions.
+- **`cartridge-e2e.mjs`** — the CARTRIDGE LOOP, no chain write / no publish:
+  - fixture gate: `examples/cartridges/bouncing_ball.rl` compile-checks with
+    the repo CLI (`localharness compile`; set `LH_CLI` to the binary, else it
+    probes `target/release/` and skips honestly)
+  - feed embed via the history-replay seam: a synthetic successful
+    `create_and_publish_app` result planted in OPFS `.lh_history.json`
+    replays as the playable `embed-app-card`, and the resume path recompiles
+    the recorded source and BOOTS the cartridge worker into the card's canvas
+    (`__lhEmbedTrace` + live `page.workers()` + two-frame animation diff)
+  - local `app.rl` on Host::Other boots the fullscreen face via
+    `try_paint_app` (in-browser rustlite compile), `[studio]` escape painted,
+    still animating past the watchdog window (no LH1001 kill)
+  - display overlay runs the fixture (`opfs-open app.rl` through the app's
+    own delegated-action seam) and ESC genuinely TERMINATES the worker
+    (count → 0), with zero telemetry/crash posts and zero metered calls
+  - NOT covered (honest): the live tool-success auto-embed
+    (`chat::stream_turn` → `launch_pending_embed` needs a real model turn
+    calling the tool) and the tenant-only `#studio-app-slot` owner pin.
 
 Helpers: `serve.mjs` (static web/ server with wasm MIME, READ-ONLY),
 `fake-gemini.mjs` (one SSE chunk then silence), `lib.mjs` (browser discovery,
@@ -41,6 +59,7 @@ bundle check, pass/fail tally).
 npm install --prefix scripts/tab-e2e        # 2. pull puppeteer-core (the only dep)
 node scripts/tab-e2e/tab-e2e-main.mjs        # 3. run (exit 0 = all checks passed)
 node scripts/tab-e2e/stop-e2e.mjs
+node scripts/tab-e2e/cartridge-e2e.mjs
 ```
 
 - **Browser**: set `CHROME_PATH` to a Chromium binary, else the harness probes
@@ -59,5 +78,6 @@ node scripts/tab-e2e/stop-e2e.mjs
 NOT a verify.sh stage — browser availability varies by machine, and the
 proof-of-spec gate must stay hermetic. It is documented there as an OPT-IN
 extension (like `verify-onchain.sh` / `verify-e2e.sh`); run it after touching
-the chat turn loop, the intent router, Stop/TURN_ACTIVE, the bell, or the
-display overlay — and before deploying a rebuilt bundle.
+the chat turn loop, the intent router, Stop/TURN_ACTIVE, the bell, the
+display overlay, or the cartridge loop (embed cards / history resume /
+public-face boot / worker lifecycle) — and before deploying a rebuilt bundle.
