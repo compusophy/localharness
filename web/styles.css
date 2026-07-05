@@ -2078,6 +2078,12 @@ button.ready:hover {
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
+}
+/* Sticky header ONLY inside cards that scroll THEMSELVES (max-height +
+   overflow-y above). .embed-app-card sets overflow:visible, so a sticky head
+   there latches onto the OUTER chat scrollport and floats over the transcript
+   (telemetry #30). */
+.inline-card:not(.embed-app-card) .ic-head {
   position: sticky;
   top: 0;
 }

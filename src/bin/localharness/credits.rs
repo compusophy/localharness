@@ -45,7 +45,9 @@ pub(crate) async fn credits_show(caller_name: Option<&str>) -> i32 {
             (expiry - now) / 60
         );
     } else {
-        println!("  session  none  (open one with `localharness session`, or just `topup` for per-call billing)");
+        // SessionFacet is SHELVED (per-call metering is the live path) — don't
+        // recommend `localharness session`; `topup` funds the meter instead.
+        println!("  session  none  (legacy; `topup` for per-call billing is the live path)");
     }
     0
 }

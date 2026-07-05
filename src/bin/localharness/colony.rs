@@ -984,7 +984,12 @@ async fn colony_step_pick(
     caller_label: &str,
 ) -> Result<ColonyWorker, String> {
     let worker_name = match worker {
-        Some(w) => w,
+        Some(w) => {
+            // Not silent: the transcript shows every numbered step, so say WHY
+            // the auto-pick didn't run rather than skipping [2/8] wordlessly.
+            println!("[2/8] PICK  — skipped (worker forced: {w})");
+            w
+        }
         None => {
             println!("[2/8] PICK  — auto-selecting the best worker (reputation-aware, excluding the caller) …");
             match colony_pick_worker(task, caller_label).await {
