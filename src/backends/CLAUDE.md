@@ -56,7 +56,12 @@ Browser fetch surfaces Gemini SSE with `\r\n\r\n`. `GeminiSseStream::take_frame`
 - `mcp/`: stdio MCP client — `feature=native` only (no wasm).
 - `local/`: in-browser Gemma 3 270M via Burn wgpu — `feature=local`, HEAVY (~570MB),
   OFF the default bundle. getrandom-0.4 needs the wasm_js backend; burn-store DIRECT
-  (memmap2 wasm-broken); GPU read-back MUST `into_data_async().await`.
+  (memmap2 wasm-broken); GPU read-back MUST `into_data_async().await`. Decode is
+  KV-CACHED (`GemmaModel::forward_cached`; `forward` delegates over a throwaway
+  cache — ONE attention codepath) and STREAMS text-delta Steps per token
+  (`generate_streamed`; StreamEmitter holds back a partial `"\nUser:"` marker and
+  goes quiet on non-prefix-stable decodes). Parity/speed proofs: ignored tests
+  `gemma_kv_parity_and_speed` / `gemma_native_stream` (GEMMA_DIR=weights dir).
 
 ## Error classification is OWNED by `crate::error_codes::classify`, not here
 A backend surfaces the RAW provider error; `classify` maps it to `LH3xxx`. A 429 /
