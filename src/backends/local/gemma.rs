@@ -149,12 +149,21 @@ impl<B: Backend> Attention<B> {
         }
     }
 
+    /// Attention over the layer's KV cache. `x` holds the `seq` NEW positions
+    /// starting at absolute position `offset` (`=` the cached length); the new
+    /// keys/values are RoPE'd at their absolute positions, appended to
+    /// `cache`, and the queries attend over the FULL cached sequence. `mask`
+    /// is the additive causal mask over `[seq, offset+seq]` — `None` for a
+    /// single-token decode step (every cached key is in the past, so the mask
+    /// would be all zeros).
     fn forward(
         &self,
         x: Tensor<B, 3>,
         cfg: &GemmaConfig,
         rope: &RotaryEncoding<B>,
-        mask: Tensor<B, 4>,
+        mask: Option<Tensor<B, 4>>,
+        cache: &mut Option<(Tensor<B, 4>, Tensor<B, 4>)>,
+        offset: usize,
     ) -> Tensor<B, 3> {
         let [batch, seq, _] = x.dims();
         let (h, kv, hd) = (cfg.num_heads, cfg.num_kv_heads, cfg.head_dim);
@@ -169,21 +178,30 @@ impl<B: Backend> Attention<B> {
         let k = self.k_norm.forward(k).swap_dims(1, 2); // [b, kv, s, hd]
         let v = v.swap_dims(1, 2);
 
-        // RoPE on q and k (applied over the last dim = head_dim).
-        let q = rope.forward(q);
-        let k = rope.forward(k);
+        // RoPE on q and k at their ABSOLUTE positions (offset..offset+seq).
+        let q = rope.apply(q, offset);
+        let k = rope.apply(k, offset);
+
+        // Append the new k/v to the layer cache and attend over ALL of it.
+        let (k_all, v_all) = match cache.take() {
+            Some((ck, cv)) => (Tensor::cat(vec![ck, k], 2), Tensor::cat(vec![cv, v], 2)),
+            None => (k, v),
+        };
+        *cache = Some((k_all.clone(), v_all.clone()));
 
         // GQA: repeat the kv heads up to the query-head count.
-        let k = k.repeat_dim(1, h / kv);
-        let v = v.repeat_dim(1, h / kv);
+        let k_all = k_all.repeat_dim(1, h / kv);
+        let v_all = v_all.repeat_dim(1, h / kv);
 
         // Scaled dot-product attention with the additive causal mask.
-        let scores = q
-            .matmul(k.swap_dims(2, 3))
-            .mul_scalar(cfg.attn_scale())
-            + mask;
+        let mut scores = q
+            .matmul(k_all.swap_dims(2, 3))
+            .mul_scalar(cfg.attn_scale());
+        if let Some(mask) = mask {
+            scores = scores + mask;
+        }
         let probs = activation::softmax(scores, 3);
-        let ctx = probs.matmul(v); // [b, h, s, hd]
+        let ctx = probs.matmul(v_all); // [b, h, s, hd]
 
         // Merge heads -> [b, s, h*hd] and project out.
         let ctx = ctx.swap_dims(1, 2).reshape([batch, seq, h * hd]);
@@ -225,11 +243,13 @@ impl<B: Backend> DecoderLayer<B> {
         x: Tensor<B, 3>,
         cfg: &GemmaConfig,
         rope: &RotaryEncoding<B>,
-        mask: Tensor<B, 4>,
+        mask: Option<Tensor<B, 4>>,
+        cache: &mut Option<(Tensor<B, 4>, Tensor<B, 4>)>,
+        offset: usize,
     ) -> Tensor<B, 3> {
         // h = x + post_attn_norm(attn(input_norm(x)))
         let normed = self.input_layernorm.forward(x.clone());
-        let attn = self.self_attn.forward(normed, cfg, rope, mask);
+        let attn = self.self_attn.forward(normed, cfg, rope, mask, cache, offset);
         let h = x + self.post_attention_layernorm.forward(attn);
         // out = h + post_ff_norm(mlp(pre_ff_norm(h)))
         let normed = self.pre_feedforward_layernorm.forward(h.clone());
@@ -279,23 +299,57 @@ impl<B: Backend> GemmaModel<B> {
     }
 
     /// Forward pass: token ids `[batch, seq]` -> logits `[batch, seq, vocab]`.
+    /// Positions are absolute `0..seq` — the uncached (full-recompute) path,
+    /// implemented as [`Self::forward_cached`] over a throwaway cache so there
+    /// is exactly ONE attention codepath.
     pub fn forward(&self, tokens: Tensor<B, 2, Int>) -> Tensor<B, 3> {
+        let mut cache = self.new_cache();
+        self.forward_cached(tokens, &mut cache)
+    }
+
+    /// An empty per-layer KV cache sized for this model.
+    pub fn new_cache(&self) -> KvCache<B> {
+        KvCache {
+            layers: vec![None; self.config.num_layers],
+            len: 0,
+        }
+    }
+
+    /// Incremental forward pass: `tokens` `[batch, seq]` are the NEW positions
+    /// `cache.len()..cache.len()+seq`; their keys/values append to `cache` and
+    /// only the new positions' logits `[batch, seq, vocab]` are computed. Call
+    /// once with the full prompt (prefill), then once per generated token —
+    /// each decode step is O(seq_total) instead of the O(seq_total²) full
+    /// recompute.
+    ///
+    /// Attends over the WHOLE cache on every layer — same semantics as
+    /// [`Self::forward`], which applies only the causal mask (the 512-token
+    /// sliding window is not yet implemented on either path).
+    pub fn forward_cached(&self, tokens: Tensor<B, 2, Int>, cache: &mut KvCache<B>) -> Tensor<B, 3> {
         let cfg = &self.config;
         let [batch, seq] = tokens.dims();
         let device = tokens.device();
+        let offset = cache.len;
 
         // Embed and scale by √hidden (Gemma's input normaliser).
         let scale = (cfg.hidden_size as f64).sqrt();
         let mut x = self.embed.forward(tokens).mul_scalar(scale);
 
-        // Additive causal mask [1, 1, seq, seq]: 0 on/below the diagonal,
-        // -inf above (future positions). Broadcasts over batch and heads.
-        let q_idx = Tensor::<B, 1, Int>::arange(0..seq as i64, &device).reshape([seq, 1]);
-        let k_idx = Tensor::<B, 1, Int>::arange(0..seq as i64, &device).reshape([1, seq]);
-        let future = k_idx.greater(q_idx); // bool [seq, seq], true where k>q
-        let mask = Tensor::<B, 2>::zeros([seq, seq], &device)
-            .mask_fill(future, f32::NEG_INFINITY)
-            .reshape([1, 1, seq, seq]);
+        // Additive causal mask [1, 1, seq, offset+seq]: query row i sits at
+        // absolute position offset+i; keys cover 0..offset+seq; -inf where
+        // k > q (future). Broadcasts over batch and heads. A single-token
+        // step attends only to past keys — the mask would be all zeros, so
+        // it is skipped entirely (`None`).
+        let total = offset + seq;
+        let mask = (seq > 1).then(|| {
+            let q_idx =
+                Tensor::<B, 1, Int>::arange(offset as i64..total as i64, &device).reshape([seq, 1]);
+            let k_idx = Tensor::<B, 1, Int>::arange(0..total as i64, &device).reshape([1, total]);
+            let future = k_idx.greater(q_idx); // bool [seq, total], true where k>q
+            Tensor::<B, 2>::zeros([seq, total], &device)
+                .mask_fill(future, f32::NEG_INFINITY)
+                .reshape([1, 1, seq, total])
+        });
         let _ = batch;
 
         for (i, layer) in self.layers.iter().enumerate() {
@@ -304,12 +358,37 @@ impl<B: Backend> GemmaModel<B> {
             } else {
                 &self.rope_local
             };
-            x = layer.forward(x, cfg, rope, mask.clone());
+            x = layer.forward(x, cfg, rope, mask.clone(), &mut cache.layers[i], offset);
         }
+        cache.len += seq;
         let x = self.norm.forward(x);
 
         // Tied LM head: logits = hidden · embedᵀ.  [b,s,d] · [d,vocab].
         let embed_t = self.embed.weight.val().transpose(); // [hidden, vocab]
         x.matmul(embed_t.unsqueeze::<3>())
+    }
+}
+
+/// Per-layer key/value cache for incremental decode. One `(k, v)` pair per
+/// decoder layer, each `[batch, kv_heads, cached_seq, head_dim]`, plus the
+/// cached position count (identical across layers). Build via
+/// [`GemmaModel::new_cache`]; feed to [`GemmaModel::forward_cached`].
+///
+/// Memory: 270M has 18 layers × 1 kv-head × 256 dims × 2 tensors × 4 bytes
+/// ≈ 36KB per cached token (~147MB at the full `ROPE_CACHE_LEN` context).
+pub struct KvCache<B: Backend> {
+    layers: Vec<Option<(Tensor<B, 4>, Tensor<B, 4>)>>,
+    len: usize,
+}
+
+impl<B: Backend> KvCache<B> {
+    /// Number of positions currently cached.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// True when nothing has been cached yet.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }

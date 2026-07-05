@@ -1,23 +1,20 @@
 //! Greedy (argmax) decoding for the local Gemma 3 270M backend.
 //!
-//! `v1` deliberately keeps this as simple as the architecture allows: no KV
-//! cache, no sampling, no beam search. Each step re-runs the FULL forward pass
-//! over the running token sequence, reads the logits for the final position,
-//! takes the `argmax` token, appends it, and repeats — until the model emits
-//! the Gemma EOS token (`1`) or `max_new` tokens have been generated. The
-//! prompt is tokenized with a leading BOS (`2`) by [`GemmaTokenizer::encode`].
-//!
-//! Recomputing the whole sequence every step is O(n²) and obviously slower than
-//! a cached decode, but it is correct, allocation-light, and — critically —
-//! identical on native and `wasm32`, which is all `v1` needs. A KV cache is a
-//! later optimisation that does not change this public surface.
+//! KV-cached decode: the prompt is forwarded ONCE (prefill, populating the
+//! per-layer [`KvCache`]), then each step forwards only the single new token —
+//! O(seq) per token instead of the v1 full-recompute O(seq²). Greedy argmax,
+//! no sampling, no beam search: read the final position's logits, take the
+//! `argmax` token, append, repeat — until the model emits the Gemma EOS token
+//! (`1`), fabricates the next `"\nUser:"` turn, or `max_new` tokens have been
+//! generated. The prompt is tokenized with a leading BOS (`2`) by
+//! [`GemmaTokenizer::encode`].
 //!
 //! Compiles on native and `wasm32-unknown-unknown`. The whole module is gated
 //! on `feature = "local"` (see `super`).
 
 use burn::tensor::{backend::Backend, Int, Tensor, TensorData};
 
-use super::gemma::{GemmaModel, ROPE_CACHE_LEN};
+use super::gemma::{GemmaModel, KvCache, ROPE_CACHE_LEN};
 use super::tokenizer::GemmaTokenizer;
 
 /// Gemma end-of-sequence token id. Generation stops as soon as the model emits
@@ -123,9 +120,10 @@ pub async fn generate<B: Backend>(
 
 /// Greedy argmax decode with incremental text streaming.
 ///
-/// Tokenizes `prompt` (the tokenizer prepends BOS), then autoregressively
-/// appends the highest-probability next token — recomputing the full forward
-/// pass each step (no KV cache in v1) — stopping at the first EOS (`1`), the
+/// Tokenizes `prompt` (the tokenizer prepends BOS), prefills the KV cache with
+/// one full-prompt forward pass, then autoregressively appends the
+/// highest-probability next token — forwarding only that single token per step
+/// ([`GemmaModel::forward_cached`]) — stopping at the first EOS (`1`), the
 /// first fabricated `"\nUser:"` turn ([`STOP_MARKER`]), or after `max_new` new
 /// tokens. Returns the decoded continuation (the prompt tokens are not
 /// re-emitted; a trailing EOS is dropped).
@@ -148,7 +146,15 @@ pub async fn generate_streamed<B: Backend>(
     mut on_delta: impl FnMut(&str) -> bool,
 ) -> String {
     // Tokenize the prompt. The tokenizer is responsible for the leading BOS.
-    let mut tokens: Vec<i64> = tok.encode(prompt);
+    let tokens: Vec<i64> = tok.encode(prompt);
+
+    // KV-cached decode state: `pending` is what the next forward consumes —
+    // the whole prompt for the prefill pass, then exactly one token per step.
+    // `total_len` = cached + pending positions (the RoPE-bound sequence length,
+    // identical to v1's `tokens.len()`).
+    let mut cache: KvCache<B> = model.new_cache();
+    let mut pending: Vec<i64> = tokens;
+    let mut total_len = pending.len();
 
     // The continuation we accumulate and decode at the end. Kept separate from
     // `tokens` so the prompt is never echoed back in the returned string.
@@ -164,31 +170,33 @@ pub async fn generate_streamed<B: Backend>(
     let t_start = js_sys::Date::now();
     #[cfg(target_arch = "wasm32")]
     web_sys::console::log_1(
-        &format!("[lh-local] generate: prompt={} tokens, max_new={max_new}", tokens.len()).into(),
+        &format!("[lh-local] generate: prompt={} tokens, max_new={max_new}", total_len).into(),
     );
 
     for _ in 0..max_new {
-        // Clean stop before the forward pass would index past the RoPE cache.
-        // v1 has no KV cache, so `tokens` (prompt + continuation) grows every
-        // step; once it reaches `ROPE_CACHE_LEN`, `forward` would index the
-        // precomputed RoPE cache out of bounds and panic the tab. Degrade an
-        // over-length context to a clean stop instead (issue #96).
-        if at_context_limit(tokens.len()) {
+        // Clean stop before the forward pass would index past the RoPE cache:
+        // once the sequence (cached + pending) reaches `ROPE_CACHE_LEN`, the
+        // per-layer RoPE would index the precomputed cache out of bounds and
+        // panic the tab. Degrade an over-length context to a clean stop
+        // instead (issue #96).
+        if at_context_limit(total_len) {
             break;
         }
 
-        // Build the input tensor [1, seq] from the running token sequence. We
-        // construct a 1-D Int tensor from the i64 ids then reshape to add the
-        // batch dim — portable across backends (the Int element may be i32 on
-        // wgpu, but `from_data` converts from the i64 source data).
-        let seq = tokens.len();
-        let input = Tensor::<B, 1, Int>::from_data(TensorData::from(tokens.as_slice()), device)
+        // Build the input tensor [1, seq] from the PENDING tokens only (the
+        // prompt on the prefill pass, then one token per step — the cache
+        // holds everything earlier). We construct a 1-D Int tensor from the
+        // i64 ids then reshape to add the batch dim — portable across
+        // backends (the Int element may be i32 on wgpu, but `from_data`
+        // converts from the i64 source data).
+        let seq = pending.len();
+        let input = Tensor::<B, 1, Int>::from_data(TensorData::from(pending.as_slice()), device)
             .reshape([1, seq]);
 
-        // Forward pass -> logits [1, seq, vocab]. argmax over the vocab dim
-        // gives the most-likely token id at every position; we only need the
-        // last position's prediction (the next token).
-        let logits = model.forward(input);
+        // Forward pass -> logits [1, seq, vocab] for the new positions only.
+        // argmax over the vocab dim gives the most-likely token id at every
+        // new position; we only need the last one (the next token).
+        let logits = model.forward_cached(input, &mut cache);
         let argmax = logits.argmax(2); // [1, seq, 1]
 
         // Read the argmax ids back to the host. Use the ASYNC read-back: the
@@ -217,7 +225,8 @@ pub async fn generate_streamed<B: Backend>(
             break;
         }
 
-        tokens.push(next);
+        pending = vec![next];
+        total_len += 1;
         generated.push(next);
 
         // Stream the newly-stable slice of decoded text; break early on the
@@ -394,6 +403,112 @@ mod tests {
             "streamed deltas must reproduce the returned continuation up to the stop cut"
         );
         assert!(deltas > 1, "expected incremental deltas, got a single blob");
+    }
+
+    /// NATIVE KV-cache parity + speed — real weights, real GPU. Ignored by
+    /// default (needs the ~536MB checkpoint). Run with:
+    ///   GEMMA_DIR=target/gemma-test GEMMA_MAX_NEW=256 cargo test --release --features local --lib -- --ignored --nocapture gemma_kv_parity
+    /// Decodes the same prompt twice — v1-style full recompute every step vs
+    /// the KV-cached incremental path — asserts the greedy token sequences
+    /// match, and prints honest before/after tokens/sec.
+    #[tokio::test]
+    #[ignore]
+    async fn gemma_kv_parity_and_speed() {
+        let dir = std::env::var("GEMMA_DIR")
+            .expect("set GEMMA_DIR to a folder with model.safetensors + tokenizer.json");
+        let weights = std::fs::read(format!("{dir}/model.safetensors")).expect("read weights");
+        let tok_bytes =
+            std::fs::read(format!("{dir}/tokenizer.json")).expect("read tokenizer.json");
+
+        let device = burn::backend::wgpu::WgpuDevice::default();
+        let model = super::super::gemma::GemmaModel::<super::super::LocalBackend>::init(
+            super::super::gemma::GemmaConfig::gemma_3_270m(),
+            &device,
+        );
+        let model =
+            super::super::weights::load_gemma(model, &weights, &device).expect("load_gemma");
+        let tok = super::super::tokenizer::GemmaTokenizer::from_bytes(&tok_bytes)
+            .expect("load tokenizer");
+
+        let prompt = std::env::var("GEMMA_PROMPT")
+            .unwrap_or_else(|_| "The capital of France is".to_string());
+        let max_new: usize = std::env::var("GEMMA_MAX_NEW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256);
+
+        // ── BEFORE: the v1 loop — full recompute of the whole sequence every
+        // step (each `forward` builds and drops its own throwaway cache).
+        let mut tokens: Vec<i64> = tok.encode(&prompt);
+        let prompt_len = tokens.len();
+        let mut uncached: Vec<i64> = Vec::new();
+        let t0 = std::time::Instant::now();
+        for _ in 0..max_new {
+            if at_context_limit(tokens.len()) {
+                break;
+            }
+            let seq = tokens.len();
+            let input = Tensor::<super::super::LocalBackend, 1, Int>::from_data(
+                TensorData::from(tokens.as_slice()),
+                &device,
+            )
+            .reshape([1, seq]);
+            let logits = model.forward(input);
+            let data = logits.argmax(2).into_data_async().await.expect("read-back");
+            let next = data.iter::<i64>().last().expect("nonempty");
+            if next == EOS_ID {
+                break;
+            }
+            tokens.push(next);
+            uncached.push(next);
+        }
+        let dt_uncached = t0.elapsed().as_secs_f64();
+
+        // ── AFTER: the shipped KV-cached path (prefill + 1 token/step).
+        let mut cache = model.new_cache();
+        let mut pending: Vec<i64> = tok.encode(&prompt);
+        let mut total_len = pending.len();
+        let mut cached: Vec<i64> = Vec::new();
+        let t1 = std::time::Instant::now();
+        for _ in 0..max_new {
+            if at_context_limit(total_len) {
+                break;
+            }
+            let seq = pending.len();
+            let input = Tensor::<super::super::LocalBackend, 1, Int>::from_data(
+                TensorData::from(pending.as_slice()),
+                &device,
+            )
+            .reshape([1, seq]);
+            let logits = model.forward_cached(input, &mut cache);
+            let data = logits.argmax(2).into_data_async().await.expect("read-back");
+            let next = data.iter::<i64>().last().expect("nonempty");
+            if next == EOS_ID {
+                break;
+            }
+            pending = vec![next];
+            total_len += 1;
+            cached.push(next);
+        }
+        let dt_cached = t1.elapsed().as_secs_f64();
+
+        println!(
+            "\n=== GEMMA KV PARITY + SPEED ===\nprompt: {prompt:?} ({prompt_len} tokens)\n\
+             uncached: {} tokens in {dt_uncached:.2}s = {:.2} tok/s\n\
+             cached:   {} tokens in {dt_cached:.2}s = {:.2} tok/s ({:.1}x)\n\
+             text: {:?}\n===============================\n",
+            uncached.len(),
+            uncached.len() as f64 / dt_uncached.max(1e-9),
+            cached.len(),
+            cached.len() as f64 / dt_cached.max(1e-9),
+            dt_uncached / dt_cached.max(1e-9),
+            tok.decode(&cached),
+        );
+        assert_eq!(
+            uncached, cached,
+            "greedy token sequences must match between the uncached and KV-cached paths"
+        );
+        assert!(!cached.is_empty(), "no tokens generated");
     }
 
     /// Holdback floors to a char boundary — no slice panic on multibyte tails.

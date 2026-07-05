@@ -73,14 +73,14 @@ pub const WEIGHTS_PATH: &str = ".lh_local_model.safetensors";
 /// Default OPFS path for the downloaded Gemma tokenizer (`tokenizer.json`).
 pub const TOKENIZER_PATH: &str = ".lh_local_tokenizer.json";
 
-/// How many new tokens a single turn generates (greedy, no KV cache — keep
-/// modest so an in-tab turn stays responsive).
+/// How many new tokens a single turn generates (greedy, KV-cached decode —
+/// keep modest so an in-tab turn stays responsive).
 const MAX_NEW_TOKENS: usize = 256;
 
 /// Maximum model↔tool round-trips per user turn. The local model is a tiny
-/// fast-path; a low cap keeps a runaway tool loop cheap (each round is a full
-/// recompute-from-scratch generate). Best-effort tool calling means most turns
-/// fall through on round 1 anyway.
+/// fast-path; a low cap keeps a runaway tool loop cheap (each round re-prefills
+/// the re-rendered prompt). Best-effort tool calling means most turns fall
+/// through on round 1 anyway.
 const MAX_TOOL_ROUNDS: u32 = 5;
 
 // =============================================================================
