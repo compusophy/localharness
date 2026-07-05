@@ -9,9 +9,11 @@
 //! `compact` / `history_bytes` / `transcript` session surface (on the
 //! [`Connection`] trait). The differences from the network backends:
 //!
-//! * **No HTTP.** There is no client and no streaming loop. A turn is a bounded
-//!   generate → parse-tool → dispatch → feed-result → re-loop driven by
-//!   [`generate`], emitting a terminal text [`Step`] (plus per-call ToolCall /
+//! * **No HTTP.** There is no client and no network streaming loop. A turn is a
+//!   bounded generate → parse-tool → dispatch → feed-result → re-loop driven by
+//!   [`generate_streamed`], emitting per-token text-delta [`Step`]s while the
+//!   GPU decodes (the transcript paints live, same shape as the network
+//!   backends) and a terminal text [`Step`] (plus per-call ToolCall /
 //!   ToolResult steps when a tool is invoked).
 //! * **Best-effort tool calling.** The built-in tools ARE registered (reusing
 //!   the Gemini backend's `register_builtins`, both LLM-client slots `None`, so
@@ -55,7 +57,7 @@ use crate::types::{
 };
 
 use super::gemma::{GemmaConfig, GemmaModel};
-use super::generate::generate;
+use super::generate::generate_streamed;
 use super::tokenizer::{self, GemmaTokenizer};
 use super::tool_parse::parse_tool_code;
 use super::weights;
@@ -162,10 +164,22 @@ struct Engine {
 }
 
 impl Engine {
-    /// Run one greedy generation for `prompt`. Async because the per-token
-    /// GPU read-back ([`generate`]) must use the non-blocking path on wasm.
-    async fn run(&self, prompt: &str) -> String {
-        generate(&self.model, &self.tokenizer, prompt, MAX_NEW_TOKENS, &self.device).await
+    /// Run one greedy generation for `prompt`, streaming decoded text slices
+    /// through `on_delta` as they stabilise (returning `false` cancels — the
+    /// send loop feeds the turn's cancel flag through so Stop takes effect
+    /// mid-generation, not only between tool rounds). Async because the
+    /// per-token GPU read-back ([`generate_streamed`]) must use the
+    /// non-blocking path on wasm.
+    async fn run(&self, prompt: &str, on_delta: impl FnMut(&str) -> bool) -> String {
+        generate_streamed(
+            &self.model,
+            &self.tokenizer,
+            prompt,
+            MAX_NEW_TOKENS,
+            &self.device,
+            on_delta,
+        )
+        .await
     }
 }
 
@@ -585,7 +599,21 @@ impl Connection for LocalConnection {
                 }
 
                 let rendered = state.render_prompt_with_tools(tool_runner.as_deref());
-                let reply = engine.run(&rendered).await;
+                // Stream each newly-stable decoded slice as a text-delta Step
+                // (the SAME shape the network backends' `EmitCtx::push_text`
+                // emits), so the transcript paints tokens as they generate.
+                // One step_index per round, like `EmitCtx`. The callback
+                // returns the negated cancel flag so Stop halts generation
+                // mid-round. The terminal `turn_complete` below still carries
+                // the authoritative (trimmed) full text; `step_to_chunks`'s
+                // suffix recovery only emits what the deltas didn't cover.
+                let delta_index = state.alloc_step_index();
+                let reply = engine
+                    .run(&rendered, |delta| {
+                        state.emit(Step::text_delta(&traj, delta_index, delta));
+                        !state.cancel.load(Ordering::Acquire)
+                    })
+                    .await;
                 // The base model keeps continuing the flat transcript past its
                 // own turn (fabricating "User:" lines) — cut at the first one.
                 let reply = match reply.find("\nUser:") {
