@@ -5,6 +5,90 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Stop button takes effect promptly (telemetry #33)** — cancel was
+  cooperative at chunk/dispatch boundaries only, so a silent stream (model
+  thinking, stalled socket) or a round of tool calls made Stop look dead for
+  seconds. `backends/stream_timeout.rs` re-checks the cancel flag every 100ms
+  while the stream is silent; `backends/turn_engine.rs` breaks the round
+  mid-stream (dropping the in-flight HTTP response) and re-checks BETWEEN tool
+  dispatches; the first click paints an optimistic "stopping…" status
+  (`app/chat/mod.rs`) that `TurnGuard` reconciles by exact match, never wiping
+  real errors. Follow-up: a mid-dispatch cancel folds the never-dispatched
+  calls into the SAME tool-results batch as synthetic `{"error":"cancelled"}`
+  results — the old separate balance append left Gemini with an unbalanced
+  functionCall/functionResponse turn that 400'd every later message and
+  persisted to OPFS.
+- **Bare transport send failure retried once (telemetry #41)** — reqwest's
+  opaque "error sending request" (a POST that got no response — flaky mobile)
+  classified to CORE_OTHER, so the shared stream-open retry failed fast and
+  surfaced a hard turn error. New `LH3009` BACKEND_SEND class
+  (`error_codes::classify`); `backends/retry.rs` gives it ONE retry after
+  500ms — tighter than the 3-attempt transient cap because the wording can't
+  prove the request never reached the proxy (which floor-debits after an
+  upstream 2xx; one retry bounds double-billing to one message).
+- **Web Push: verified enrollment + dead-sub pruning + delivery urgency +
+  bell enrolled-state (telemetry #40)** — enrollment was fire-and-forget (POST
+  trusted, never verified), a stale subscription (push-service 404/410 after a
+  PWA reinstall) was re-served from the store forever behind a generic 502,
+  and the bell gave no enrolled signal. New pure `src/push_enroll.rs`
+  (`verify_enrolled` store read-back + `bell_status`, native-tested);
+  `notifications.rs` GETs the store back after the enroll POST and fails
+  honestly; the bell tap paints the push-state line + verified outcome
+  (`events/admin.rs`); proxy `_webpush.ts` classifies 404/410 as gone and
+  sends urgency HIGH (normal let Android Doze defer delivery until the device
+  woke); `notify.ts` prunes dead store subs after send and reports "no live
+  push subscription — re-enroll" instead of a generic send failure.
+- **T7 (TIP-1067) submit hardening** (`registry/rpc.rs` + `tx.rs`): "gas price
+  is less than basefee" (+ close phrasings) is a new retryable `BasefeeTooLow`
+  class — the submit paths re-read the gas price INSIDE the retry loop so the
+  resubmit reprices under the moving base fee. `MAX_GAS_PRICE_WEI` dropped
+  1000 gwei → 50 gwei (T7 caps the basefee at 12 gwei; the 2× bid stays ≤ 24),
+  mirrored in lockstep in `proxy/api/sponsor.ts`. `examples/tempo_tx_live.rs`
+  now discovers a USD-currency TIP-20 fee_token live via `currency()` (the
+  stale Moderato AlphaUSD slot fails `FeeTokenNotUsdError` under T7); no
+  candidate → honest skip, not a hard fail.
+- **`withdrawCredits` joined the relay's `SELF_PAY_SELECTORS`**
+  (`proxy/api/sponsor.ts`) — without it, `credits --reclaim` hit
+  `LH_RELAY_FUNDED` for exactly its target audience (a funded wallet with
+  meter dust).
+- **Inline-card headers no longer float over the transcript (telemetry #30)**
+  — `.ic-head` is sticky ONLY inside cards that scroll themselves;
+  `.embed-app-card` sets `overflow: visible`, so its sticky head latched onto
+  the OUTER chat scrollport (`web/styles.css`).
+
+### Added
+
+- **`credits --reclaim` — meter-dust recovery + honest billing-pot labels**:
+  `credits`/`whoami`/`status` claimed the METER pays per-call billing while
+  `call` truthfully pays wallet-first via x402, so sub-price meter dust (e.g.
+  0.99 $LH under a 1 $LH call price) stranded forever for a funded-wallet CLI
+  user. The pure `format_credits` now states which pot pays which flow
+  ("browser chat + scheduled runs debit this" — the scheduler debits it too)
+  and hints `--reclaim` when the meter is non-empty; `--reclaim` pulls the
+  whole `withdrawableOf` balance back into the wallet via a sponsored
+  `withdrawCredits` (the fiat-locked portion is reported, never attempted, so
+  the call never reverts).
+- **Stale-local-key warning in `whoami`/`lookup` + `status <name>`** — a local
+  `<name>.localharness.key` whose derived address is NOT the name's on-chain
+  owner (keys created pre-mainnet-relaunch, e.g. console/mario/tetris) meant
+  colony top-ups via `--as` funded an address no dashboard tracks. Both
+  commands now print `stale local key: signs as 0x…, on-chain owner is 0x…
+  (top-ups to this name via --as fund the LOCAL key)` to stderr (stdout/`--json`
+  stays clean), reusing the owner already fetched — no extra RPC
+  (`status.rs::stale_key_warning`, native-tested).
+
+### Changed
+
+- `credits`: the shelved SessionFacet is no longer recommended — "session
+  none" now reads legacy and points at `topup` (per-call metering is the live
+  path).
+- `colony run`: a forced `--worker` prints "[2/8] PICK — skipped (worker
+  forced: …)" instead of silently omitting the numbered step.
+
 ## [0.65.0] - 2026-07-05
 
 ### Fixed

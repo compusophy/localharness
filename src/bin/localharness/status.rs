@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, fmt_interval, fmt_lh, job_is_terminal, load_signer, registry, resolve_caller_label, truncate_words, wallet};
+use crate::{bytes_to_hex_str, fmt_interval, fmt_lh, job_is_terminal, load_signer, registry, resolve_caller_label, resolve_key_read_path, truncate_words, wallet};
 
 pub(crate) const WHOAMI_USAGE: &str = "usage: localharness whoami [--json] [--as] <name>";
 
@@ -114,6 +114,43 @@ pub(crate) fn format_whoami_json(info: &WhoamiInfo) -> String {
     serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
 }
 
+/// One-line stale-local-key warning: a local `<name>.localharness.key` whose
+/// derived address is NOT the name's on-chain owner (keys created before the
+/// mainnet relaunch, e.g. console/mario/tetris) silently signs — and colony
+/// top-ups via `--as <name>` fund — an address no dashboard tracks. `None` when
+/// the addresses match (case-insensitive hex — derivation lowercases, RPC may
+/// checksum). Pure + testable; callers print it to stderr.
+pub(crate) fn stale_key_warning(local_addr: &str, onchain_owner: &str) -> Option<String> {
+    if local_addr.eq_ignore_ascii_case(onchain_owner) {
+        return None;
+    }
+    Some(format!(
+        "stale local key: signs as {local_addr}, on-chain owner is {onchain_owner} \
+         (top-ups to this name via --as fund the LOCAL key)"
+    ))
+}
+
+/// The address `<name>`'s LOCAL key file derives, if one exists and parses
+/// (cwd-first then config home — the same `resolve_key_read_path` every signer
+/// load uses). Local FS only — no RPC. Best-effort: any failure → `None`.
+pub(crate) fn local_key_address(name: &str) -> Option<String> {
+    let key_file = resolve_key_read_path(name)?;
+    let key_hex = std::fs::read_to_string(&key_file).ok()?;
+    let signer = wallet::from_private_key_hex(key_hex.trim()).ok()?;
+    Some(bytes_to_hex_str(&wallet::address(&signer)))
+}
+
+/// Print the stale-local-key warning (stderr, so `--json` stdout stays clean)
+/// when `<name>` has a local key that doesn't sign as `onchain_owner`. Reuses
+/// the owner the caller ALREADY fetched — adds no RPC.
+fn warn_if_stale_local_key(name: &str, onchain_owner: &str) {
+    if let Some(local) = local_key_address(name) {
+        if let Some(w) = stale_key_warning(&local, onchain_owner) {
+            eprintln!("{w}");
+        }
+    }
+}
+
 /// Resolve the on-chain profile of `<name>`. All read-only RPC — no `$LH`.
 /// A failed sub-read (TBA / persona / face) degrades to absent rather than
 /// failing the whole lookup; only an owner-read error is fatal.
@@ -178,6 +215,9 @@ pub(crate) async fn whoami(name: &str, json: bool) -> i32 {
                     format_whoami(&info)
                 }
             );
+            if let Some(owner) = &info.owner {
+                warn_if_stale_local_key(name, owner);
+            }
             0
         }
         Err(e) => {
@@ -237,6 +277,8 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
                     return 1;
                 }
             };
+            // Reuses the owner just fetched — no extra RPC, local FS only.
+            warn_if_stale_local_key(n, &owner);
             let id = registry::id_of_name(n).await.unwrap_or(0);
             (n.to_string(), owner, id)
         }
@@ -786,6 +828,21 @@ mod tests {
         assert_eq!(
             format_reputation_inline(Some((3, 10))),
             "reputation 3.33 from 3 attestations"
+        );
+    }
+
+    #[test]
+    fn stale_key_warning_fires_only_on_address_mismatch() {
+        // Matching addresses (any case mix — derivation lowercases, RPC may
+        // checksum) → no warning.
+        assert_eq!(stale_key_warning("0xabc1", "0xabc1"), None);
+        assert_eq!(stale_key_warning("0xAbC1", "0xabc1"), None);
+        // Mismatch → the one-line warning naming BOTH addresses + the top-up trap.
+        let w = stale_key_warning("0x1111", "0x2222").unwrap();
+        assert_eq!(
+            w,
+            "stale local key: signs as 0x1111, on-chain owner is 0x2222 \
+             (top-ups to this name via --as fund the LOCAL key)"
         );
     }
 
