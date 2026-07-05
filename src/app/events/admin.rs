@@ -388,11 +388,29 @@ pub(super) fn header_admin_open() -> bool {
 /// first so a bell tap never opens BEHIND an already-open admin panel and two
 /// panels never stack. Every close is an idempotent hidden-swap, so closing an
 /// already-closed panel is a harmless no-op.
-fn close_all_header_overlays() {
+pub(super) fn close_all_header_overlays() {
     close_notif_panel();
     close_feedback_panel();
     header_admin_close();
     close_brand_menu();
+}
+
+/// Neutralize every LIVE inline admin card (#36 chat-native admin): swap each
+/// `#admin-card-<slug>` in the transcript for an id-free "superseded" note, so
+/// the fixed ids the section handlers target (`#model-msg`,
+/// `#public-face-status`, `#redeem-code`, …) exist at most ONCE. Runs before
+/// the settings sheet opens AND before a new card mounts — whichever admin
+/// surface opened LAST owns the ids. Idempotent (a missing card is a no-op).
+pub(super) fn retire_admin_cards() {
+    for topic in crate::router::AdminTopic::ALL {
+        let id = format!("admin-card-{}", topic.slug());
+        if dom::by_id(&id).is_some() {
+            dom::swap_outer(
+                &id,
+                &templates::admin_chat_card_retired(topic.title()).into_string(),
+            );
+        }
+    }
 }
 
 /// [clear all] tapped: re-render the OPEN panel with the inline yes/cancel
@@ -533,6 +551,7 @@ pub(super) fn header_admin_toggle() {
         return;
     }
     close_all_header_overlays(); // mutually exclusive — close notif/feedback/brand first
+    retire_admin_cards(); // inline admin cards yield their fixed ids to the sheet
     let body = match crate::app::tenant::current() {
         crate::app::tenant::Host::Apex => templates::admin_dropdown_apex().into_string(),
         crate::app::tenant::Host::Tenant(_) | crate::app::tenant::Host::Other(_) => {

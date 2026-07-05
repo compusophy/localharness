@@ -30,6 +30,73 @@ pub enum UiCommand {
     OpenDisplay,
     /// The CLI-sandbox terminal overlay (`Action::ToggleTerminal`).
     OpenTerminal,
+    /// SET the light theme (no-op if already light) — precise, not a blind
+    /// toggle: "light mode" must never turn the lights off.
+    ThemeLight,
+    /// SET the dark theme (no-op if already dark).
+    ThemeDark,
+    /// SET the desktop (unframed) view.
+    ViewDesktop,
+    /// SET the mobile (9:16 framed) view.
+    ViewMobile,
+}
+
+/// An admin surface rendered INLINE in the transcript as an interactive card
+/// (telemetry #36 — admin is chat-native, not only a header panel). Each
+/// topic reuses the settings sheet's own section templates + `data-action`
+/// handlers, so the card IS the admin control, not a description of one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminTopic {
+    /// The index card: what you can ask for in chat + a door to the full sheet.
+    Settings,
+    /// Who am I — name / owner address / balance.
+    Identity,
+    /// The LLM model picker.
+    Model,
+    /// The public-face picker (directory / publish app / publish html).
+    PublicFace,
+    /// Funds — redeem a code, buy `$LH`, invite a friend.
+    Funds,
+    /// Device linking (QR seed-adoption) + device sync.
+    Devices,
+}
+
+impl AdminTopic {
+    /// Every topic — the retire sweep (`events::admin::retire_admin_cards`)
+    /// iterates this, so a new variant that's missing here would leak
+    /// duplicate element ids. Guarded by `admin_topic_slugs_are_id_safe`.
+    pub const ALL: &'static [AdminTopic] = &[
+        AdminTopic::Settings,
+        AdminTopic::Identity,
+        AdminTopic::Model,
+        AdminTopic::PublicFace,
+        AdminTopic::Funds,
+        AdminTopic::Devices,
+    ];
+
+    /// Element-id suffix for the card wrapper (`#admin-card-<slug>`).
+    pub fn slug(self) -> &'static str {
+        match self {
+            AdminTopic::Settings => "settings",
+            AdminTopic::Identity => "identity",
+            AdminTopic::Model => "model",
+            AdminTopic::PublicFace => "public-face",
+            AdminTopic::Funds => "funds",
+            AdminTopic::Devices => "devices",
+        }
+    }
+
+    /// Human card title (the small uppercase label on the card).
+    pub fn title(self) -> &'static str {
+        match self {
+            AdminTopic::Settings => "settings",
+            AdminTopic::Identity => "identity",
+            AdminTopic::Model => "model",
+            AdminTopic::PublicFace => "public face",
+            AdminTopic::Funds => "funds",
+            AdminTopic::Devices => "devices",
+        }
+    }
 }
 
 /// A docs-FAQ topic answered from the embedded self-docs facts
@@ -54,6 +121,10 @@ pub enum FreeAction {
     UiCommand(UiCommand),
     /// Render a canned fact card from [`docs_answer`].
     DocsAnswer(DocsTopic),
+    /// Mount an interactive admin card inline in the transcript (#36).
+    /// Mounting is FREE and takes no action — the card's buttons drive the
+    /// same (owner-/confirm-gated) handlers as the settings sheet.
+    AdminCard(AdminTopic),
 }
 
 /// The routing decision for one user message.
@@ -133,6 +204,80 @@ const FREE_PHRASES: &[(&str, FreeAction)] = &[
     ("open terminal", FreeAction::UiCommand(UiCommand::OpenTerminal)),
     ("show terminal", FreeAction::UiCommand(UiCommand::OpenTerminal)),
     ("open the terminal", FreeAction::UiCommand(UiCommand::OpenTerminal)),
+    // ── render prefs → precise SET commands (never blind toggles) ──
+    ("light mode", FreeAction::UiCommand(UiCommand::ThemeLight)),
+    ("light theme", FreeAction::UiCommand(UiCommand::ThemeLight)),
+    ("switch to light mode", FreeAction::UiCommand(UiCommand::ThemeLight)),
+    ("dark mode", FreeAction::UiCommand(UiCommand::ThemeDark)),
+    ("dark theme", FreeAction::UiCommand(UiCommand::ThemeDark)),
+    ("switch to dark mode", FreeAction::UiCommand(UiCommand::ThemeDark)),
+    ("desktop view", FreeAction::UiCommand(UiCommand::ViewDesktop)),
+    ("desktop mode", FreeAction::UiCommand(UiCommand::ViewDesktop)),
+    ("mobile view", FreeAction::UiCommand(UiCommand::ViewMobile)),
+    ("mobile mode", FreeAction::UiCommand(UiCommand::ViewMobile)),
+    // ── admin intents → inline admin cards (#36 chat-native admin) ──
+    ("settings", FreeAction::AdminCard(AdminTopic::Settings)),
+    ("open settings", FreeAction::AdminCard(AdminTopic::Settings)),
+    ("show settings", FreeAction::AdminCard(AdminTopic::Settings)),
+    ("admin", FreeAction::AdminCard(AdminTopic::Settings)),
+    ("admin panel", FreeAction::AdminCard(AdminTopic::Settings)),
+    ("open admin", FreeAction::AdminCard(AdminTopic::Settings)),
+    ("open the admin panel", FreeAction::AdminCard(AdminTopic::Settings)),
+    ("who am i", FreeAction::AdminCard(AdminTopic::Identity)),
+    ("whoami", FreeAction::AdminCard(AdminTopic::Identity)),
+    ("identity", FreeAction::AdminCard(AdminTopic::Identity)),
+    ("my identity", FreeAction::AdminCard(AdminTopic::Identity)),
+    ("my address", FreeAction::AdminCard(AdminTopic::Identity)),
+    ("my wallet", FreeAction::AdminCard(AdminTopic::Identity)),
+    ("show my wallet", FreeAction::AdminCard(AdminTopic::Identity)),
+    ("show my address", FreeAction::AdminCard(AdminTopic::Identity)),
+    ("my account", FreeAction::AdminCard(AdminTopic::Identity)),
+    ("account", FreeAction::AdminCard(AdminTopic::Identity)),
+    ("model", FreeAction::AdminCard(AdminTopic::Model)),
+    ("models", FreeAction::AdminCard(AdminTopic::Model)),
+    ("change model", FreeAction::AdminCard(AdminTopic::Model)),
+    ("switch model", FreeAction::AdminCard(AdminTopic::Model)),
+    ("change the model", FreeAction::AdminCard(AdminTopic::Model)),
+    ("switch the model", FreeAction::AdminCard(AdminTopic::Model)),
+    ("set model", FreeAction::AdminCard(AdminTopic::Model)),
+    ("which model", FreeAction::AdminCard(AdminTopic::Model)),
+    ("what model", FreeAction::AdminCard(AdminTopic::Model)),
+    ("which model am i using", FreeAction::AdminCard(AdminTopic::Model)),
+    ("what model is this", FreeAction::AdminCard(AdminTopic::Model)),
+    ("public face", FreeAction::AdminCard(AdminTopic::PublicFace)),
+    ("my public face", FreeAction::AdminCard(AdminTopic::PublicFace)),
+    ("set public face", FreeAction::AdminCard(AdminTopic::PublicFace)),
+    ("change public face", FreeAction::AdminCard(AdminTopic::PublicFace)),
+    ("publish", FreeAction::AdminCard(AdminTopic::PublicFace)),
+    ("publish app", FreeAction::AdminCard(AdminTopic::PublicFace)),
+    ("publish my app", FreeAction::AdminCard(AdminTopic::PublicFace)),
+    ("publish html", FreeAction::AdminCard(AdminTopic::PublicFace)),
+    ("publish my html", FreeAction::AdminCard(AdminTopic::PublicFace)),
+    ("funds", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("add funds", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("top up", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("topup", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("redeem", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("redeem code", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("redeem a code", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("buy lh", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("buy $lh", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("buy credits", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("invite", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("invite a friend", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("create invite", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("create an invite", FreeAction::AdminCard(AdminTopic::Funds)),
+    ("devices", FreeAction::AdminCard(AdminTopic::Devices)),
+    ("my devices", FreeAction::AdminCard(AdminTopic::Devices)),
+    ("add device", FreeAction::AdminCard(AdminTopic::Devices)),
+    ("add a device", FreeAction::AdminCard(AdminTopic::Devices)),
+    ("link device", FreeAction::AdminCard(AdminTopic::Devices)),
+    ("link a device", FreeAction::AdminCard(AdminTopic::Devices)),
+    ("pair device", FreeAction::AdminCard(AdminTopic::Devices)),
+    ("pair a device", FreeAction::AdminCard(AdminTopic::Devices)),
+    ("sync devices", FreeAction::AdminCard(AdminTopic::Devices)),
+    ("sync my devices", FreeAction::AdminCard(AdminTopic::Devices)),
+    ("new device", FreeAction::AdminCard(AdminTopic::Devices)),
     // ── docs FAQ → canned facts from self_docs ──
     ("what does a message cost", FreeAction::DocsAnswer(DocsTopic::Pricing)),
     ("how much does a message cost", FreeAction::DocsAnswer(DocsTopic::Pricing)),
@@ -323,6 +468,91 @@ mod tests {
             classify("show terminal"),
             Route::Free(FreeAction::UiCommand(UiCommand::OpenTerminal))
         );
+    }
+
+    #[test]
+    fn admin_intents_route_to_their_card() {
+        for (s, topic) in [
+            ("settings", AdminTopic::Settings),
+            ("Settings", AdminTopic::Settings),
+            ("open the admin panel", AdminTopic::Settings),
+            ("admin", AdminTopic::Settings),
+            ("who am I?", AdminTopic::Identity),
+            ("whoami", AdminTopic::Identity),
+            ("my wallet", AdminTopic::Identity),
+            ("account", AdminTopic::Identity),
+            ("model", AdminTopic::Model),
+            ("switch model", AdminTopic::Model),
+            ("Which model am I using?", AdminTopic::Model),
+            ("public face", AdminTopic::PublicFace),
+            ("publish my app", AdminTopic::PublicFace),
+            ("publish", AdminTopic::PublicFace),
+            ("redeem a code", AdminTopic::Funds),
+            ("buy $LH", AdminTopic::Funds),
+            ("top up", AdminTopic::Funds),
+            ("invite a friend", AdminTopic::Funds),
+            ("add a device", AdminTopic::Devices),
+            ("sync my devices", AdminTopic::Devices),
+            ("devices", AdminTopic::Devices),
+        ] {
+            assert_eq!(
+                classify(s),
+                Route::Free(FreeAction::AdminCard(topic)),
+                "{s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pref_commands_route_to_precise_setters() {
+        for (s, cmd) in [
+            ("light mode", UiCommand::ThemeLight),
+            ("Dark mode", UiCommand::ThemeDark),
+            ("switch to dark mode", UiCommand::ThemeDark),
+            ("desktop view", UiCommand::ViewDesktop),
+            ("mobile view", UiCommand::ViewMobile),
+        ] {
+            assert_eq!(classify(s), Route::Free(FreeAction::UiCommand(cmd)), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn admin_near_misses_route_metered() {
+        // Allowlist words in real sentences MUST still reach the model.
+        for s in [
+            "who am i kidding",
+            "my account is locked, why?",
+            "what model of car should i buy",
+            "train a model on my notes",
+            "publish my app to the app store",
+            "add a device for my mom",
+            "sync my devices and then publish",
+            "settings for my cartridge",
+            "change the model of my cartridge",
+            "redeem my promise",
+            "invite bob to the guild",
+            "dark mode is ugly, fix the css",
+            "make the light mode background whiter",
+        ] {
+            assert_eq!(classify(s), Route::Metered, "{s:?} must be metered");
+        }
+    }
+
+    #[test]
+    fn admin_topic_slugs_are_id_safe() {
+        // Slugs become element ids (`#admin-card-<slug>`): unique, lowercase,
+        // no spaces. ALL must cover every variant (retire sweep completeness).
+        let mut seen = std::collections::HashSet::new();
+        for t in AdminTopic::ALL {
+            let slug = t.slug();
+            assert!(seen.insert(slug), "duplicate slug {slug:?}");
+            assert!(
+                slug.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "{slug:?} not id-safe"
+            );
+            assert!(!t.title().is_empty());
+        }
+        assert_eq!(seen.len(), 6, "AdminTopic::ALL missing a variant");
     }
 
     #[test]

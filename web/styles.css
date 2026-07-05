@@ -2272,6 +2272,24 @@ footer a:hover { text-decoration: underline; }
 }
 /* The resting $LH line aligns its number like the other identity rows. */
 .admin-balance-row code { font-variant-numeric: tabular-nums; }
+/* Chat-native admin cards (#36) — the settings sheet's sections rendered
+   inline in a transcript turn. The section styles below are global (not scoped
+   to .admin-dialog), so they apply as-is; the wrapper is a bordered card. */
+.admin-chat-card { border: 1px solid var(--border); padding: 10px 12px; margin: 4px 0; }
+.admin-chat-card-title {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+}
+.admin-chat-card-retired {
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 6px 10px;
+  margin: 4px 0;
+}
 .admin-section { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
 .admin-section:last-of-type { border-bottom: 0; padding-bottom: 0; margin-bottom: 8px; }
 .admin-section-title {

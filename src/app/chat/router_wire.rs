@@ -98,8 +98,10 @@ fn apply_cmd(cmd: RouterCmd) {
             dom::set_status(
                 &format!(
                     "intent router: {state}. Free tiers when on: balance/credits, open \
-                     files/display/terminal, a small docs FAQ. '!' prefix forces the \
-                     model; '/router on|off' toggles."
+                     files/display/terminal, light/dark mode, inline admin cards \
+                     (settings · identity · model · public face · funds · devices), \
+                     a small docs FAQ. '!' prefix forces the model; '/router on|off' \
+                     toggles."
                 ),
                 false,
             );
@@ -109,7 +111,9 @@ fn apply_cmd(cmd: RouterCmd) {
 
 /// Paint the user bubble + a free assistant answer (no agent, no meter).
 /// Mirrors the transcript shapes `run_send` paints so a free turn is visually
-/// indistinguishable from a chat turn.
+/// indistinguishable from a chat turn. Admin intents (#36) mount an
+/// INTERACTIVE card instead of markdown — the settings sheet's own section
+/// templates inline in the transcript, buttons wired to the same handlers.
 async fn run_free(prompt: &str, action: FreeAction) {
     let (user_turn_id, assistant_turn_id) = APP.with(|cell| {
         let mut app = cell.borrow_mut();
@@ -121,23 +125,36 @@ async fn run_free(prompt: &str, action: FreeAction) {
     );
     dom::scroll_to_bottom("transcript");
 
-    let answer = match action {
-        FreeAction::BalanceQuery => balance_answer().await,
-        FreeAction::DocsAnswer(topic) => docs_answer(topic).to_string(),
-        FreeAction::UiCommand(cmd) => run_ui_command(cmd).await,
+    let body = match action {
+        FreeAction::BalanceQuery => rendered_with_footer(&balance_answer().await),
+        FreeAction::DocsAnswer(topic) => rendered_with_footer(docs_answer(topic)),
+        FreeAction::UiCommand(cmd) => rendered_with_footer(&run_ui_command(cmd).await),
+        FreeAction::AdminCard(topic) => {
+            // Retire older cards + close the header overlays FIRST so this
+            // card's fixed section ids resolve uniquely (events::admin owns
+            // the exclusivity rule).
+            crate::app::events::admin_card_will_mount();
+            html! {
+                (templates::admin_chat_card(topic))
+                p.admin-blurb { (FREE_ROUTE_FOOTER) }
+            }
+        }
     };
-    let body = format!("{answer}\n\n{FREE_ROUTE_FOOTER}");
     dom::append_html(
         "transcript",
-        &templates::turn(
-            assistant_turn_id,
-            "assistant",
-            templates::rendered_markdown(&body),
-            false,
-        )
-        .into_string(),
+        &templates::turn(assistant_turn_id, "assistant", body, false).into_string(),
     );
     dom::scroll_to_bottom("transcript");
+    // Async fills AFTER the card is in the DOM (balance pill, model active
+    // state, public-face status) — the same refreshes the sheet fires on open.
+    if let FreeAction::AdminCard(topic) = action {
+        crate::app::events::admin_card_refresh(topic).await;
+    }
+}
+
+/// Markdown-render a free text answer with the escape-hatch footer appended.
+fn rendered_with_footer(answer: &str) -> maud::Markup {
+    templates::rendered_markdown(&format!("{answer}\n\n{FREE_ROUTE_FOOTER}"))
 }
 
 /// The SAME data the admin credits pill shows (`events::refresh_credits_pill`):
@@ -194,6 +211,34 @@ async fn run_ui_command(cmd: UiCommand) -> String {
                 "Closed the display overlay.".to_string()
             } else {
                 "Opened the display overlay (× or ESC closes it).".to_string()
+            }
+        }
+        UiCommand::ThemeLight => {
+            if crate::app::events::set_theme_light(true) {
+                "Light mode on.".to_string()
+            } else {
+                "Already in light mode.".to_string()
+            }
+        }
+        UiCommand::ThemeDark => {
+            if crate::app::events::set_theme_light(false) {
+                "Dark mode on.".to_string()
+            } else {
+                "Already in dark mode.".to_string()
+            }
+        }
+        UiCommand::ViewDesktop => {
+            if crate::app::events::set_view_desktop(true) {
+                "Desktop view on.".to_string()
+            } else {
+                "Already in desktop view.".to_string()
+            }
+        }
+        UiCommand::ViewMobile => {
+            if crate::app::events::set_view_desktop(false) {
+                "Mobile view on.".to_string()
+            } else {
+                "Already in mobile view.".to_string()
             }
         }
         UiCommand::OpenTerminal => {

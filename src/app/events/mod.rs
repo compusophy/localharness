@@ -992,6 +992,40 @@ fn dispatch(action: Action) {
     }
 }
 
+// ── Chat-native admin bridge (#36) — called by `chat::router_wire` ──────────
+
+/// Before a free-routed admin card mounts in the transcript: retire previous
+/// inline cards + close the header overlays, so the new card's fixed section
+/// ids (`#model-msg`, `#redeem-code`, …) resolve uniquely — the same
+/// exclusivity rule `header_admin_toggle` enforces in the other direction.
+pub(crate) fn admin_card_will_mount() {
+    admin::retire_admin_cards();
+    admin::close_all_header_overlays();
+}
+
+/// Post-mount async fill for an inline admin card — the SAME per-section
+/// refreshes `header_admin_toggle` fires for the sheet, scoped to one topic.
+pub(crate) async fn admin_card_refresh(topic: crate::router::AdminTopic) {
+    use crate::router::AdminTopic as T;
+    match topic {
+        T::Model => credits::refresh_model_selector().await,
+        T::PublicFace => admin::refresh_public_face_status().await,
+        T::Identity | T::Funds => refresh_credits_pill().await,
+        T::Settings | T::Devices => {}
+    }
+}
+
+/// Chat-facing render-pref setters (the "light mode" / "desktop view" free
+/// routes) — precise SETs, `true` = a flip happened.
+pub(crate) fn set_theme_light(light: bool) -> bool {
+    layout::set_theme_light(light)
+}
+
+/// See [`set_theme_light`].
+pub(crate) fn set_view_desktop(desktop: bool) -> bool {
+    layout::set_view_desktop(desktop)
+}
+
 /// Fetch the credit balance for the apex wallet and write it into
 /// `#credits-balance`. Called on admin-open. Soft-fail — leaves the
 /// placeholder on error so the UI stays clean.

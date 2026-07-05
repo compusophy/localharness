@@ -18,6 +18,38 @@ pub(super) fn toggle_preview() {
     set_render_mode("preview-mobile", "lh-preview", "mobile", "desktop");
 }
 
+/// Chat-native SET variant of [`toggle_theme`] (the "light mode"/"dark mode"
+/// free routes must never blind-toggle): flips only when the current theme
+/// differs. Returns whether a flip happened (the answer line reports it).
+pub(super) fn set_theme_light(light: bool) -> bool {
+    if html_has_class("theme-light") == light {
+        return false;
+    }
+    toggle_theme();
+    true
+}
+
+/// Chat-native SET variant of [`toggle_preview`] — `preview-mobile` present =
+/// the 9:16 mobile frame, absent = desktop. Same contract as
+/// [`set_theme_light`].
+pub(super) fn set_view_desktop(desktop: bool) -> bool {
+    let currently_desktop = !html_has_class("preview-mobile");
+    if currently_desktop == desktop {
+        return false;
+    }
+    toggle_preview();
+    true
+}
+
+/// Whether `<html>` currently carries a render-mode class.
+fn html_has_class(class: &str) -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+        .map(|h| h.class_list().contains(class))
+        .unwrap_or(false)
+}
+
 /// Flip a render-mode class on `<html>`, persist the pref in `localStorage`,
 /// then re-render `#display-toggles` so the toggles reflect the new state. No
 /// reload — the token block (`style.rs`) + `styles.css` react to the class

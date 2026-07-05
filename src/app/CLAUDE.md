@@ -66,6 +66,23 @@ no-wallet identity path). This REPLACED the old `.admin-tabbed` tabs + `ShowAdmi
 `Reveal`+`HideSecurity` swaps; the on-chain enable-notifications + test buttons and the
 feedback-on-chain toggle were CUT (push rides the bell and is fully OFF-CHAIN now).
 
+**Chat-native admin cards (#36 phase 2).** Every admin surface is ALSO reachable
+inline in the transcript: free-routed admin intents ("settings" / "who am i" /
+"model" / "public face" / "redeem" / "add a device" / … — `router::AdminTopic`,
+exact-allowlist) mount `templates::admin_chat_card(topic)` as an assistant-turn
+card that REUSES the sheet's own section templates, so the buttons drive the same
+`data-action` handlers + gates and the same fixed ids get their async fills
+(`events::admin_card_refresh`). "light/dark mode" + "desktop/mobile view" are
+precise SET commands (`layout::set_theme_light`/`set_view_desktop`, never blind
+toggles). **ID-UNIQUENESS RULE:** the sheet and the inline cards share fixed
+section ids — `events::admin::retire_admin_cards` swaps every `#admin-card-<slug>`
+to an id-free "superseded" note before a new card mounts (`admin_card_will_mount`)
+AND before the sheet opens (`header_admin_toggle`); whichever admin surface opened
+LAST owns the ids (the sheet also sits earlier in the DOM, so it wins `by_id`
+while open). Persona / x402 price / tool allowlist / security stay sheet-only
+(no chat-tool parity by design — allowlist must not be self-grantable; a revealed
+seed must not linger in the transcript).
+
 ## Turn-status / stage painter (`chat/stage.rs` + `turn_stage.rs`)
 Pending-turn cue: ONE pulsing glyph in `#turn-status` (header) + a `data-stage` word
 on the pending bubble (`::before{content:attr(data-stage)}`). `begin()` paints an
@@ -105,7 +122,8 @@ every backend branch; add new chat tools there, never per-backend; source guard
 `tests/chat_toolset_single_source.rs`; router_wire.rs = the INTENT-ROUTER gate:
 `run_send` classifies each message via the `crate::router` pure core BEFORE any
 metered work — exact-allowlist free routes only (balance/credits reads, the
-files/display/terminal toggles, a tiny docs FAQ), everything else untouched;
+files/display/terminal toggles, light/dark + desktop/mobile SETs, the inline
+admin cards above, a tiny docs FAQ), everything else untouched;
 '!' prefix always forces the model; the gate is DEFAULT ON (tab-E2E'd
 2026-07-05; per-session opt-out via `/router off`, sessionStorage
 `lh_router`="0", default pinned by `router::router_enabled` natively); free

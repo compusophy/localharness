@@ -1522,6 +1522,69 @@ fn admin_advanced_body() -> Markup {
     }
 }
 
+/// One chat-native admin card (#36 phase 2) — an admin topic rendered INLINE
+/// in the transcript as an assistant-turn card. It reuses the settings sheet's
+/// OWN section templates, so the buttons drive the exact same `data-action`
+/// handlers (owner-/confirm-gates included) and the same fixed ids get their
+/// async fills. ID-UNIQUENESS RULE: at most one live instance of a topic's
+/// ids — `events::admin::retire_admin_cards` neutralizes previous cards before
+/// a new card mounts or the sheet opens (and the sheet's markup sits EARLIER
+/// in the DOM, so it wins `by_id` lookups while it is open).
+pub(crate) fn admin_chat_card(topic: crate::router::AdminTopic) -> Markup {
+    use crate::router::AdminTopic as T;
+    let body = match topic {
+        T::Settings => admin_chat_settings_body(),
+        T::Identity => {
+            let name = super::tenant::current_name();
+            let owner_hex = super::APP
+                .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.address_hex()));
+            let has_wallet = owner_hex.is_some();
+            html! {
+                (admin_identity_section(name.as_deref(), owner_hex.as_deref(), None, has_wallet))
+                @if has_wallet { (admin_balance_line()) }
+            }
+        }
+        T::Model => admin_model_section(),
+        T::PublicFace => admin_app_section(),
+        T::Funds => html! { (admin_balance_line()) (admin_funds_body()) },
+        T::Devices => admin_devices_body(),
+    };
+    html! {
+        div id=(format!("admin-card-{}", topic.slug())) .admin-chat-card {
+            div.admin-chat-card-title { (topic.title()) }
+            (body)
+        }
+    }
+}
+
+/// The `settings` index card — the chat-native map of the admin surface plus
+/// the door to the full sheet (same `header-admin-toggle` action as the cog).
+fn admin_chat_settings_body() -> Markup {
+    html! {
+        p.admin-blurb {
+            "ask in chat: identity · model · public face · funds · devices — or "
+            "\"light mode\" / \"dark mode\" / \"desktop view\" / \"mobile view\" / "
+            "\"files\" / \"display\" / \"terminal\". persona, price, tool allowlist "
+            "and security stay in the sheet."
+        }
+        div.pair-slot {
+            button type="button" data-action="header-admin-toggle" .ghost {
+                "open the settings sheet"
+            }
+        }
+    }
+}
+
+/// The id-free note a superseded inline admin card collapses to (a NEWER card
+/// of the same topic mounted below, or the settings sheet took the ids).
+pub(crate) fn admin_chat_card_retired(title: &str) -> Markup {
+    html! {
+        div.admin-chat-card-retired {
+            "(" (title) " card superseded — see below, or the settings cog)"
+        }
+    }
+}
+
 /// Custom system prompt section — the studio MVP. Tenant-only.
 /// Textarea pre-filled from `.lh_system_prompt.txt`, save button
 /// writes it back. Empty save reverts to the bundle's default prompt
