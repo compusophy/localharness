@@ -188,6 +188,15 @@ async fn load_engine(config: &LocalBackendConfig) -> Result<Option<Engine>> {
     };
 
     let device = burn::backend::wgpu::WgpuDevice::default();
+    // wasm: the browser's adapter/device request is async-only — cubecl's lazy
+    // blocking init panics ("call init() before load()"). Initialize the wgpu
+    // runtime explicitly BEFORE the first tensor op. Native inits lazily fine.
+    #[cfg(target_arch = "wasm32")]
+    burn::backend::wgpu::init_setup_async::<burn::backend::wgpu::graphics::WebGpu>(
+        &device,
+        Default::default(),
+    )
+    .await;
     let cfg = GemmaConfig::gemma_3_270m();
     let model = GemmaModel::<LocalBackend>::init(cfg, &device);
     let model = weights::load_gemma(model, &weights, &device)
@@ -294,7 +303,11 @@ impl LoopState {
             buf.push_str(&t.text);
             buf.push('\n');
         }
-        buf.push_str("Assistant: ");
+        // NO trailing space after the colon: a dangling "▁" token boundary
+        // collapses the 270M base model into degenerate output ("1000…" for a
+        // factual continuation — proven by a native A/B with identical
+        // weights). The model emits the leading space itself.
+        buf.push_str("Assistant:");
         buf
     }
 
@@ -573,6 +586,12 @@ impl Connection for LocalConnection {
 
                 let rendered = state.render_prompt_with_tools(tool_runner.as_deref());
                 let reply = engine.run(&rendered).await;
+                // The base model keeps continuing the flat transcript past its
+                // own turn (fabricating "User:" lines) — cut at the first one.
+                let reply = match reply.find("\nUser:") {
+                    Some(i) => reply[..i].trim().to_string(),
+                    None => reply.trim().to_string(),
+                };
 
                 // Parse a tool call only when a runner is present; otherwise the
                 // model output is always plain text.
@@ -879,7 +898,9 @@ mod tests {
         let tok = super::super::tokenizer::GemmaTokenizer::from_bytes(&tok_bytes)
             .expect("load tokenizer");
 
-        let prompt = "The capital of France is";
+        let prompt = std::env::var("GEMMA_PROMPT")
+            .unwrap_or_else(|_| "The capital of France is".to_string());
+        let prompt = prompt.as_str();
         let out = super::super::generate::generate(&model, &tok, prompt, 16, &device).await;
         println!("\n=== GEMMA NATIVE FORWARD ===\nprompt: {prompt:?}\noutput:  {out:?}\n============================\n");
         assert!(

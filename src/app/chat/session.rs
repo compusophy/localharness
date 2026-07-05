@@ -422,13 +422,28 @@ pub(crate) async fn start_session(
         // the heavy `local` feature; without it, the id can't be served here.
         #[cfg(feature = "local")]
         {
+            // The local model's context is ROPE_CACHE_LEN (4096) tokens; the
+            // full platform prompt is ~15k tokens and would leave the decoder
+            // NO room (live WebGPU run: prompt=15101 → immediate context-limit
+            // stop → empty reply). A 270M model can't use the tool docs anyway
+            // — give it a short local-appropriate preamble instead.
+            let local_system = "You are a helpful assistant running fully in \
+                 the user's browser (Gemma 3 270M on WebGPU). Reply concisely.";
+            // No builtin tools either: the tool preamble alone was ~1.9k tokens
+            // (live run), the per-step logits buffer scales with seq × the 262k
+            // vocab (2.1 GB at seq 2000 — device-lost after 42 tokens), and a
+            // 270M base model can't reliably drive tools. Plain text only.
+            let mut local_caps = capabilities.clone();
+            local_caps.enabled_tools = Some(vec![]);
+            local_caps.enable_subagents = false;
             let mut cfg = crate::LocalAgentConfig::new(model.clone())
-                .with_capabilities(capabilities)
+                .with_capabilities(local_caps)
                 // Same allow-all as `wire_shared_session!` — bootstrap refuses
                 // write-capable configs with no policy (live WebGPU run found it).
                 .with_policies(vec![policy::allow_all()])
                 .with_filesystem(crate::app::shared_opfs())
-                .with_system_instructions(system_instructions);
+                .with_system_instructions(local_system);
+            let _ = &system_instructions;
             if let Some(bytes) = pending_history {
                 if crate::backends::local::connection::decode_transcript_bytes(&bytes).is_ok() {
                     cfg = cfg.with_history_bytes(bytes);

@@ -60,6 +60,16 @@ pub async fn generate<B: Backend>(
     // `tokens` so the prompt is never echoed back in the returned string.
     let mut generated: Vec<i64> = Vec::with_capacity(max_new);
 
+    // In-browser observability: one console line per generated token so a live
+    // run's progress + tokens/sec are visible without waiting for the full
+    // decode (the transcript only paints after the whole string returns).
+    #[cfg(target_arch = "wasm32")]
+    let t_start = js_sys::Date::now();
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(
+        &format!("[lh-local] generate: prompt={} tokens, max_new={max_new}", tokens.len()).into(),
+    );
+
     for _ in 0..max_new {
         // Clean stop before the forward pass would index past the RoPE cache.
         // v1 has no KV cache, so `tokens` (prompt + continuation) grows every
@@ -112,6 +122,20 @@ pub async fn generate<B: Backend>(
 
         tokens.push(next);
         generated.push(next);
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let dt = (js_sys::Date::now() - t_start) / 1000.0;
+            let tps = generated.len() as f64 / dt.max(1e-9);
+            web_sys::console::log_1(
+                &format!(
+                    "[lh-local] tok {}/{max_new} ({tps:.2} tok/s) text={:?}",
+                    generated.len(),
+                    tok.decode(&generated)
+                )
+                .into(),
+            );
+        }
     }
 
     tok.decode(&generated)

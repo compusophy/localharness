@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **In-browser Gemma (`browser-app-local`) actually generates** — first live
+  WebGPU proof ("Hello, I'm Gemma.", 9.08 tok/s, RTX 3090 headless Chrome)
+  flushed out four fixes: wasm needs `init_setup_async::<WebGpu>` before the
+  first tensor op; the local session now gets a short preamble (the full
+  ~15k-token platform prompt blew past ROPE_CACHE_LEN 4096) and runs
+  tool-free (per-step logits at long seq ≈ 2.1 GB → device loss); the
+  `"Assistant: "` trailing space degenerated output (native A/B proved it —
+  and incidentally proved wasm/WebGPU numeric parity with native GPU); reply
+  truncates at the base model's first fabricated `
+User:` turn. Plus
+  per-token progress logs and `scripts/tab-e2e/gemma-e2e.mjs`.
 - **Orphaned public faces (mario/console/frank) serve again** — the resolver
   now falls back to the legacy on-chain `app.wasm`/`public.html` metadata
   slots when the off-chain app store misses (store-first order unchanged;
