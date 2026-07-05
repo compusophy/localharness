@@ -347,7 +347,11 @@ unpublished edits) else published. `PublicFace`: **Cartridge** (`app.rl` /
 `public_html_of` → `render_html_in_root_canvas`), **Directory**
 (`paint_public_landing`: profile + sibling agents via `list_owned_tokens`, personas
 batch-fetched via `personas_of`). UNSET infers "cartridge if one exists, else
-directory". `Host::Other` uses `try_paint_app` (local `app.rl` only).
+directory". `Host::Other` uses `try_paint_app` (local `app.rl` only). Published
+content resolves STORE-FIRST (off-chain app store); a store MISS (404/fetch fail —
+pure rule `registry::store_miss_falls_back`) falls back to the LEGACY on-chain
+`setMetadata` slots (`app_wasm_onchain_of`/`public_html_onchain_of`) so pre-pivot
+(2026-06-23) publishes keep their faces (mario/console/frank).
 
 **Picker (admin → "public face").** `[directory] [publish app] [publish html]` →
 `Action::SetPublicFace`. `directory` sets only the choice; `app`/`html`

@@ -385,6 +385,23 @@ pub async fn app_wasm_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
     app_wasm_from_store(&name).await
 }
 
+/// LEGACY on-chain cartridge read: pre-pivot (2026-06-23 apps-off-chain)
+/// publishes stored `app.wasm` bytes in the diamond under
+/// `keccak256("localharness.app.wasm")`. New publishes live in the off-chain
+/// store; this backs the STORE-MISS fallback so those orphaned public faces
+/// (e.g. mario/console) keep resolving for visitors.
+pub async fn app_wasm_onchain_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
+    metadata_bytes_of(token_id, app_metadata_key()).await
+}
+
+/// Store-first face resolution: `true` when the off-chain app-store outcome —
+/// a 404 (`Ok(None)`) OR a fetch failure (`Err`) — should fall back to the
+/// LEGACY on-chain metadata slot. Published store bytes always win, so the
+/// on-chain read only fires on a miss (store stays the cheap first hop).
+pub fn store_miss_falls_back<T>(store: &Result<Option<T>, String>) -> bool {
+    !matches!(store, Ok(Some(_)))
+}
+
 /// Storage key for the legacy on-chain app wasm: `keccak256("localharness.app.wasm")`.
 /// Retained for back-compat reads of pre-off-chain publishes; new publishes go to
 /// the app store (no on-chain bytes).
@@ -485,6 +502,13 @@ pub fn encode_set_public_face(token_id: u64, choice: &str) -> Vec<u8> {
 pub async fn public_html_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
     let name = name_of_id(token_id).await?;
     html_from_store(&name).await
+}
+
+/// LEGACY on-chain HTML read (`keccak256("localharness.public.html")`) — the
+/// store-miss fallback sibling of [`app_wasm_onchain_of`], for pre-pivot HTML
+/// faces (e.g. frank) the off-chain store 404s on.
+pub async fn public_html_onchain_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
+    metadata_bytes_of(token_id, keccak_key(PUBLIC_HTML_LABEL)).await
 }
 
 /// Encode `setMetadata` for the published public-face HTML. LEGACY — the on-chain
@@ -707,6 +731,21 @@ pub fn proxy_auth_token(signer: &SigningKey, now_secs: u64, route: &str) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The store-first fallback rule: only a store HIT (`Ok(Some)`) suppresses
+    /// the legacy on-chain read; a 404 (`Ok(None)`) and a fetch failure (`Err`)
+    /// both fall back — the orphaned-faces fix (pre-2026-06-23 on-chain
+    /// publishes the off-chain store 404s on).
+    #[test]
+    fn store_miss_falls_back_on_404_and_error_only() {
+        assert!(!store_miss_falls_back(&Ok(Some(vec![0u8]))));
+        // Empty PUBLISHED bytes are still a hit (store wins).
+        assert!(!store_miss_falls_back(&Ok(Some(Vec::<u8>::new()))));
+        assert!(store_miss_falls_back(&Ok(None::<Vec<u8>>)));
+        assert!(store_miss_falls_back(&Err::<Option<Vec<u8>>, _>(
+            "GET: HTTP 500".into()
+        )));
+    }
 
     /// `rank_agent_matches` hostile inputs: case-insensitivity, name-tier vs
     /// persona-tier ordering, substring (not word) matching, empty registry,

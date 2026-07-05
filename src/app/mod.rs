@@ -1692,23 +1692,50 @@ async fn local_public_html() -> Option<String> {
 /// published no app. Backs the iframe-free `?compose=` compositor.
 async fn compose_module_wasm(name: &str) -> Option<Vec<u8>> {
     // Apps are OFF-CHAIN now: fetch the published cartridge by NAME from the app
-    // store (the chain keeps only ownership). A 404 (unpublished/typo'd name) is
-    // a clean `None`.
-    registry::app_wasm_from_store(name).await.ok().flatten()
+    // store (the chain keeps only ownership). A 404 (unpublished/typo'd name)
+    // falls back to the LEGACY on-chain slot (pre-pivot publishes), else `None`.
+    let store = registry::app_wasm_from_store(name).await;
+    if !registry::store_miss_falls_back(&store) {
+        return store.ok().flatten();
+    }
+    legacy_cartridge_onchain(name, None).await
+}
+
+/// STORE-MISS fallback: pre-pivot (2026-06-23 apps-off-chain) publishes left
+/// `app.wasm` bytes ON-CHAIN under `setMetadata`, so the off-chain store 404s
+/// for them and visitors lost those faces. Read the legacy slot on a miss —
+/// silent for visitors, console-logged for debugging. `id` skips the
+/// `idOfName` round-trip when the caller already resolved it.
+async fn legacy_cartridge_onchain(name: &str, id: Option<u64>) -> Option<Vec<u8>> {
+    let id = match id {
+        Some(i) => i,
+        None => registry::id_of_name(name).await.ok().filter(|&i| i != 0)?,
+    };
+    let wasm = registry::app_wasm_onchain_of(id).await.ok().flatten()?;
+    web_sys::console::log_1(&JsValue::from_str(&format!(
+        "public face: app store miss for '{name}', serving legacy on-chain app.wasm ({} bytes)",
+        wasm.len()
+    )));
+    Some(wasm)
 }
 
 /// Cartridge bytes for the public face. When `prefer_local` (owner preview
 /// only), the device's unpublished `app.rl` working copy wins so the owner
 /// sees their edits; for a VISITOR `prefer_local` is false, so only the
-/// PUBLISHED cartridge (off-chain app store, by name) is shown — never the
-/// owner-device's local draft.
-async fn resolve_cartridge(name: &str, prefer_local: bool) -> Option<Vec<u8>> {
+/// PUBLISHED cartridge is shown — never the owner-device's local draft.
+/// Resolution is STORE-FIRST (cheap CDN); a store miss (404 or fetch failure)
+/// falls back to the legacy on-chain `app.wasm` slot.
+async fn resolve_cartridge(name: &str, prefer_local: bool, id: Option<u64>) -> Option<Vec<u8>> {
     if prefer_local {
         if let Some(w) = local_cartridge_wasm().await {
             return Some(w);
         }
     }
-    registry::app_wasm_from_store(name).await.ok().flatten()
+    let store = registry::app_wasm_from_store(name).await;
+    if !registry::store_miss_falls_back(&store) {
+        return store.ok().flatten();
+    }
+    legacy_cartridge_onchain(name, id).await
 }
 
 /// Resolve the public face for tenant `name`. Reads the on-chain choice
@@ -1735,17 +1762,32 @@ async fn resolve_public_face(name: &str, is_owner_preview: bool) -> PublicFace {
                 }
             }
             if let Some(i) = id {
-                if let Ok(Some(bytes)) = registry::public_html_of(i).await {
+                let store = registry::public_html_of(i).await;
+                let bytes = if registry::store_miss_falls_back(&store) {
+                    // Store miss (404 / fetch failure): pre-pivot HTML faces
+                    // live in the LEGACY on-chain `public.html` slot.
+                    let legacy = registry::public_html_onchain_of(i).await.ok().flatten();
+                    if legacy.is_some() {
+                        web_sys::console::log_1(&JsValue::from_str(&format!(
+                            "public face: html store miss for '{name}', serving legacy on-chain public.html"
+                        )));
+                    }
+                    legacy
+                } else {
+                    store.ok().flatten()
+                };
+                if let Some(bytes) = bytes {
                     return PublicFace::Html(String::from_utf8_lossy(&bytes).into_owned());
                 }
             }
             PublicFace::Directory
         }
         // "app" or unset/legacy — prefer a cartridge (off-chain app store, by
-        // name), fall back to directory. With apps off-chain the publish no
-        // longer writes a `public_face="app"` choice, so the UNSET case is the
-        // normal path for a published app.
-        _ => match resolve_cartridge(name, is_owner_preview).await {
+        // name; store-miss → legacy on-chain slot), fall back to directory.
+        // With apps off-chain the publish no longer writes a
+        // `public_face="app"` choice, so the UNSET case is the normal path for
+        // a published app.
+        _ => match resolve_cartridge(name, is_owner_preview, id).await {
             Some(w) => PublicFace::Cartridge(w),
             None => PublicFace::Directory,
         },
@@ -1765,7 +1807,7 @@ async fn resolve_public_face(name: &str, is_owner_preview: bool) -> PublicFace {
 /// (or run later in chat) supersedes this card's live frame — expected, one
 /// live cartridge at a time.
 async fn mount_studio_app_card(name: &str) {
-    let Some(wasm) = resolve_cartridge(name, true).await else { return };
+    let Some(wasm) = resolve_cartridge(name, true, None).await else { return };
     if dom::by_id("studio-app-slot").is_none() {
         return; // chrome replaced (e.g. demoted to the public face) meanwhile
     }
