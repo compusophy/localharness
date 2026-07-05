@@ -25,7 +25,14 @@ pub(crate) async fn collect_payment_if_required() -> Result<Option<String>, Stri
     // Do NOT collapse None to 0 (`unwrap_or(0)`) — a fast visitor could send before the
     // price loads and bypass a PRICED agent's gate for free. Fail closed until known
     // (same posture as the TBA/verify checks below); the window is a few seconds.
+    // EXCEPT Host::Other (localhost / Vercel preview): no tenant, so
+    // `kick_verification` never runs and pricing stays None FOREVER — the
+    // "retry in a moment" would be a lie there. No priced agent exists on
+    // that surface; treat it as free.
     let Some(price_wei) = pricing_wei else {
+        if matches!(crate::app::tenant::current(), crate::app::tenant::Host::Other(_)) {
+            return Ok(None);
+        }
         return Err("agent pricing is still loading (verification running) — retry in a moment".into());
     };
     if price_wei == 0 {

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Host::Other (localhost / Vercel preview) metered sends no longer fail
+  closed forever** — `kick_verification` never runs without a tenant, so the
+  pricing gate's `None` state was permanent there and its "retry in a moment"
+  a lie (found by the tick-6 tab-E2E). That surface has no priced agent; it
+  now routes as free. Production tenants unchanged.
+
 - **Stop button takes effect promptly (telemetry #33)** — cancel was
   cooperative at chunk/dispatch boundaries only, so a silent stream (model
   thinking, stalled socket) or a round of tool calls made Stop look dead for
