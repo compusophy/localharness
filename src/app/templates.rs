@@ -87,7 +87,7 @@ pub(crate) fn buy_area_default() -> Markup {
 pub(crate) fn buy_inline_form(lh_label: &str) -> Markup {
     html! {
         div.api-key-hint style="margin:2px 0 8px" { (lh_label) }
-        div #buy-checkout-msg .step-msg style="color:var(--muted)" {
+        div #buy-checkout-msg .step-msg role="status" style="color:var(--muted)" {
             "preparing secure checkout…"
         }
         div #lh-pay-region {
@@ -115,7 +115,7 @@ pub(crate) fn onboard_checkout() -> Markup {
             // Keep the offer pitch at the top so "limited time" / the deal does
             // NOT vanish when the user taps create (same pitch as the button card).
             (crate::landing::onboard_pitch())
-            div #onboard-checkout-msg .step-msg style="color:var(--muted)" {
+            div #onboard-checkout-msg .step-msg role="status" style="color:var(--muted)" {
                 "preparing secure checkout…"
             }
             div #lh-pay-region {
@@ -371,6 +371,8 @@ pub(crate) fn fund_banner_body() -> Markup {
             span { "no $LH yet — redeem a code to start" }
             input #fund-redeem-code .redeem-input type="text" aria-label="redeem code" placeholder="redeem code";
             button type="button" data-action="redeem-banner" .ghost { "redeem" }
+            // No role="status" here: this slot sits INSIDE `#fund-banner`,
+            // already a live region — nesting one would double-announce (#75).
             div #fund-msg .admin-msg-slot style="margin-top:0;flex-basis:100%" {}
         }
     }
@@ -586,7 +588,10 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 // told to announce mutations. `role=log` + `aria-live=polite`
                 // queue new content without interrupting; `aria-atomic=false`
                 // announces only the added nodes, not the whole transcript each
-                // chunk. Purely semantic — no visual change.
+                // chunk. Purely semantic — no visual change. Deliberately NO
+                // aria-busy while streaming: busy=true SUPPRESSES live
+                // announcements until cleared, the opposite of what a streaming
+                // reply needs (feedback #75).
                 div #transcript .transcript role="log" aria-live="polite" aria-atomic="false"
                     aria-label="agent conversation" {}
                 section.terminal-panel {
@@ -719,7 +724,7 @@ pub(crate) fn admin_feedback_section() -> Markup {
                 aria-label="feedback message"
                 rows="6" {}
             button type="button" data-action="feedback-submit" .ghost.feedback-submit { "submit" }
-            div #feedback-msg .feedback-msg {}
+            div #feedback-msg .feedback-msg role="status" {}
         }
     }
 }
@@ -1292,7 +1297,7 @@ pub(crate) fn buy_to_claim() -> Markup {
         div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;\
                     margin-top:8px;font-size:12px;color:var(--muted)" {
             button type="button" data-action="buy-lh" .ghost { "buy $2 to claim" }
-            div #fund-msg .admin-msg-slot style="margin-top:0;flex-basis:100%" {}
+            div #fund-msg .admin-msg-slot role="status" style="margin-top:0;flex-basis:100%" {}
         }
     }
 }
@@ -1388,8 +1393,11 @@ fn admin_funds_body() -> Markup {
             button type="button" data-action="redeem-code" .ghost { "redeem" }
         }
         div #buy-area { (buy_area_default()) }
-        div #buy-msg .admin-msg-slot {}
-        div #credits-msg .admin-msg-slot {}
+        // Async tx/status sinks are polite live regions (role="status") so a
+        // screen reader hears redeem / buy / pair / publish progress (#75) —
+        // ONE region per logical stream, none nested in another live region.
+        div #buy-msg .admin-msg-slot role="status" {}
+        div #credits-msg .admin-msg-slot role="status" {}
         (admin_invite_section())
     }
 }
@@ -1403,7 +1411,7 @@ fn admin_devices_body() -> Markup {
         div.pair-slot {
             button type="button" data-action="sync-devices" .ghost { "sync my devices" }
         }
-        div #pair-msg .admin-msg-slot {}
+        div #pair-msg .admin-msg-slot role="status" {}
     }
 }
 
@@ -1418,7 +1426,7 @@ fn admin_device_body() -> Markup {
             button type="button" data-action="install-app" .ghost { "install app" }
             button type="button" data-action="toggle-files" .ghost { "files" }
         }
-        div #install-msg .admin-msg-slot {}
+        div #install-msg .admin-msg-slot role="status" {}
         (display_toggles())
         div.pair-slot {
             button #telemetry-toggle type="button" data-action="toggle-telemetry" .ghost {
@@ -1604,7 +1612,7 @@ pub(crate) fn admin_prompt_section() -> Markup {
                     button type="submit" .ghost { "save" }
                 }
             }
-            div #prompt-msg .admin-msg-slot {}
+            div #prompt-msg .admin-msg-slot role="status" {}
         }
     }
 }
@@ -1627,7 +1635,7 @@ pub(crate) fn admin_model_section() -> Markup {
                         class="ghost" data-model=(id) { (label) }
                 }
             }
-            div #model-msg .admin-msg-slot {}
+            div #model-msg .admin-msg-slot role="status" {}
             // Opt-in download for the in-browser local model (~570 MB, fetched
             // once from the HF CDN into OPFS). Gated on `local`: only shown when
             // this bundle actually compiles the Burn-wgpu backend that loads the
@@ -1639,7 +1647,7 @@ pub(crate) fn admin_model_section() -> Markup {
                         "download local model"
                     }
                 }
-                div #local-model-msg .admin-msg-slot {}
+                div #local-model-msg .admin-msg-slot role="status" {}
             }
         }
     }
@@ -1658,7 +1666,7 @@ pub(crate) fn admin_x402_price_section() -> Markup {
                     button type="submit" .ghost { "save" }
                 }
             }
-            div #x402-price-msg .admin-msg-slot {}
+            div #x402-price-msg .admin-msg-slot role="status" {}
         }
     }
 }
@@ -1680,7 +1688,7 @@ pub(crate) fn admin_app_section() -> Markup {
                 button type="button" data-action="set-public-face" data-arg="app" .ghost { "publish app" }
                 button type="button" data-action="set-public-face" data-arg="html" .ghost { "publish html" }
             }
-            div #publish-app-msg .admin-msg-slot {}
+            div #publish-app-msg .admin-msg-slot role="status" {}
             div.public-face-preview {
                 a href="?view=public" { "view public face →" }
             }
@@ -1712,7 +1720,7 @@ pub(crate) fn admin_tool_allowlist_section() -> Markup {
                     data-action="reset-tool-allowlist"
                     .ghost { "reset (all)" }
             }
-            div #tool-allowlist-msg .admin-msg-slot {}
+            div #tool-allowlist-msg .admin-msg-slot role="status" {}
         }
     }
 }
@@ -1769,8 +1777,8 @@ fn admin_identity_section(
                 // Volatile-storage (incognito) warning target — filled async by
                 // the CreateIdentity handler when durable storage is refused.
                 div #storage-warn-slot {}
-                div #identity-msg .admin-msg-slot {}
-                div #seed-msg .admin-msg-slot {}
+                div #identity-msg .admin-msg-slot role="status" {}
+                div #seed-msg .admin-msg-slot role="status" {}
                 // Mobile lifeline: a TOP-LEVEL link to apex (the apex signer
                 // iframe is dead on mobile, so in-place create/import can't run
                 // there — this navigation can). Restore your seed at apex.
@@ -1813,7 +1821,7 @@ pub(crate) fn admin_invite_section() -> Markup {
                     inputmode="decimal" aria-label="invite amount in $LH" placeholder="$LH amount";
                 button type="button" data-action="create-invite" .ghost { "create" }
             }
-            div #invite-result .admin-msg-slot {}
+            div #invite-result .admin-msg-slot role="status" {}
         }
     }
 }
@@ -1935,7 +1943,7 @@ pub(crate) fn adopt_join(ct_hex: &str) -> Markup {
                         input #adopt-ct type="hidden" value=(ct_hex) {}
                         button type="submit" .create-button { "adopt" }
                     }
-                    div #adopt-msg .step-msg {}
+                    div #adopt-msg .step-msg role="status" {}
                 }
             }
         }
@@ -1962,7 +1970,7 @@ pub(crate) fn identity_choice(name: &str) -> Markup {
                 }
             }
             div #import-slot {}
-            div #seed-msg .admin-msg-slot {}
+            div #seed-msg .admin-msg-slot role="status" {}
             div.pair-waiting { "or open “add a device” on a device you already use" }
         }
     }
@@ -1986,7 +1994,7 @@ pub(crate) fn reset_confirm_inline() -> Markup {
                 button type="button" data-action="reset-confirm" .danger { "reset" }
                 button type="button" data-action="reset-cancel" .ghost { "cancel" }
             }
-            div #reset-confirm-msg .admin-msg-slot {}
+            div #reset-confirm-msg .admin-msg-slot role="status" {}
         }
     }
 }
@@ -2184,7 +2192,7 @@ pub(crate) fn import_seed_inline() -> Markup {
                 button type="button" data-action="import-seed" { "import" }
                 button type="button" data-action="cancel-import" .ghost { "cancel" }
             }
-            div #seed-msg .step-msg {}
+            div #seed-msg .step-msg role="status" {}
         }
     }
 }
@@ -2356,7 +2364,7 @@ pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
                     button type="button" data-action="claim-on-chain" .button-link {
                         "claim " (name)
                     }
-                    div #claim-msg .step-msg {}
+                    div #claim-msg .step-msg role="status" {}
                 }
             }
         }

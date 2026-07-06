@@ -83,6 +83,18 @@ while open). Persona / x402 price / tool allowlist / security stay sheet-only
 (no chat-tool parity by design — allowlist must not be self-grantable; a revealed
 seed must not linger in the transcript).
 
+## Live regions (a11y, feedback #75)
+Screen readers hear mutations only inside live regions: `#transcript` is
+`role="log" aria-live="polite"` (streamed turns + the in-stream `#system-status`
+line + confirm callouts — anything inserted there is announced; do NOT add a
+nested live region inside it, and NEVER `aria-busy` — busy MUTES announcements
+mid-stream). `#turn-status`, `#fund-banner`, the terminal `#status`, and every
+async tx/status msg slot (`*-msg` / `#claim-msg` / `#invite-result` …) carry
+`role="status"` — ONE region per logical stream (the banner-embedded `#fund-msg`
+is deliberately bare: it nests in `#fund-banner`). Guard:
+`tests/a11y_live_regions.rs`; new async status sinks get `role="status"` + the
+guard list.
+
 ## Turn-status / stage painter (`chat/stage.rs` + `turn_stage.rs`)
 Pending-turn cue: ONE pulsing glyph in `#turn-status` (header) + a `data-stage` word
 on the pending bubble (`::before{content:attr(data-stage)}`). `begin()` paints an
