@@ -38,17 +38,17 @@ pub(crate) fn propose_measure_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let guild_id = params.guild_id()?;
             let to_arg = params.to.trim().to_string();
             if to_arg.is_empty() {
-                return Err(crate::error::Error::other("to cannot be empty"));
+                return Err(crate::error::Error::bad_args("propose_measure", "to cannot be empty"));
             }
             let amount_arg = params.amount_lh.trim().to_string();
             let amount_wei = crate::encoding::parse_token_amount(&amount_arg).ok_or_else(|| {
-                crate::error::Error::other(format!(
+                crate::error::Error::bad_args("propose_measure", format!(
                     "could not parse amount_lh \"{amount_arg}\" — pass a decimal $LH \
                      figure like \"5\" or \"1.5\""
                 ))
             })?;
             if amount_wei == 0 {
-                return Err(crate::error::Error::other("amount_lh must be greater than 0"));
+                return Err(crate::error::Error::bad_args("propose_measure", "amount_lh must be greater than 0"));
             }
             let memo = params.memo.as_deref().unwrap_or("").trim();
             // Period hours → seconds. Default 48h.
@@ -56,14 +56,14 @@ pub(crate) fn propose_measure_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 Some(s) if !s.trim().is_empty() => s
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| crate::error::Error::other("period_hours must be a number"))?,
+                    .map_err(|_| crate::error::Error::bad_args("propose_measure", "period_hours must be a number"))?,
                 _ => PROPOSAL_DEFAULT_PERIOD_HOURS,
             };
             if period_hours <= 0.0 {
-                return Err(crate::error::Error::other("period_hours must be greater than 0"));
+                return Err(crate::error::Error::bad_args("propose_measure", "period_hours must be greater than 0"));
             }
             let period_secs = (period_hours * 3600.0) as u64;
-            let to_hex = resolve_account(&to_arg).await?;
+            let to_hex = resolve_account("propose_measure", &to_arg).await?;
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::propose_sponsored(
                 &signer,

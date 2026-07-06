@@ -66,6 +66,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model-visible text), empty image-model responses (the MCP no-result
   precedent), `run_command` spawn, configure_agent's opaque re-wraps, and the
   encode-direction at-rest encrypt. Slice C2 (src/app, ~216 sites) pending.
+- **Error typed-variant migration slice C2 (src/app chat tools) — migration
+  COMPLETE, all slices, no new variants** — the browser chat tools' face-value
+  ARG validation (~95 sites across platform/bounty/guild/party/governance/
+  validation/room/company/misc: empty/parse/range checks, confirmation-code
+  gates, `classify_recipient` / `GuildRole::parse` / bashlite-diagnostic
+  rejections; the shared helpers `resolve_account` / `resolve_lh_recipient` /
+  `build_actor_setup` now thread the calling tool's name) constructs
+  `Error::BadArgs { tool, message }` — Display verbatim, structural `LH4009`,
+  so a model-echoed amount/name/script containing "429"/"quota" can no longer
+  substring-classify as a backend failure. The proxy notify/web_fetch non-2xx
+  replies construct `Error::http_status` (a metered 402 classifies `LH3003`
+  out-of-credits off the REAL status), `run_wasm_cli`'s OPFS read rides
+  `Error::fs`, and `select_consult_backend`'s unknown-model rejection rides
+  `BadArgs`. NO `Chain(String)` variant: nothing branches on chain-vs-other
+  (tool errors are stringified at dispatch), reverts already carry inline
+  `LH2xxx` labels, and the substring pass on chain prose is load-bearing in
+  the right direction ("insufficient … $LH" → the credits class + hint) — so
+  chain/RPC/tx prose, state-dependent refusals, and opaque re-wraps stay
+  `Error::other` deliberately (183 sites in src/app, 250 crate-wide, all
+  recorded in the roadmap). All surfaced text byte-identical.
 
 ## [0.69.0] - 2026-07-06
 

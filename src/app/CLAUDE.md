@@ -136,6 +136,20 @@ Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
   `app.rl` draft first, else published `app.wasm`). [fullscreen] + `?view=public`
   in its header; never auto-fullscreen; visitors unaffected; no app → empty slot.
 
+## Chat-tool errors (slice C2 idiom — follow it for new tools)
+Face-value ARG rejections (empty/parse/range, confirmation-code gates,
+`classify_recipient`/role parses, bashlite diagnostics) are
+`Error::bad_args(tool, msg)` — Display verbatim, structural CORE_TOOL_FAILED,
+never substring-classified (model-echoed args must not read as backend codes;
+shared helpers `resolve_account`/`resolve_lh_recipient`/`build_actor_setup`
+take the tool name). Proxy non-2xx replies with a real status →
+`Error::http_status`. Everything else — chain/RPC/tx prose ("X failed: {e}"),
+state-dependent refusals (no identity / not-registered / owned-by-other),
+opaque re-wraps — DELIBERATELY stays `Error::other`: its `classify()` pass is
+load-bearing there ("insufficient … $LH" → the credits class). No Chain
+variant — nothing branches on chain-vs-other and reverts carry inline LH2xxx
+labels already. Rationale per site: `design/big-picture-refactor-roadmap.md`.
+
 ## Files (orientation)
 `mod.rs` mount/routing · `templates.rs` ALL maud HTML · `dom.rs` swap shims ·
 `events/` the delegated listeners + `Action` enum + per-domain handlers

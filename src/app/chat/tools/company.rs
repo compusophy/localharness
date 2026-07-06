@@ -191,7 +191,7 @@ pub(crate) fn company_status_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .trim()
                 .to_string();
             if company.is_empty() {
-                return Err(crate::error::Error::other("company cannot be empty"));
+                return Err(crate::error::Error::bad_args("company_status", "company cannot be empty"));
             }
             let guild_id = resolve_guild(&company).await?;
             // Read the org snapshot from EXISTING views. The name/treasury reads are
@@ -275,10 +275,10 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let name = p.name.trim().to_string();
             let mission = p.mission.trim().to_string();
             if name.is_empty() {
-                return Err(crate::error::Error::other("name cannot be empty"));
+                return Err(crate::error::Error::bad_args("found_company", "name cannot be empty"));
             }
             if mission.is_empty() {
-                return Err(crate::error::Error::other("mission cannot be empty"));
+                return Err(crate::error::Error::bad_args("found_company", "mission cannot be empty"));
             }
             // Belt-and-suspenders: the confirm_guard hook denies any unconfirmed
             // call before this body runs; this guards a path that forgot the hook
@@ -290,7 +290,8 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "found_company",
                     "found_company requires the platform-issued confirmation code",
                 ));
             }
@@ -305,7 +306,7 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 s.trim_matches('-').to_string()
             };
             if company_slug.len() < 2 {
-                return Err(crate::error::Error::other(format!(
+                return Err(crate::error::Error::bad_args("found_company", format!(
                     "could not derive a usable subdomain prefix from company name \"{name}\" \
                      — give it a name with at least two letters/digits"
                 )));
@@ -313,7 +314,7 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 
             let roles = resolve_roles(args.get("roles"));
             if roles.is_empty() {
-                return Err(crate::error::Error::other("no valid roles to staff"));
+                return Err(crate::error::Error::bad_args("found_company", "no valid roles to staff"));
             }
 
             // The founder owner — all role subdomains + the guild are owned/signed
@@ -350,7 +351,7 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 let seed = seed.trim();
                 if !seed.is_empty() && seed != "0" {
                     let amount_wei = crate::encoding::parse_token_amount(seed).ok_or_else(|| {
-                        crate::error::Error::other(format!(
+                        crate::error::Error::bad_args("found_company", format!(
                             "could not parse seed_treasury_lh \"{seed}\" — pass a decimal \
                              $LH figure like \"10\" or \"2.5\""
                         ))
@@ -420,6 +421,7 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 match crate::app::registry::id_of_name(cand).await {
                     Ok(token_id) if token_id != 0 => {
                         match crate::app::chat::access::build_actor_setup(
+                            "found_company",
                             &owner,
                             token_id,
                             cand,

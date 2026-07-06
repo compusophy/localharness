@@ -9,11 +9,12 @@ use crate::encoding::parse_address;
 use crate::tools::ClosureTool;
 
 /// Resolve a `recipient` arg (raw 0x… address or subdomain name) to the
-/// 0x… address that receives $LH (a name pays its on-chain OWNER).
-async fn resolve_lh_recipient(recipient_arg: &str) -> Result<String, crate::error::Error> {
+/// 0x… address that receives $LH (a name pays its on-chain OWNER). `tool`
+/// names the caller for the arg-rejection (`Error::bad_args`) arm.
+async fn resolve_lh_recipient(tool: &str, recipient_arg: &str) -> Result<String, crate::error::Error> {
     use crate::encoding::Recipient;
     let kind = crate::encoding::classify_recipient(recipient_arg)
-        .map_err(crate::error::Error::other)?;
+        .map_err(|e| crate::error::Error::bad_args(tool, e))?;
     match kind {
         Recipient::Address(addr) => Ok(addr),
         Recipient::Name(name) => crate::app::registry::owner_of_name(&name)
@@ -137,8 +138,9 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
             let prefund_lh = params.prefund_lh.as_deref();
             // Validate (don't silently mangle) — an invalid name returns a clear
             // reason to the agent instead of minting a DIFFERENT name (#66/#60).
-            let cleaned = crate::subdomain::validate(name)
-                .map_err(|why| crate::error::Error::other(format!("invalid subdomain name: {why}")))?;
+            let cleaned = crate::subdomain::validate(name).map_err(|why| {
+                crate::error::Error::bad_args("create_subdomain", format!("invalid subdomain name: {why}"))
+            })?;
             // Register the name first (master wallet ends up holding the new id).
             let (owner, claim_tx) = crate::app::verify::claim_name_via_iframe(&cleaned)
                 .await
@@ -179,6 +181,7 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
                     Err(e) => return Err(crate::error::Error::other(format!("id_of_name: {e}"))),
                 };
                 let setup = build_actor_setup(
+                    "create_subdomain",
                     &owner,
                     token_id,
                     &cleaned,
@@ -432,14 +435,15 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
             let source = params.source.as_str();
             let persona = params.persona.as_deref();
             let prefund_lh = params.prefund_lh.as_deref();
-            let cleaned = crate::subdomain::validate(name)
-                .map_err(|why| crate::error::Error::other(format!("invalid subdomain name: {why}")))?;
+            let cleaned = crate::subdomain::validate(name).map_err(|why| {
+                crate::error::Error::bad_args("create_and_publish_app", format!("invalid subdomain name: {why}"))
+            })?;
             // Compile FIRST (also bounds-checks size) so a bad cartridge fails
             // before any register/setMetadata write. This is the SAME shape the
             // update path uses; resolve the tokenId after we know it compiles.
             // (token_id is patched in once known — encode below.)
             if source.trim().is_empty() {
-                return Err(crate::error::Error::other("source cannot be empty"));
+                return Err(crate::error::Error::bad_args("create_and_publish_app", "source cannot be empty"));
             }
             // Who would sign? The owner of the current host subdomain — the
             // master wallet that holds ALL this identity's names. Used to decide
@@ -514,7 +518,8 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
             // economy primitives, and small/cheap unlike the app bytes). Submit
             // them as their own sponsored batch only if either was requested.
             let setup =
-                build_actor_setup(&owner, token_id, &cleaned, persona, prefund_lh).await?;
+                build_actor_setup("create_and_publish_app", &owner, token_id, &cleaned, persona, prefund_lh)
+                    .await?;
             let setup_tx = if setup.calls.is_empty() {
                 None
             } else {
@@ -594,14 +599,16 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "publish_app_to",
                     "publish_app_to requires the platform-issued confirmation code",
                 ));
             }
-            let cleaned = crate::subdomain::validate(name)
-                .map_err(|why| crate::error::Error::other(format!("invalid subdomain name: {why}")))?;
+            let cleaned = crate::subdomain::validate(name).map_err(|why| {
+                crate::error::Error::bad_args("publish_app_to", format!("invalid subdomain name: {why}"))
+            })?;
             if source.trim().is_empty() {
-                return Err(crate::error::Error::other("source cannot be empty"));
+                return Err(crate::error::Error::bad_args("publish_app_to", "source cannot be empty"));
             }
             // The signer = the current host's owner (the master wallet holding
             // ALL this identity's names). Required so we can prove ownership of a
@@ -668,7 +675,7 @@ pub(crate) fn embed_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let name = params.name.trim();
             let cleaned = crate::app::tenant::sanitize(name);
             if cleaned.is_empty() {
-                return Err(crate::error::Error::other("name cannot be empty"));
+                return Err(crate::error::Error::bad_args("embed_app", "name cannot be empty"));
             }
             let token_id = match crate::app::registry::id_of_name(&cleaned).await {
                 Ok(id) if id != 0 => id,
@@ -730,7 +737,8 @@ pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Too
                 .trim()
                 .to_lowercase();
             if !matches!(choice.as_str(), "directory" | "app" | "html") {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "publish_public_face",
                     "choice must be \"directory\", \"app\", or \"html\"",
                 ));
             }
@@ -844,7 +852,7 @@ pub(crate) fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool>
             let params = crate::tool_params::ReleaseSubdomainParams::lenient(&args);
             let name = params.name.trim().to_string();
             if name.is_empty() {
-                return Err(crate::error::Error::other("name is required"));
+                return Err(crate::error::Error::bad_args("release_subdomain", "name is required"));
             }
             // The typed-confirmation gate (confirm_guard) runs BEFORE this body
             // and denies any call without a user-typed challenge code. This
@@ -856,7 +864,8 @@ pub(crate) fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool>
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "release_subdomain",
                     "release_subdomain requires the platform-issued confirmation code",
                 ));
             }
@@ -915,7 +924,8 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "bulk_release_subdomains",
                     "bulk_release_subdomains requires the platform-issued confirmation code",
                 ));
             }
@@ -1002,10 +1012,10 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 .filter(|s| !s.is_empty())
                 .collect();
             if requested.is_empty() {
-                return Err(crate::error::Error::other("names cannot be empty"));
+                return Err(crate::error::Error::bad_args("batch_create_subdomains", "names cannot be empty"));
             }
             if requested.len() > MAX_BATCH_CREATE {
-                return Err(crate::error::Error::other(format!(
+                return Err(crate::error::Error::bad_args("batch_create_subdomains", format!(
                     "too many names: {} (max {MAX_BATCH_CREATE} per batch) — \
                      split into multiple calls",
                     requested.len()
@@ -1167,13 +1177,14 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // Amount: parse to 18-decimal wei (same units as the act panel /
             // per-turn payment), reject zero / garbage.
             let amount_wei = parse_token_amount(&amount_arg).ok_or_else(|| {
-                crate::error::Error::other(format!(
+                crate::error::Error::bad_args("send_lh", format!(
                     "could not parse amount \"{amount_arg}\" — pass a decimal $LH \
                      figure like \"5\" or \"1.5\""
                 ))
             })?;
             if amount_wei == 0 {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "send_lh",
                     "amount must be greater than 0",
                 ));
             }
@@ -1186,13 +1197,14 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "send_lh",
                     "send_lh requires the platform-issued confirmation code",
                 ));
             }
 
             // Recipient: address used directly; name → on-chain owner address.
-            let to_hex = resolve_lh_recipient(&recipient_arg).await?;
+            let to_hex = resolve_lh_recipient("send_lh", &recipient_arg).await?;
 
             // Sender = this subdomain's on-chain owner (the apex wallet that
             // signs via the iframe), matching list_subdomains / bulk_release.
@@ -1306,12 +1318,14 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .cloned()
                 .unwrap_or_default();
             if items.is_empty() {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "batch_send_lh",
                     "batch_send_lh: transfers must be a non-empty array",
                 ));
             }
             if items.len() > 20 {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "batch_send_lh",
                     "batch_send_lh: at most 20 transfers per batch",
                 ));
             }
@@ -1324,7 +1338,8 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "batch_send_lh",
                     "batch_send_lh requires the platform-issued confirmation code",
                 ));
             }
@@ -1346,21 +1361,22 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     .trim()
                     .to_string();
                 let amount_wei = parse_token_amount(&amount_str).ok_or_else(|| {
-                    crate::error::Error::other(format!(
+                    crate::error::Error::bad_args("batch_send_lh", format!(
                         "could not parse amount \"{amount_str}\" for \"{recipient}\""
                     ))
                 })?;
                 if amount_wei == 0 {
-                    return Err(crate::error::Error::other(format!(
+                    return Err(crate::error::Error::bad_args("batch_send_lh", format!(
                         "amount for \"{recipient}\" must be greater than 0"
                     )));
                 }
-                let to_hex = resolve_lh_recipient(&recipient).await?;
+                let to_hex = resolve_lh_recipient("batch_send_lh", &recipient).await?;
                 // checked, not saturating: a hostile/overflowing total must be a
                 // clear error (matching parse_token_amount's reject-don't-wrap
                 // contract), not a silently-clamped wrong bridge/display amount.
                 total_wei = total_wei.checked_add(amount_wei).ok_or_else(|| {
-                    crate::error::Error::other(
+                    crate::error::Error::bad_args(
+                        "batch_send_lh",
                         "batch total exceeds the maximum representable amount — split the batch",
                     )
                 })?;
@@ -1526,7 +1542,8 @@ pub(crate) fn query_balance_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .trim()
                 .to_string();
             if target.is_empty() {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "query_balance",
                     "query_balance: target (an agent name or 0x address) is required",
                 ));
             }

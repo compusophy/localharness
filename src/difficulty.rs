@@ -328,7 +328,7 @@ pub fn select_consult_backend(model: &str) -> crate::error::Result<ConsultBacken
             .map(|(id, _)| *id)
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(crate::error::Error::other(format!(
+        return Err(crate::error::Error::bad_args("consult_model", format!(
             "consult_model: unsupported model {model:?} — choose one of: {supported}"
         )));
     }

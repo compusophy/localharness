@@ -126,7 +126,7 @@ pub(crate) async fn set_shared_state(
     value: &str,
 ) -> Result<(u64, String), crate::error::Error> {
     if key.is_empty() {
-        return Err(crate::error::Error::other("key cannot be empty"));
+        return Err(crate::error::Error::bad_args("shared_state_set", "key cannot be empty"));
     }
     let (identity_secret, writer_addr, owner, room_id) = owner_room_context().await?;
     let k_room = crate::kv_room::derive_room_key(&identity_secret, room_id);
@@ -196,7 +196,7 @@ pub(crate) fn shared_state_set_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
             let p = crate::tool_params::SharedStateSetParams::lenient(&args);
             let key = p.key.trim();
             if key.is_empty() {
-                return Err(crate::error::Error::other("key cannot be empty"));
+                return Err(crate::error::Error::bad_args("shared_state_set", "key cannot be empty"));
             }
             let (room_id, tx_hash) = set_shared_state(key, &p.value).await?;
             Ok(serde_json::json!({
@@ -225,7 +225,7 @@ pub(crate) fn shared_state_get_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
             let p = crate::tool_params::SharedStateGetParams::lenient(&args);
             let key = p.key.trim();
             if key.is_empty() {
-                return Err(crate::error::Error::other("key cannot be empty"));
+                return Err(crate::error::Error::bad_args("shared_state_get", "key cannot be empty"));
             }
             let (identity_secret, _writer, _owner, room_id) = owner_room_context().await?;
             let k_room = crate::kv_room::derive_room_key(&identity_secret, room_id);

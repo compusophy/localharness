@@ -91,15 +91,15 @@ pub(crate) fn stake_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
             let subject = args
                 .get("subject")
                 .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("subject (tokenId) is required"))?;
+                .ok_or_else(|| crate::error::Error::bad_args("stake_validation", "subject (tokenId) is required"))?;
             let bounty_id = args
                 .get("bounty_id")
                 .and_then(|v| v.as_u64())
-                .ok_or_else(|| crate::error::Error::other("bounty_id is required"))?;
+                .ok_or_else(|| crate::error::Error::bad_args("stake_validation", "bounty_id is required"))?;
             let valid = args
                 .get("valid")
                 .and_then(|v| v.as_bool())
-                .ok_or_else(|| crate::error::Error::other("valid (true/false verdict) is required"))?;
+                .ok_or_else(|| crate::error::Error::bad_args("stake_validation", "valid (true/false verdict) is required"))?;
             let amount_arg = args
                 .get("amount_lh")
                 .and_then(|v| v.as_str())
@@ -107,13 +107,13 @@ pub(crate) fn stake_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
                 .trim()
                 .to_string();
             let stake_wei = crate::encoding::parse_token_amount(&amount_arg).ok_or_else(|| {
-                crate::error::Error::other(format!(
+                crate::error::Error::bad_args("stake_validation", format!(
                     "could not parse amount_lh \"{amount_arg}\" — pass a decimal $LH \
                      figure like \"5\" or \"1.5\""
                 ))
             })?;
             if stake_wei == 0 {
-                return Err(crate::error::Error::other("amount_lh must be greater than 0"));
+                return Err(crate::error::Error::bad_args("stake_validation", "amount_lh must be greater than 0"));
             }
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::stake_validation_sponsored(
@@ -213,7 +213,7 @@ pub(crate) fn resolve_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool
                 "validator" | "valid" => true,
                 "challenger" | "invalid" => false,
                 other => {
-                    return Err(crate::error::Error::other(format!(
+                    return Err(crate::error::Error::bad_args("resolve_validation", format!(
                         "winner must be 'validator' or 'challenger', got '{other}'"
                     )));
                 }

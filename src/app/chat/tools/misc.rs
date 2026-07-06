@@ -43,7 +43,8 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let params = crate::tool_params::SetPersonaParams::lenient(&args);
             let text = params.text.trim();
             if text.is_empty() {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "set_persona",
                     "set_persona text cannot be empty (to clear, edit your config instead)",
                 ));
             }
@@ -115,7 +116,7 @@ pub(crate) fn record_lesson_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let params = crate::tool_params::RecordLessonParams::lenient(&args);
             let lesson = params.lesson.trim();
             if lesson.is_empty() {
-                return Err(crate::error::Error::other("record_lesson lesson cannot be empty"));
+                return Err(crate::error::Error::bad_args("record_lesson", "record_lesson lesson cannot be empty"));
             }
             let existing = crate::app::lessons::load().await.unwrap_or_default();
             let merged = crate::lessons::merge_lesson(&existing, lesson);
@@ -252,7 +253,8 @@ pub(crate) fn set_lessons_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let raw = crate::tool_params::SetLessonsParams::lenient(&args).lessons;
             let replacement = crate::lessons::replace_all(&raw);
             if replacement.is_empty() {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "set_lessons",
                     "set_lessons lessons cannot be empty — a consolidation pass \
                      rewrites the list, it never erases it (to drop everything \
                      is almost certainly a mistake)",
@@ -335,10 +337,11 @@ pub(crate) fn create_skill_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let name = p.name.trim();
             let instructions = p.instructions.trim();
             if name.is_empty() {
-                return Err(crate::error::Error::other("create_skill name cannot be empty"));
+                return Err(crate::error::Error::bad_args("create_skill", "create_skill name cannot be empty"));
             }
             if instructions.is_empty() {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "create_skill",
                     "create_skill instructions cannot be empty",
                 ));
             }
@@ -428,7 +431,7 @@ pub(crate) fn delete_skill_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let p = crate::tool_params::DeleteSkillParams::lenient(&args);
             let name = p.name.trim();
             if name.is_empty() {
-                return Err(crate::error::Error::other("delete_skill name cannot be empty"));
+                return Err(crate::error::Error::bad_args("delete_skill", "delete_skill name cannot be empty"));
             }
             let existing = crate::app::skills::load().await.unwrap_or_default();
             let (updated, removed) = crate::skills::remove(&existing, name);
@@ -506,7 +509,7 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let params = crate::tool_params::NotifyParams::lenient(&args);
             let title = params.title.trim();
             if title.is_empty() {
-                return Err(crate::error::Error::other("notify title cannot be empty"));
+                return Err(crate::error::Error::bad_args("notify", "notify title cannot be empty"));
             }
             let body = params.body.as_deref().unwrap_or("");
             let to = params
@@ -618,12 +621,13 @@ pub(crate) fn schedule_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let p = crate::tool_params::ScheduleTaskParams::lenient(&args);
             let task = p.task.trim();
             if task.is_empty() {
-                return Err(crate::error::Error::other("schedule_task: task cannot be empty"));
+                return Err(crate::error::Error::bad_args("schedule_task", "schedule_task: task cannot be empty"));
             }
             let interval_secs =
                 crate::app::events::schedule::parse_schedule_interval(&p.interval).ok_or_else(
                     || {
-                        crate::error::Error::other(
+                        crate::error::Error::bad_args(
+                            "schedule_task",
                             "interval must be at least 60s — e.g. \"60s\", \"15m\", \"1h\"",
                         )
                     },
@@ -700,7 +704,8 @@ pub(crate) fn cancel_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .trim()
                 .to_string();
             if job_id.is_empty() {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "cancel_task",
                     "cancel_task: job_id must be the id string from schedule_task",
                 ));
             }
@@ -763,10 +768,12 @@ pub(crate) async fn notify_cross_agent(
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown proxy error");
-        return Err(crate::error::Error::other(format!(
-            "notify {to} failed ({}): {msg}",
-            status.as_u16()
-        )));
+        // Structured status (slice A idiom): a metered notify that 402s
+        // classifies BACKEND_CREDITS off the real number, never prose.
+        return Err(crate::error::Error::http_status(
+            status.as_u16(),
+            format!("notify {to} failed ({}): {msg}", status.as_u16()),
+        ));
     }
     // TOOL-LEVEL ENROLLMENT CHECK: the proxy returns 200 with `enrolled: false`
     // when the target has no device enrolled for Web Push. The note did NOT
@@ -829,7 +836,7 @@ pub(crate) fn web_fetch_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .trim()
                 .to_string();
             if url.is_empty() {
-                return Err(crate::error::Error::other("web_fetch url cannot be empty"));
+                return Err(crate::error::Error::bad_args("web_fetch", "web_fetch url cannot be empty"));
             }
             // FRESH auth token per call — same scheme + preimage as the model
             // path (`registry::proxy_auth_token`, personal-sign over
@@ -878,10 +885,12 @@ pub(crate) fn web_fetch_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown proxy error");
-                return Err(crate::error::Error::other(format!(
-                    "web_fetch failed ({}): {msg}",
-                    status.as_u16()
-                )));
+                // Structured status (slice A idiom) — the real number decides
+                // the LH3xxx class (402 → out-of-credits), never prose.
+                return Err(crate::error::Error::http_status(
+                    status.as_u16(),
+                    format!("web_fetch failed ({}): {msg}", status.as_u16()),
+                ));
             }
             Ok(body)
         },
@@ -947,7 +956,7 @@ pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let params = crate::tool_params::SubmitFeedbackParams::lenient(&args);
             let text = params.text.trim();
             if text.is_empty() {
-                return Err(crate::error::Error::other("feedback text cannot be empty"));
+                return Err(crate::error::Error::bad_args("submit_feedback", "feedback text cannot be empty"));
             }
             // The telemetry POST is personal-sign authed — without an identity it
             // would silently no-op while the tool claimed success.
@@ -1001,7 +1010,8 @@ pub(crate) fn spawn_recursive_subagent_tool(
                 let system = p.system_instructions.as_str();
                 let prompt = p.prompt.as_str();
                 if prompt.is_empty() {
-                    return Err(crate::error::Error::other(
+                    return Err(crate::error::Error::bad_args(
+                        "spawn_recursive_subagent",
                         "spawn_recursive_subagent: prompt cannot be empty",
                     ));
                 }
@@ -1126,7 +1136,8 @@ pub(crate) fn consult_model_tool(
                 let model = args.get("model").and_then(|v| v.as_str()).unwrap_or("").trim();
                 let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
                 if prompt.trim().is_empty() {
-                    return Err(crate::error::Error::other(
+                    return Err(crate::error::Error::bad_args(
+                        "consult_model",
                         "consult_model: prompt cannot be empty",
                     ));
                 }
@@ -1255,7 +1266,7 @@ pub(crate) fn run_wasm_cli_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let p = crate::tool_params::RunWasmCliParams::lenient(&args);
             let path = p.path.trim();
             if path.is_empty() {
-                return Err(crate::error::Error::other("run_wasm_cli: path cannot be empty"));
+                return Err(crate::error::Error::bad_args("run_wasm_cli", "run_wasm_cli: path cannot be empty"));
             }
             let argv: Vec<String> = p.args.unwrap_or_default();
             // Read the module bytes from OPFS via the shared filesystem (the same
@@ -1264,7 +1275,7 @@ pub(crate) fn run_wasm_cli_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let wasm = fs
                 .read(path)
                 .await
-                .map_err(|e| crate::error::Error::other(format!("read {path}: {e}")))?;
+                .map_err(|e| crate::error::Error::fs("read", path, format!("read {path}: {e}")))?;
             if wasm.is_empty() {
                 return Err(crate::error::Error::other(format!("{path} is empty")));
             }
@@ -1366,7 +1377,7 @@ pub(crate) fn execute_script_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         |args: serde_json::Value, _ctx| async move {
             let source = crate::tool_params::ExecuteScriptParams::lenient(&args).source;
             if source.trim().is_empty() {
-                return Err(crate::error::Error::other("execute_script: source cannot be empty"));
+                return Err(crate::error::Error::bad_args("execute_script", "execute_script: source cannot be empty"));
             }
             let mut host = OpfsBashHost { fs: crate::app::shared_opfs() };
             match crate::bashlite::run(&mut host, &source).await {
@@ -1376,8 +1387,10 @@ pub(crate) fn execute_script_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     "stderr": result.stderr,
                 })),
                 // A lex/parse failure or fuel exhaustion is a tool error (the
-                // script itself was bad), surfaced with the bashlite diagnostic.
-                Err(e) => Err(crate::error::Error::other(e.to_string())),
+                // script itself was bad — the `source` ARG), surfaced with the
+                // bashlite diagnostic. BadArgs: the diagnostic echoes script
+                // text, which must never substring-classify as a backend code.
+                Err(e) => Err(crate::error::Error::bad_args("execute_script", e.to_string())),
             }
         },
     )

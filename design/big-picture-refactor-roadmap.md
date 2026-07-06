@@ -219,7 +219,30 @@ validation; at-rest decrypt tamper / non-UTF-8 edit read / image base64 ride
 (caps/not-found/overwrite), the protected-path refusal (PolicyDenied prefix
 would change model-visible text), empty image-model responses, run_command
 spawn (neither fs nor prefix-safe Io), configure_agent's opaque re-wraps, the
-encode-direction seal; remaining: slice C2 src/app ~216 `Error::other` sites) ·
+encode-direction seal; slice C2 SHIPPED 2026-07-06 — **migration COMPLETE, all
+slices, no new variants**: src/app chat tools' face-value ARG validation (~95
+sites: empty/parse/range checks, confirmation-code gates, `classify_recipient` /
+`GuildRole::parse` / bashlite-diagnostic rejections — the shared helpers
+`resolve_account`/`resolve_lh_recipient`/`build_actor_setup` thread a `tool`
+name) → `BadArgs` (Display verbatim, structural CORE_TOOL_FAILED — a
+model-echoed amount/name/script containing "429"/"quota" can't read as a
+backend class), the proxy notify/web_fetch non-2xx replies → `HttpStatus` (the
+metered 402 classifies BACKEND_CREDITS off the real number), `run_wasm_cli`'s
+OPFS read → `Fs`, `select_consult_backend`'s unknown-model rejection →
+`BadArgs`. NO `Chain(String)` variant, judged against the code: nothing
+branches on chain-vs-other (dispatch.rs stringifies tool errors before any
+consumer; retry.rs never sees them), reverts already carry inline `LH2xxx`
+labels via `decode_known_revert`, and `classify`'s substring pass on chain
+prose is load-bearing in the RIGHT direction ("insufficient … $LH/funds" →
+BACKEND_CREDITS is the correct class + redeem hint) — so chain/RPC/tx-failure
+prose ("X failed: {e}", RPC reads), state-dependent refusals (no identity /
+not-registered / owned-by-other / bounty-preflight causes / "no app.rl"),
+opaque re-wraps (subagent/consult chat, escrow_bridge_wei, `parse_address`
+invariants, mixed transport/decode proxy-POST closures), and the
+mixed-provenance `publish_app_face`/`publish_html_face` checks (source is an
+ARG for create_and_publish_app but a FILE for publish_public_face)
+DELIBERATELY stay `Other`. Final count: 183 `Error::other` sites in src/app,
+250 crate-wide — all deliberate catch-alls) ·
 loop_util stall
 (superseded by R3/R7) · money-path E2E proofs run only by hand (~~stale wrong-chain
 scripts~~ SHIPPED 2026-07-03: harvest-feedback.{sh,ps1} now delegate to

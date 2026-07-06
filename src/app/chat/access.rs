@@ -353,9 +353,12 @@ pub(crate) struct ActorSetup {
 /// controls. We batch `createTokenBoundAccount(tokenId)` first (idempotent) so
 /// the counterfactual TBA exists to receive the transfer.
 ///
-/// `creator` is the owner address paying / signing; `token_id` is the new
-/// name's freshly-minted id; `name` is the (sanitised) subdomain.
+/// `tool` names the calling agent tool (for the `prefund_lh` arg-rejection —
+/// `Error::bad_args`); `creator` is the owner address paying / signing;
+/// `token_id` is the new name's freshly-minted id; `name` is the (sanitised)
+/// subdomain.
 pub(crate) async fn build_actor_setup(
+    tool: &str,
     creator: &str,
     token_id: u64,
     name: &str,
@@ -393,7 +396,7 @@ pub(crate) async fn build_actor_setup(
         let amt_str = amt_str.trim();
         if !amt_str.is_empty() {
             let amount_wei = crate::encoding::parse_token_amount(amt_str).ok_or_else(|| {
-                crate::error::Error::other(format!(
+                crate::error::Error::bad_args(tool, format!(
                     "could not parse prefund_lh \"{amt_str}\" — pass a decimal $LH figure \
                      like \"5\" or \"1.5\""
                 ))

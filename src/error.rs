@@ -387,6 +387,24 @@ mod tests {
         );
     }
 
+    /// Slice C2 of the Error migration (src/app chat tools — no new variants):
+    /// arg-validation rides `BadArgs` (structural CORE_TOOL_FAILED — a
+    /// model-echoed amount/name/script containing "429"/"quota" can no longer
+    /// read as a backend failure), and the proxy notify/web_fetch failures ride
+    /// `HttpStatus` (the real number decides: a metered 402 IS out-of-credits).
+    /// Chain/RPC/tx prose deliberately stays `Other` — its substring pass is
+    /// load-bearing ("insufficient … $LH" → the credits class + hint).
+    #[test]
+    fn slice_c2_app_tool_sites_classification() {
+        use crate::error_codes as ec;
+        let b = Error::bad_args("send_lh", "could not parse amount \"429 quota\" — pass a decimal $LH figure like \"5\" or \"1.5\"");
+        assert_eq!(b.to_string(), "could not parse amount \"429 quota\" — pass a decimal $LH figure like \"5\" or \"1.5\"");
+        assert_eq!(b.code(), ec::CORE_TOOL_FAILED); // NOT BACKEND_RATE_LIMIT
+        assert_eq!(Error::http_status(402, "notify bob failed (402): no $LH").code(), ec::BACKEND_CREDITS);
+        // The chain-prose class kept on Other: the substring pass is correct here.
+        assert_eq!(Error::other("send_lh failed: insufficient $LH balance").code(), ec::BACKEND_CREDITS);
+    }
+
     #[test]
     #[allow(deprecated)]
     fn http_status_display_and_accessor() {

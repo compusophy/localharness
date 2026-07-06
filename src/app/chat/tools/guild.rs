@@ -31,7 +31,7 @@ pub(crate) fn create_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let params = crate::tool_params::CreateGuildParams::lenient(&args);
             let name = params.name.trim();
             if name.is_empty() {
-                return Err(crate::error::Error::other("name cannot be empty"));
+                return Err(crate::error::Error::bad_args("create_guild", "name cannot be empty"));
             }
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::create_guild_sponsored(&signer, name)
@@ -82,7 +82,7 @@ pub(crate) fn invite_to_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let params = crate::tool_params::InviteToGuildParams::lenient(&args);
             let guild_id = params.guild_id()?;
             let member_arg = params.member.trim().to_string();
-            let member_hex = resolve_account(&member_arg).await?;
+            let member_hex = resolve_account("invite_to_guild", &member_arg).await?;
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::invite_to_guild_sponsored(&signer, guild_id, &member_hex)
             .await
@@ -113,13 +113,13 @@ pub(crate) fn fund_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let guild_id = params.guild_id()?;
             let amount_arg = params.amount_lh.trim().to_string();
             let amount_wei = crate::encoding::parse_token_amount(&amount_arg).ok_or_else(|| {
-                crate::error::Error::other(format!(
+                crate::error::Error::bad_args("fund_guild", format!(
                     "could not parse amount_lh \"{amount_arg}\" — pass a decimal $LH \
                      figure like \"5\" or \"1.5\""
                 ))
             })?;
             if amount_wei == 0 {
-                return Err(crate::error::Error::other("amount_lh must be greater than 0"));
+                return Err(crate::error::Error::bad_args("fund_guild", "amount_lh must be greater than 0"));
             }
             let signer = bounty_signer().await?;
             // Escrow auto-bridge (feedback #63): a wallet shortfall covered by
@@ -166,13 +166,13 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let amount_arg = params.amount_lh.trim().to_string();
             let memo = params.memo.as_deref().unwrap_or("").trim();
             let amount_wei = crate::encoding::parse_token_amount(&amount_arg).ok_or_else(|| {
-                crate::error::Error::other(format!(
+                crate::error::Error::bad_args("spend_treasury", format!(
                     "could not parse amount_lh \"{amount_arg}\" — pass a decimal $LH \
                      figure like \"5\" or \"1.5\""
                 ))
             })?;
             if amount_wei == 0 {
-                return Err(crate::error::Error::other("amount_lh must be greater than 0"));
+                return Err(crate::error::Error::bad_args("spend_treasury", "amount_lh must be greater than 0"));
             }
             // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
             // this body runs; this guards a path that forgot the hook (spend_treasury
@@ -183,11 +183,12 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "spend_treasury",
                     "spend_treasury requires the platform-issued confirmation code",
                 ));
             }
-            let to_hex = resolve_account(&to_arg).await?;
+            let to_hex = resolve_account("spend_treasury", &to_arg).await?;
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::spend_treasury_sponsored(&signer, guild_id, &to_hex, amount_wei, memo.as_bytes())
             .await
@@ -227,7 +228,7 @@ pub(crate) fn set_role_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // Body validation unchanged: the schema's enum constrains the
             // MODEL; an out-of-enum role still hits GuildRole::parse here.
             let role = crate::app::registry::GuildRole::parse(p.role.trim())
-                .map_err(crate::error::Error::other)?;
+                .map_err(|e| crate::error::Error::bad_args("set_role", e))?;
             // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
             // this body runs; this guards a path that forgot the hook (set_role is a
             // privilege escalation — same posture as spend_treasury).
@@ -237,11 +238,12 @@ pub(crate) fn set_role_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "set_role",
                     "set_role requires the platform-issued confirmation code",
                 ));
             }
-            let member_hex = resolve_account(&member_arg).await?;
+            let member_hex = resolve_account("set_role", &member_arg).await?;
             let signer = bounty_signer().await?;
             let tx_hash = crate::app::registry::set_role_sponsored(&signer, guild_id, &member_hex, role.as_u8())
             .await
@@ -295,9 +297,11 @@ pub(crate) fn list_my_guilds_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// Resolve a free-form account argument (a raw `0x…` address OR a subdomain
 /// name) to a 0x-hex address — names map to their on-chain owner. Shared by the
 /// guild invite/spend tools (mirrors `send_lh`'s `classify_recipient` branch).
-pub(crate) async fn resolve_account(arg: &str) -> Result<String, crate::error::Error> {
+/// `tool` names the caller for the arg-rejection (`Error::bad_args`) arm.
+pub(crate) async fn resolve_account(tool: &str, arg: &str) -> Result<String, crate::error::Error> {
     use crate::encoding::Recipient;
-    let kind = crate::encoding::classify_recipient(arg).map_err(crate::error::Error::other)?;
+    let kind = crate::encoding::classify_recipient(arg)
+        .map_err(|e| crate::error::Error::bad_args(tool, e))?;
     match kind {
         Recipient::Address(addr) => Ok(addr),
         Recipient::Name(name) => crate::app::registry::owner_of_name(&name)

@@ -25,9 +25,9 @@ use super::guild::format_lh;
 async fn resolve_member_token_id(member: &str) -> Result<u64, crate::error::Error> {
     let trimmed = member.trim().trim_start_matches('#');
     if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
-        return trimmed
-            .parse::<u64>()
-            .map_err(|_| crate::error::Error::other(format!("invalid member id \"{member}\"")));
+        return trimmed.parse::<u64>().map_err(|_| {
+            crate::error::Error::bad_args("form_party", format!("invalid member id \"{member}\""))
+        });
     }
     match crate::app::registry::id_of_name(&member.trim().to_ascii_lowercase()).await {
         Ok(0) => Err(crate::error::Error::other(format!(
@@ -67,7 +67,8 @@ pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .filter(|s| !s.is_empty())
                 .collect();
             if members_arg.is_empty() {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "form_party",
                     "members cannot be empty — pass at least one name or token id",
                 ));
             }
@@ -85,7 +86,7 @@ pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let shares: Vec<u16> = match args.get("shares").and_then(|v| v.as_array()) {
                 Some(arr) if !arr.is_empty() => {
                     if arr.len() != member_ids.len() {
-                        return Err(crate::error::Error::other(format!(
+                        return Err(crate::error::Error::bad_args("form_party", format!(
                             "shares has {} entries but members has {} — give EVERY member \
                              a share or NONE (equal split)",
                             arr.len(),
@@ -95,13 +96,13 @@ pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     let mut out: Vec<u16> = Vec::with_capacity(arr.len());
                     for v in arr {
                         let bps = v.as_u64().filter(|&b| b > 0 && b <= 10_000).ok_or_else(|| {
-                            crate::error::Error::other("each share must be 1..10000 bps")
+                            crate::error::Error::bad_args("form_party", "each share must be 1..10000 bps")
                         })?;
                         out.push(bps as u16);
                     }
                     let sum: u32 = out.iter().map(|&b| b as u32).sum();
                     if sum != 10_000 {
-                        return Err(crate::error::Error::other(format!(
+                        return Err(crate::error::Error::bad_args("form_party", format!(
                             "shares must sum to 10000 bps, got {sum}"
                         )));
                     }
@@ -122,11 +123,11 @@ pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 Some(s) if !s.trim().is_empty() => s
                     .trim()
                     .parse::<f64>()
-                    .map_err(|_| crate::error::Error::other("ttl_hours must be a number"))?,
+                    .map_err(|_| crate::error::Error::bad_args("form_party", "ttl_hours must be a number"))?,
                 _ => 168.0,
             };
             if ttl_hours <= 0.0 {
-                return Err(crate::error::Error::other("ttl_hours must be greater than 0"));
+                return Err(crate::error::Error::bad_args("form_party", "ttl_hours must be greater than 0"));
             }
             let ttl_secs = (ttl_hours * 3600.0) as u64;
             let signer = bounty_signer().await?;
@@ -199,13 +200,13 @@ pub(crate) fn fund_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let party_id = p.party_id()?;
             let amount_arg = p.amount_lh.trim().to_string();
             let amount_wei = crate::encoding::parse_token_amount(&amount_arg).ok_or_else(|| {
-                crate::error::Error::other(format!(
+                crate::error::Error::bad_args("fund_party", format!(
                     "could not parse amount_lh \"{amount_arg}\" — pass a decimal $LH \
                      figure like \"5\" or \"1.5\""
                 ))
             })?;
             if amount_wei == 0 {
-                return Err(crate::error::Error::other("amount_lh must be greater than 0"));
+                return Err(crate::error::Error::bad_args("fund_party", "amount_lh must be greater than 0"));
             }
             let signer = bounty_signer().await?;
             // Escrow auto-bridge (feedback #63): a wallet shortfall covered by

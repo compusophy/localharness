@@ -41,27 +41,27 @@ pub(crate) fn post_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let params = crate::tool_params::PostBountyParams::lenient(&args);
             let task = params.task.trim();
             if task.is_empty() {
-                return Err(crate::error::Error::other("task cannot be empty"));
+                return Err(crate::error::Error::bad_args("post_bounty", "task cannot be empty"));
             }
             let reward_arg = params.reward_lh.trim().to_string();
             let reward_wei = crate::encoding::parse_token_amount(&reward_arg).ok_or_else(|| {
-                crate::error::Error::other(format!(
+                crate::error::Error::bad_args("post_bounty", format!(
                     "could not parse reward_lh \"{reward_arg}\" — pass a decimal $LH \
                      figure like \"5\" or \"1.5\""
                 ))
             })?;
             if reward_wei == 0 {
-                return Err(crate::error::Error::other("reward_lh must be greater than 0"));
+                return Err(crate::error::Error::bad_args("post_bounty", "reward_lh must be greater than 0"));
             }
             // TTL: hours → seconds. Default 24h.
             let ttl_hours: f64 = match params.ttl_hours.as_deref() {
                 Some(s) if !s.trim().is_empty() => s.trim().parse::<f64>().map_err(|_| {
-                    crate::error::Error::other("ttl_hours must be a number")
+                    crate::error::Error::bad_args("post_bounty", "ttl_hours must be a number")
                 })?,
                 _ => 24.0,
             };
             if ttl_hours <= 0.0 {
-                return Err(crate::error::Error::other("ttl_hours must be greater than 0"));
+                return Err(crate::error::Error::bad_args("post_bounty", "ttl_hours must be greater than 0"));
             }
             let ttl_secs = (ttl_hours * 3600.0) as u64;
             let signer = bounty_signer().await?;
@@ -158,7 +158,7 @@ pub(crate) fn submit_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let bounty_id = params.bounty_id()?;
             let result_text = params.result.trim();
             if result_text.is_empty() {
-                return Err(crate::error::Error::other("result cannot be empty"));
+                return Err(crate::error::Error::bad_args("submit_result", "result cannot be empty"));
             }
             // Specific cause if this bounty isn't in a submittable state (#50).
             if let Err(why) = crate::app::registry::bounty_preflight_check(bounty_id, "submit").await {
@@ -282,7 +282,7 @@ pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let p = crate::tool_params::AttestParams::lenient(&args);
             let subject_arg = p.subject.trim().to_string();
             if subject_arg.is_empty() {
-                return Err(crate::error::Error::other("subject cannot be empty"));
+                return Err(crate::error::Error::bad_args("attest", "subject cannot be empty"));
             }
             // rating: accept an integer or a numeric string (1..=5). The
             // string COERCION stays inline — the table's `rating` row covers
@@ -291,9 +291,9 @@ pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let rating = args
                 .get("rating")
                 .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())))
-                .ok_or_else(|| crate::error::Error::other("rating is required"))?;
+                .ok_or_else(|| crate::error::Error::bad_args("attest", "rating is required"))?;
             if !(1..=5).contains(&rating) {
-                return Err(crate::error::Error::other("rating must be an integer 1-5"));
+                return Err(crate::error::Error::bad_args("attest", "rating must be an integer 1-5"));
             }
             // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
             // this body runs; this guards a path that forgot the hook (attest writes a
@@ -304,7 +304,8 @@ pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
-                return Err(crate::error::Error::other(
+                return Err(crate::error::Error::bad_args(
+                    "attest",
                     "attest requires the platform-issued confirmation code",
                 ));
             }
@@ -327,7 +328,7 @@ pub(crate) fn attest_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let mut work_ref = [0u8; 32];
             if !work_ref_arg.is_empty() {
                 let id = work_ref_arg.trim_start_matches('#').parse::<u64>().map_err(|_| {
-                    crate::error::Error::other(format!(
+                    crate::error::Error::bad_args("attest", format!(
                         "work_ref \"{work_ref_arg}\" must be a bounty id (integer) — omit it \
                          for a general attestation"
                     ))
