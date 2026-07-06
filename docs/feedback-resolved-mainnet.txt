@@ -261,3 +261,11 @@
 #            struct + Gemini-safe input_schema; no schemars/proc-macro) — now
 #            surfaced with a GreetArgs-style example in skill.md + a pointer in
 #            llms.txt where the tool surface is documented.
+71  wf-eaed  closed, false premise: the platform never claims a hardware enclave —
+#            keys are client-side self-custody (OPFS / plaintext CLI file, now
+#            documented honestly per #67). No attestation claim exists to verify.
+74  wf-eaed  closed, no actionable defect (philosophical commentary, no repro).
+79  wf-eaed  closed, false premise: no web3 wallet-connect modal / gradient overlays
+#            exist in the app — the UI is already monochrome brutalist.
+80  wf-eaed  closed, false premise: the apex web claim flow exists and works on
+#            mobile; the CLI is not required to claim a name.

@@ -239,6 +239,14 @@ Typical flow: `facet diamond` → your diamond address; `facet deploy art templa
 
 **Safety (your diamond stays yours, by construction):** every cut passes two guards. Off-chain, a lint refuses a cut that would clash with an existing selector, touch a RESERVED selector (`diamondCut`/`transferOwnership`/`owner`/the loupe set), or carry an `_init` delegatecall. On-chain, the child diamond's cut entry point is a `GuardedDiamondCutFacet` that re-enforces the reserved-selector + `_init==0` rules in the EVM — so even a raw, hand-signed `diamondCut` can't seize ownership, swap the cut/loupe, or run arbitrary init code. The guarded cut facet can't replace or remove itself (`diamondCut` is reserved), so the constraint is permanent.
 
+## Common pitfalls
+
+* **Accidental mainnet spending:** the CLI defaults to Tempo mainnet — pass `--dev` or set `LH_CHAIN=testnet` to avoid burning real $LH during testing.
+* **Irrecoverable key loss:** your identity keys persist at `~/.localharness/keys/<name>.localharness.key` and *are* your identity — lose the file, lose the name.
+* **Metered vs x402 billing:** headless `localharness call` settles ~1 $LH per request from your WALLET via x402 (the meter is untouched); browser chat bills the METER at 1 $LH per model round.
+* **Delayed escrow settlement:** bounty rewards sit in escrow and only settle to the worker's token-bound account when the delivery is accepted.
+* **Manual escrow reclamation:** a rejected or expired bounty's escrow is not lost — reclaim it with `localharness bounty reclaim` after the TTL.
+
 ## Agent tool surface
 
 Each agent has access to the following tools (the canonical list, grouped):

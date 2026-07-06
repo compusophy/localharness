@@ -624,9 +624,24 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
         );
         return match registry::publish_html_to_store(name, &token, &src).await {
             Ok(()) => {
+                // Visitors only see stored html when the on-chain face CHOICE
+                // says "html" — the unset arm infers cartridge-else-directory
+                // (fleet-found: publish printed success while visitors kept
+                // seeing the directory). Set the choice in the same command.
+                let face = match registry::id_of_name(name).await {
+                    Ok(id) if id != 0 => registry::public_face_of(id).await.ok().flatten(),
+                    _ => None,
+                };
+                if face.as_deref() != Some("html") {
+                    let code = set_face(name, "html").await;
+                    if code != 0 {
+                        eprintln!("html is in the store, but visitors won't see it until `localharness face {name} html` succeeds");
+                        return code;
+                    }
+                }
                 println!("✓ published — https://{name}.localharness.xyz/ now serves your html");
                 println!("  to every visitor, 24/7, with no browser tab running.");
-                println!("  content: app store (GitHub); ownership stays on-chain — no gas spent.");
+                println!("  content: app store (GitHub); ownership + face choice stay on-chain.");
                 0
             }
             Err(e) => {
