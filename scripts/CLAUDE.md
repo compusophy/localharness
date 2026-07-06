@@ -29,6 +29,9 @@ browser-app,mainnet) → STAMPS the `?v=` cache-buster into boot.js/index.html (
   `web/feedback-resolutions.json` (the resolved-bell feed). Mark an item resolved =
   add its index to the resolved file + regen + deploy.
 - `check-meter.mjs` reads the per-request meter (the smoke-test for "can't send").
+- `add-redeem-codes.sh` defaults to MAINNET (addresses copied from
+  `src/registry/chain.rs`); `LH_CHAIN=moderato|testnet|dev` opts into Moderato —
+  it USED to default testnet and a 40-$LH code silently minted there.
 
 ## Verify / parity gates (run for the matching change)
 - `verify.sh` — the full proof suite (wasm builds, compose wiring, codegen).

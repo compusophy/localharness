@@ -30,12 +30,22 @@
 #                codes, hashes, wei amount, and the exact `cast send` it WOULD run,
 #                writing the plaintext file but sending NOTHING.
 #
-# Env overrides: DIAMOND, RPC, EVM_PRIVATE_KEY.
+# Env overrides: LH_CHAIN (mainnet default; moderato|testnet|dev = Moderato),
+# DIAMOND, RPC, EVM_PRIVATE_KEY.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-DIAMOND="${DIAMOND:-0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c}"
-RPC="${RPC:-https://rpc.moderato.tempo.xyz}"
+# Chain selection mirrors the CLI's LH_CHAIN (src/registry/chain.rs): MAINNET by
+# default; explicit LH_CHAIN opt-in for Moderato. DIAMOND/RPC env still override.
+case "${LH_CHAIN:-mainnet}" in
+  mainnet)
+    DIAMOND="${DIAMOND:-0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77}"
+    RPC="${RPC:-https://rpc.tempo.xyz}" ;;
+  moderato|testnet|dev)
+    DIAMOND="${DIAMOND:-0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c}"
+    RPC="${RPC:-https://rpc.moderato.tempo.xyz}" ;;
+  *) echo "add-redeem-codes: unknown LH_CHAIN: ${LH_CHAIN} (use mainnet|moderato|testnet|dev)" >&2; exit 1 ;;
+esac
 
 usage() {
   sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'

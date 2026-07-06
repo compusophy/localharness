@@ -38,6 +38,9 @@ CLI="${LOCALHARNESS_BIN:-./target/debug/localharness.exe}"
 command -v node >/dev/null 2>&1 || { echo "run-fleet: needs node on PATH (for JSON parsing)" >&2; exit 1; }
 
 JSON="$(dirname "$0")/personas.json"
+# CLI stderr goes here, NOT into captured payloads (feedback filed on-chain must
+# not start with '· localharness on Tempo…' chatter); errors still get echoed.
+ERRLOG="$(mktemp)"; trap 'rm -f "$ERRLOG"' EXIT
 
 # pj <persona-name> <field>  → the field's value (focus|persona|probe), or
 # with name "" and field "target"/"names" → the top-level target / all names.
@@ -109,24 +112,24 @@ for NAME in "${SELECT[@]}"; do
   # best-effort fund from claude and retry ONCE; a funded persona never pays
   # the extra read, and a failed send degrades to today's failure.
   echo "  · probing $TARGET…"
-  EXPERIENCE="$($CLI call --as "$NAME" --fresh "$TARGET" "$PROBE" 2>&1)"
+  EXPERIENCE="$($CLI call --as "$NAME" --fresh "$TARGET" "$PROBE" 2>"$ERRLOG")"
   RC=$?
-  if [ $RC -ne 0 ] && printf '%s' "$EXPERIENCE" | grep -q "402"; then
+  if [ $RC -ne 0 ] && grep -q "402" "$ERRLOG"; then
     echo "  · probe 402'd (empty meter) — topping up 2 \$LH + retrying"
     if fund_persona "$NAME" 2; then
-      EXPERIENCE="$($CLI call --as "$NAME" --fresh "$TARGET" "$PROBE" 2>&1)" \
-        || { echo "  ✗ probe failed after funding: $EXPERIENCE"; continue; }
+      EXPERIENCE="$($CLI call --as "$NAME" --fresh "$TARGET" "$PROBE" 2>"$ERRLOG")" \
+        || { echo "  ✗ probe failed after funding: ${EXPERIENCE:-$(cat "$ERRLOG")}"; continue; }
     else
-      echo "  ✗ probe failed (and could not fund from claude): $EXPERIENCE"; continue
+      echo "  ✗ probe failed (and could not fund from claude): ${EXPERIENCE:-$(cat "$ERRLOG")}"; continue
     fi
   elif [ $RC -ne 0 ]; then
-    echo "  ✗ probe failed: $EXPERIENCE"; continue
+    echo "  ✗ probe failed: ${EXPERIENCE:-$(cat "$ERRLOG")}"; continue
   fi
 
   # 3. reflect IN PERSONA on the ACTUAL experience → one grounded item
   REFLECT="You just used localharness. You asked: \"$PROBE\" and the agent replied: \"$EXPERIENCE\". Based on your personality and this REAL experience, write exactly ONE concrete piece of feedback for the localharness maintainers. Start it with [BUG], [FEATURE], or [FEEDBACK]. One item only, under 280 characters, in your own voice, no preamble or sign-off."
-  FEEDBACK="$($CLI call --as "$NAME" --fresh "$NAME" "$REFLECT" 2>&1)" \
-    || { echo "  ✗ reflect failed: $FEEDBACK"; continue; }
+  FEEDBACK="$($CLI call --as "$NAME" --fresh "$NAME" "$REFLECT" 2>"$ERRLOG")" \
+    || { echo "  ✗ reflect failed: ${FEEDBACK:-$(cat "$ERRLOG")}"; continue; }
   FEEDBACK="$(printf '%s' "$FEEDBACK" | tr -d '\r' | tr '\n' ' ' | sed 's/  */ /g' | head -c 2000)"
   echo "  · ${FEEDBACK}"
 
