@@ -503,12 +503,13 @@ in a `LibXyzStorage` lib; each cut via `script/Add<Facet>.s.sol`.
   idempotent).
 - **MainIdentityFacet** — `registerMain / mainOf / mainNameOf / isMain`.
   Primary identity NFT; auto-set on first-claim.
-- **FeedbackFacet** — `submitFeedback(string)` appends on-chain + emits an
-  event. Read views `feedbackCount/feedbackAt/feedbackRange`. 2048-byte
-  cap; gas is the spam filter (a short note ≈1.3M, near the cap ≈17M gas).
-  Owner-only `clearFeedback()` (TRANSIENT inbox; the event log survives a
-  clear). RETIRED client-side: feedback files GitHub issues via the proxy
-  telemetry endpoint — no client writes/reads this facet anymore.
+- **FeedbackFacet** — REMOVED-BY-CUT 2026-07-06. Feedback is the off-chain
+  telemetry repo ONLY (`src/app/telemetry.rs` → `proxy/api/telemetry.ts` →
+  GitHub Issues); the source stays in `facets/` for the historical event log
+  but its selectors are cut from the mainnet diamond.
+- **PushFacet** — REMOVED-BY-CUT 2026-07-06. Push enrollment is the proxy's
+  address-keyed store ONLY (`POST /api/push-sub`); selectors cut from the
+  mainnet diamond.
 - **CreditsFacet** — `LocalharnessCredits` TIP-20 distribution. Diamond
   holds `ISSUER_ROLE`. `dailyAllowance` **0 (DISABLED** — free daily mint
   = sybil hole); facet stays cut. Funding = redeem codes + `send_lh`.

@@ -150,9 +150,9 @@ src/app/ (browser IDE):
     tab/panel; worker.rs lifecycle+router, surface.rs mount/pointer/embed/
     composer UI, bridge/{feed,compose,http,mp,chat,audio}.rs per capability)
   gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
-  notifications.rs(notify tool: local + `to:` cross-agent; push sub enrolled
-    OFF-CHAIN via proxy /api/push-sub — no sponsored write; bell inbox persists
-    to OPFS via sw.js relay/stash→push_arrived)
+  notifications.rs(notify tool: local + `to:` cross-agent; push sub = proxy
+    /api/push-sub store ONLY — on-chain slots REMOVED 2026-07-06; bell inbox
+    persists to OPFS via sw.js relay/stash→push_arrived)
   signer_protocol.rs(lh-* postMessage consts + challenge preimage, used by BOTH
     signer.rs and verify.rs — never re-fork it)
   key_store.rs owner.rs(.lh_owner on-chain-derived hint) tenant.rs(host

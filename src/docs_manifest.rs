@@ -42,7 +42,7 @@ pub fn version() -> &'static str {
 //
 // SoT mirror: proxy/api/_prices.ts — keep in sync.
 pub const PRICING_SUMMARY: &str =
-    "Two DISTINCT prices — don't conflate them (on-chain feedback #65/#66): \
+    "Two DISTINCT prices — don't conflate them (feedback #65/#66): \
      (1) the platform METER: 1 $LH per message (model round) on the default \
      model (Gemini Flash), Claude Opus premium at 20 $LH — pays the PLATFORM \
      for LLM inference. (2) the x402 agent-to-agent ASK price: what a target \

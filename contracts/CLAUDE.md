@@ -26,7 +26,7 @@ runs EVERY cut/deploy itself (key in `./.env`), never tells the user to. Recover
 helpers like `MintForReceipt.s.sol` exist for fiat-mint gaps.
 
 ## Data writes are gas-HUNGRY — set length-scaled caps, never guess
-`setMetadata` ≈ 7.6k gas/BYTE; `submitFeedback` 1.3–17M. Block limit 500M, so big
+`setMetadata` ≈ 7.6k gas/BYTE. Block limit 500M, so big
 writes fit — the bug is always an under-set CLIENT cap. `cast estimate` before
 capping; trust `debug_traceTransaction` (real exec) over `cast run` (replay).
 
@@ -35,7 +35,8 @@ CALL-only; additional device signers on top of the NFT holder + EIP-1271
 `isValidSignature` (no seed sharing); signers are bound to their enroller (an NFT
 transfer revokes them); rejects high-s signatures. Detail in `contracts/README.md`.
 
-## FeedbackFacet is RETIRED client-side; feedback is off-chain telemetry.
-`FeedbackFacet.submitFeedback` (2048-byte cap) still exists on-chain, but no
-client path writes/reads it — feedback files GitHub issues via
-`proxy/api/telemetry.ts`. See `src/registry/CLAUDE.md`.
+## On-chain feedback + push are REMOVED (2026-07-06)
+FeedbackFacet + PushFacet selectors are cut from the mainnet diamond. Feedback =
+the off-chain telemetry repo ONLY (`src/app/telemetry.rs` → `proxy/api/telemetry.ts`
+→ GitHub Issues); push enrollment = the proxy's `/api/push-sub` store ONLY. Don't
+reintroduce on-chain paths, fallback reads, or opt-in toggles for either.
