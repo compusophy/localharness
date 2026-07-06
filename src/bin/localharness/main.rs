@@ -24,7 +24,8 @@
 //!                            visitor 24/7, no browser tab required); CLAIMS the
 //!                            name first if you don't already hold its key
 //!   persona <name> <text>    publish <name>'s public system prompt on-chain so
-//!                            `call` answers AS that agent (text or a file path)
+//!                            `call` answers AS that agent (inline text, or an
+//!                            existing file's contents)
 //!   call [--as <me>] [--fresh] [--pay <amt>] [--verify <keys>] <name> <message…>
 //!                            run a headless agent turn that answers as <name>,
 //!                            via the credit proxy (no Gemini key, no live tab);
@@ -257,7 +258,8 @@ IDENTITY & PROFILE
                                          CODE + an ?adopt=1#s=<ct> link/QR; paste
                                          that link + CODE here to write <name>'s key
   localharness persona <name> <text>     publish <name>'s public system prompt so
-                                         `call` answers as that agent (text or file)
+                                         `call` answers as that agent (inline text,
+                                         or an existing file's contents)
   localharness price <name> <amount|clear>
                                          advertise <name>'s per-call $LH price
                                          on-chain — the hosted ask_agent gate

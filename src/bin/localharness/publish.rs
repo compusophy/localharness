@@ -360,15 +360,14 @@ pub(crate) fn read_file_clean(path: &str) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| clean_io_error("read", path, &e))
 }
 
-/// True when `arg` looks like it was MEANT as a file path (a path separator or a
-/// known text/source extension) rather than literal persona text. Used so the
-/// `persona` command can give a clean "file not found" error when the user
-/// clearly intended a file, instead of silently using the path string as the
-/// persona OR leaking a raw "(os error 2)".
+/// True when `arg` is UNAMBIGUOUSLY meant as a file path (whitespace-free +
+/// a known text/source extension) rather than literal persona text. A bare
+/// separator no longer qualifies — it misread inline personas like
+/// "monochrome/brutalist" as paths (fleet-found); an EXISTING file always
+/// wins regardless (see [`resolve_persona_arg`]).
 pub(crate) fn looks_like_path(arg: &str) -> bool {
-    arg.contains('/')
-        || arg.contains('\\')
-        || [".txt", ".md", ".rl", ".json", ".toml", ".prompt"]
+    !arg.chars().any(char::is_whitespace)
+        && [".txt", ".md", ".rl", ".json", ".toml", ".prompt"]
             .iter()
             .any(|ext| arg.to_ascii_lowercase().ends_with(ext))
 }
@@ -1112,22 +1111,36 @@ mod tests {
 
     #[test]
     fn looks_like_path_distinguishes_files_from_prose() {
-        // Path-shaped: separators or known source/text extensions.
+        // Path-shaped: whitespace-free with a known source/text extension.
         assert!(looks_like_path("persona.txt"));
         assert!(looks_like_path("prompts/agent.md"));
         assert!(looks_like_path("C:\\agents\\bob.prompt"));
         assert!(looks_like_path("./x.rl"));
-        // Plain prose persona text is NOT a path.
+        // Plain prose persona text is NOT a path — even with a separator
+        // (fleet-found: "monochrome/brutalist" died as 'file not found').
         assert!(!looks_like_path("You are bob, a helpful agent"));
         assert!(!looks_like_path("bob"));
+        assert!(!looks_like_path("monochrome/brutalist"));
+        assert!(!looks_like_path("either/or thinker.md")); // whitespace = prose
     }
 
     #[test]
     fn resolve_persona_arg_literal_text_passthrough() {
-        // A non-path-shaped, unreadable string is the persona text verbatim —
-        // it must NOT touch the filesystem error path.
+        // Non-path-shaped, unreadable strings are the persona text verbatim —
+        // they must NOT touch the filesystem error path.
         let p = resolve_persona_arg("You are bob, answer tersely").unwrap();
         assert_eq!(p, "You are bob, answer tersely");
+        assert_eq!(resolve_persona_arg("monochrome/brutalist").unwrap(), "monochrome/brutalist");
+    }
+
+    #[test]
+    fn resolve_persona_arg_existing_file_wins() {
+        // An arg naming a file that EXISTS is read as the persona, even
+        // without a known extension — existence decides.
+        let path = std::env::temp_dir().join("lh_persona_probe_xyz123");
+        std::fs::write(&path, "from the file").unwrap();
+        assert_eq!(resolve_persona_arg(path.to_str().unwrap()).unwrap(), "from the file");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
