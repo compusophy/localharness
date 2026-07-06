@@ -690,6 +690,11 @@ fn mount() -> Result<(), JsValue> {
     // resolvable. Skipped for signer/rpc modes (returned above).
     capture_invite_code();
 
+    // Pre-sign + cache the panic-beacon auth token (refreshed inside the
+    // proxy's 300s freshness window) — the panic hook can't sign, only spend.
+    // Skipped for the headless chromes (returned above).
+    telemetry::start_panic_beacon_refresh();
+
     match &host {
         tenant::Host::Apex => {
             // Linked-device hand-off: a device that just paired redirects here

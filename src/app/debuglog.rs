@@ -7,7 +7,9 @@
 //!   breadcrumbs) into a fixed banner at the top of the page. A wasm panic
 //!   kills every spawned future, so pre-banner the ONLY mobile symptom was a
 //!   silently frozen UI ("stuck on creating identity…" with the 15s timeout
-//!   never firing — the timeout future was dead too).
+//!   never firing — the timeout future was dead too). The hook also
+//!   AUTO-REPORTS via [`send_panic_beacon`] (sendBeacon + a pre-signed token)
+//!   so panics reach the telemetry repo without a user screenshot.
 //! * **Breadcrumb log** — [`log`] records the last [`CAP`] steps in a ring
 //!   buffer. With `?debug=1` in the URL they also paint live into a fixed
 //!   overlay (`#lh-debug`), so a hang (no panic, a promise that never
@@ -25,6 +27,56 @@ const CAP: usize = 30;
 
 thread_local! {
     static CRUMBS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// Pre-signed `telemetry`-route proxy auth token for the panic beacon.
+    static PANIC_TOKEN: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Cache a fresh auth token for the panic beacon. Refreshed periodically by
+/// [`crate::app::telemetry::start_panic_beacon_refresh`] — post-panic the wasm
+/// executor is dead, so the hook can only SPEND a token signed earlier.
+pub(crate) fn set_panic_token(token: String) {
+    PANIC_TOKEN.with(|t| *t.borrow_mut() = Some(token));
+}
+
+/// Auto-report a panic via `navigator.sendBeacon` — the one fire-and-forget
+/// network call that survives the panic hook (every spawned future dies with
+/// the panic; sendBeacon hands the bytes to the BROWSER synchronously).
+/// sendBeacon can't set headers, so the pre-signed token rides in the JSON
+/// body (`auth`) — `proxy/api/telemetry.ts` accepts body auth for exactly
+/// this. Best-effort: no cached token yet (no identity / telemetry off) or a
+/// disabled toggle → banner only, exactly as before.
+fn send_panic_beacon(msg: &str, crumb_tail: &[String]) {
+    if !crate::app::telemetry::enabled() {
+        return;
+    }
+    // `try_borrow` for the same reason as `crumbs_snapshot`: never panic
+    // inside the panic hook.
+    let Some(token) = PANIC_TOKEN.with(|t| t.try_borrow().ok().and_then(|v| v.clone())) else {
+        return;
+    };
+    let title: String = msg.lines().next().unwrap_or("panic").chars().take(160).collect();
+    let fp: String = msg.chars().filter(|c| c.is_ascii_alphanumeric()).take(40).collect();
+    let body = crate::app::telemetry::clamp(format!(
+        "{}\n\nlast steps:\n· {}\n\napp: v{}",
+        crate::app::telemetry::redact(msg),
+        crumb_tail.join("\n· "),
+        env!("CARGO_PKG_VERSION"),
+    ));
+    let payload = serde_json::json!({
+        "kind": "panic",
+        "title": crate::app::telemetry::redact(&title),
+        "signature": format!("panic-{fp}"),
+        "body": body,
+        "auth": token,
+    })
+    .to_string();
+    let url = format!(
+        "{}/api/telemetry",
+        crate::registry::CREDIT_PROXY_URL.trim_end_matches('/')
+    );
+    if let Some(nav) = web_sys::window().map(|w| w.navigator()) {
+        let _ = nav.send_beacon_with_opt_str(&url, Some(&payload));
+    }
 }
 
 /// Record a breadcrumb (and mirror it to the console). Call this at every
@@ -93,6 +145,9 @@ pub(crate) fn install_panic_banner() {
         let msg = info.to_string();
         let crumbs = crumbs_snapshot();
         let tail_start = crumbs.len().saturating_sub(8);
+        // Auto-report FIRST — the beacon is handed off synchronously, so a
+        // paint hiccup below can't lose it. Banner stays for the human.
+        send_panic_beacon(&msg, &crumbs[tail_start..]);
         let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
         let markup = html! {
             div id="lh-panic-banner" style="position:fixed;top:0;left:0;right:0;\

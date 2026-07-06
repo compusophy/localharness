@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Panic-hook telemetry beacon** — a wasm panic now AUTO-REPORTS to the
+  telemetry repo (`kind:"panic"`, message + last breadcrumbs) via
+  `navigator.sendBeacon` inside the panic hook, instead of relying on a user
+  screenshot of the banner. sendBeacon can't set headers, so the app keeps a
+  pre-signed `telemetry`-route token fresh (180s cadence inside the proxy's
+  300s window) and the token rides in the JSON body — `proxy/api/telemetry.ts`
+  now accepts body auth (same verification + rate limits; **proxy redeploy
+  required**). Respects the `lh_telemetry` off toggle; no identity → banner only.
+
 - **`localharness fee [--as <me>] <target>`** (on-chain feedback #84) — a
   read-only pre-flight for a call's cost: the target's advertised x402 fee
   (or the platform default, labelled) + the ~1 $LH model-run meter charge +

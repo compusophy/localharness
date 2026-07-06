@@ -75,8 +75,19 @@ export default async function handler(req: Request): Promise<Response> {
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405, origin);
   if (!GH_TOKEN) return json({ error: 'telemetry not configured' }, 503, origin);
 
-  // Auth — personal-sign token (address:ts:sig), 300s freshness.
-  const token = req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? '';
+  let payload: Record<string, unknown>;
+  try {
+    payload = await req.json();
+  } catch {
+    return json({ error: 'bad json' }, 400, origin);
+  }
+
+  // Auth — personal-sign token (address:ts:sig), 300s freshness. The panic
+  // beacon (navigator.sendBeacon in the wasm panic hook) CANNOT set headers,
+  // so the token may ride in the JSON body (`auth`) instead — same
+  // verification, same route-binding, same rate limits.
+  const token =
+    req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? clean(payload.auth, 256);
   let addr: string;
   try {
     // Route-bind the token to this endpoint (audit L9).
@@ -97,13 +108,6 @@ export default async function handler(req: Request): Promise<Response> {
   const gwait = globalWindow.hit('telemetry');
   if (gwait > 0) {
     return json({ error: 'telemetry rate limited (global backstop)', retryAfterSeconds: gwait }, 429, origin);
-  }
-
-  let payload: Record<string, unknown>;
-  try {
-    payload = await req.json();
-  } catch {
-    return json({ error: 'bad json' }, 400, origin);
   }
 
   const kind = clean(payload.kind, 24).replace(/[^a-z-]/g, '') || 'error';

@@ -102,7 +102,7 @@ fn redact_value(val: &str) -> String {
 /// so we never ship bytes the proxy would only truncate). Cut on a char boundary.
 const MAX_BODY_BYTES: usize = 24_576;
 
-fn clamp(mut s: String) -> String {
+pub(crate) fn clamp(mut s: String) -> String {
     if s.len() > MAX_BODY_BYTES {
         let mut cut = MAX_BODY_BYTES;
         while cut > 0 && !s.is_char_boundary(cut) {
@@ -112,6 +112,29 @@ fn clamp(mut s: String) -> String {
         s.push_str("\n…(truncated)");
     }
     s
+}
+
+/// Keep a fresh pre-signed `telemetry`-route token cached for the PANIC
+/// beacon (`debuglog::send_panic_beacon`). The panic hook can't sign — the
+/// executor dies with the panic — so this loop re-signs inside the proxy's
+/// 300s freshness window (180s cadence leaves clock-skew margin). Uses the
+/// same credit signer every report authenticates with.
+pub(crate) fn start_panic_beacon_refresh() {
+    crate::runtime::spawn(async {
+        loop {
+            if enabled() {
+                if let Some((signer, _addr)) = crate::app::chat::credit_signer().await {
+                    let now = (js_sys::Date::now() / 1000.0) as u64;
+                    crate::app::debuglog::set_panic_token(crate::registry::proxy_auth_token(
+                        &signer,
+                        now,
+                        "telemetry",
+                    ));
+                }
+            }
+            crate::runtime::sleep_ms(180_000).await;
+        }
+    });
 }
 
 /// POST a fully-assembled report to the proxy. Best-effort, fire-and-forget,

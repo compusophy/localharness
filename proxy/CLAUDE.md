@@ -45,7 +45,10 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   feed feature), not push enrollment.
 - `telemetry.ts` — files GitHub ISSUES in the private telemetry repo = THE
   feedback/error task list (on-chain FeedbackFacet path removed). `MAX_BODY_BYTES`
-  mirrors the Rust clamp in `src/app/telemetry.rs` — keep them equal.
+  mirrors the Rust clamp in `src/app/telemetry.rs` — keep them equal. Auth token
+  is accepted in the JSON body (`auth`) as well as the header: the wasm panic
+  hook auto-reports via `navigator.sendBeacon` (headerless by spec) spending a
+  pre-signed token (`src/app/debuglog.rs::send_panic_beacon`).
 - `publish.ts` + `app.ts` — the OFF-CHAIN app store (cartridges live in GitHub, NOT
   on-chain; the chain keeps only the name's ownership). `publish.ts` (POST, personal-
   sign authed like telemetry) verifies the caller owns `name` on-chain (`ownerOf(
