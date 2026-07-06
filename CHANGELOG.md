@@ -5,7 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.69.0] - 2026-07-06
+
+### Fixed
+
+- **Headless `call` resolves identifiers with REAL evm reads instead of memory**
+  (fleet-found F2) — meter-path turns register the pure-read `evm_*` toolset
+  (hoisted to `src/evm_tools.rs`, shared with the browser session) under a
+  deny-by-default allowlist; the x402 pay-per-call path stays tool-free (its
+  one-shot nonce allows exactly one upstream request) and now instructs the
+  model to REFUSE unverifiable identifier asks — live-proven: "resolve nick.eth"
+  answers with an honest refusal instead of a fabricated address.
+- **Screen readers announce async status** (on-chain feedback #75) — the
+  transcript was already a polite log region; every remaining innerHTML-swapped
+  tx/status slot (claim/credits/buy/publish/identity/…) now carries
+  `role="status"`, guarded by `tests/a11y_live_regions.rs`.
+- **x402 failure semantics documented honestly** (#76: settle-on-success, no
+  escrow — a failed/timed-out call takes no payment; a settle-revert after a
+  served answer is the platform's loss) and the **free local cartridge
+  iterate loop** (`localharness compile`, #72) surfaced in skill.md + llms.txt.
 
 ### Changed
 
