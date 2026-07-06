@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Typed `Error::Transport` + `Error::Decode{what,message}` variants (slice A)** —
+  the three streaming backends' POST/chunk-read failures now construct
+  `Error::transport` (classified via `classify()`, falling back to `LH3007`
+  network — an unmatched transport failure retries instead of failing fast on
+  `LH4012`) and their JSON/SSE-frame + history-restore decode failures construct
+  `Error::decode` (new `LH4013`). Surfaced text is byte-identical; the
+  never-constructed `Error::Http(String)` is now `#[deprecated]` (use
+  `Error::http_status` / `Error::transport`). Config/MCP/engine sites stay
+  `Error::other` (slices B/C).
+
 ## [0.68.0] - 2026-07-06
 
 ### Fixed

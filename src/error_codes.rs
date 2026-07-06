@@ -298,6 +298,11 @@ pub const CORE_TIMEOUT: u16 = 4011;
 /// `LH4012` — `Error::Other`: a catch-all not matched by
 /// [`classify`](crate::error_codes::classify).
 pub const CORE_OTHER: u16 = 4012;
+/// `LH4013` — `Error::Decode`: a payload failed to decode (provider JSON/SSE
+/// frame, restored history bytes) and [`classify`](crate::error_codes::classify)
+/// matched nothing. (`Error::Transport` has no own code — an unmatched
+/// transport failure falls back to [`BACKEND_NETWORK`].)
+pub const CORE_DECODE: u16 = 4013;
 
 /// The full registry — the SINGLE source of truth. `docs/error-codes.md` is a
 /// hand-maintained index checked against this table (the
@@ -464,6 +469,8 @@ pub const REGISTRY: &[ErrorCode] = &[
        "the operation exceeded its deadline — raise the timeout or retry"),
     ec(CORE_OTHER, Family::Core, "unspecified error",
        "a catch-all error — see the inline message for details"),
+    ec(CORE_DECODE, Family::Core, "payload decode error",
+       "the bytes didn't match the expected shape — the message names the codec boundary"),
 ];
 
 /// `const`-friendly constructor for a [`ErrorCode`] table entry.

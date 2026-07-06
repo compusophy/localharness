@@ -143,7 +143,7 @@ impl AnthropicClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::other(format!("anthropic POST: {e}")))?;
+            .map_err(|e| Error::transport(format!("anthropic POST: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -160,7 +160,7 @@ impl AnthropicClient {
         response
             .json::<MessagesResponse>()
             .await
-            .map_err(|e| Error::other(format!("anthropic JSON: {e}")))
+            .map_err(|e| Error::decode("anthropic JSON", e.to_string()))
     }
 
     /// Streaming `POST /v1/messages` (`stream: true`). Returns a
@@ -181,7 +181,7 @@ impl AnthropicClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::other(format!("anthropic POST: {e}")))?;
+            .map_err(|e| Error::transport(format!("anthropic POST: {e}")))?;
 
         let debug_sse = std::env::var("LH_DEBUG_SSE").is_ok();
         if debug_sse {
@@ -208,7 +208,7 @@ impl AnthropicClient {
 
         let byte_stream = response
             .bytes_stream()
-            .map(|res| res.map_err(|e| Error::other(format!("anthropic chunk read: {e}"))));
+            .map(|res| res.map_err(|e| Error::transport(format!("anthropic chunk read: {e}"))));
         Ok(MessagesSseStream::new(Box::pin(byte_stream)))
     }
 }
@@ -254,10 +254,10 @@ impl Stream for MessagesSseStream {
 
 fn decode_event(payload: &[u8]) -> Result<StreamEvent> {
     serde_json::from_slice::<StreamEvent>(payload).map_err(|e| {
-        Error::other(format!(
-            "anthropic sse decode: {e}; payload: {}",
-            String::from_utf8_lossy(payload)
-        ))
+        Error::decode(
+            "anthropic sse decode",
+            format!("{e}; payload: {}", String::from_utf8_lossy(payload)),
+        )
     })
 }
 

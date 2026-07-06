@@ -193,7 +193,13 @@ deleted, all consumers on `crate::builtins`; gemini rides the shared
 79 *_sponsored wrappers~~ (SHIPPED 2026-07-02: the fee side resolves inside the
 registry submit skeletons — `registry::sponsor::fee_payer()` + active-chain
 fee_token; wrappers/call sites dropped both params, net -808 SLOC) · facet dead weight + persona duplication · stringly Http/
-Other error variants (consider before 1.0 alongside R6) · loop_util stall
+Other error variants (consider before 1.0 alongside R6; slice A SHIPPED
+2026-07-06: typed `Error::Transport(String)` + `Error::Decode{what,message}`,
+Display byte-identical, Transport→LH3007 fallback / Decode→new LH4013,
+`Error::Http` deprecated with zero production constructors, backends'
+POST/chunk-read + JSON/SSE/history-decode sites migrated; remaining: slice B
+config/MCP/spawn sites, slice C engine/app/filesystem/builtins `Error::other`
+sites) · loop_util stall
 (superseded by R3/R7) · money-path E2E proofs run only by hand (~~stale wrong-chain
 scripts~~ SHIPPED 2026-07-03: harvest-feedback.{sh,ps1} now delegate to
 check-feedback.mjs) · templates.rs growth hazard.

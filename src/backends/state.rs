@@ -106,7 +106,7 @@ pub(crate) mod history {
         if bytes.is_empty() {
             return Ok(Vec::new());
         }
-        serde_json::from_slice(bytes).map_err(|e| Error::other(format!("set_history_bytes: {e}")))
+        serde_json::from_slice(bytes).map_err(|e| Error::decode("set_history_bytes", e.to_string()))
     }
 
     /// Per-entry-lenient decode for transcript repaint: parse the array
@@ -118,7 +118,7 @@ pub(crate) mod history {
             return Ok(Vec::new());
         }
         let raw: Vec<serde_json::Value> = serde_json::from_slice(bytes)
-            .map_err(|e| Error::other(format!("decode_transcript_bytes: {e}")))?;
+            .map_err(|e| Error::decode("decode_transcript_bytes", e.to_string()))?;
         Ok(raw
             .into_iter()
             .filter_map(|v| serde_json::from_value(v).ok())

@@ -179,7 +179,9 @@ error string to one of these; the `.turn-error` chat line shows `LH3xxx · <mean
 One code per [`Error`](https://docs.rs/localharness) enum variant, so `Error::code()`
 always resolves to a stable code (the `src/bin/localharness/` CLI prints it on failure).
 The string-wrapping variants (`Http`/`ToolFailed`/`Other`) first defer to `classify()`,
-so they surface a `LH3xxx` backend code when the message matches one. The structured
+so they surface a `LH3xxx` backend code when the message matches one; so do the typed
+`Transport` (falls back to `LH3007` — an unmatched transport failure IS a network
+failure) and `Decode { what, message }` (falls back to `LH4013`) variants. The structured
 `HttpStatus { status, message }` variant (what the model backends raise on a non-2xx
 response) classifies off its **real status code** via `classify_http()` /
 `classify_status()` — no substring parsing — falling back to the message string for
@@ -200,6 +202,7 @@ status via `Error::http_status_code()`.
 | `LH4010` | `PolicyDenied` | a policy blocked the operation |
 | `LH4011` | `Timeout` | an operation exceeded its deadline |
 | `LH4012` | `Other` | a catch-all not matched by `classify()` |
+| `LH4013` | `Decode` | a payload failed to decode (provider JSON/SSE frame, restored history) |
 
 ---
 

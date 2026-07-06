@@ -123,7 +123,7 @@ impl OpenAiClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::other(format!("openai POST: {e}")))?;
+            .map_err(|e| Error::transport(format!("openai POST: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -140,7 +140,7 @@ impl OpenAiClient {
         response
             .json::<ChatResponse>()
             .await
-            .map_err(|e| Error::other(format!("openai JSON: {e}")))
+            .map_err(|e| Error::decode("openai JSON", e.to_string()))
     }
 
     /// Streaming `POST /v1/chat/completions` (`stream: true`). Returns a
@@ -158,7 +158,7 @@ impl OpenAiClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::other(format!("openai POST: {e}")))?;
+            .map_err(|e| Error::transport(format!("openai POST: {e}")))?;
 
         let debug_sse = std::env::var("LH_DEBUG_SSE").is_ok();
         if debug_sse {
@@ -185,7 +185,7 @@ impl OpenAiClient {
 
         let byte_stream = response
             .bytes_stream()
-            .map(|res| res.map_err(|e| Error::other(format!("openai chunk read: {e}"))));
+            .map(|res| res.map_err(|e| Error::transport(format!("openai chunk read: {e}"))));
         Ok(ChatSseStream::new(Box::pin(byte_stream)))
     }
 }
@@ -230,10 +230,10 @@ impl Stream for ChatSseStream {
 
 fn decode_chunk(payload: &[u8]) -> Result<ChatChunk> {
     serde_json::from_slice::<ChatChunk>(payload).map_err(|e| {
-        Error::other(format!(
-            "openai sse decode: {e}; payload: {}",
-            String::from_utf8_lossy(payload)
-        ))
+        Error::decode(
+            "openai sse decode",
+            format!("{e}; payload: {}", String::from_utf8_lossy(payload)),
+        )
     })
 }
 

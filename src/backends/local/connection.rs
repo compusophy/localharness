@@ -489,7 +489,7 @@ pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<TranscriptEntry>> {
         return Ok(Vec::new());
     }
     let history: Vec<Turn> = serde_json::from_slice(bytes)
-        .map_err(|e| Error::other(format!("decode_transcript_bytes: {e}")))?;
+        .map_err(|e| Error::decode("decode_transcript_bytes", e.to_string()))?;
     Ok(history
         .into_iter()
         .map(|t| TranscriptEntry {
@@ -748,7 +748,7 @@ impl Connection for LocalConnection {
             return Ok(());
         }
         let restored: Vec<Turn> = serde_json::from_slice(bytes)
-            .map_err(|e| Error::other(format!("set_history_bytes: {e}")))?;
+            .map_err(|e| Error::decode("set_history_bytes", e.to_string()))?;
         *self.state.history.lock() = restored;
         Ok(())
     }

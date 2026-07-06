@@ -22,8 +22,32 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 
     /// HTTP transport error.
+    #[deprecated(
+        since = "0.69.0",
+        note = "never constructed by the SDK; use Error::http_status (non-2xx with a \
+                real status) or Error::transport (request/stream transport failure)"
+    )]
     #[error("http: {0}")]
     Http(String),
+
+    /// A network/transport failure reaching a backend: the request POST
+    /// failed, or a mid-stream chunk read died. Like [`Error::HttpStatus`],
+    /// `Display` prints the message verbatim so surfaced text is byte-identical
+    /// to the legacy `Other` path. Constructed via [`Error::transport`].
+    #[error("{0}")]
+    Transport(String),
+
+    /// A payload failed to decode (a provider JSON body / SSE frame, restored
+    /// history bytes). `what` names the codec boundary; `Display` prints
+    /// `"{what}: {message}"` — byte-identical to the legacy `Other` strings.
+    /// Constructed via [`Error::decode`].
+    #[error("{what}: {message}")]
+    Decode {
+        /// The codec boundary that failed (e.g. `"gemini JSON"`).
+        what: String,
+        /// The decoder's error text (may embed the offending payload).
+        message: String,
+    },
 
     /// An HTTP failure carrying its REAL status code (structured — consumers
     /// read [`Error::http_status_code`] instead of substring-parsing "429"
@@ -94,6 +118,18 @@ impl Error {
         Self::Config(msg.into())
     }
 
+    /// Construct a transport error (request send / chunk read died). `msg` is
+    /// surfaced verbatim.
+    pub fn transport(msg: impl Into<String>) -> Self {
+        Self::Transport(msg.into())
+    }
+
+    /// Construct a decode error: `what` names the codec boundary, `message`
+    /// the decoder's error text. Surfaces as `"{what}: {message}"`.
+    pub fn decode(what: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Decode { what: what.into(), message: message.into() }
+    }
+
     /// Construct a structured HTTP error: `msg` is what users see (unchanged
     /// from the legacy string path); `status` rides alongside so
     /// [`Error::code`] classifies off the real number instead of substring
@@ -117,14 +153,24 @@ impl Error {
     /// ([`crate::error_codes::classify_http`]); the legacy string-wrapping
     /// variants (`Http`/`ToolFailed`/`Other`) fall back to substring parsing
     /// via [`crate::error_codes::classify`] so an upstream "429"/"401"/… body
-    /// resolves to the right `LH3xxx` backend code; every other variant maps to
-    /// its own `LH4xxx` core code. Always resolves to a registered code.
+    /// resolves to the right `LH3xxx` backend code; [`Error::Transport`] /
+    /// [`Error::Decode`] classify the same way but fall back to
+    /// `BACKEND_NETWORK` / `CORE_DECODE`; every other variant maps to its own
+    /// `LH4xxx` core code. Always resolves to a registered code.
     pub fn code(&self) -> u16 {
         use crate::error_codes as ec;
         match self {
             Error::Io(_) => ec::CORE_IO,
             Error::Json(_) => ec::CORE_JSON,
+            #[allow(deprecated)]
             Error::Http(s) => ec::classify(s).unwrap_or(ec::CORE_HTTP),
+            // Transport failures classify off the message (a "429" body / bare
+            // "error sending request" keeps its precise LH3xxx class) and fall
+            // back to the network class — an unmatched transport failure IS a
+            // network failure, so the #29 stream-open retry treats it as
+            // transient instead of failing fast on CORE_OTHER.
+            Error::Transport(s) => ec::classify(s).unwrap_or(ec::BACKEND_NETWORK),
+            Error::Decode { message, .. } => ec::classify(message).unwrap_or(ec::CORE_DECODE),
             Error::HttpStatus { status, message } => {
                 ec::classify_http(*status, message).unwrap_or(ec::CORE_HTTP)
             }
@@ -156,12 +202,15 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn every_variant_maps_to_a_registered_code() {
         let variants = [
             Error::Io(std::io::Error::other("x")),
             Error::Json(serde_json::from_str::<i32>("nope").unwrap_err()),
             Error::Http("boom".into()),
             Error::http_status(500, "boom"),
+            Error::transport("boom"),
+            Error::decode("gemini JSON", "boom"),
             Error::Closed,
             Error::NotStarted,
             Error::AlreadyStarted,
@@ -183,6 +232,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn string_wrapping_variants_classify_to_backend_codes() {
         use crate::error_codes as ec;
         assert_eq!(Error::Http("HTTP 429 too many requests".into()).code(), ec::BACKEND_RATE_LIMIT);
@@ -210,7 +260,32 @@ mod tests {
         assert_eq!(Error::http_status(418, "teapot").code(), ec::CORE_HTTP);
     }
 
+    /// The typed transport/decode variants (slice A of the Error migration):
+    /// `Display` stays byte-identical to the legacy `Error::other` strings,
+    /// classification keeps the precise LH3xxx class when the message carries
+    /// one, and the fallbacks are BACKEND_NETWORK (transport IS a network
+    /// failure — retryable) / CORE_DECODE.
     #[test]
+    fn transport_and_decode_display_and_classify() {
+        use crate::error_codes as ec;
+        let t = Error::transport("gemini POST: error sending request");
+        assert_eq!(t.to_string(), "gemini POST: error sending request");
+        assert_eq!(t.code(), ec::BACKEND_SEND); // #41 retry-once class preserved
+        assert_eq!(Error::transport("gemini chunk read: <opaque>").code(), ec::BACKEND_NETWORK);
+        assert_eq!(Error::transport("x").http_status_code(), None);
+
+        let d = Error::decode("gemini JSON", "expected value at line 1");
+        assert_eq!(d.to_string(), "gemini JSON: expected value at line 1");
+        assert_eq!(d.code(), ec::CORE_DECODE);
+        // A payload echo that names a backend cause keeps its LH3xxx class.
+        assert_eq!(
+            Error::decode("gemini sse decode", "eof; payload: exceeded your quota").code(),
+            ec::BACKEND_RATE_LIMIT
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
     fn http_status_display_and_accessor() {
         let e = Error::http_status(429, "gemini HTTP 429 Too Many Requests: quota");
         // Display prints the message VERBATIM — byte-identical to the legacy

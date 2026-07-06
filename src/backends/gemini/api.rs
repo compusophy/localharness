@@ -129,7 +129,7 @@ impl GeminiClient {
             .json(req)
             .send()
             .await
-            .map_err(|e| Error::other(format!("gemini POST: {e}")))?;
+            .map_err(|e| Error::transport(format!("gemini POST: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -146,7 +146,7 @@ impl GeminiClient {
         response
             .json::<GenerateChunk>()
             .await
-            .map_err(|e| Error::other(format!("gemini JSON: {e}")))
+            .map_err(|e| Error::decode("gemini JSON", e.to_string()))
     }
 
     /// Streaming `generateContent`. Returns a `Stream` that yields one
@@ -177,7 +177,7 @@ impl GeminiClient {
             .json(req)
             .send()
             .await
-            .map_err(|e| Error::other(format!("gemini POST: {e}")))?;
+            .map_err(|e| Error::transport(format!("gemini POST: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -192,7 +192,7 @@ impl GeminiClient {
         }
 
         let byte_stream = response.bytes_stream().map(|res| {
-            res.map_err(|e| Error::other(format!("gemini chunk read: {e}")))
+            res.map_err(|e| Error::transport(format!("gemini chunk read: {e}")))
         });
         Ok(GeminiSseStream::new(Box::pin(byte_stream)))
     }
@@ -237,8 +237,8 @@ impl Stream for GeminiSseStream {
 
 fn decode_chunk(payload: &[u8]) -> Result<GenerateChunk> {
     serde_json::from_slice::<GenerateChunk>(payload)
-        .map_err(|e| Error::other(format!("gemini sse decode: {e}; payload: {}",
-            String::from_utf8_lossy(payload))))
+        .map_err(|e| Error::decode("gemini sse decode",
+            format!("{e}; payload: {}", String::from_utf8_lossy(payload))))
 }
 
 // Re-export an `Arc<GeminiClient>` for ergonomic cloning into spawned tasks.
