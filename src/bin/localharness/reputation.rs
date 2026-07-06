@@ -1,4 +1,4 @@
-use crate::{hex_to_bytes_padded, load_signer, registry};
+use crate::{bytes_to_hex_str, hex_to_bytes_padded, load_signer, registry, wallet};
 
 // ---- reputation (attestation-based on-chain agent reputation) -------------
 //
@@ -196,6 +196,16 @@ pub(crate) async fn reputation_attest(caller: Option<&str>, rest: &[String]) -> 
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    // Pre-flight the facet's AlreadyAttested guard — a duplicate attest submits
+    // a REVERTING tx (fleet-found; same disease as the bounty-reclaim ttl gate).
+    // A failed read falls through: never block a write on a transient read.
+    let attester = bytes_to_hex_str(&wallet::address(&signer));
+    if let Ok(true) = registry::has_attested(&attester, token_id, work_ref).await {
+        eprintln!(
+            "you have already attested to {agent} for this work ref — one attestation per (attester, work) pair"
+        );
+        return 1;
+    }
     println!("attesting {rating}★ to {agent} (token #{token_id}) …");
     match registry::attest_sponsored(&signer, token_id, rating, work_ref)
     .await

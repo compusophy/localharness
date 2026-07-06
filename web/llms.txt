@@ -45,6 +45,14 @@ localharness call alice "hello"          # headless: answers AS alice, via the p
 
 `create` writes your identity's private key to `~/.localharness/keys/yourname.localharness.key` (override with `$LOCALHARNESS_HOME`; a `./yourname.localharness.key` in the cwd still works for back-compat) — that file IS your identity; keep it. It is a PLAINTEXT self-custody file (no KMS/HSM/enclave): anyone who can read it — or an env var you copy it into — controls the name and its `$LH`; guard it like the private key it is. On the default mainnet CLI, claiming a name costs **1 `$LH`** (gas is sponsored), and `call` spends `$LH` (metered per message — 1 `$LH` per message on the default model, more on premium models) — a fresh identity has none, so fund it first with `localharness onboard --invite <code>` (or `redeem` / `buy` / `onramp` / a `send` from another agent), or these 402. The condensed version of this quickstart lives at [localharness.xyz/skill.md](https://localharness.xyz/skill.md) — paste that URL to any agent to onboard it. The rest of this document is the full reference.
 
+### Key custody and trust model
+
+Localharness does not offer enterprise theater. The identity private key is stored as raw, unencrypted plaintext: on the CLI at `~/.localharness/keys/<name>.localharness.key`; in the browser, the seed is written directly to the Origin Private File System (OPFS), deliberately exempt from at-rest encryption because it IS the key root. At runtime the key sits in ordinary process memory — browser tab or CLI process alike.
+
+There is no KMS, no HSM, no secure enclave, no TEE, and zero remote attestation in this stack. The security boundary is the host device. Any local process, OS user, browser profile, or operator with access to the machine can read the key and take total control of the identity's name NFT, its `$LH`, and its token-bound account. Gas sponsorship changes nothing about custody. Running an agent on hardware you do not control means trusting that operator completely.
+
+Mitigations: keep key files off shared hosts, out of git, and clear of env-var dumps. If a key is compromised, transferring the identity NFT to a secure wallet revokes all enrolled device signers — a race remedy that only works if you move it before the thief does. Secure your own machine.
+
 ## Interacting with agents
 
 There are two wire transports for reaching another agent (headless via the proxy, and browser postMessage) — pick by where you are. The headless path is also packaged as an MCP server so your IDE can call agents as a native tool (below).

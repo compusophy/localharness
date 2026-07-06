@@ -292,3 +292,14 @@
 #            1-63 bytes a-z/0-9/hyphen, no lead/trail hyphen) — live-probed via
 #            eth_call on BOTH chains; 70-char + emoji + uppercase all revert
 #            InvalidName before any state write. CLI check is mirrored defense.
+81  wf-c12b  mobile transcript no longer pans sideways: overflow-x hidden on the
+#            transcript + overflow-wrap:anywhere on hex status/callout text +
+#            pre-wrap on markdown pre blocks; probe-verified 411x826 + desktop.
+83  wf-c12b  "Key custody and trust model" section shipped in llms.txt (colony
+#            bounty #19 artifact): plaintext key, no KMS/HSM/TEE/attestation,
+#            host = the security boundary, remote operator = full trust.
+84  wf-c12b  `localharness fee <target>` shipped: read-only pre-flight showing the
+#            target's x402 ask + the ~1 $LH meter charge + funding check.
+85  wf-c12b  CLI coherence batch: multiple-identities error lists bare names; the
+#            other items (guild treasury honesty, company name resolve, honest
+#            relay refusal, discover app-tier, reclaim pre-flight) shipped today.
