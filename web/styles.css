@@ -442,6 +442,11 @@ main.layout .transcript {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* NEVER pan sideways (on-chain #81): `overflow-y: auto` alone computes
+     overflow-x to auto, so one long hex hash in any child let the whole
+     transcript scroll horizontally on a phone. Children wrap (break-word /
+     overflow-wrap below); this is the structural guarantee. */
+  overflow-x: hidden;
   /* Top + bottom padding clear the two now-FLOATING transparent chrome bars
      (header above, footer below): the first/last message clears the chrome by
      one --chrome-pad and then scrolls UNDER it, so the chat flows edge to edge.
@@ -482,6 +487,7 @@ main.layout .transcript > * { flex-shrink: 0; }
   font-size: 12px;
   color: var(--muted);
   border: 0;
+  overflow-wrap: anywhere; /* tx hashes / addresses wrap, never overflow (#81) */
 }
 .system-status.err { color: var(--error); }
 /* Typed-confirmation prompt: a bordered system panel, deliberately NOT the
@@ -494,6 +500,7 @@ main.layout .transcript > * { flex-shrink: 0; }
   padding: 8px 10px;
   margin: 4px 0;
   max-width: 360px;
+  overflow-wrap: anywhere; /* long args (addresses/amounts) wrap in-box (#81) */
 }
 .confirm-callout-head {
   color: var(--muted);
@@ -1931,9 +1938,12 @@ button.ready:hover {
    identifiers/paths read as code in a monochrome UI. Block code opts out. */
 .turn .body code { background: var(--panel); border: 1px solid var(--border); padding: 1px 4px; }
 .turn .body pre code { background: none; border: 0; padding: 0; }
-/* A markdown code block (<pre>) expands to its widest line; contain the
-   overflow to the block so a long line scrolls internally, page stays put. */
-.turn .body pre { max-width: 100%; overflow-x: auto; }
+/* A markdown code block (<pre>) WRAPS its long lines (on-chain #81: raw JSON
+   / hex overflowing horizontally on a phone read as broken CSS, not intent) —
+   the same pre-wrap + break-word every other transcript pre already uses
+   (tool-call pre, .ic-body, terminal lines). overflow-x:auto stays as the
+   belt-and-braces containment for anything still unbreakable. */
+.turn .body pre { max-width: 100%; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 /* `pre-wrap` is ONLY correct while the turn STREAMS — the segment then holds
    raw model text whose newlines must show. The instant streaming ends the
    segment becomes rendered markdown, where pulldown-cmark's trailing "\n" text
