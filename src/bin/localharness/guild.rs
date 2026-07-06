@@ -131,6 +131,20 @@ pub(crate) async fn guild(caller: Option<&str>, rest: &[String]) -> i32 {
     }
 }
 
+/// The honest next step when the mainnet relay refuses `guild create` for a
+/// funded wallet (`LH_RELAY_FUNDED`) — the relay's stock "self-pay your fees"
+/// is a dead end (an agent holds `$LH`, never USDC.e, the fee token). `None`
+/// for every other failure. Pure (testable).
+fn create_refusal_hint(err: &str) -> Option<&'static str> {
+    err.contains("LH_RELAY_FUNDED").then_some(
+        "guild creation is a NON-EXEMPT diamond write: the mainnet relay sponsors it only \
+         for onboarding (low-$LH) wallets — see the gate-exempt lists in proxy/api/sponsor.ts \
+         + src/registry/CLAUDE.md. If your key holds the fee token (USDC.e), \
+         `company found --confirm --pay <name> <mission>` self-pays the gas and creates the \
+         guild; otherwise a funded wallet cannot create a guild via the CLI on mainnet yet.",
+    )
+}
+
 /// `guild create <name>` — create an on-chain guild (`createGuild`); the caller
 /// becomes its admin. Reads the new guildId back from `guildsOf(creator)`.
 pub(crate) async fn guild_create(caller: Option<&str>, name: &str) -> i32 {
@@ -168,6 +182,9 @@ pub(crate) async fn guild_create(caller: Option<&str>, name: &str) -> i32 {
         }
         Err(e) => {
             eprintln!("guild create failed: {e}");
+            if let Some(hint) = create_refusal_hint(&e) {
+                eprintln!("  {hint}");
+            }
             1
         }
     }
@@ -726,7 +743,9 @@ pub(crate) async fn guild_members(id_arg: &str) -> i32 {
 }
 
 /// `guild treasury <guildId>` — show a guild's pooled `$LH` + its wallet address
-/// (`treasuryBalanceOf` + `guildAddress`). Read-only, no `$LH`.
+/// (`treasuryBalanceOf` + `guildAddress`). Read-only, no `$LH`. An unknown id is
+/// a hard error, not a phantom "treasury 0.00 LH" — `treasuryBalanceOf` returns
+/// 0 for nonexistent guilds, so existence is checked via `isGuild` first.
 pub(crate) async fn guild_treasury(id_arg: &str) -> i32 {
     let guild_id = match parse_guild_id(id_arg) {
         Ok(id) => id,
@@ -735,6 +754,17 @@ pub(crate) async fn guild_treasury(id_arg: &str) -> i32 {
             return 2;
         }
     };
+    match registry::is_guild(guild_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("guild #{guild_id} does not exist");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            return 1;
+        }
+    }
     let name = registry::guild_name(guild_id).await.unwrap_or_default();
     let balance = match registry::treasury_balance_of(guild_id).await {
         Ok(b) => b,
@@ -801,6 +831,19 @@ mod tests {
         assert_eq!(registry::GuildRole::parse("  ADMIN ").unwrap().as_u8(), 3);
         assert!(registry::GuildRole::parse("none").is_err());
         assert!(registry::GuildRole::parse("owner").is_err());
+    }
+
+    /// The `guild create` relay-refusal hint fires ONLY on `LH_RELAY_FUNDED` and
+    /// names the real gate + the working path — never the proxy's dead-end
+    /// "self-pay your fees" advice (a CLI agent holds $LH, not USDC.e).
+    #[test]
+    fn create_refusal_hint_only_on_funded_gate() {
+        let hint = create_refusal_hint("sponsor relay refused (LH_RELAY_FUNDED): …").unwrap();
+        assert!(hint.contains("proxy/api/sponsor.ts"));
+        assert!(hint.contains("company found --confirm --pay"));
+        assert!(hint.contains("not available via the CLI on mainnet") || hint.contains("cannot create a guild via the CLI on mainnet"));
+        assert!(create_refusal_hint("sponsor relay unreachable: timeout").is_none());
+        assert!(create_refusal_hint("guild create failed: OOG").is_none());
     }
 
     /// `guild invite alice` (a name) classifies as a Name (→ owner lookup);

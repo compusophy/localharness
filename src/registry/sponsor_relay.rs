@@ -117,11 +117,30 @@ pub async fn request_fee_payer_signature(
     if !status.is_success() {
         let code = json.get("code").and_then(|c| c.as_str()).unwrap_or("LH_RELAY");
         let msg = json.get("error").and_then(|m| m.as_str()).unwrap_or("(no message)");
-        return Err(format!("sponsor relay refused ({code}): {msg}"));
+        return Err(format_refusal(code, msg));
     }
 
     let local_hash = tx.fee_payer_hash(sender_address);
     verify_relay_reply(&json, &local_hash)
+}
+
+/// Format a relay refusal HONESTLY. The proxy's stock `LH_RELAY_FUNDED` advice
+/// ("self-pay your fees") is a dead end for an agent — it holds `$LH`, never the
+/// chain fee token (USDC.e on mainnet), so it CANNOT self-pay gas. Name the real
+/// gate + where the exemption lists live instead of echoing fake advice. Other
+/// codes pass through verbatim. Pure (testable).
+fn format_refusal(code: &str, msg: &str) -> String {
+    if code == "LH_RELAY_FUNDED" {
+        format!(
+            "sponsor relay refused ({code}): this write is relay-sponsored only during \
+             onboarding — a funded wallet is gated by design (exemption lists: \
+             proxy/api/sponsor.ts; src/registry/CLAUDE.md). An agent holds $LH, never \
+             the chain fee token, so it cannot self-pay gas; self-paying needs a key \
+             holding the fee token (USDC.e on mainnet)."
+        )
+    } else {
+        format!("sponsor relay refused ({code}): {msg}")
+    }
 }
 
 /// Verify a SUCCESS reply against the locally-recomputed fee_payer hash and
@@ -206,6 +225,22 @@ mod tests {
         assert_eq!(j["senderAddress"], "0x1111111111111111111111111111111111111111");
         assert_eq!(j["senderSignature"].as_str().unwrap().len(), 2 + 130);
         assert_eq!(j["feeToken"], "0x2020202020202020202020202020202020202020");
+    }
+
+    #[test]
+    fn funded_refusal_is_honest_not_self_pay_advice() {
+        // LH_RELAY_FUNDED: the proxy's "self-pay your fees" is unactionable for an
+        // agent (holds $LH, not the fee token) — the surfaced text must not echo it.
+        let funded = format_refusal("LH_RELAY_FUNDED", "caller is funded — self-pay your fees");
+        assert!(funded.contains("LH_RELAY_FUNDED"));
+        assert!(funded.contains("cannot self-pay gas"));
+        assert!(funded.contains("proxy/api/sponsor.ts"));
+        assert!(!funded.contains("self-pay your fees"));
+        // Any other code passes through verbatim.
+        assert_eq!(
+            format_refusal("LH_RELAY_SELECTOR", "selector not allowed"),
+            "sponsor relay refused (LH_RELAY_SELECTOR): selector not allowed"
+        );
     }
 
     #[test]

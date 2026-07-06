@@ -621,8 +621,9 @@ async fn prefund_role_tba(
 
 /// `company status <guildId|name>` — read-only snapshot of a company (a guild):
 /// its pooled `$LH` treasury + its members with their on-chain roles. `target` is
-/// a numeric guild id (pure read, no key) OR a guild name matched among the
-/// caller's guilds (needs a local key to resolve). Composes existing reads only.
+/// a numeric guild id or a guild name — both resolve on-chain, key-free, for
+/// members and non-members alike (see `resolve_company_guild_id`). Composes
+/// existing reads only.
 pub(crate) async fn company_status(caller: Option<&str>, target: &str) -> i32 {
     let guild_id = match resolve_company_guild_id(caller, target).await {
         Ok(id) => id,
@@ -701,15 +702,38 @@ const PLAN_MAX_STEPS: usize = 64;
 const DEFAULT_TASK_ROLE: Role = Role::Coder;
 const DEFAULT_MIN_QUALITY: u8 = 3;
 
-/// Resolve a `<guildId|name>` target to a guild id. A numeric target (optional
-/// `#`/whitespace) is a pure, key-free read; a name is matched among the caller's
-/// guilds (needs a local key). Shared by `status`/`plan`/`payroll`. `Err(code)` is
-/// the exit code to return (the same convention as `load_signer`).
+/// Resolve a `<guildId|name>` target to a guild id — KEY-FREE for anyone, member
+/// or not. A numeric target (optional `#`/whitespace) is existence-checked via
+/// `isGuild` (the mapping reads return zero-values for unknown ids, which used to
+/// paint a phantom empty company). A name resolves GLOBALLY: `createGuild` writes
+/// the guild's name into the registry name→id map, so `id_of_name` + `isGuild`
+/// find it on-chain; only the case-insensitive fallback (exact-map miss) matches
+/// among the caller's guilds and needs a local key. Shared by `status`/`plan`/
+/// `payroll`. `Err(code)` = the exit code (the `load_signer` convention).
 async fn resolve_company_guild_id(caller: Option<&str>, target: &str) -> Result<u64, i32> {
     if let Ok(id) = target.trim().trim_start_matches('#').parse::<u64>() {
-        return Ok(id);
+        return match registry::is_guild(id).await {
+            Ok(true) => Ok(id),
+            Ok(false) => {
+                eprintln!("guild #{id} does not exist");
+                Err(1)
+            }
+            Err(e) => {
+                eprintln!("RPC error: {e}");
+                Err(1)
+            }
+        };
     }
-    // Resolve by NAME among the caller's guilds — needs a local key.
+    // GLOBAL on-chain lookup first (no key, no membership): the registry's
+    // name→id map holds guild names verbatim; `isGuild` rejects an ordinary
+    // subdomain that happens to share the name.
+    if let Ok(id) = registry::id_of_name(target.trim()).await {
+        if id != 0 && registry::is_guild(id).await.unwrap_or(false) {
+            return Ok(id);
+        }
+    }
+    // Fallback: case-insensitive match among the caller's guilds (needs a key —
+    // guild names are stored verbatim, so `acme co` misses the exact map on `Acme Co`).
     let signer = load_signer(caller)?;
     let addr = bytes_to_hex_str(&wallet::address(&signer));
     let ids = match registry::guilds_of(&addr).await {
@@ -726,8 +750,8 @@ async fn resolve_company_guild_id(caller: Option<&str>, target: &str) -> Result<
         }
     }
     eprintln!(
-        "no company named '{target}' among the guilds you belong to — pass a numeric \
-         guild id, or `guild mine` to list them"
+        "no guild named '{target}' on-chain (exact match) or among the guilds you \
+         belong to — pass a numeric guild id, or `guild mine` to list yours"
     );
     Err(1)
 }

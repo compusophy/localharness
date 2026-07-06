@@ -20,7 +20,7 @@ use super::*;
 //   reads: guildMembersOf(uint256)->address[] | roleOf(uint256,address)->uint8
 //          isGuildMember(uint256,address)->bool | treasuryBalanceOf(uint256)->uint256
 //          guildAddress(uint256)->address | guildName(uint256)->string
-//          guildsOf(address)->uint256[] | guildCount()->uint256
+//          guildsOf(address)->uint256[] | guildCount()->uint256 | isGuild(uint256)->bool
 //
 // NOTE ON SELECTOR COLLISIONS: the diamond can't share a selector across facets.
 // If the sibling renamed a colliding selector with a `guild` prefix on the live
@@ -475,6 +475,15 @@ pub async fn guilds_of(addr_hex: &str) -> Result<Vec<u64>, String> {
     let result = read_view(selector("guildsOf(address)"), &[addr_word(&account)]).await?;
     let bytes = hex_to_bytes(&result)?;
     Ok(decode_u64_array(&bytes))
+}
+
+/// Read `isGuild(tokenId)` → whether the id was created via `createGuild` (an
+/// ordinary registered name is NOT a guild). THE existence check — the other
+/// mapping reads (`treasuryBalanceOf`/`guildMembersOf`/`roleOf`) return
+/// zero-values for an unknown id instead of reverting.
+pub async fn is_guild(guild_id: u64) -> Result<bool, String> {
+    let result = read_view(selector("isGuild(uint256)"), &[u256_be(guild_id as u128)]).await?;
+    Ok(decode_u256_as_u64(&result)? != 0)
 }
 
 /// Read `guildCount()` → the total number of guilds created (the next-id - 1
