@@ -9,7 +9,7 @@
 # by hand.
 #
 # Why it exists: the entire bug history of this project is "local says ok, chain
-# reverted silently" — a flat gas cap OOG-ing on submitFeedback / setMetadata /
+# reverted silently" — a flat gas cap OOG-ing on setMetadata /
 # release while the CLI prints success. The ONLY real proof is an INDEPENDENT
 # on-chain READ asserting the write landed. This script does exactly that:
 #

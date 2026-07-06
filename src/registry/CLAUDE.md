@@ -19,10 +19,8 @@ routes the submit chokepoints (and the browser's sponsored calls) to the keyless
 
 ## Gas: ESTIMATE, never guess (data writes are gas-HUNGRY)
 - `setMetadata` ≈ **7.6k gas/BYTE** → `1.2M + bytes*8500`. `gas::set_metadata_gas`
-  is the one home for this formula (app side).
-- `submitFeedback` ~1.3M (short) to ~17M (near the 2048-byte cap, cold SSTOREs).
-  A flat 800k cap out-of-gassed EVERY feedback once — the bug is always an
-  under-set CLIENT cap. Block limit is 500M, so big writes fit.
+  is the one home for this formula (app side). A flat under-set CLIENT cap
+  silently out-of-gasses big writes; block limit is 500M, so they fit.
 - `cast estimate` before setting a cap. **Trust `debug_traceTransaction` (real exec)
   over `cast run` (replay).**
 
@@ -30,7 +28,7 @@ routes the submit chokepoints (and the browser's sponsored calls) to the keyless
 A wrong selector silently mis-routes or the relay 403s it (`LH_RELAY_SELECTOR`).
 Compute `keccak256("name(types)")[:4]` from the canonical sig — don't eyeball or
 trust memory. Real incidents this came up: `releaseName(uint256)` = `0x48e69e68`,
-`setPushSub(bytes)`, `transfer`/`settle` on the relay allowlist.
+`transfer`/`settle` on the relay allowlist.
 
 ## Tempo native AA tx (0x76) — `tempo_tx.rs`
 `examples/tempo_tx_live.rs` is the SOURCE OF TRUTH (live-verified). Key traps:
@@ -58,7 +56,7 @@ $LH = in-system credits, not gas). Fee token is AlphaUSD (testnet) / USDC.e (mai
 - **MAINNET embeds NO money key.** `sponsor_relay` → `proxy/api/sponsor.ts` signs the
   fee_payer half SERVER-SIDE, gated by: selector allowlist + onboarding-only balance
   gate + rate window + float breaker. Gas-only, no-value selectors
-  (submitFeedback/register/releaseName/createInvite/settle/transfer/setPushSub) are in
+  (register/releaseName/createInvite/settle/transfer) are in
   `ALWAYS_FREE_SELECTORS` so a FUNDED user can still do them (a funded caller is
   refused for value-sponsorship — `LH_RELAY_FUNDED`). `proxy/` is a SEPARATE deploy
   (`cd proxy && vercel --prod`) — a registry-side selector change needs the proxy
@@ -69,21 +67,12 @@ Proxy debits the per-request METER (`creditOf`); `send`/`redeem` fund the WALLET
 x402 `settle` pulls the WALLET. Bridges both ways (`call.rs::ensure_meter_funded`
 wallet→meter; `withdrawCredits` meter→wallet). "has $LH but 402s" = BOTH pots empty.
 
-## Push subscriptions (`push.rs`) — LEGACY on-chain slots, read-only
-Enrollment moved OFF-CHAIN (proxy `POST /api/push-sub` → GitHub store; the
-sponsored `setPushSub` publish bypassed the mainnet relay and failed for
-unfunded users — don't re-wire an app path to it). The proxy still READS the
-on-chain slots as a fallback for pre-migration devices. Each sub carries a
-stable per-device `"dev"` id; `merge_push_sub` upserts by `dev` (falling back
-to endpoint for legacy subs) so one device's cross-origin endpoints collapse to
-ONE delivery — the proxy store mirrors these semantics (`_pushstore.ts`) and
-dedupes by `dev` too (`_webpush.ts`). Keep `push.rs` wasm32-clean.
-
-## Feedback resolution is OFF-CHAIN-tracked
-On-chain feedback is an opt-in mirror now (off-chain telemetry is primary). Mark an
-on-chain item resolved by adding its index to `docs/feedback-resolved-mainnet.txt`
-→ `scripts/gen-feedback-resolutions.mjs` writes `web/feedback-resolutions.json`
-→ deploy → the submitter gets a "resolved" bell. Don't mark UI items resolved until
-the owner confirms in-browser.
+## Push enrollment + feedback are OFF-CHAIN — the bindings are GONE
+Push subscriptions live in the proxy's store (`POST /api/push-sub` → GitHub
+store; per-device `"dev"`-keyed dedup in `_pushstore.ts`/`_webpush.ts`) and
+feedback is filed by the proxy telemetry endpoint as GitHub issues
+(`proxy/api/telemetry.ts`). The on-chain client bindings (`push.rs` /
+`feedback.rs` — setPushSub slots, FeedbackFacet submit/log-scan) were DELETED;
+don't reintroduce an on-chain path for either.
 
 ## Full facet semantics live in `contracts/README.md` — this file is gotchas only.

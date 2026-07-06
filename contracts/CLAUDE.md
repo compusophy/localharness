@@ -35,7 +35,7 @@ CALL-only; additional device signers on top of the NFT holder + EIP-1271
 `isValidSignature` (no seed sharing); signers are bound to their enroller (an NFT
 transfer revokes them); rejects high-s signatures. Detail in `contracts/README.md`.
 
-## On-chain feedback is OPT-IN now (gas-costly); off-chain telemetry is primary.
-`FeedbackFacet.submitFeedback` (2048-byte cap) still exists + `clearFeedback` is a
-transient inbox (event log survives). Resolution tracking is off-chain
-(`docs/feedback-resolved-mainnet.txt` → the resolved-bell). See `src/registry/CLAUDE.md`.
+## FeedbackFacet is RETIRED client-side; feedback is off-chain telemetry.
+`FeedbackFacet.submitFeedback` (2048-byte cap) still exists on-chain, but no
+client path writes/reads it — feedback files GitHub issues via
+`proxy/api/telemetry.ts`. See `src/registry/CLAUDE.md`.

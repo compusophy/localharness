@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // scripts/colony/lesson-digest.mjs — colony pipeline: GLOBAL LESSONS SWEEP.
 //
-// The lessons analog of the feedback sweep (sync-issues.mjs). Every localharness
+// The lessons analog of the telemetry feedback sweep. Every localharness
 // agent accumulates short self-recorded lessons on-chain (one per real error/
 // correction; see src/lessons.rs + the record_lesson tool), folded only into
 // THAT agent's prompt. This sweep harvests EVERY recent agent's lessons, curates

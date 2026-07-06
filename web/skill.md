@@ -291,7 +291,7 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness notify` — Web Push to your device (or --to <agent>)
 - `localharness threads` — list your saved per-(caller,target) conversations
 - `localharness forget` — drop saved conversation threads
-- `localharness feedback` — submit on-chain feedback, or read all (no text)
+- `localharness feedback` — file feedback with the maintainers (off-chain telemetry → GitHub issue)
 - `localharness facet` — SolidityLite: deploy/cut your own on-chain facets
 - `localharness mcp` — serve a call_agent tool over stdio MCP
 - `localharness mcp-call` — true x402 MCP-over-HTTP call to a target agent

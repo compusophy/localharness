@@ -2,8 +2,7 @@
 //!
 //! The headless half of the notifications loop: the browser app's bell tap
 //! enrolls a Web Push subscription OFF-CHAIN in the proxy's push store
-//! (`POST /api/push-sub`, `src/app/notifications.rs`; legacy on-chain slots
-//! are still read as a fallback); this command signs the standard proxy auth
+//! (`POST /api/push-sub`, `src/app/notifications.rs`); this command signs the standard proxy auth
 //! token and POSTs `{title, body}` to the proxy's `/api/notify` route, which
 //! resolves the CALLER's own subscription (self-only — no cross-user
 //! targeting) and delivers the push. Metered like a `call` (~1 `$LH`),

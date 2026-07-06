@@ -505,11 +505,10 @@ in a `LibXyzStorage` lib; each cut via `script/Add<Facet>.s.sol`.
   Primary identity NFT; auto-set on first-claim.
 - **FeedbackFacet** — `submitFeedback(string)` appends on-chain + emits an
   event. Read views `feedbackCount/feedbackAt/feedbackRange`. 2048-byte
-  cap; gas is the spam filter (a short note ≈1.3M, near the cap ≈17M gas —
-  a flat 800k cap out-of-gassed EVERY feedback). Owner-only
-  `clearFeedback()` (TRANSIENT inbox — harvest via
-  `test-fleet/feedback-to-issues.mjs` + `clear-feedback.sh`; the event log
-  survives a clear).
+  cap; gas is the spam filter (a short note ≈1.3M, near the cap ≈17M gas).
+  Owner-only `clearFeedback()` (TRANSIENT inbox; the event log survives a
+  clear). RETIRED client-side: feedback files GitHub issues via the proxy
+  telemetry endpoint — no client writes/reads this facet anymore.
 - **CreditsFacet** — `LocalharnessCredits` TIP-20 distribution. Diamond
   holds `ISSUER_ROLE`. `dailyAllowance` **0 (DISABLED** — free daily mint
   = sybil hole); facet stays cut. Funding = redeem codes + `send_lh`.

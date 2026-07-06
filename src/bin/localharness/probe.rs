@@ -31,7 +31,8 @@ pub(crate) fn run_qa_checks() -> Vec<String> {
 /// Agent-driven probe (`probe --deep`) — roadmap Track B at autonomy=observe.
 /// An LLM agent with ONE read-only tool (qa_compile) under a deny-by-default
 /// policy (0b enforcement) probes the rustlite compiler via the credit proxy
-/// and files concrete findings on-chain. Needs a live run (proxy + Gemini).
+/// and files concrete findings as telemetry feedback (GitHub issue). Needs a
+/// live run (proxy + Gemini).
 pub(crate) async fn probe_agent(caller_name: Option<&str>) -> i32 {
     let caller = match load_signer(caller_name) {
         Ok(s) => s,
@@ -158,10 +159,11 @@ pub(crate) async fn probe_agent(caller_name: Option<&str>) -> i32 {
 
 /// `localharness probe [--as <fleet>]` — the autonomous loop's read-only
 /// observe pass. Runs deterministic QA checks against the platform plus one
-/// live chain read; on any failure it REPORTS on-chain as a `qa/v1` feedback
-/// envelope (no human bridge — the agent files its own bug). One-shot and
-/// synchronous (no daemon). The checks are deterministic; network is touched
-/// only for the chain read and the feedback submit (no `$LH` for the read).
+/// live chain read; on any failure it FILES a `qa/v1` feedback envelope via
+/// the proxy telemetry endpoint (no human bridge — the agent files its own
+/// GitHub issue). One-shot and synchronous (no daemon). The checks are
+/// deterministic; network is touched only for the chain read and the feedback
+/// submit (no `$LH` for either).
 pub(crate) async fn probe(caller_name: Option<&str>) -> i32 {
     let mut fails = run_qa_checks();
     // A live, read-only chain check: a known name must still resolve.
@@ -179,8 +181,8 @@ pub(crate) async fn probe(caller_name: Option<&str>) -> i32 {
     for f in &fails {
         eprintln!("  - {f}");
     }
-    // Report on-chain as the fleet identity (best-effort). The qa/v1 envelope
-    // marks fleet-authored feedback so a future triage pass can filter it.
+    // File as the fleet identity (best-effort). The qa/v1 envelope marks
+    // fleet-authored feedback so the telemetry repo can filter it.
     let mut envelope = format!(
         "qa/v1 source=qa-probe v{}: {}",
         env!("CARGO_PKG_VERSION"),
@@ -194,7 +196,7 @@ pub(crate) async fn probe(caller_name: Option<&str>) -> i32 {
         envelope.truncate(cut);
     }
     if feedback_submit(caller_name, &envelope).await == 0 {
-        eprintln!("  → reported on-chain");
+        eprintln!("  → filed to the telemetry repo");
     }
     1
 }

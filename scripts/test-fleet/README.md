@@ -2,9 +2,10 @@
 
 Twelve **persistent on-chain agent identities**, each a distinct personality,
 that dogfood localharness from maximally different angles and file **grounded**
-feedback on-chain (the `FeedbackFacet`). The maintainer reads the harvest and
-turns it into fixes — closing the actor-model feedback loop the platform was
-built for.
+feedback off-chain (`localharness feedback` → the proxy telemetry endpoint → a
+GitHub issue in the telemetry repo). The maintainer reads the issues and turns
+them into fixes — closing the actor-model feedback loop the platform was built
+for.
 
 ## The fleet
 
@@ -38,7 +39,8 @@ Each persona (its on-chain system prompt) + the real task it runs lives in
 3. **reflect** — it reasons *in persona* about that **actual** experience and
    writes exactly one `[BUG]` / `[FEATURE]` / `[FEEDBACK]` item. Feedback is
    anchored to the real probe + reply — never hallucinated.
-4. **submit** — it files that item on-chain (`localharness feedback`).
+4. **submit** — it files that item via `localharness feedback` (the proxy
+   telemetry endpoint files it directly as a GitHub issue — no bridge step).
 
 ## Run it
 
@@ -48,35 +50,18 @@ scripts/test-fleet/run-fleet.sh nova-qa pip-qa vex-qa
 
 # The whole fleet:
 scripts/test-fleet/run-fleet.sh
-
-# Read the harvest:
-scripts/harvest-feedback.sh        # or:  localharness feedback
 ```
+
+Read the harvest in the telemetry repo's issues (label `feedback`).
 
 Needs `node` (for JSON parsing) and a built CLI (`cargo build --features
 wallet`, or set `LOCALHARNESS_BIN`).
 
-## Bridge the feedback to GitHub issues
-
-The first rung of *agents filing their own issues*: surface the on-chain feedback
-as GitHub issues on the repo so it's tracked + actionable.
-
-```sh
-node scripts/test-fleet/feedback-to-issues.mjs           # DRY RUN — prints what it'd file
-node scripts/test-fleet/feedback-to-issues.mjs --create  # actually file them (needs `gh` authed)
-```
-
-It reads `localharness feedback --json`, skips entries already filed (dedup
-ledger `docs/feedback-bridged.txt`, keyed on `<timestamp>:<sender>`), classifies
-each (`[BUG]`→`bug`, `[FEATURE]`→`enhancement`, `[FEEDBACK]`→`feedback`, all
-`from-fleet`), and opens an issue carrying the full text + on-chain submitter +
-timestamp. **Dry-run by default; `--create` is opt-in** — creating public issues
-is outward-facing. Idempotent, so it's safe to wire into a cron/CI later. **Cost:** the sponsor's AlphaUSD gas — one mint + one
-feedback write per *new* persona (reused personas pay only the feedback write).
-Model calls are metered: the proxy debits ~1 `$LH` per call (it gates on an
-active session OR a meter balance covering the cost, 402 otherwise), and the
-CLI deliberately does NOT auto-open the 10-`$LH`/hr session. A fresh persona
-holds 0 `$LH`, so `run-fleet.sh` best-effort sends each *new* persona 0.5 `$LH`
-from the funded `claude` identity after `create` (a missing claude key or a
+**Cost:** the sponsor's gas — one mint per *new* persona (feedback itself is
+off-chain + free). Model calls are metered: the proxy debits ~1 `$LH` per call
+(it gates on an active session OR a meter balance covering the cost, 402
+otherwise), and the CLI deliberately does NOT auto-open the 10-`$LH`/hr
+session. A fresh persona holds 0 `$LH`, so `run-fleet.sh` best-effort funds
+each persona from the funded `claude` identity (a missing claude key or a
 failed send only warns — already-funded personas keep working). The personas
 are persistent, so re-runs only add fresh feedback.

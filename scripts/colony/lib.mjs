@@ -1,5 +1,5 @@
 // scripts/colony/lib.mjs — shared plumbing for the colony pipeline scripts
-// (sync-issues / issue-to-bounty / settle-on-merge). Zero npm deps: on-chain
+// (issue-to-bounty / settle-on-merge / build-board). Zero npm deps: on-chain
 // reads are raw JSON-RPC eth_call via global fetch (node >= 18), GitHub access
 // is the `gh` CLI as a subprocess (execFileSync with arg arrays — no shell, so
 // it is Windows-safe), and on-chain WRITES go through the `localharness` CLI.
@@ -31,17 +31,6 @@ export const REPO = process.env.LH_REPO || 'compusophy/localharness';
 /** Registry diamond + Tempo Moderato RPC (CLAUDE.md canonical addresses). */
 export const DIAMOND = process.env.DIAMOND || '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
 export const RPC = process.env.RPC || 'https://rpc.moderato.tempo.xyz';
-
-/** The visible marker line stamped into every colony-synced issue body; the
- *  dedup contract between on-chain feedback indices and GitHub issues. */
-export const MARKER_PREFIX = 'lh-feedback:';
-
-// FeedbackFacet view selectors, precomputed once via `cast sig` (selectors are
-// immutable for a fixed signature, so vanilla node needs no keccak):
-//   cast sig "feedbackCount()"      -> 0x2ed3f65b
-//   cast sig "feedbackAt(uint256)"  -> 0x5274f07a
-const SEL_FEEDBACK_COUNT = '0x2ed3f65b';
-const SEL_FEEDBACK_AT = '0x5274f07a';
 
 // ------------------------------------------------------------ arg utilities
 
@@ -164,7 +153,7 @@ export function runCli(args, { inherit = false } = {}) {
 // only ships SHA3, which differs in the padding byte, so we can't borrow it).
 // Used solely to derive 4-byte function selectors at build time, so a fixed
 // implementation beats hardcoding a growing table of magic hex by hand.
-// Verified against lib.mjs's known feedbackCount()/feedbackAt() selectors.
+// Verified against known `cast sig` selectors (e.g. getBounty(uint256)).
 const _RC = [
   0x0000000000000001n, 0x0000000000008082n, 0x800000000000808an, 0x8000000080008000n,
   0x000000000000808bn, 0x0000000080000001n, 0x8000000080008081n, 0x8000000000008009n,
@@ -231,7 +220,7 @@ export function selector(sig) {
   return keccak256(sig).slice(0, 10); // '0x' + 8 hex
 }
 
-// -------------------------------------------------------- on-chain feedback
+// ---------------------------------------------------------- on-chain reads
 
 const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -272,76 +261,3 @@ export async function ethCall(data, { retries = 6 } = {}) {
   }
 }
 
-/** `feedbackCount()` — total on-chain feedback entries (stable array length). */
-export async function feedbackCount() {
-  const hex = await ethCall(SEL_FEEDBACK_COUNT);
-  return Number(BigInt(hex));
-}
-
-/** ABI-decode the `feedbackAt(uint256)` return: (address sender, uint64 ts,
- *  string text). Hand-rolled head/tail decode — the shape is fixed. */
-export function decodeFeedbackAt(hex) {
-  const buf = Buffer.from(hex.replace(/^0x/, ''), 'hex');
-  const word = (i) => buf.subarray(i * 32, (i + 1) * 32);
-  const sender = '0x' + word(0).subarray(12).toString('hex');
-  const timestamp = Number(BigInt('0x' + word(1).toString('hex')));
-  const strOffset = Number(BigInt('0x' + word(2).toString('hex')));
-  const strLen = Number(BigInt('0x' + buf.subarray(strOffset, strOffset + 32).toString('hex')));
-  const text = buf.subarray(strOffset + 32, strOffset + 32 + strLen).toString('utf8');
-  return { sender, timestamp, text };
-}
-
-/** Read every UNSKIPPED feedback entry from contract state (the same stable
- *  0-based view harvest-feedback.sh prints — NOT the windowed log scan behind
- *  `localharness feedback --json`, which has no stable index). Resolved
- *  indices are skipped before the RPC so the read stays cheap. */
-export async function fetchFeedback(skip = new Set()) {
-  const count = await feedbackCount();
-  const wanted = [];
-  for (let i = 0; i < count; i++) if (!skip.has(i)) wanted.push(i);
-  const out = [];
-  const CHUNK = 4; // gentle concurrency against the rate-limited public RPC (ethCall backs off on 429)
-  for (let at = 0; at < wanted.length; at += CHUNK) {
-    const slice = wanted.slice(at, at + CHUNK);
-    const rows = await Promise.all(
-      slice.map(async (i) => {
-        const arg = i.toString(16).padStart(64, '0');
-        const hex = await ethCall(SEL_FEEDBACK_AT + arg);
-        return { index: i, ...decodeFeedbackAt(hex) };
-      }),
-    );
-    out.push(...rows);
-  }
-  return { count, entries: out };
-}
-
-/** Parse docs/feedback-resolved.txt: first whitespace token of every
- *  non-comment, non-blank line is a resolved index (same rule as
- *  harvest-feedback.sh's is_resolved awk). Missing file => empty set. */
-export function readResolvedIndices(path = join(REPO_ROOT, 'docs', 'feedback-resolved.txt')) {
-  const set = new Set();
-  if (!existsSync(path)) return set;
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    const t = line.trim();
-    if (!t || t.startsWith('#')) continue;
-    const idx = Number(t.split(/\s+/)[0]);
-    if (Number.isInteger(idx) && idx >= 0) set.add(idx);
-  }
-  return set;
-}
-
-/** Mirror of the CLI's parse_qa_envelope: `qa/v1 source=<s> v<ver>: <body>`.
- *  Returns { source, version, body } or null for non-fleet text. */
-export function parseQaEnvelope(text) {
-  if (!text.startsWith('qa/v1 ')) return null;
-  const rest = text.slice('qa/v1 '.length);
-  const sep = rest.indexOf(': ');
-  if (sep === -1) return null;
-  const header = rest.slice(0, sep);
-  const body = rest.slice(sep + 2);
-  const toks = header.split(/\s+/);
-  const source = toks.find((t) => t.startsWith('source='))?.slice('source='.length);
-  const version = toks.find((t) => /^v\d/.test(t))?.slice(1);
-  if (!source || !version || !body.trim()) return null;
-  return { source, version, body };
-}

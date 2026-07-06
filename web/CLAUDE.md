@@ -12,8 +12,8 @@ a stale module for an unchanged URL (redeploys invisible until a hard reload).
 `build-web.sh` stamps the wasm content hash as `?v=<hash>` on `boot.js` +
 `stripe-embed.js` in `index.html`, AND inside `boot.js` on the shim import + the
 EXPLICIT `init()` wasm url (the shim drops the query otherwise). So: change wasm →
-`build-web.sh` (re-stamps) → commit `boot.js`/`index.html` → deploy. `styles.css` +
-`feedback-resolutions.json` are `max-age=0`+ETag (revalidated; no stamp needed).
+`build-web.sh` (re-stamps) → commit `boot.js`/`index.html` → deploy. `styles.css`
+is `max-age=0`+ETag (revalidated; no stamp needed).
 
 ## ⛔ cartridge-worker.js HAND-PORTS Rust — keep it in PARITY
 `cartridge-worker.js` is the off-main-thread cartridge runtime (the brick fix: wasm

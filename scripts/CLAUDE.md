@@ -1,4 +1,4 @@
-# scripts — build / release / feedback tooling subsystem spec
+# scripts — build / release / QA tooling subsystem spec
 
 > Module-owned context (auto-loaded when an agent works in `scripts/`). Operational
 > tooling. The gotchas below have each cost a real incident.
@@ -15,19 +15,19 @@ ship stale docs. On a mid-way failure consult `RELEASING.md`; don't hand-fix.
   is commit + push + `vercel` deploy. Run release scripts only when asked.
 
 ## `build-web.{sh,ps1}` — the web bundle
-Regenerates `gen-docs` + `gen-feedback-resolutions` → `wasm-pack build` (release,
+Regenerates `gen-docs` → `wasm-pack build` (release,
 browser-app,mainnet) → STAMPS the `?v=` cache-buster into boot.js/index.html (see
 `web/CLAUDE.md`). wasm-opt is DISABLED (bundled wasm-opt rejects post-MVP features).
 
-## Feedback tooling — use the RIGHT chain
-- `check-feedback.mjs` (node, view-function loop) reads on-chain feedback on BOTH
-  chains. **MAINNET is live; the testnet 274 is STALE** (pre-migration). Use THIS.
-- `harvest-feedback.{sh,ps1}` are THIN DELEGATING SHIMS over `check-feedback.mjs`
-  (`--unresolved`/`-Unresolved` map to `--open`). They used to read the FeedbackFacet
-  via `cast` pinned to the stale TESTNET diamond — don't reintroduce that.
-- `gen-feedback-resolutions.mjs`: `docs/feedback-resolved-*.txt` → 
-  `web/feedback-resolutions.json` (the resolved-bell feed). Mark an item resolved =
-  add its index to the resolved file + regen + deploy.
+## Feedback is OFF-CHAIN (telemetry) — the on-chain tooling is GONE
+Feedback lands as GitHub issues in the telemetry repo (`proxy/api/telemetry.ts`;
+the in-app box + `localharness feedback` POST it). The whole on-chain harvest
+stack (`check-feedback.mjs`, `harvest-feedback.{sh,ps1}`, `clear-feedback.sh`,
+`gen-feedback-resolutions.mjs`, `colony/sync-issues.mjs`,
+`test-fleet/feedback-to-issues.mjs`, the resolved-index files) was DELETED with
+the FeedbackFacet client paths — don't reintroduce an on-chain feedback read.
+
+## Other operational reads
 - `check-meter.mjs` reads the per-request meter (the smoke-test for "can't send").
 - `add-redeem-codes.sh` defaults to MAINNET (addresses copied from
   `src/registry/chain.rs`); `LH_CHAIN=moderato|testnet|dev` opts into Moderato —

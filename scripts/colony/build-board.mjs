@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 // scripts/colony/build-board.mjs — generate the PUBLIC COLONY BOARD.
 //
-// A read-only generator that joins the colony's three rungs into one
-// human-viewable pipeline, then renders a SELF-CONTAINED static page to
+// A read-only generator that joins the colony's rungs into one human-viewable
+// pipeline, then renders a SELF-CONTAINED static page to
 // web/colony.html (deployed with the web bundle to localharness.xyz/colony.html):
 //
-//   on-chain feedback (FeedbackFacet)
-//     → GitHub issue (label `colony`, body marker `lh-feedback:<index>`)
-//       → on-chain bounty (BountyFacet, task references the issue)
-//         → PR (the bounty's submitted result, when it's a URL)
-//           → settled (status=paid → the worker's TBA was paid)
+//   GitHub issue (label `colony` — feedback arrives here via the off-chain
+//   telemetry endpoint)
+//     → on-chain bounty (BountyFacet, task references the issue)
+//       → PR (the bounty's submitted result, when it's a URL)
+//         → settled (status=paid → the worker's TBA was paid)
 //
 // Reads only (zero npm deps): on-chain via raw eth_call (lib.mjs's `ethCall` +
 // keccak-derived `selector`), GitHub via the `gh` CLI (lib.mjs's `gh`). The page
@@ -18,7 +18,6 @@
 // Usage:
 //   node scripts/colony/build-board.mjs                 # write web/colony.html
 //   node scripts/colony/build-board.mjs --out <path>    # custom output path
-//   node scripts/colony/build-board.mjs --feedback <n>  # recent feedback cap (default 30)
 //   node scripts/colony/build-board.mjs --stdout        # print HTML, write nothing
 // Env: LH_REPO, DIAMOND, RPC, GH_TOKEN (honored by gh automatically).
 
@@ -28,16 +27,12 @@ import {
   REPO,
   DIAMOND,
   RPC,
-  MARKER_PREFIX,
   REPO_ROOT,
   takeFlag,
   hasFlag,
   gh,
   ethCall,
   selector,
-  feedbackCount,
-  decodeFeedbackAt,
-  parseQaEnvelope,
 } from './lib.mjs';
 
 const BOUNTY_SCAN = 200; // how far down the bounty id space we walk
@@ -90,11 +85,6 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
-/** Effective feedback text: decoded body for qa/v1 fleet envelopes, raw else. */
-function effectiveText(text) {
-  return parseQaEnvelope(text)?.body ?? text;
-}
-
 /** First http(s) URL in a string (a submitted bounty result that IS a PR). */
 function firstUrl(s) {
   const m = String(s || '').match(/https?:\/\/[^\s)>\]]+/);
@@ -107,7 +97,6 @@ const SEL = {
   resultOf: selector('resultOf(uint256)'),
   nameOfId: selector('nameOfId(uint256)'),
   openBounties: selector('openBounties(uint256,uint256)'),
-  feedbackAt: selector('feedbackAt(uint256)'),
 };
 
 const BOUNTY_STATUS = ['open', 'claimed', 'submitted', 'paid', 'cancelled', 'reclaimed'];
@@ -128,32 +117,6 @@ function decodeBounty(hex) {
     status: buf[3 * 32 + 31],
     claimantTokenId: Number(BigInt('0x' + word(4).toString('hex'))),
   };
-}
-
-/** Read on-chain feedback: the most-recent `cap` entries UNION any explicitly
- *  `extra` indices (the ones open issues reference), so the feedback column
- *  always resolves the text behind a tracked issue even if it predates the
- *  recent window. Returns the total count + the read entries (newest first). */
-async function readFeedback(cap, extra = new Set()) {
-  const count = await feedbackCount();
-  const start = Math.max(0, count - cap);
-  const wanted = new Set();
-  for (let i = count - 1; i >= start; i--) wanted.add(i);
-  for (const i of extra) if (Number.isInteger(i) && i >= 0 && i < count) wanted.add(i);
-  const idx = [...wanted].sort((a, b) => b - a); // newest first
-  const out = [];
-  const CHUNK = 8;
-  for (let at = 0; at < idx.length; at += CHUNK) {
-    const slice = idx.slice(at, at + CHUNK);
-    const rows = await Promise.all(
-      slice.map(async (i) => {
-        const hex = await call(SEL.feedbackAt + uintArg(i));
-        return { index: i, ...decodeFeedbackAt(hex) };
-      }),
-    );
-    out.push(...rows);
-  }
-  return { count, entries: out };
 }
 
 /** Walk the bounty id space [0, scan) and read every posted bounty (task +
@@ -191,7 +154,7 @@ async function readBounties(scan) {
   return out;
 }
 
-/** Open `colony`-label issues, with the lh-feedback index parsed from the body.
+/** Open `colony`-label issues.
  *  Returns [] (and warns) if gh is unavailable so the board still renders. */
 function readColonyIssues() {
   let raw;
@@ -200,31 +163,26 @@ function readColonyIssues() {
       'issue', 'list',
       '--state', 'open',
       '--label', 'colony',
-      '--json', 'number,title,url,body',
+      '--json', 'number,title,url',
       '--limit', '200',
     ]);
   } catch (e) {
     console.error(`warning: could not list colony issues (${e.message}); rendering without them.`);
     return [];
   }
-  const re = new RegExp(`${MARKER_PREFIX}(\\d+)\\b`);
   return JSON.parse(raw).map((i) => ({
     number: i.number,
     title: i.title,
     url: i.url,
-    feedbackIndex: (i.body || '').match(re)?.[1] ?? null,
   }));
 }
 
 // ------------------------------------------------------------------- join
 
-/** Join the three rungs into pipeline rows keyed on the issue. A bounty is
+/** Join the rungs into pipeline rows keyed on the issue. A bounty is
  *  linked to an issue when its task text references `#<n>` for that issue (the
- *  shape issue-to-bounty.mjs stamps: "fix #<n> — …"). Feedback links via the
- *  issue body's `lh-feedback:<index>` marker. */
-function buildPipeline(feedback, issues, bounties) {
-  const fbByIndex = new Map(feedback.entries.map((e) => [String(e.index), e]));
-
+ *  shape issue-to-bounty.mjs stamps: "fix #<n> — …"). */
+function buildPipeline(issues, bounties) {
   // For each issue, find bounties whose task references #<issue number>.
   const rows = issues.map((issue) => {
     const ref = new RegExp(`(^|[^\\w/])#${issue.number}\\b`);
@@ -232,9 +190,8 @@ function buildPipeline(feedback, issues, bounties) {
     // Prefer the most-advanced bounty (paid > submitted > claimed > open).
     linked.sort((a, b) => b.status - a.status || b.id - a.id);
     const bounty = linked[0] || null;
-    const fb = issue.feedbackIndex != null ? fbByIndex.get(issue.feedbackIndex) : null;
     const prUrl = bounty && firstUrl(bounty.result);
-    return { issue, bounty, feedback: fb, prUrl };
+    return { issue, bounty, prUrl };
   });
 
   // Order: live work first (open/claimed/submitted bounty), then settled, then
@@ -260,22 +217,14 @@ function statusCell(bounty, prUrl) {
 
 function renderRows(rows) {
   if (!rows.length) {
-    return '<tr><td colspan="3" class="muted empty">no colony issues yet — file feedback on-chain to seed the pipeline.</td></tr>';
+    return '<tr><td colspan="2" class="muted empty">no colony issues yet — file feedback (in-app or `localharness feedback`) to seed the pipeline.</td></tr>';
   }
   return rows
     .map((r) => {
-      const fbCell = r.feedback
-        ? `<span class="muted">#${r.feedback.index}</span> ${esc(
-            effectiveText(r.feedback.text).replace(/\s+/g, ' ').trim().slice(0, 80),
-          )}`
-        : r.issue.feedbackIndex != null
-          ? `<span class="muted">#${esc(r.issue.feedbackIndex)}</span>`
-          : '<span class="muted">—</span>';
       const issueCell = `<a href="${esc(r.issue.url)}">#${r.issue.number}</a> ${esc(
         r.issue.title,
       )}`;
       return `<tr>
-  <td class="c-fb">${fbCell}</td>
   <td class="c-issue">${issueCell}</td>
   <td class="c-bounty">${statusCell(r.bounty, r.prUrl)}</td>
 </tr>`;
@@ -309,9 +258,8 @@ thead th {
 }
 tbody td { padding: 10px; border-bottom: 1px solid #141414; vertical-align: top; }
 tbody tr:hover { background: #0b0b0b; }
-.c-fb { width: 34%; color: #888; }
-.c-issue { width: 36%; }
-.c-bounty { width: 30%; white-space: nowrap; }
+.c-issue { width: 62%; }
+.c-bounty { width: 38%; white-space: nowrap; }
 .muted { color: #555; }
 .empty { padding: 28px 10px; text-align: center; }
 .st { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
@@ -341,7 +289,7 @@ ${STYLE}
 </head>
 <body>
 <h1>localharness colony board</h1>
-<p class="sub">the colony's work pipeline — on-chain feedback → github issue → on-chain bounty → merged PR → paid. anyone can join: humans, agents, contributors.</p>
+<p class="sub">the colony's work pipeline — feedback (off-chain telemetry) → github issue → on-chain bounty → merged PR → paid. anyone can join: humans, agents, contributors.</p>
 
 <div class="totals">
   <div class="cell"><span class="n">${totals.openIssues}</span><span class="k">open issues</span></div>
@@ -353,7 +301,7 @@ ${STYLE}
 
 <table>
 <thead>
-  <tr><th>feedback</th><th>issue</th><th>bounty → PR → settled</th></tr>
+  <tr><th>issue</th><th>bounty → PR → settled</th></tr>
 </thead>
 <tbody>
 ${rows}
@@ -363,7 +311,7 @@ ${rows}
 <footer>
   <h2>how to contribute</h2>
   <ol>
-    <li>file feedback on-chain — <code>localharness feedback &lt;text&gt;</code> (or the in-app feedback box). it becomes a <code>colony</code> issue.</li>
+    <li>file feedback — <code>localharness feedback &lt;text&gt;</code> (or the in-app feedback box). it lands as a GitHub issue via the telemetry endpoint.</li>
     <li>claim a bounty — <code>localharness bounty list</code>, then <code>localharness bounty claim &lt;id&gt;</code>. the reward pays your agent's TBA on merge.</li>
     <li>open a PR that references the issue (<code>Closes #N</code>), then <code>localharness bounty submit &lt;id&gt; &lt;PR url&gt;</code>. a merge settles the escrow.</li>
   </ol>
@@ -378,26 +326,18 @@ ${rows}
 // -------------------------------------------------------------------- main
 
 async function main() {
-  const cap = Number(takeFlag('--feedback', '30'));
-  const feedbackCap = Number.isInteger(cap) && cap > 0 ? cap : 30;
   const generatedAt = new Date().toISOString();
 
   console.error(`reading colony state (diamond ${DIAMOND} via ${RPC}) …`);
-  // GitHub first (cheap, no RPC) so we know which feedback indices to pin.
+  // GitHub first (cheap, no RPC), then the bounty walk (the `call` retry
+  // covers transient 429s on the rate-limited public RPC).
   const issues = readColonyIssues();
-  const referenced = new Set(
-    issues.map((i) => Number(i.feedbackIndex)).filter((n) => Number.isInteger(n)),
-  );
-  // Serialize the two on-chain reads (gentler on the rate-limited public RPC
-  // than firing both bursts at once; the `call` retry covers transient 429s).
-  const feedback = await readFeedback(feedbackCap, referenced);
   const bounties = await readBounties(BOUNTY_SCAN);
   console.error(
-    `  feedback: ${feedback.count} on-chain (${feedback.entries.length} recent)` +
-      `  ·  issues: ${issues.length} open colony  ·  bounties: ${bounties.length} posted`,
+    `  issues: ${issues.length} open colony  ·  bounties: ${bounties.length} posted`,
   );
 
-  const pipeline = buildPipeline(feedback, issues, bounties);
+  const pipeline = buildPipeline(issues, bounties);
 
   const open = bounties.filter((b) => b.status === 0);
   const paid = bounties.filter((b) => b.status === 3);

@@ -21,9 +21,7 @@ exclude = [
     "proxy/**",
     # docs/error-codes.md stays packaged: the `index_doc_lists_every_code`
     # lib test reads it via CARGO_MANIFEST_DIR at test runtime.
-    "docs/SOP-QA-001-autonomous-feedback.md",
     "docs/TESTING-0.24.0.md",
-    "docs/feedback-resolved*.txt",
     "vercel.json",
     ".vercelignore",
     ".env",
@@ -338,13 +336,6 @@ required-features = ["wallet"]
 # multi-round tool turn through the credit proxy (funded identity, no key).
 [[example]]
 name = "thought_signature_live"
-required-features = ["wallet"]
-
-# LIVE regression proof for the setPushSub per-byte gas fix: publishes a
-# realistic ~365-byte Web Push subscription via the sponsored path and reads
-# it back. Writes to Moderato testnet.
-[[example]]
-name = "push_sub_live"
 required-features = ["wallet"]
 
 # Probe: does a SPONSORED Tempo 0x76 CONTRACT-CREATION tx deploy on Moderato?

@@ -219,7 +219,7 @@ pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("notify", "Web Push to your device (or --to <agent>)"),
     ("threads", "list your saved per-(caller,target) conversations"),
     ("forget", "drop saved conversation threads"),
-    ("feedback", "submit on-chain feedback, or read all (no text)"),
+    ("feedback", "file feedback with the maintainers (off-chain telemetry → GitHub issue)"),
     ("facet", "SolidityLite: deploy/cut your own on-chain facets"),
     ("mcp", "serve a call_agent tool over stdio MCP"),
     ("mcp-call", "true x402 MCP-over-HTTP call to a target agent"),

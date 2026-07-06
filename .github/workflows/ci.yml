@@ -137,7 +137,7 @@ jobs:
 
       # The real deploy build: gen-docs → wasm-pack (release, browser-app,
       # mainnet) → cache-buster stamp. bash-clean on Linux (the cygpath calls
-      # are ||-guarded; gen-feedback-resolutions is best-effort by design).
+      # are ||-guarded).
       # Cold-cache this is the long pole; rust-cache keeps warm runs short.
       - name: build web bundle (./scripts/build-web.sh)
         timeout-minutes: 35

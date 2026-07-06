@@ -3,7 +3,7 @@
 #
 # A standing fleet of 12 persistent on-chain agent identities (personas.json),
 # each a distinct personality, that dogfood localharness and file GROUNDED
-# feedback on-chain. For each selected persona:
+# feedback. For each selected persona:
 #
 #   1. create it on-chain with its persona (sponsored mint; idempotent — a
 #      persona that already exists is reused, not re-minted)
@@ -11,17 +11,18 @@
 #   3. reflect on that ACTUAL experience IN PERSONA and write exactly one
 #      [BUG] / [FEATURE] / [FEEDBACK] item (anchored to the real probe + reply,
 #      never hallucinated)
-#   4. submit it on-chain (FeedbackFacet)
+#   4. file it off-chain (`localharness feedback` → the proxy telemetry
+#      endpoint → a GitHub issue in the telemetry repo)
 #
-# Read the harvest with:  scripts/harvest-feedback.sh   (or  localharness feedback)
+# Read the harvest in the telemetry repo's issues (label `feedback`).
 #
 # Usage:
 #   scripts/test-fleet/run-fleet.sh                  # all 12 personas
 #   scripts/test-fleet/run-fleet.sh nova-qa pip-qa   # just these (a sample)
 #   LOCALHARNESS_BIN=/path/to/localharness scripts/test-fleet/run-fleet.sh ...
 #
-# Cost: spends the sponsor's AlphaUSD gas (one mint + one feedback write per
-# NEW persona; reused personas only pay the feedback write). Model calls are
+# Cost: spends the sponsor's gas for one mint per NEW persona (feedback itself
+# is off-chain + free). Model calls are
 # NOT free: the proxy meters ~1 $LH per call (it gates on an active session
 # OR a meter balance >= the cost, 402 otherwise) and the CLI deliberately does
 # NOT auto-open the 10-$LH/hr session. A fresh persona holds 0 $LH AND on mainnet
@@ -38,7 +39,7 @@ CLI="${LOCALHARNESS_BIN:-./target/debug/localharness.exe}"
 command -v node >/dev/null 2>&1 || { echo "run-fleet: needs node on PATH (for JSON parsing)" >&2; exit 1; }
 
 JSON="$(dirname "$0")/personas.json"
-# CLI stderr goes here, NOT into captured payloads (feedback filed on-chain must
+# CLI stderr goes here, NOT into captured payloads (a filed feedback body must
 # not start with '· localharness on Tempo…' chatter); errors still get echoed.
 ERRLOG="$(mktemp)"; trap 'rm -f "$ERRLOG"' EXIT
 
@@ -133,9 +134,9 @@ for NAME in "${SELECT[@]}"; do
   FEEDBACK="$(printf '%s' "$FEEDBACK" | tr -d '\r' | tr '\n' ' ' | sed 's/  */ /g' | head -c 2000)"
   echo "  · ${FEEDBACK}"
 
-  # 4. submit on-chain
+  # 4. file via the telemetry endpoint (GitHub issue in the telemetry repo)
   if $CLI feedback --as "$NAME" "$FEEDBACK" >/dev/null 2>&1; then
-    echo "  ✓ submitted on-chain"
+    echo "  ✓ filed (telemetry → GitHub issue)"
     submitted=$((submitted + 1))
   else
     echo "  ✗ feedback submit failed"
@@ -143,5 +144,5 @@ for NAME in "${SELECT[@]}"; do
 done
 
 echo
-echo "fleet run complete — $submitted item(s) submitted on-chain."
-echo "read them:  scripts/harvest-feedback.sh   (or  $CLI feedback)"
+echo "fleet run complete — $submitted item(s) filed."
+echo "read them in the telemetry repo's issues (label: feedback)."

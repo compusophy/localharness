@@ -572,32 +572,6 @@ pub fn encode_set_public_html(token_id: u64, html: &[u8]) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, keccak_key(PUBLIC_HTML_LABEL), html)
 }
 
-pub(crate) const PUSH_SUB_LABEL: &[u8] = b"localharness.push_sub";
-
-/// Read a token's published Web Push subscription JSON
-/// (`{endpoint, keys: {p256dh, auth}}`), if any. Written by the browser
-/// app's "enable notifications" flow; consumed by the proxy's scheduler
-/// worker to notify the owner when a scheduled job completes (tab closed).
-pub async fn push_sub_of(token_id: u64) -> Result<Option<String>, String> {
-    match metadata_bytes_of(token_id, keccak_key(PUSH_SUB_LABEL)).await? {
-        Some(b) => Ok(String::from_utf8(b)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())),
-        None => Ok(None),
-    }
-}
-
-/// Encode `setMetadata` for a Web Push subscription JSON.
-///
-/// KNOWN TRADEOFF (v1): the payload is PLAINTEXT on-chain — a push endpoint
-/// is a bearer capability URL (push payloads stay E2E-encrypted to the
-/// browser via p256dh/auth, but anyone reading chain state can spam the
-/// endpoint). Follow-up: ECIES-seal to a proxy-held key.
-pub fn encode_set_push_sub(token_id: u64, sub_json: &[u8]) -> Vec<u8> {
-    encode_set_metadata_bytes(token_id, keccak_key(PUSH_SUB_LABEL), sub_json)
-}
-
 pub(crate) const PERSONA_LABEL: &[u8] = b"localharness.persona";
 
 /// Read a subdomain's published persona — the system instructions a

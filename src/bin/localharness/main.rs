@@ -77,11 +77,11 @@
 //!                            explicit amount, or --all for the whole wallet
 //!                            (bare topup only shows what would move)
 //!   list [--as <me>]         list the subdomains you own (`--json` for machine output)
-//!   feedback [--as <me>] [text|--json]
-//!                            submit on-chain feedback (text), or read the log
-//!                            (no text; `--json` = machine-readable array)
-//!   probe [--as <fleet>]     autonomous QA self-checks; report failures on-chain
-//!   triage                   dedup + recurrence-rank the on-chain feedback log
+//!   feedback [--as <me>] <text>
+//!                            file feedback with the maintainers (off-chain
+//!                            telemetry → a GitHub issue in the telemetry repo)
+//!   probe [--as <fleet>]     autonomous QA self-checks; failures are filed as
+//!                            telemetry feedback
 //!   notify [--as <me>] [--to <agent>] <title> [body...]
 //!                            Web-Push a note to YOUR OWN phone/device, or with
 //!                            `--to` to ANOTHER agent's notification inbox +
@@ -596,10 +596,10 @@ GUILDS & GOVERNANCE
   localharness vote weighted show <proposalId> full weighted-proposal detail + share tally
 
 FEEDBACK & QA
-  localharness feedback [--as <me>] [text|--json]  submit on-chain feedback, or read
-                                         all (no text; --json for machine output)
-  localharness probe [--as <fleet>]      run QA self-checks; report failures on-chain
-  localharness triage                    dedup + rank the on-chain feedback log
+  localharness feedback [--as <me>] <text>  file feedback with the maintainers
+                                         (off-chain telemetry → GitHub issue)
+  localharness probe [--as <fleet>]      run QA self-checks; failures are filed
+                                         as telemetry feedback
 
 CONVERSATIONS
   localharness threads [--as <me>]       list your saved call conversations
@@ -800,13 +800,9 @@ async fn run(args: &[String]) -> i32 {
             }
         },
         Some("feedback") => match take_as_flag(&args[1..]) {
-            Ok((caller, rest)) if rest.is_empty() => {
-                let _ = caller;
-                feedback_read(false).await
-            }
-            Ok((caller, rest)) if rest.len() == 1 && rest[0] == "--json" => {
-                let _ = caller;
-                feedback_read(true).await
+            Ok((_, rest)) if rest.is_empty() => {
+                eprintln!("usage: localharness feedback [--as <me>] <text>");
+                2
             }
             Ok((caller, rest)) => feedback_submit(caller.as_deref(), &rest.join(" ")).await,
             Err(e) => {
@@ -1014,7 +1010,6 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
-        Some("triage") => triage().await,
         Some("notify") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => notify(caller.as_deref(), &rest).await,
             Err(e) => {
@@ -1242,7 +1237,7 @@ mod tests {
         // command can't ship undocumented for beta testers reading `help`.
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "abtest", "list", "buy",
-            "feedback", "probe", "triage", "threads", "forget", "whoami", "status", "fee",
+            "feedback", "probe", "threads", "forget", "whoami", "status", "fee",
             "invite", "bounty", "colony", "reputation", "guild", "company", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "remind", "jobs", "unschedule", "notify", "models", "sh",
             "onboard", "onramp", "link",

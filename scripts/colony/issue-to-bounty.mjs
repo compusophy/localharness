@@ -21,7 +21,7 @@
 //       [--reward 0.5] [--as claude] [--ttl 7d] [--live] [--force]
 // Env: LH_REPO, LOCALHARNESS_BIN, GH_TOKEN (honored by gh automatically).
 
-import { REPO, MARKER_PREFIX, hasFlag, takeFlag, positionals, fmtCmd, gh, resolveCli, runCli } from './lib.mjs';
+import { REPO, hasFlag, takeFlag, positionals, fmtCmd, gh, resolveCli, runCli } from './lib.mjs';
 
 const LIVE = hasFlag('--live');
 const FORCE = hasFlag('--force');
@@ -54,9 +54,6 @@ async function main() {
   console.log(`issue #${issue.number}: ${issue.title}`);
   console.log(`  state: ${issue.state}   labels: ${labels}`);
   console.log(`  url:   ${issue.url}`);
-  const marker = (issue.body || '').match(new RegExp(`${MARKER_PREFIX}(\\d+)\\b`));
-  if (marker) console.log(`  on-chain feedback index: ${marker[1]}`);
-
   if (issue.state !== 'OPEN' && !FORCE) {
     console.error(`refusing: issue #${issueNum} is ${issue.state}, not OPEN (pass --force to override).`);
     process.exit(1);

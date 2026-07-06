@@ -668,10 +668,9 @@ crate::tool_params! {
 crate::tool_params! {
     /// Args for the browser `submit_feedback` tool (`src/app/chat/tools/misc.rs`).
     pub struct SubmitFeedbackParams: lenient {
-        text: req_str = "The feedback text. Filed off-chain with full \
-                    conversation + device/settings context. (If the owner enabled \
-                    on-chain mirroring, the SHORT note is also written on-chain, where \
-                    a 2048-byte cap applies — summarize rather than pasting a long report.)",
+        text: req_str = "The feedback text. Filed off-chain (proxy telemetry → \
+                    a GitHub issue in the telemetry repo) with full conversation + \
+                    device/settings context.",
     }
 }
 
@@ -1951,10 +1950,9 @@ mod tests {
                 "properties": {
                     "text": {
                         "type": "string",
-                        "description": "The feedback text. Filed off-chain with full \
-                            conversation + device/settings context. (If the owner enabled \
-                            on-chain mirroring, the SHORT note is also written on-chain, where \
-                            a 2048-byte cap applies — summarize rather than pasting a long report.)"
+                        "description": "The feedback text. Filed off-chain (proxy telemetry → \
+                            a GitHub issue in the telemetry repo) with full conversation + \
+                            device/settings context."
                     }
                 },
                 "required": ["text"]

@@ -4,7 +4,7 @@
 #   pwsh scripts/build-web.ps1   (or:  powershell -File scripts/build-web.ps1)
 #
 # This is a THIN WRAPPER that delegates to scripts/build-web.sh — the single
-# source of truth for the build (gen-docs, gen-feedback-resolutions, RUSTFLAGS
+# source of truth for the build (gen-docs, RUSTFLAGS
 # path-remapping for privacy, wasm-pack --features browser-app,mainnet, and the
 # boot.js/icon cache-buster stamping). A hand-maintained PowerShell PORT of that
 # logic silently drifted — it had dropped the `mainnet` feature (shipping a

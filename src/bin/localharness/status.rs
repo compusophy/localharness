@@ -728,109 +728,6 @@ pub(crate) async fn list_mine(caller_name: Option<&str>, json: bool) -> i32 {
     }
 }
 
-/// A parsed `qa/v1` autonomous-fleet feedback envelope. `version`/`body` are
-/// consumed by the triage agent (roadmap Phase 4); `source` tags the listing.
-#[allow(dead_code)]
-pub(crate) struct QaEnvelope {
-    source: String,
-    version: String,
-    body: String,
-}
-
-/// Parse a `qa/v1 source=<s> v<ver>: <body>` envelope. `None` unless it is a
-/// well-formed qa/v1 envelope — the triage path must NOT consume a body (e.g.
-/// a repro string) from a malformed or non-fleet entry, since the feedback log
-/// is permissionless and an attacker can plant crafted text (a critique gate).
-pub(crate) fn parse_qa_envelope(text: &str) -> Option<QaEnvelope> {
-    let (header, body) = text.strip_prefix("qa/v1 ")?.split_once(": ")?;
-    let source = header.split_whitespace().find_map(|t| t.strip_prefix("source="))?;
-    let version = header.split_whitespace().find_map(|t| {
-        t.strip_prefix('v')
-            .filter(|v| v.starts_with(|c: char| c.is_ascii_digit()))
-    })?;
-    if source.is_empty() || body.trim().is_empty() {
-        return None;
-    }
-    Some(QaEnvelope {
-        source: source.to_string(),
-        version: version.to_string(),
-        body: body.to_string(),
-    })
-}
-
-/// Render the on-chain feedback log (newest first). Pure for testing. Entries
-/// the autonomous fleet authored (valid `qa/v1` envelopes) are tagged so the
-/// maintainer can tell agent-filed bugs from human ones at a glance.
-pub(crate) fn format_feedback(entries: &[registry::FeedbackEntry]) -> String {
-    if entries.is_empty() {
-        return "no on-chain feedback yet\n".to_string();
-    }
-    let mut out = format!("{} on-chain feedback entr(ies), newest first:\n", entries.len());
-    for e in entries {
-        let tag = match parse_qa_envelope(&e.text) {
-            Some(env) => format!(" [fleet:{}]", env.source),
-            None => String::new(),
-        };
-        out.push_str(&format!(
-            "  [{}] {}{}\n    {}\n",
-            e.timestamp,
-            e.sender,
-            tag,
-            e.text.replace('\n', " ")
-        ));
-    }
-    out
-}
-
-/// Collapse feedback bodies into a deduplicated, recurrence-ranked work-list:
-/// the same bug filed across many probe runs becomes ONE item, ranked by how
-/// often it recurred (most-reported first). Dedup BEFORE ranking, else the
-/// log's natural repetition drowns the signal. Ties break by first-seen order
-/// for stable output. The triage agent's deterministic core (roadmap Phase 4).
-pub(crate) fn triage_findings(bodies: &[String]) -> Vec<(String, usize)> {
-    use std::collections::HashMap;
-    // key -> (representative text, count, first-seen index)
-    let mut counts: HashMap<String, (String, usize, usize)> = HashMap::new();
-    for (i, body) in bodies.iter().enumerate() {
-        let key = body.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
-        if key.is_empty() {
-            continue;
-        }
-        let e = counts.entry(key).or_insert_with(|| (body.trim().to_string(), 0, i));
-        e.1 += 1;
-    }
-    let mut v: Vec<(String, usize, usize)> = counts.into_values().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)));
-    v.into_iter().map(|(rep, count, _)| (rep, count)).collect()
-}
-
-/// `localharness triage` — read the on-chain feedback log and print a
-/// deduplicated, recurrence-ranked work-list. Read-only, no `$LH`. Prefers the
-/// `qa/v1` body when an entry is a fleet envelope.
-pub(crate) async fn triage() -> i32 {
-    let entries = match registry::list_feedback().await {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("RPC error: {e}");
-            return 1;
-        }
-    };
-    let bodies: Vec<String> = entries
-        .iter()
-        .map(|e| parse_qa_envelope(&e.text).map(|env| env.body).unwrap_or_else(|| e.text.clone()))
-        .collect();
-    let ranked = triage_findings(&bodies);
-    if ranked.is_empty() {
-        println!("no feedback to triage");
-        return 0;
-    }
-    println!("{} distinct item(s), most-recurring first:", ranked.len());
-    for (i, (rep, count)) in ranked.iter().enumerate() {
-        println!("  {}. (x{count}) {}", i + 1, rep.replace('\n', " "));
-    }
-    0
-}
-
 /// How many matched agents `discover` prints (and the cap on the extra
 /// reputation reads — we only fetch reputation for the agents actually shown,
 /// not the whole scanned set, so the per-result RPC cost stays bounded).
@@ -909,76 +806,87 @@ pub(crate) async fn discover(query: &str) -> i32 {
     }
 }
 
-/// Read the on-chain feedback log (`localharness feedback`, no text). With
-/// `--json`, emit a machine-readable array instead of the human view — for
-/// tooling like the feedback→GitHub-issues bridge.
-pub(crate) async fn feedback_read(json: bool) -> i32 {
-    match registry::list_feedback().await {
-        Ok(entries) => {
-            if json {
-                print!("{}", feedback_json(&entries));
-            } else {
-                print!("{}", format_feedback(&entries));
-            }
-            0
-        }
-        Err(e) => {
-            eprintln!("RPC error: {e}");
-            1
-        }
-    }
-}
+/// Body cap mirroring `proxy/api/telemetry.ts` MAX_BODY_BYTES (the proxy would
+/// only truncate anything longer). Cut on a char boundary.
+const TELEMETRY_MAX_BODY: usize = 24_576;
 
-/// Render the feedback log as a JSON array (`feedback --json`), newest first,
-/// matching the human view. Each item: `{ timestamp, sender, text }`, plus
-/// `{ fleet_source, body }` when the entry is a `qa/v1` fleet envelope.
-/// `(timestamp, sender)` is a stable dedup key for tooling — `list_feedback`
-/// is a windowed log scan, so there's no stable on-chain append index to emit.
-pub(crate) fn feedback_json(entries: &[registry::FeedbackEntry]) -> String {
-    let items: Vec<serde_json::Value> = entries
-        .iter()
-        .map(|e| {
-            let mut o = serde_json::json!({
-                "timestamp": e.timestamp,
-                "sender": e.sender,
-                "text": e.text,
-            });
-            if let Some(env) = parse_qa_envelope(&e.text) {
-                o["fleet_source"] = serde_json::json!(env.source);
-                o["body"] = serde_json::json!(env.body);
-            }
-            o
-        })
+/// Assemble the telemetry payload fields for a feedback note — the native
+/// mirror of the browser's `src/app/telemetry.rs::report_feedback` shape:
+/// `title` = "feedback (<agent>): <first-line summary>", `signature` =
+/// "feedback-<agent>-<48-char alnum fingerprint>" (the proxy's dedup key),
+/// `body` = the full text clamped to the proxy cap. Pure for testing.
+pub(crate) fn feedback_report(agent: &str, text: &str) -> (String, String, String) {
+    let summary: String = text
+        .split(['\n', '.'])
+        .next()
+        .unwrap_or(text)
+        .trim()
+        .chars()
+        .take(100)
         .collect();
-    serde_json::to_string_pretty(&serde_json::Value::Array(items))
-        .unwrap_or_else(|_| "[]".to_string())
-        + "\n"
+    let fp: String = text.chars().filter(|c| c.is_ascii_alphanumeric()).take(48).collect();
+    let mut body = text.to_string();
+    if body.len() > TELEMETRY_MAX_BODY {
+        let mut cut = TELEMETRY_MAX_BODY;
+        while cut > 0 && !body.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        body.truncate(cut);
+        body.push_str("\n…(truncated)");
+    }
+    (format!("feedback ({agent}): {summary}"), format!("feedback-{agent}-{fp}"), body)
 }
 
-/// Submit on-chain feedback as the caller's identity (sponsored). This is the
-/// agent-to-platform leg of the feedback loop: a test agent reports bugs / UX
-/// friction / errors here, and `feedback` (no text) reads them back.
+/// Submit feedback OFF-CHAIN as the caller's identity: a personal-sign-authed
+/// POST to the proxy's `/api/telemetry`, which files it as a GitHub issue in
+/// the telemetry repo — the maintainer's task list (the on-chain FeedbackFacet
+/// path is retired).
 pub(crate) async fn feedback_submit(caller_name: Option<&str>, text: &str) -> i32 {
     let text = text.trim();
     if text.is_empty() {
         eprintln!("feedback text is empty");
         return 2;
     }
-    if text.len() > 2048 {
-        eprintln!("feedback too long: {} bytes (max 2048)", text.len());
-        return 1;
-    }
     let signer = match load_signer(caller_name) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    println!("submitting {}-byte feedback on-chain …", text.len());
-    match registry::submit_feedback_sponsored(&signer, text)
-        .await
-    {
-        Ok(tx) => {
-            println!("✓ feedback submitted\n  tx: {tx}");
+    let agent = caller_name.unwrap_or("cli");
+    let (title, signature, body) = feedback_report(agent, text);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let token = registry::proxy_auth_token(&signer, now, "telemetry");
+    let endpoint =
+        format!("{}/api/telemetry", registry::CREDIT_PROXY_URL.trim_end_matches('/'));
+    println!("filing {}-byte feedback (off-chain telemetry → GitHub issue) …", body.len());
+    let res = reqwest::Client::new()
+        .post(&endpoint)
+        .header("content-type", "application/json")
+        .header("x-goog-api-key", token)
+        .json(&serde_json::json!({
+            "kind": "feedback",
+            "title": title,
+            "signature": signature,
+            "body": body,
+        }))
+        .send()
+        .await;
+    match res {
+        Ok(r) if r.status().is_success() => {
+            let v: serde_json::Value = r.json().await.unwrap_or_default();
+            match v.get("url").and_then(|u| u.as_str()) {
+                Some(url) => println!("✓ feedback filed\n  {url}"),
+                None => println!("✓ feedback filed"),
+            }
             0
+        }
+        Ok(r) => {
+            let status = r.status();
+            let detail = r.text().await.unwrap_or_default();
+            eprintln!("feedback failed: HTTP {status} {}", detail.trim());
+            1
         }
         Err(e) => {
             eprintln!("feedback failed: {e}");
@@ -1309,108 +1217,17 @@ mod tests {
     }
 
     #[test]
-    fn triage_dedups_and_ranks_by_recurrence() {
-        let bodies = vec![
-            "Compile leaks OS error".to_string(),
-            "compile leaks os error".to_string(),       // same modulo case
-            "  Compile   leaks OS error ".to_string(),  // same modulo whitespace
-            "whoami is slow".to_string(),
-        ];
-        let ranked = triage_findings(&bodies);
-        assert_eq!(ranked.len(), 2, "two distinct issues after dedup");
-        assert_eq!(ranked[0].1, 3, "the recurring one ranks first with count 3");
-        assert!(ranked[0].0.to_lowercase().contains("compile leaks"));
-        assert_eq!(ranked[1].1, 1);
-    }
-
-    #[test]
-    fn triage_skips_empty_bodies() {
-        let bodies = vec!["".to_string(), "   ".to_string(), "real bug".to_string()];
-        let ranked = triage_findings(&bodies);
-        assert_eq!(ranked, vec![("real bug".to_string(), 1)]);
-    }
-
-    #[test]
-    fn parse_qa_envelope_accepts_valid_rejects_others() {
-        let env =
-            parse_qa_envelope("qa/v1 source=qa-probe v0.20.0: compile leaked os error").unwrap();
-        assert_eq!(env.source, "qa-probe");
-        assert_eq!(env.version, "0.20.0");
-        assert!(env.body.contains("compile leaked"));
-        // Not a fleet envelope → rejected (triage won't consume its body).
-        assert!(parse_qa_envelope("just some human feedback").is_none());
-        assert!(parse_qa_envelope("qa/v1 source=x v1.0.0:   ").is_none()); // empty body
-        assert!(parse_qa_envelope("qa/v1 no source or colon").is_none());
-        assert!(parse_qa_envelope("qa/v1 source=x vNOTVERSION: body").is_none());
-    }
-
-    #[test]
-    fn feedback_json_emits_fields_and_fleet_envelope() {
-        let entries = vec![
-            registry::FeedbackEntry {
-                sender: "0xabc".into(),
-                timestamp: 100,
-                text: "[BUG] something broke".into(),
-            },
-            registry::FeedbackEntry {
-                sender: "0xdef".into(),
-                timestamp: 200,
-                text: "qa/v1 source=qa-probe v0.20.0: a real bug".into(),
-            },
-        ];
-        let v: serde_json::Value = serde_json::from_str(&feedback_json(&entries)).unwrap();
-        let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-        // plain entry: dedup-key fields + raw text, no fleet fields
-        assert_eq!(arr[0]["sender"], "0xabc");
-        assert_eq!(arr[0]["timestamp"], 100);
-        assert_eq!(arr[0]["text"], "[BUG] something broke");
-        assert!(arr[0].get("fleet_source").is_none());
-        // qa/v1 envelope: gets fleet_source + decoded body
-        assert_eq!(arr[1]["fleet_source"], "qa-probe");
-        assert!(arr[1]["body"].as_str().unwrap().contains("a real bug"));
-        // empty log → valid empty array
-        let empty: serde_json::Value = serde_json::from_str(&feedback_json(&[])).unwrap();
-        assert_eq!(empty.as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn format_feedback_tags_fleet_envelopes_only() {
-        let entries = vec![
-            registry::FeedbackEntry {
-                sender: "0x1".into(),
-                timestamp: 1,
-                text: "qa/v1 source=qa-probe v0.20.0: a real bug".into(),
-            },
-            registry::FeedbackEntry {
-                sender: "0x2".into(),
-                timestamp: 2,
-                text: "a human note".into(),
-            },
-        ];
-        let out = format_feedback(&entries);
-        assert!(out.contains("[fleet:qa-probe]"));
-        assert!(
-            out.lines().any(|l| l.contains("0x2") && !l.contains("[fleet")),
-            "human feedback must not be tagged as fleet"
-        );
-    }
-
-    #[test]
-    fn format_feedback_empty_and_entries() {
-        assert!(format_feedback(&[]).contains("no on-chain feedback"));
-        let entries = vec![
-            registry::FeedbackEntry {
-                sender: "0xabc".into(),
-                timestamp: 1700000000,
-                text: "create flow worked\nbut whoami was slow".into(),
-            },
-        ];
-        let out = format_feedback(&entries);
-        assert!(out.contains("1 on-chain feedback"));
-        assert!(out.contains("0xabc"));
-        // Newlines collapsed so one entry stays one block.
-        assert!(out.contains("create flow worked but whoami was slow"));
+    fn feedback_report_mirrors_the_browser_telemetry_shape() {
+        // Title = first line/sentence summary; signature = alnum fingerprint.
+        let (title, sig, body) = feedback_report("nova-qa", "[BUG] whoami is slow.\nDetails here");
+        assert_eq!(title, "feedback (nova-qa): [BUG] whoami is slow");
+        assert!(sig.starts_with("feedback-nova-qa-BUGwhoamiisslow"));
+        assert_eq!(body, "[BUG] whoami is slow.\nDetails here");
+        // Over-cap bodies clamp on a char boundary + get the truncation note.
+        let long = "é".repeat(TELEMETRY_MAX_BODY); // 2 bytes/char → over cap
+        let (_, _, body) = feedback_report("cli", &long);
+        assert!(body.len() <= TELEMETRY_MAX_BODY + "\n…(truncated)".len());
+        assert!(body.ends_with("…(truncated)"));
     }
 
     #[test]

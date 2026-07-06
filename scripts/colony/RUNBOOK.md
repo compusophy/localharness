@@ -1,11 +1,11 @@
 # Colony pipeline runbook
 
-The colony is the dev team. This is the operator loop that turns on-chain
-feedback into merged code and pays the worker — every script here is
+The colony is the dev team. This is the operator loop that turns feedback into
+merged code and pays the worker — every script here is
 **dry-run by default**; `--live` opts in and only the maintainer runs it.
 
 ```
-on-chain feedback ──sync-issues──▶ GitHub issue ──issue-to-bounty──▶ $LH escrow
+feedback (off-chain telemetry → GitHub issue) ──issue-to-bounty──▶ $LH escrow
                                                                         │
    settle-on-merge ◀── maintainer merges ◀── verify.sh gates ◀── agent claims +
    (pays worker's TBA)                                            authors a PR
@@ -19,29 +19,17 @@ arrays, no shell).
 
 - `gh auth status` green (see **Auth** below).
 - `cargo build --features wallet` → `target/debug/localharness(.exe)`
-  (override with `LOCALHARNESS_BIN`). Needed for the bounty legs; the
-  issue-sync leg reads the chain directly over JSON-RPC.
+  (override with `LOCALHARNESS_BIN`). Needed for the bounty legs.
 - Poster identity: bounties post `--as claude` by default — that key must
   exist (`~/.localharness/keys/claude.key`) and its wallet must hold the
   reward (`localharness credits --as claude`).
 
 ## 1. Feedback → issues
 
-```sh
-node scripts/colony/sync-issues.mjs            # dry run: audit what would be filed
-node scripts/colony/sync-issues.mjs --live     # file them (label: colony)
-```
-
-Skips: indices in `docs/feedback-resolved.txt`, indices already tracked by an
-OPEN issue (matched on the `lh-feedback:<index>` marker line in the body),
-and exact-duplicate texts (first index wins, dups noted in the footer).
-
-Rules that keep the dedup honest:
-- **Closing an issue without merging a fix?** Add the index to
-  `docs/feedback-resolved.txt` in the same commit, or the next sync re-files it.
-- **After an owner `clearFeedback()`** on-chain indices restart at 0 — start
-  `feedback-resolved.txt` over (its header says the same) **and** close/relabel
-  stale `lh-feedback:` issues, or markers will collide across epochs.
+Feedback arrives as GitHub issues DIRECTLY: the in-app feedback box and
+`localharness feedback <text>` POST the proxy's telemetry endpoint
+(`proxy/api/telemetry.ts`), which files an issue in the telemetry repo. There
+is no sync step — label an issue `colony` to pull it into this pipeline.
 
 ## 2. Issue → bounty
 
@@ -90,25 +78,21 @@ bounty isn't in `submitted` state or the on-chain claimant ≠ `--worker`
 (accept pays the CLAIMANT's TBA — this check stops claim-squatter payouts).
 Runs (on `--live`): `localharness bounty accept --as claude <id>`.
 
-Close the loop: add the feedback index (`lh-feedback:<n>` in the issue body)
-to `docs/feedback-resolved.txt` in the commit that landed the fix.
-
 ## 6. The public board
 
 `build-board.mjs` renders the whole pipeline to a viewable page so anyone —
 humans, agents, contributors — can see what's open and join. It is **read-only**
-(no `--live`, never writes on-chain or to GitHub) and joins all three rungs:
-on-chain feedback → `colony` issue → bounty → PR → settled.
+(no `--live`, never writes on-chain or to GitHub) and joins the rungs:
+`colony` issue → bounty → PR → settled.
 
 ```sh
 node scripts/colony/build-board.mjs                  # → web/colony.html (default)
-node scripts/colony/build-board.mjs --feedback 50    # widen the recent-feedback window
 node scripts/colony/build-board.mjs --out /tmp/b.html # custom output path
 node scripts/colony/build-board.mjs --stdout         # print HTML, write nothing
 ```
 
 Reads: on-chain via raw `eth_call` (`lib.mjs` `ethCall` + keccak-derived
-`selector` — `feedbackAt` / `getBounty` / `bountyTaskOf` / `resultOf` /
+`selector` — `getBounty` / `bountyTaskOf` / `resultOf` /
 `nameOfId`); GitHub via `gh issue list --label colony`. It walks the bounty id
 space directly (not just `openBounties`) so settled/paid history shows in the
 totals. The public RPC 429s under bursts, so the reads are serialized with a
@@ -150,8 +134,6 @@ follow-up, not built yet.
 - **PR authoring** — agents claim + submit, but the fix itself is human or a
   pluggable `$FIX_CMD` behind `scripts/issue-to-pr.sh`.
 - **Merge** — always the maintainer, always behind a green `scripts/verify.sh`.
-- **Issue closure bookkeeping** — `feedback-resolved.txt` lines are written by
-  hand in the fixing commit.
 - **gh 2.45 limitation** — no `closedByPullRequestsReferences`, so the merged-PR
   check scans the last 200 merged PRs for a `#<issue>` reference (closing
   keywords ranked first). Upgrade gh and this can become an exact linked-PR query.

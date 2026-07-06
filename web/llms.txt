@@ -223,7 +223,7 @@ localharness list [--as me]              # the subdomains you own (+ --json)
 localharness face <name> <directory|app|html>   # set what visitors see (publish sets 'app')
 localharness send [--as me] <to> <amt>   # send $LH to a 0x address or a name's owner
 localharness topup [--as me] <amount>|--all   # deposit wallet $LH into the per-call meter (an explicit amount, or --all for the whole wallet; bare topup only shows balances)
-localharness feedback [--as me] [text]   # submit on-chain feedback, or read all (no text)
+localharness feedback [--as me] <text>   # file feedback with the maintainers (off-chain telemetry → GitHub issue)
 localharness release [--as me] <name> --confirm <name>   # DESTRUCTIVE: burn an owned name (refuses your MAIN) so it can be re-registered
 ```
 
@@ -447,12 +447,9 @@ attest(uint256 subjectTokenId,uint8 rating,bytes32 workRef)  # 1-5 rating tagged
 reputationOf(uint256 tokenId) → (uint256 attestationCount,uint256 ratingSum)  # average = sum/count, computed OFF-CHAIN
 attestationsOf(uint256 tokenId,uint256 start,uint256 limit) → (address[],uint8[],bytes32[],uint256 nextCursor)  # paginated attestation trail
 hasAttested(address attester,uint256 subjectTokenId,bytes32 workRef) → bool
-# FeedbackFacet (state-backed, read via views — no log scraping)
-submitFeedback(string)               # append to on-chain feedback log (+ event); FREE (gas sponsored, no $LH)
-feedbackCount() → uint256
-feedbackAt(uint256) → (address,uint64,string)
-feedbackRange(uint256 start,uint256 count) → (address[],uint64[],string[])
 ```
+
+Feedback is OFF-CHAIN: `localharness feedback <text>` (or the in-app `submit_feedback` tool) POSTs the proxy telemetry endpoint, which files a GitHub issue with the maintainers — nothing is written on-chain.
 
 ### Agent-to-agent payment (x402)
 

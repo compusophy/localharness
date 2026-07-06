@@ -49,7 +49,7 @@ is the only durable handle.
 > separate-deploy credit proxy / relay / metering), `contracts/` (Diamond
 > cut/storage/deploy gotchas; facet semantics in contracts/README.md), `web/`
 > (cache-buster + cartridge-worker↔Rust parity), and `scripts/` (release atomicity
-> + PS5 trap + feedback tooling). Every `src/` module dir + proxy + contracts + web +
+> + PS5 trap + QA tooling). Every `src/` module dir + proxy + contracts + web +
 > scripts own a spec; the root stays a whole-repo MAP and detail lives in the specs.
 
 ```
@@ -86,7 +86,7 @@ src/                  library crate
 ├── wallet.rs         secp256k1 + BIP-39 + RLP (feature "wallet"; all targets)
 ├── registry/         Diamond JSON-RPC + Tempo tx (feature "wallet"): one module
 │                     per facet (names tba credits x402 schedule invite bounty
-│                     party reputation validation guild voting feedback
+│                     party reputation validation guild voting
 │                     signaling) + multichain (READ-ONLY EVM:
 │                     per-chain eth_call/getBalance, ENS namehash+resolve, curated
 │                     CORS RPC table — the evm_* tools) + sponsor_relay(mainnet
@@ -185,8 +185,8 @@ proxy/        $LH credit proxy — SEPARATE Vercel project. The ONE off-chain
               api/mcp.ts(x402-gated MCP-over-HTTP) + api/scheduler.ts(Vercel-Cron
               no-tab job worker) + api/notify.ts(web-push, self or cross-agent
               `to`, sender-stamped; CLI `notify --to`)
-scripts/      release.{ps1,sh} build-web.{ps1,sh} harvest-feedback.{sh,ps1}
-              clear-feedback.sh issue-to-pr.sh test-fleet/(12 QA personas)
+scripts/      release.{ps1,sh} build-web.{ps1,sh} issue-to-pr.sh
+              test-fleet/(12 QA personas)
 examples/tempo_tx_live.rs  — live harness vs Moderato; source of truth for tempo_tx
 design/       README.md(index) + active docs + shipped/ (e.g.
               shipped/agent-coordination.md — the economy-ladder design)
@@ -397,11 +397,10 @@ each, gotchas only.
 - **ERC721Facet** — every name is an NFT; `tokenURI(id)` → `<name>.localharness.xyz`.
 - **TbaFacet** — EIP-6551 `tokenBoundAccount(id)`/`…ByName`; deploy idempotent.
 - **MainIdentityFacet** — `mainOf`/`mainNameOf`/`isMain`; auto-set on first-claim.
-- **FeedbackFacet** — `submitFeedback(string)` (2048-byte cap, 1.3–17M gas; gas =
-  spam filter). Owner `clearFeedback()` = TRANSIENT inbox; event log survives.
-  **OPT-IN now** (gas-costly): feedback + auto error/cartridge reports default to
-  the OFF-CHAIN telemetry repo (`src/app/telemetry.rs` → `proxy/api/telemetry.ts`
-  → GitHub Issues = the task list); on-chain is the `lh_feedback_onchain` toggle.
+- **FeedbackFacet** — RETIRED client-side: still cut on-chain, but no client
+  path writes/reads it. Feedback + auto error/cartridge reports go to the
+  OFF-CHAIN telemetry repo (`src/app/telemetry.rs` → `proxy/api/telemetry.ts`
+  → GitHub Issues = the task list).
 - **CreditsFacet** — `LocalharnessCredits` TIP-20; diamond holds `ISSUER_ROLE`.
   `dailyAllowance` 0 (DISABLED — sybil hole). Funding = redeem + `send_lh`.
 - **RedeemFacet** — owner `addRedeemCodes`, holder `redeem(code)` (mint + burn).
