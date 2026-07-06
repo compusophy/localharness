@@ -167,8 +167,9 @@ enum Action {
     /// Open/close the OPFS file-browser modal (header [files] button +
     /// the modal's own ×).
     ToggleFiles,
-    /// Open/close the header feedback-bug dropdown (#36) — the on-chain feedback
-    /// widget, anchored under the bug button (between the bell and the cog).
+    /// Open/close the header feedback-bug dropdown (#36) — the feedback widget
+    /// (off-chain telemetry), anchored under the bug button (between the bell
+    /// and the cog).
     ToggleFeedback,
     FeedbackSubmit,
     /// Dismiss the QR seed-adoption panel back to the "add a device" button.

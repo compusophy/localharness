@@ -932,17 +932,16 @@ pub(crate) fn compact_context_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
-/// `submit_feedback(text)` — file user feedback OFF-CHAIN (rich context) by
-/// default; mirror it on-chain only when the owner opted in.
+/// `submit_feedback(text)` — file user feedback OFF-CHAIN (rich context) to the
+/// private telemetry repo. The on-chain FeedbackFacet mirror was removed.
 pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     // Hoisted table: `crate::tool_params::SubmitFeedbackParams`.
     let schema = crate::tool_params::SubmitFeedbackParams::schema();
     ClosureTool::new(
         "submit_feedback",
         "Submit user feedback. Filed off-chain to the private telemetry repo with full \
-         context (conversation, device, settings); ALSO mirrored on-chain via the \
-         FeedbackFacet only if the owner enabled on-chain feedback. Use this when the \
-         user asks to leave feedback or to report an issue about another agent.",
+         context (conversation, device, settings). Use this when the user asks to leave \
+         feedback or to report an issue about another agent.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let params = crate::tool_params::SubmitFeedbackParams::lenient(&args);
@@ -950,49 +949,17 @@ pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if text.is_empty() {
                 return Err(crate::error::Error::other("feedback text cannot be empty"));
             }
-            let onchain = crate::app::feedback::feedback_onchain_enabled();
-            if onchain && text.len() > 2048 {
-                return Err(crate::error::Error::other(format!(
-                    "feedback too long for the on-chain mirror: {} bytes (max 2048) — please shorten",
-                    text.len()
-                )));
+            // The telemetry POST is personal-sign authed — without an identity it
+            // would silently no-op while the tool claimed success.
+            if crate::app::chat::credit_signer().await.is_none() {
+                return Err(crate::error::Error::other("no identity — claim a subdomain first"));
             }
-            let from_hex = crate::app::APP.with(|cell| {
-                use crate::app::VerifyState;
-                match &cell.borrow().verify_state {
-                    VerifyState::Verified { address } => Some(address.clone()),
-                    VerifyState::Visitor { visitor_address, .. } => Some(visitor_address.clone()),
-                    _ => cell.borrow().wallet.as_ref().map(|w| w.address_hex()),
-                }
-            });
-            let from_hex = from_hex.ok_or_else(|| {
-                crate::error::Error::other("no identity — claim a subdomain first")
-            })?;
             let agent =
                 crate::app::tenant::current_name().unwrap_or_else(|| "apex".to_string());
-            // On-chain ONLY when opted in (default off — off-chain is the cheap,
-            // rich primary path). A failed on-chain leg doesn't abort the report.
-            let tx = if onchain {
-                match crate::app::feedback::submit_feedback_onchain(&from_hex, text).await {
-                    Ok(h) => Some(h),
-                    Err(e) => {
-                        return Err(crate::error::Error::other(format!(
-                            "feedback on-chain submit failed: {e}"
-                        )))
-                    }
-                }
-            } else {
-                None
-            };
-            // The rich off-chain report is the primary record (full context,
-            // linked to the tx when present). Await so the tool returns only once
-            // filed (deliberate action — independent of the auto-telemetry toggle).
-            crate::app::telemetry::report_feedback(agent, tx.clone(), text.to_string()).await;
-            Ok(serde_json::json!({
-                "status": "submitted",
-                "onchain": onchain,
-                "tx_hash": tx,
-            }))
+            // Await so the tool returns only once filed (deliberate action —
+            // independent of the auto-telemetry toggle).
+            crate::app::telemetry::report_feedback(agent, text.to_string()).await;
+            Ok(serde_json::json!({ "status": "submitted" }))
         },
     )
 }

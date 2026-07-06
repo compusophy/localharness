@@ -746,7 +746,9 @@ fn transfer_recipient(input: &[u8]) -> Result<[u8; 20], String> {
 /// whose selector isn't here is refused. Admin/owner-gated selectors
 /// (`diamondCut`, `adminReset*`, `mintFromFiat`, `meter`, `recordRun`) are
 /// deliberately ABSENT — they revert without the role anyway and must never be
-/// cross-origin-signed. Selectors are computed from the canonical signatures so
+/// cross-origin-signed. `submitFeedback`/`setPushSub` are gone too: feedback and
+/// push enrollment moved fully OFF-CHAIN (telemetry repo / proxy push store).
+/// Selectors are computed from the canonical signatures so
 /// they stay in lockstep with `registry::selector`.
 fn diamond_signable_selectors() -> Vec<[u8; 4]> {
     [
@@ -759,7 +761,6 @@ fn diamond_signable_selectors() -> Vec<[u8; 4]> {
         "depositCredits(uint256)",
         "redeem(string)",
         "openSession()",
-        "submitFeedback(string)",
         "scheduleJob(uint256,bytes,uint64,uint128,uint32)",
         "cancelJob(uint256)",
         "createInvite(bytes32,uint256,uint64)",
@@ -776,7 +777,6 @@ fn diamond_signable_selectors() -> Vec<[u8; 4]> {
         "announce(bytes32,address,address,bytes,bytes)",
         "leave(bytes32,address,address,bytes)",
         "postSignal(address,bytes)",
-        "setPushSub(bytes)",
         "createGuild(string)",
         "inviteToGuild(uint256,address)",
         "setRole(uint256,address,uint8)",

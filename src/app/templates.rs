@@ -236,8 +236,8 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                 (stage_status_slot())
                 // Header: bell · feedback (bug) · settings (cog) — three square
                 // icon buttons. The feedback bug button (#36) sits BETWEEN the
-                // bell and the cog and opens the on-chain feedback widget as its
-                // own dropdown (no longer an admin tab). Files opens from admin.
+                // bell and the cog and opens the feedback widget (off-chain
+                // telemetry) as its own dropdown. Files opens from admin.
                 div #header-admin .header-admin {
                     (notif_bell())
                     (feedback_bug())
@@ -254,7 +254,7 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
 
 /// The header feedback (bug) button + its dropdown (#36). A square icon button
 /// — same `.header-button` treatment as the bell/cog — that toggles the
-/// on-chain feedback widget as a dropdown anchored under it (the feedback admin
+/// feedback widget as a dropdown anchored under it (the feedback admin
 /// TAB was retired). Wrapped in `.feedback-bug-wrap` (position:relative) so the
 /// panel anchors to the button like the notif bell.
 pub(crate) fn feedback_bug() -> Markup {
@@ -268,11 +268,11 @@ pub(crate) fn feedback_bug() -> Markup {
     }
 }
 
-/// The feedback-bug dropdown panel — the on-chain feedback widget (textarea +
+/// The feedback-bug dropdown panel — the feedback widget (textarea +
 /// submit + msg slot) in a bordered box anchored under the bug button, mirroring
 /// the notif panel. `hidden` controls visibility; `toggle-feedback` re-renders
 /// it open/closed. Reuses the exact `#feedback-text`/`#feedback-msg` ids
-/// `feedback::feedback_submit` drives, so the submit/rate-limit/sign path is
+/// `feedback::feedback_submit` drives, so the submit/rate-limit path is
 /// unchanged from the old admin tab.
 pub(crate) fn feedback_panel(hidden: bool) -> Markup {
     html! {
@@ -706,11 +706,11 @@ fn terminal_surface(argv: &str, run: &crate::app::cli::CliRun) -> Markup {
 // `display: none` shim. If a footer ever comes back, reintroduce
 // here with a meaningful purpose.
 
-/// The on-chain feedback widget — textarea + submit + msg slot. Lives in the
+/// The feedback widget — textarea + submit + msg slot. Lives in the
 /// header feedback-bug dropdown ([`feedback_panel`], #36); the admin feedback
-/// TAB was retired in its favour. On-chain write-only: the textarea + submit
-/// reuse the exact ids `feedback::feedback_submit` drives (`#feedback-text` /
-/// `#feedback-msg`), so the submit / rate-limit / sign path is unchanged. Submit
+/// TAB was retired in its favour. Submissions go OFF-CHAIN via telemetry: the
+/// textarea + submit reuse the exact ids `feedback::feedback_submit` drives
+/// (`#feedback-text` / `#feedback-msg`). Submit
 /// also mirrors to `.lh_feedback.txt` in OPFS as a local copy.
 pub(crate) fn admin_feedback_section() -> Markup {
     // No section TITLE (the bug-button + placeholder already say what this is) —
@@ -729,9 +729,8 @@ pub(crate) fn admin_feedback_section() -> Markup {
     }
 }
 
-// feedback_list() removed — feedback is write-only in the UI now. The
-// on-chain log is still public; triage it off-chain via
-// scripts/harvest-feedback.
+// feedback_list() removed — feedback is write-only in the UI now; the
+// telemetry repo's GitHub issues are the developer-side record.
 
 /// One assistant or user turn. `body_html` is already HTML (assistant
 /// turns inject their streaming segments and tool blocks here, so the

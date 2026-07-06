@@ -3,9 +3,10 @@
 //!
 //! On a REAL, unexpected failure the app submits ONE redacted report to the
 //! credit proxy (`/api/telemetry`), which files it as a GitHub issue in the
-//! private telemetry repo. This is the rich, off-chain counterpart to the short
-//! on-chain `FeedbackFacet` — we learn from failures the model didn't even
-//! notice (distinct from `record_lesson`, which the model writes deliberately).
+//! private telemetry repo — THE feedback rail (deliberate feedback rides the
+//! same path via [`report_feedback`]). We learn from failures the model didn't
+//! even notice (distinct from `record_lesson`, which the model writes
+//! deliberately).
 //!
 //! Privacy: the body is REDACTED on this device (keys/secrets stripped) BEFORE
 //! it leaves — the proxy never sees a secret. On by default; an owner can turn
@@ -207,10 +208,9 @@ pub(crate) fn signature_for(agent: &str, context: &str, err: &str) -> String {
     format!("{agent}-{context}-{fp}")
 }
 
-/// Rich off-chain feedback (design/telemetry-and-global-lessons.md). Off-chain is
-/// now the PRIMARY path (cheap, rich); `tx_hash` is `Some` only when the owner
-/// opted to ALSO mirror the short note on-chain, and is linked here RAW.
-pub(crate) async fn report_feedback(agent: String, tx_hash: Option<String>, feedback: String) {
+/// Rich off-chain feedback (design/telemetry-and-global-lessons.md) — THE
+/// feedback record (the on-chain FeedbackFacet write was removed).
+pub(crate) async fn report_feedback(agent: String, feedback: String) {
     let summary: String = feedback
         .split(['\n', '.'])
         .next()
@@ -226,11 +226,7 @@ pub(crate) async fn report_feedback(agent: String, tx_hash: Option<String>, feed
         .take(48)
         .collect();
     let signature = format!("feedback-{agent}-{fp}");
-    let raw_trailer = match tx_hash {
-        Some(tx) if !tx.trim().is_empty() => format!("on-chain tx: {tx}"),
-        _ => String::new(),
-    };
-    report_event("feedback".to_string(), None, title, signature, feedback, raw_trailer).await;
+    report_event("feedback".to_string(), None, title, signature, feedback, String::new()).await;
 }
 
 /// Project the live agent's last few turns into a short text block for a report
@@ -313,9 +309,8 @@ pub(crate) async fn context_block() -> String {
         "---\ncontext:\n  agent: {agent}\n  identity: {address}\n  model: {model}\n  \
          chain: {chain}\n  app: v{ver}\n  device: {form} · {ua}\n  viewport: {vw}x{vh}\n  \
          lang: {lang}\n  url: {url_q}\n  settings: byok={byok} key_present={key_present} \
-         theme={theme} telemetry={tele} feedback_onchain={fonchain}",
+         theme={theme} telemetry={tele}",
         ver = env!("CARGO_PKG_VERSION"),
         tele = enabled(),
-        fonchain = crate::app::feedback::feedback_onchain_enabled(),
     )
 }

@@ -397,10 +397,11 @@ each, gotchas only.
 - **ERC721Facet** — every name is an NFT; `tokenURI(id)` → `<name>.localharness.xyz`.
 - **TbaFacet** — EIP-6551 `tokenBoundAccount(id)`/`…ByName`; deploy idempotent.
 - **MainIdentityFacet** — `mainOf`/`mainNameOf`/`isMain`; auto-set on first-claim.
-- **FeedbackFacet** — RETIRED client-side: still cut on-chain, but no client
-  path writes/reads it. Feedback + auto error/cartridge reports go to the
-  OFF-CHAIN telemetry repo (`src/app/telemetry.rs` → `proxy/api/telemetry.ts`
-  → GitHub Issues = the task list).
+- **FeedbackFacet** — REMOVED 2026-07-06: selectors CUT from the mainnet
+  diamond (calls revert) and every client path deleted. Feedback + auto
+  error/cartridge reports flow ONLY through the off-chain telemetry repo
+  (`src/app/telemetry.rs` / CLI `feedback` → `proxy/api/telemetry.ts` →
+  GitHub Issues = the task list). Never reintroduce an on-chain path.
 - **CreditsFacet** — `LocalharnessCredits` TIP-20; diamond holds `ISSUER_ROLE`.
   `dailyAllowance` 0 (DISABLED — sybil hole). Funding = redeem + `send_lh`.
 - **RedeemFacet** — owner `addRedeemCodes`, holder `redeem(code)` (mint + burn).

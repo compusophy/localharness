@@ -65,6 +65,10 @@ ids still resolve. Apex `security` is `has_wallet`-gated (it shares `#import-slo
 no-wallet identity path). This REPLACED the old `.admin-tabbed` tabs + `ShowAdminTab` /
 `Reveal`+`HideSecurity` swaps; the on-chain enable-notifications + test buttons and the
 feedback-on-chain toggle were CUT (push rides the bell and is fully OFF-CHAIN now).
+**Feedback is OFF-CHAIN ONLY** (`feedback.rs` → `telemetry::report_feedback` → proxy
+`/api/telemetry` → GitHub issue; local OPFS mirror `.lh_feedback.txt`): the on-chain
+`FeedbackFacet.submitFeedback` write, the `lh_feedback_onchain` opt-in, and the
+apex-hosted feedback-resolutions bell feed are REMOVED — don't reintroduce them.
 
 **Chat-native admin cards (#36 phase 2).** Every admin surface is ALSO reachable
 inline in the transcript: free-routed admin intents ("settings" / "who am i" /
