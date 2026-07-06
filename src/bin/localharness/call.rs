@@ -470,19 +470,23 @@ async fn settle_call_payment(key_hex: &str, target: &str, value_wei: u128) -> i3
 /// `mcp` server's `call_agent` tool, so both reach an agent identically.
 /// Best-effort lazy meter funding shared by `call` / `run_agent_turn` /
 /// `probe`: when the caller's per-request meter is below one call's cost,
-/// deposit [`CALL_METER_TOPUP_WEI`] from their own wallet (sponsored gas).
+/// deposit [`bridge_amount`] from their own wallet (sponsored gas) — enough
+/// to cover ONE call, at least the [`CALL_METER_TOPUP_WEI`] buffer.
 /// One retry on the known-transient Tempo RPC flake, and a WARN (not
 /// silence) on final failure — a silently-skipped deposit surfaces minutes
 /// later as an unexplained 402 (seen live: colony judges quietly dropping
 /// out of the panel). Still best-effort: an unfunded wallet stays unfunded.
 pub(crate) async fn ensure_meter_funded(caller: &k256::ecdsa::SigningKey) {
     let addr = bytes_to_hex_str(&wallet::address(caller));
-    if registry::credit_balance_of(&addr).await.unwrap_or(0) >= CALL_COST_WEI {
+    let meter = registry::credit_balance_of(&addr).await.unwrap_or(0);
+    if meter >= CALL_COST_WEI {
         return;
     }
-    let deposit = || {
-        registry::deposit_credits_sponsored(caller, CALL_METER_TOPUP_WEI)
+    let wallet_lh = registry::token_balance_of(&addr).await.unwrap_or(0);
+    let Some(amount) = bridge_amount(meter, wallet_lh, CALL_COST_WEI, CALL_METER_TOPUP_WEI) else {
+        return; // empty wallet — nothing to bridge (the request will 402 below)
     };
+    let deposit = || registry::deposit_credits_sponsored(caller, amount);
     match deposit().await {
         Ok(_) => {}
         Err(e) if crate::colony::is_transient_rpc_error(&e) => {
@@ -494,6 +498,18 @@ pub(crate) async fn ensure_meter_funded(caller: &k256::ecdsa::SigningKey) {
             eprintln!("warning: meter top-up failed ({e}) — the call may 402");
         }
     }
+}
+
+/// Pure wallet→meter bridge decision (telemetry #43): how much to deposit so
+/// the meter covers ONE call. `None` = nothing to do (meter already covers, or
+/// empty wallet). At least the `buffer`, MORE when the buffer alone would still
+/// leave the meter short (the fleet 402: wallet 0.8 + meter 0.2 vs cost 1.0 —
+/// a flat 0.2 top-up left the meter at 0.4), capped at what the wallet holds.
+pub(crate) fn bridge_amount(meter: u128, wallet: u128, cost: u128, buffer: u128) -> Option<u128> {
+    if meter >= cost || wallet == 0 {
+        return None;
+    }
+    Some(buffer.max(cost - meter).min(wallet))
 }
 
 /// The `X-PAYMENT` request header name the proxy reads for an x402 per-call
@@ -963,6 +979,21 @@ pub(crate) fn forget(caller_name: Option<&str>, target: &str) -> i32 {
 mod tests {
     use super::*;
     use crate::args;
+
+    #[test]
+    fn bridge_amount_covers_one_call_not_just_the_buffer() {
+        // The telemetry #43 fleet case: 0.8 wallet + 0.2 meter vs 1.0 cost —
+        // a flat 0.2 buffer left the meter at 0.4 and the notify 402'd.
+        let (lh, buf) = (CALL_COST_WEI, CALL_METER_TOPUP_WEI);
+        assert_eq!(bridge_amount(lh / 5, 4 * lh / 5, lh, buf), Some(4 * lh / 5));
+        // Rich wallet: cover the shortfall exactly (> buffer).
+        assert_eq!(bridge_amount(lh / 5, 10 * lh, lh, buf), Some(4 * lh / 5));
+        // Tiny shortfall: still deposit the full buffer (avoid per-call txs).
+        assert_eq!(bridge_amount(lh - 1, 10 * lh, lh, buf), Some(buf));
+        // Meter already covers / empty wallet: no deposit.
+        assert_eq!(bridge_amount(lh, 10 * lh, lh, buf), None);
+        assert_eq!(bridge_amount(0, 0, lh, buf), None);
+    }
 
     #[test]
     fn parse_call_plain_target_and_message() {

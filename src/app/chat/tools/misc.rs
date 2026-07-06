@@ -738,6 +738,11 @@ pub(crate) async fn notify_cross_agent(
     let (signer, _addr) = crate::app::chat::credit_signer().await.ok_or_else(|| {
         crate::error::Error::other("no identity to authenticate the notify — claim a subdomain first")
     })?;
+    // Notify bills the per-request METER only — bridge any wallet $LH into it
+    // first, like the CLI's `ensure_meter_funded` (telemetry #43: a caller with
+    // a funded wallet but a short meter 402'd despite holding enough total).
+    // Idempotent + best-effort: a 0 wallet is one balance read, no tx.
+    crate::app::chat::ensure_credit_meter().await;
     let now = (js_sys::Date::now() / 1000.0) as u64;
     let token = crate::registry::proxy_auth_token(&signer, now, "notify");
     let endpoint = format!(
@@ -769,10 +774,16 @@ pub(crate) async fn notify_cross_agent(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown proxy error");
         // Structured status (slice A idiom): a metered notify that 402s
-        // classifies BACKEND_CREDITS off the real number, never prose.
+        // classifies BACKEND_CREDITS off the real number, never prose. A 402
+        // names the POT explicitly (telemetry #43): the meter, not the wallet.
+        let hint = if status.as_u16() == 402 {
+            " — notify bills the per-request METER; wallet $LH counts only once bridged into it"
+        } else {
+            ""
+        };
         return Err(crate::error::Error::http_status(
             status.as_u16(),
-            format!("notify {to} failed ({}): {msg}", status.as_u16()),
+            format!("notify {to} failed ({}): {msg}{hint}", status.as_u16()),
         ));
     }
     // TOOL-LEVEL ENROLLMENT CHECK: the proxy returns 200 with `enrolled: false`

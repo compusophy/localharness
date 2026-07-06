@@ -194,9 +194,11 @@ pub(crate) use vote::*;
 /// stale 0.01 `$LH` (pre-decoupling), which under-funded the meter so every call
 /// fell through to the x402 path (found dogfooding the mainnet call).
 const CALL_COST_WEI: u128 = 1_000_000_000_000_000_000;
-/// When the per-request meter can't cover a call, top it up with this much from
-/// the wallet — a small buffer (~20 calls) so we don't deposit on every call.
-/// A one-shot agent call pays PER REQUEST, not a 10-`$LH` hour-long session.
+/// When the per-request meter can't cover a call, top it up from the wallet by
+/// AT LEAST this buffer — the bridge deposits `max(buffer, shortfall)` capped at
+/// the wallet (`call::bridge_amount`, telemetry #43: the flat buffer alone could
+/// leave the meter still short of one call). A one-shot agent call pays PER
+/// REQUEST, not a 10-`$LH` hour-long session.
 const CALL_METER_TOPUP_WEI: u128 = 200_000_000_000_000_000;
 
 /// The facet's `MIN_INTERVAL` (seconds) — no sub-minute hammering. A shorter

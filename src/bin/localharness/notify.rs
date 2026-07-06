@@ -112,6 +112,16 @@ pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown proxy error");
     eprintln!("notify failed ({}): {msg}", status.as_u16());
+    if status.as_u16() == 402 {
+        // Name the pot (telemetry #43): notify bills the per-request METER —
+        // wallet $LH only counts once bridged, and the auto-bridge above is
+        // best-effort (it can fail or find the wallet empty).
+        eprintln!(
+            "hint: notify bills the per-request METER, not wallet $LH — the \
+             wallet→meter bridge did not cover one call. Run `localharness \
+             topup --all` (or redeem/send first), then retry."
+        );
+    }
     if status.as_u16() == 404 && to.is_none() {
         // The actionable half: the push target is enrolled in the BROWSER app.
         eprintln!(
