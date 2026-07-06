@@ -9,10 +9,9 @@
 // subscription objects (newest first, upserted by the stable `dev` device id,
 // else by endpoint — mirrors the old src/registry/push.rs::merge_push_sub).
 //
-// Written by POST /api/push-sub (personal-sign authed); read FIRST by the
-// notify / broadcast / scheduler resolution, which then falls back to the
-// LEGACY on-chain slots (MAIN-tokenId metadata + PushFacet.pushSubOf) so
-// devices enrolled before the migration keep working — no migration needed.
+// Written by POST /api/push-sub (personal-sign authed); it is the ONLY
+// enrollment source notify / broadcast / scheduler resolve — the legacy
+// on-chain slots (MAIN-tokenId metadata + PushFacet.pushSubOf) are gone.
 //
 // The underscore prefix keeps Vercel from deploying this as a route.
 
@@ -165,8 +164,8 @@ export async function pruneStorePushSubs(
 
 /**
  * ALL device subscriptions stored off-chain for `address` ([] when none /
- * store unconfigured / any error — NEVER throws: resolution falls back to the
- * legacy on-chain slots and a push miss must never fail the caller's request).
+ * store unconfigured / any error — NEVER throws: a push miss must never fail
+ * the caller's request).
  */
 export async function storePushSubs(address: string): Promise<PushSubscriptionJson[]> {
   if (!GH_TOKEN || !isStoreAddress(address)) return [];

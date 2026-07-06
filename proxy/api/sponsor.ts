@@ -110,7 +110,6 @@ const DIAMOND_WRITE_SIGS = [
   'depositCredits(uint256)',
   'redeem(string)',
   'openSession()',
-  'submitFeedback(string)',
   'scheduleJob(uint256,bytes,uint64,uint128,uint32)',
   'cancelJob(uint256)',
   'createInvite(bytes32,uint256,uint64)',
@@ -131,7 +130,6 @@ const DIAMOND_WRITE_SIGS = [
   'announce(bytes32,address,address,bytes,bytes)',
   'leave(bytes32,address,address,bytes)',
   'postSignal(address,bytes)',
-  'setPushSub(bytes)',
   'createGuild(string)',
   'inviteToGuild(uint256,address)',
   'setRole(uint256,address,uint8)',
@@ -233,18 +231,16 @@ const SELF_PAY_SELECTORS = new Set([
 
 // ALWAYS-FREE writes — sponsored regardless of the caller's $LH balance because
 // the platform wants them UNCONDITIONALLY available, not just during onboarding.
-// `submitFeedback` is the canonical case: feedback must always be free and
-// encouraged, so a graduated/funded agent (which on mainnet holds $LH, not the
-// AlphaUSD fee token, and so STILL can't self-pay gas) must not be locked out of
-// it with LH_RELAY_FUNDED. Abuse stays bounded by the rate caps + float breaker.
-// `register(string)` joins it: claiming a name is the fundamental onboarding +
+// (Feedback + push enrollment left this set entirely: both moved OFF-CHAIN —
+// proxy /api/telemetry and /api/push-sub — and their selectors are no longer
+// relayed at all.)
+// `register(string)`: claiming a name is the fundamental onboarding +
 // actor-model action, and it is necessarily done by a "funded" caller — the name
 // claim costs 1 $LH (pulled on-chain), and that caller can't self-pay gas on
 // mainnet (no fee token), so the onboarding-only gate was a hard CATCH-22 (you
 // need 1 $LH to register, but holding it triggers LH_RELAY_FUNDED). Abuse stays
 // bounded by the per-name 1-$LH cost + the rate caps + the float breaker.
 const ALWAYS_FREE_SELECTORS = new Set([
-  selector('submitFeedback(string)'),
   selector('register(string)'),
   // releaseName is register's lifecycle INVERSE — a user managing their own names
   // (claim ↔ release). It's destructive to the caller's OWN asset, moves no value,
@@ -252,13 +248,6 @@ const ALWAYS_FREE_SELECTORS = new Set([
   // not be locked out by the onboarding-only gate (#62: bulk_release_subdomains).
   // Bounded by the rate caps + float breaker.
   selector('releaseName(uint256)'),
-  // setPushSub registers THIS device's Web Push subscription (address-keyed).
-  // The header bell auto-enrolls on tap (notif_bell_pressed → enable_device_push);
-  // a FUNDED user must still be able to turn notifications on. It's gas-only —
-  // stores a subscription blob, moves no value, can't touch the sponsor's
-  // fee-token float — so the onboarding-only gate must not lock it out (R4:
-  // tapping the bell on a funded account returned LH_RELAY_FUNDED).
-  selector('setPushSub(bytes)'),
 ]);
 
 // The BOUNTY / economy-lifecycle surface — the agent economy's core loop
@@ -284,7 +273,7 @@ const BOUNTY_LIFECYCLE_SELECTORS = new Set([
 ]);
 
 // Everything exempt from the onboarding-only gate below: self-pay (move the
-// caller's OWN $LH) + always-free (feedback) + the bounty/economy lifecycle
+// caller's OWN $LH) + always-free (register/release) + the bounty/economy lifecycle
 // (escrow the caller's own $LH or gas-only, never the sponsor float). A call
 // batch made up entirely of these is sponsored even for a funded caller.
 const GATE_EXEMPT_SELECTORS = new Set([
@@ -570,8 +559,9 @@ export default async function handler(req: Request): Promise<Response> {
   // 7. Onboarding-only spend gate: sponsor only zero/near-zero-$LH callers —
   //    UNLESS every call is on the gate-exempt surface: self-pay (approve +
   //    settle + $LH transfer — a funded agent can't hold the fee token to pay its
-  //    own gas) OR always-free (submitFeedback — feedback must never be locked
-  //    behind funding). A mix with any other (onboarding/economy) write still gates.
+  //    own gas) OR always-free (register/releaseName — the name lifecycle must
+  //    never be locked behind funding). A mix with any other (onboarding/economy)
+  //    write still gates.
   const gateExempt = intent.calls.every(isGateExemptCall);
   if (!gateExempt) {
     try {

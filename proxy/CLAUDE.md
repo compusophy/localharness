@@ -21,8 +21,10 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   gross-mints at $1 = 100 `$LH`.
 - `sponsor.ts` — the KEYLESS mainnet fee-payer RELAY: selector allowlist +
   onboarding-only gate (funded callers → `LH_RELAY_FUNDED`) + rate window + float
-  breaker. Gate-EXEMPT (funded callers still relayed): `ALWAYS_FREE_SELECTORS`
-  (submitFeedback/register/releaseName/setPushSub), `SELF_PAY_SELECTORS` (settle/
+  breaker. `submitFeedback`/`setPushSub` are OFF the allowlist entirely (feedback
+  = /api/telemetry, push enrollment = /api/push-sub — the on-chain systems are
+  REMOVED). Gate-EXEMPT (funded callers still relayed): `ALWAYS_FREE_SELECTORS`
+  (register/releaseName), `SELF_PAY_SELECTORS` (settle/
   approve(diamond)/transfer/createInvite/reclaimInvite/withdrawCredits/
   depositCredits/redeem — caller's OWN $LH or owner-issued one-shot codes),
   `BOUNTY_LIFECYCLE_SELECTORS`, and `setMetadata` ≤4096B self-edits (live-probed:
@@ -36,13 +38,14 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   subscription … re-enroll" when nothing accepted (telemetry #40).
 - `push-sub.ts` + `_pushstore.ts` — OFF-CHAIN push-subscription enrollment (POST
   `{sub}` personal-sign authed → GitHub store `push-subs/<address>.json`; GET
-  `?address=` open). Replaced the browser's sponsored on-chain `setPushSub`
-  publish (bypassed the relay; "insufficient funds" for unfunded users).
-  notify/broadcast/scheduler resolve the store FIRST, then the legacy on-chain
-  slots read-only — pre-migration devices keep working.
-- `telemetry.ts` — files GitHub ISSUES in the private telemetry repo = the off-chain
-  feedback/error task list (PRIMARY path now). `MAX_BODY_BYTES` mirrors the Rust clamp
-  in `src/app/telemetry.rs` — keep them equal.
+  `?address=` open). REPLACED the on-chain `setPushSub` / MAIN-metadata publish;
+  the store is the ONLY source notify/broadcast/scheduler resolve (no on-chain
+  fallback — pre-migration devices must re-enroll). broadcast.ts still reads
+  SubscribeFacet.subscribersOf on-chain: that's the feed MEMBERSHIP roster (a
+  feed feature), not push enrollment.
+- `telemetry.ts` — files GitHub ISSUES in the private telemetry repo = THE
+  feedback/error task list (on-chain FeedbackFacet path removed). `MAX_BODY_BYTES`
+  mirrors the Rust clamp in `src/app/telemetry.rs` — keep them equal.
 - `publish.ts` + `app.ts` — the OFF-CHAIN app store (cartridges live in GitHub, NOT
   on-chain; the chain keeps only the name's ownership). `publish.ts` (POST, personal-
   sign authed like telemetry) verifies the caller owns `name` on-chain (`ownerOf(

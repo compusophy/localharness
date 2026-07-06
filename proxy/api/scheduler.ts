@@ -71,12 +71,7 @@
 
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex } from '@noble/hashes/utils';
-import {
-  parsePushSubs,
-  dedupeSubs,
-  sendWebPushAll,
-  type PushSubscriptionJson,
-} from './_webpush';
+import { sendWebPushAll } from './_webpush';
 import { storePushSubs } from './_pushstore';
 import {
   createPublicClient,
@@ -396,19 +391,6 @@ const NAME_ABI = [
   },
 ] as const;
 
-// mainOf(address) -> uint256 — the owner's MAIN identity tokenId (0 = none).
-// The browser app publishes its Web Push subscription under the MAIN slot
-// (fallback: the name's own id), mirroring the Gemini-key-sync slot rule.
-const MAIN_OF_ABI = [
-  {
-    name: 'mainOf',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [{ name: 'owner', type: 'address' }],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-] as const;
-
 // idOfName(string) -> uint256 — resolves a `call_agent` target name to its token
 // id (0 = unregistered). Mirrors mcp.ts::idOfName / registry::id_of_name.
 const ID_OF_NAME_ABI = [
@@ -423,11 +405,6 @@ const ID_OF_NAME_ABI = [
 
 const PERSONA_KEY = ('0x' +
   bytesToHex(keccak_256(new TextEncoder().encode('localharness.persona')))) as `0x${string}`;
-
-// Web Push subscription slot — written by the browser app's admin
-// "enable notifications" flow (src/app/notifications.rs), v1 plaintext.
-const PUSH_SUB_KEY = ('0x' +
-  bytesToHex(keccak_256(new TextEncoder().encode('localharness.push_sub')))) as `0x${string}`;
 
 // Self-recorded lessons slot — written by the browser app's record_lesson
 // tool (src/app/chat/tools/misc.rs; merge bounds in src/lessons.rs).
@@ -564,76 +541,17 @@ async function idOfName(name: string): Promise<bigint> {
   })) as bigint;
 }
 
-// pushSubOf(address) -> bytes — the address-keyed PushFacet slot (device
-// self-registration via the header bell).
-const PUSH_SUB_OF_ABI = [
-  {
-    name: 'pushSubOf',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [{ name: 'who', type: 'address' }],
-    outputs: [{ name: '', type: 'bytes' }],
-  },
-] as const;
-
 /**
- * ALL the job owner's enrolled Web Push subscriptions ([] when none) — the
- * OFF-CHAIN GitHub push store first (the live enroll path, _pushstore.ts),
- * then the LEGACY on-chain union: the MAIN-tokenId metadata slot (falling
- * back to the job's own targetId) and the address-keyed PushFacet slot. Each
- * source holds a JSON array of per-device entries, so a phone AND a desktop
- * both get buzzed (store entries win the dedupe — they're freshest).
- * Best-effort: any failure contributes nothing rather than failing the run.
- */
-async function pushSubsOf(
-  owner: string,
-  fallbackTokenId: bigint,
-): Promise<PushSubscriptionJson[]> {
-  const out: PushSubscriptionJson[] = [];
-  out.push(...(await storePushSubs(owner))); // never throws ([] on failure)
-  try {
-    let tokenId = (await publicClient().readContract({
-      address: REGISTRY as `0x${string}`,
-      abi: MAIN_OF_ABI,
-      functionName: 'mainOf',
-      args: [owner as `0x${string}`],
-    })) as bigint;
-    if (tokenId === 0n) tokenId = fallbackTokenId;
-    const raw = (await publicClient().readContract({
-      address: REGISTRY as `0x${string}`,
-      abi: METADATA_ABI,
-      functionName: 'metadata',
-      args: [tokenId, PUSH_SUB_KEY],
-    })) as `0x${string}`;
-    out.push(...parsePushSubs(decodeUtf8Bytes(raw).trim()));
-  } catch {
-    /* best-effort */
-  }
-  try {
-    const raw = (await publicClient().readContract({
-      address: REGISTRY as `0x${string}`,
-      abi: PUSH_SUB_OF_ABI,
-      functionName: 'pushSubOf',
-      args: [owner as `0x${string}`],
-    })) as `0x${string}`;
-    out.push(...parsePushSubs(decodeUtf8Bytes(raw).trim()));
-  } catch {
-    /* best-effort */
-  }
-  return dedupeSubs(out);
-}
-
-/**
- * Send ONE Web Push {title, body} to `owner`'s on-chain subscription (slot
- * rule in [`pushSubOf`]). Returns true iff the push service accepted. NEVER
+ * Send ONE Web Push {title, body} to every device subscription in `owner`'s
+ * OFF-CHAIN push-store blob (`push-subs/<address>.json`, _pushstore.ts — the
+ * ONLY enroll source). Returns true iff a push service accepted. NEVER
  * throws: missing VAPID env / no subscription / a send failure all resolve
- * to false. Bounded: one read + one 5s-capped POST. The shared plumbing
+ * to false. Bounded: one store read + 5s-capped POSTs. The shared plumbing
  * behind both [`notifyOwnerOfRun`] (the post-run summary) and the agent's
- * `notify_owner` tool (the in-run "buzz my owner" affordance, feedback #69).
+ * `notify_owner` tool (the in-run "buzz my owner" affordance, #69).
  */
 async function sendOwnerPush(
   owner: string,
-  fallbackTokenId: bigint,
   title: string,
   body: string,
 ): Promise<boolean> {
@@ -641,7 +559,7 @@ async function sendOwnerPush(
   const privateKey = process.env.VAPID_PRIVATE_KEY;
   const subject = process.env.VAPID_SUBJECT;
   if (!publicKey || !privateKey || !subject) return false; // push not configured
-  const subs = await pushSubsOf(owner, fallbackTokenId);
+  const subs = await storePushSubs(owner); // never throws ([] on failure)
   if (subs.length === 0) return false; // owner never enabled notifications
   const sent = await sendWebPushAll(subs, JSON.stringify({ title, body }), {
     publicKey,
@@ -660,14 +578,13 @@ async function sendOwnerPush(
  */
 async function notifyOwnerOfRun(
   owner: string,
-  targetId: bigint,
   jobId: string,
   targetName: string,
   output: string,
 ): Promise<void> {
   try {
     const body = output.length > 120 ? `${output.slice(0, 119)}…` : output;
-    await sendOwnerPush(owner, targetId, `${targetName} job #${jobId}`, body);
+    await sendOwnerPush(owner, `${targetName} job #${jobId}`, body);
   } catch (e) {
     console.warn(`[scheduler] notify owner of job ${jobId} failed: ${(e as Error).message}`);
   }
@@ -1380,9 +1297,9 @@ async function runPingPong(
     }
 
     if (call.name === 'notify_owner') {
-      // OWNER PUSH (the goal-loop "notify my owner" affordance — feedback
-      // #69). Sends to the JOB OWNER's on-chain subscription via the same
-      // sendOwnerPush plumbing as the post-run summary; owner + targetId come
+      // OWNER PUSH (the goal-loop "notify my owner" affordance — #69).
+      // Sends to the JOB OWNER's push-store subscriptions via the same
+      // sendOwnerPush plumbing as the post-run summary; the owner comes
       // from the job record, NOT from model args (a run can only buzz its own
       // owner). Not a model call, but COUNTED through the same gate + ledger
       // as one (mirrors schedule_task): each push costs COST_WEI from the
@@ -1408,15 +1325,15 @@ async function runPingPong(
       } else {
         calls++;
         commitSpend(tb, owner, COST_WEI);
-        // sendOwnerPush never throws; false = unconfigured push, no on-chain
+        // sendOwnerPush never throws; false = unconfigured push, no enrolled
         // subscription, or the push service rejected — the agent can report
         // that in its final answer instead of retrying.
-        const sent = await sendOwnerPush(owner, targetId, title, pushBody);
+        const sent = await sendOwnerPush(owner, title, pushBody);
         responsePayload = sent
           ? { sent: true }
           : {
               sent: false,
-              note: 'push not delivered (owner has no on-chain push subscription, or the push service refused)',
+              note: 'push not delivered (owner has no enrolled push subscription, or the push service refused)',
             };
       }
       contents.push({
@@ -2031,7 +1948,7 @@ async function processJob(
   if (outcome === 'recorded' && ran === 'ok' && (goal === 'completed' || exhaustedNow)) {
     const pushBody = goalReport !== undefined ? goalReport : runNote;
     const pushName = goal === 'completed' ? `GOAL COMPLETE: ${name}` : name;
-    await notifyOwnerOfRun(job.owner, job.targetId, idStr, pushName, pushBody);
+    await notifyOwnerOfRun(job.owner, idStr, pushName, pushBody);
   }
 
   return {
@@ -2103,7 +2020,7 @@ async function fireOffchainJob(
     }
     let pushed = false;
     try {
-      pushed = await sendOwnerPush(job.owner, fallbackTokenId, 'Reminder', job.task.slice(0, 200));
+      pushed = await sendOwnerPush(job.owner, 'Reminder', job.task.slice(0, 200));
     } catch {
       /* a push failure never fails — or re-fires — the reminder */
     }
@@ -2113,7 +2030,7 @@ async function fireOffchainJob(
       id: job.id,
       kind: 'reminder',
       outcome: next ? 'pushed' : 'exhausted',
-      note: pushed ? undefined : 'no on-chain push subscription (reminder consumed)',
+      note: pushed ? undefined : 'no enrolled push subscription (reminder consumed)',
     };
   }
 
@@ -2237,14 +2154,14 @@ async function fireOffchainJob(
   let outcome: OffchainResult['outcome'];
   if (goalReport !== undefined) {
     outcome = 'exhausted';
-    if (ran === 'ok') await notifyOwnerOfRun(job.owner, fallbackTokenId, job.id, `GOAL COMPLETE: ${name}`, goalReport);
+    if (ran === 'ok') await notifyOwnerOfRun(job.owner, job.id, `GOAL COMPLETE: ${name}`, goalReport);
   } else {
     const next = await writeNextSlot(job);
     outcome = next ? 'ran' : 'exhausted';
     // Push the result only on a TERMINAL run (last fire) — a recurring job that
     // pushed every run would buzz the owner once an interval while it works.
     if (ran === 'ok' && next === null) {
-      await notifyOwnerOfRun(job.owner, fallbackTokenId, job.id, name, note);
+      await notifyOwnerOfRun(job.owner, job.id, name, note);
     }
   }
 

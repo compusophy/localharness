@@ -11,23 +11,17 @@
 //     impossible. The meter debit (caller pays per push, same price as a
 //     model call) is the spam leash; per-recipient blocklists are follow-up.
 //
-// Target resolution (both modes) is the UNION of every slot a device can
-// enroll under, fanned out to ALL devices (each slot holds a JSON ARRAY of
-// per-device subscriptions), OFF-CHAIN store first:
-//   1. the GitHub push store (`push-subs/<owner>.json`, _pushstore.ts) — the
-//      LIVE enroll path (POST /api/push-sub from the header bell / app open);
-//   2. LEGACY on-chain slots, read-only fallback so devices enrolled before
-//      the off-chain migration keep working with no migration:
-//      `metadata(mainOf(owner), keccak256("localharness.push_sub"))`, the
-//      same slot keyed by the name's own tokenId, and the address-keyed
-//      `pushSubOf(owner)` PushFacet slot.
+// Target resolution (both modes): the GitHub push store
+// (`push-subs/<owner>.json`, _pushstore.ts) — the ONLY enroll path (POST
+// /api/push-sub from the header bell / app open); the blob holds a JSON ARRAY
+// of per-device subscriptions and a push fans out to ALL of them.
 //
 // DEAD-SUB PRUNING (telemetry #40): a push service 404/410 means the
 // subscription is expired/unsubscribed — it is PRUNED from the store blob
-// (best-effort, store entries only; legacy on-chain slots are read-only) and,
-// when NO endpoint accepted, the caller gets an honest "no live push
-// subscription … re-enroll" instead of a generic send failure. Without this a
-// stale endpoint was re-served forever and every closed-tab push died silently.
+// (best-effort) and, when NO endpoint accepted, the caller gets an honest
+// "no live push subscription … re-enroll" instead of a generic send failure.
+// Without this a stale endpoint was re-served forever and every closed-tab
+// push died silently.
 //
 // AUTH + BILLING are byte-compatible with api/fetch.ts / api/gemini.ts: the
 // caller sends `<address>:<timestamp>:<signature>` (an Ethereum personal-sign
@@ -70,14 +64,7 @@
 //     so checked POST-AUTH: an unauthenticated request must not be able to burn
 //     a victim's recipient window and block legit cross-agent notifies.
 
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex } from '@noble/hashes/utils';
-import {
-  parsePushSubs,
-  dedupeSubs,
-  sendWebPushAllDetailed,
-  type PushSubscriptionJson,
-} from './_webpush';
+import { sendWebPushAllDetailed, type PushSubscriptionJson } from './_webpush';
 import { recordOnChainMessage } from './_message';
 import { storePushSubs, pruneStorePushSubs } from './_pushstore';
 import { SlidingWindow, claimedAddress } from './_ratelimit';
@@ -126,13 +113,6 @@ const NOTIFY_SENDER_PER_MIN = 10;
 const NOTIFY_RECIPIENT_PER_MIN = 10;
 const senderWindow = new SlidingWindow(NOTIFY_SENDER_PER_MIN, 60_000);
 const recipientWindow = new SlidingWindow(NOTIFY_RECIPIENT_PER_MIN, 60_000);
-
-// LEGACY on-chain Web Push subscription slot — what the browser app used to
-// publish under the owner's MAIN tokenId before subs moved to the off-chain
-// store (_pushstore.ts). Read-only fallback now; the scheduler reads it too.
-const PUSH_SUB_KEY = bytesToHex(
-  keccak_256(new TextEncoder().encode('localharness.push_sub')),
-);
 
 // The MessageFacet inbox writer (sendMessage) + its 1024-byte body cap live in
 // the shared `_message.ts` — both this route (cross-agent no-push fallback) and
@@ -189,63 +169,17 @@ function encodeStringArg(s: string): string {
   );
 }
 
-/** `metadata(tokenId, push_sub_key)` → validated subscriptions ([] if none). */
-async function subsFromMetadata(tokenId: bigint): Promise<PushSubscriptionJson[]> {
-  if (tokenId === 0n) return [];
-  const data =
-    '0x' +
-    selector('metadata(uint256,bytes32)') +
-    tokenId.toString(16).padStart(64, '0') +
-    PUSH_SUB_KEY;
-  return parsePushSubs(decodeAbiBytesUtf8(await ethCall(data)).trim());
-}
-
-/** Address-keyed PushFacet slot (`pushSubOf(address)`) → subscriptions. */
-async function subsFromAddress(address: string): Promise<PushSubscriptionJson[]> {
-  const data = '0x' + selector('pushSubOf(address)') + encodeAddressWord(address);
-  return parsePushSubs(decodeAbiBytesUtf8(await ethCall(data)).trim());
-}
-
-/**
- * Resolve an OWNER ADDRESS to ALL its enrolled device subscriptions — the
- * OFF-CHAIN store first (the live enroll path), then the UNION of the legacy
- * on-chain slots (see the header), deduped by device/endpoint (store entries
- * win the dedupe — they're freshest). MULTI-DEVICE by design: a phone and a
- * desktop on the same seed each hold an entry; a push fans out to every one
- * (a first-match rule silently dropped every device but one). `tokenId` is
- * the name's own id when targeting by name (0n when targeting the caller).
- */
-async function resolveSubsForOwner(
-  owner: string,
-  tokenId: bigint,
-): Promise<PushSubscriptionJson[]> {
-  const main = BigInt(
-    await ethCall('0x' + selector('mainOf(address)') + encodeAddressWord(owner)),
-  );
-  const [store, a, b, c] = await Promise.all([
-    storePushSubs(owner),
-    subsFromMetadata(main),
-    main === tokenId ? Promise.resolve([]) : subsFromMetadata(tokenId),
-    subsFromAddress(owner),
-  ]);
-  return dedupeSubs([...store, ...a, ...b, ...c]);
-}
-
-/** The CALLER's own device subscriptions (self-notify). */
-async function pushSubsOfCaller(address: string): Promise<PushSubscriptionJson[]> {
-  return resolveSubsForOwner(address, 0n);
-}
-
 /** Thrown by pushSubsOfName when the name isn't registered at all. */
 class NoSuchAgentError extends Error {}
 
 /**
  * A NAMED agent's device subscriptions (cross-agent notify): name → tokenId →
- * owner → the slot union. Throws NoSuchAgentError for an unregistered name;
- * `subs` is [] when the agent exists but no device ever enrolled. `toId` is the
- * recipient's tokenId — kept so a no-subscription delivery can still RECORD the
- * note on-chain (MessageFacet inbox) for the recipient to read at boot (#35).
- * `owner` is kept so dead store subs discovered at send time can be PRUNED.
+ * owner → the owner's push-store blob. Throws NoSuchAgentError for an
+ * unregistered name; `subs` is [] when the agent exists but no device ever
+ * enrolled. `toId` is the recipient's tokenId — kept so a no-subscription
+ * delivery can still RECORD the note on-chain (MessageFacet inbox) for the
+ * recipient to read at boot (#35). `owner` is kept so dead store subs
+ * discovered at send time can be PRUNED.
  */
 async function pushSubsOfName(
   name: string,
@@ -258,7 +192,7 @@ async function pushSubsOfName(
     '0x' + selector('ownerOf(uint256)') + id.toString(16).padStart(64, '0'),
   );
   const owner = '0x' + stripHex(ownerWord).slice(-40);
-  return { subs: await resolveSubsForOwner(owner, id), toId: id, owner };
+  return { subs: await storePushSubs(owner), toId: id, owner };
 }
 
 /**
@@ -399,7 +333,7 @@ export default async function handler(req: Request): Promise<Response> {
         recipientId = r.toId;
         subsOwner = r.owner;
       } else {
-        subs = await pushSubsOfCaller(address);
+        subs = await storePushSubs(address);
       }
     } catch (e) {
       if (e instanceof NoSuchAgentError) {

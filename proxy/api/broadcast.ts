@@ -6,8 +6,9 @@
 // "ready up" / "your turn" / "match starting" buzz to everyone subscribed to a
 // feed, with no tab open on the recipient devices. It is notify.ts's FAN-OUT
 // sibling — same auth, same token scheme, same `sendWebPush` plumbing — but it
-// reads the feed's SUBSCRIBER SET off-chain (SubscribeFacet.subscribersOf) and
-// pushes to each subscriber's published Web Push subscription instead of the
+// reads the feed's SUBSCRIBER SET on-chain (SubscribeFacet.subscribersOf — the
+// feed's MEMBERSHIP roster, a feed feature distinct from push enrollment) and
+// pushes to each subscriber's off-chain push-store subscription instead of the
 // caller's own. Unlike notify.ts, a broadcast is FREE (not metered) — see below.
 //
 // WHO MAY BROADCAST — IDENTITY-GATED, NOT OWNER-GATED. The only gate on the
@@ -40,14 +41,7 @@
 // the per-FEED cooldown below. With broadcasts free, these rate limits + the
 // identity gate ARE the spam story.
 
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex } from '@noble/hashes/utils';
-import {
-  parsePushSubs,
-  dedupeSubs,
-  sendWebPushAll,
-  type PushSubscriptionJson,
-} from './_webpush';
+import { sendWebPushAll } from './_webpush';
 import { SlidingWindow, claimedAddress } from './_ratelimit';
 import { storePushSubs } from './_pushstore';
 
@@ -62,7 +56,6 @@ import {
   isAllowedOrigin,
   verifyAuthToken,
   selector,
-  encodeAddressWord,
   stripHex,
   ethCall,
 } from './_auth';
@@ -102,14 +95,6 @@ const lastBroadcastAt = new Map<string, number>();
 // below still requires a real signature).
 const BROADCAST_SENDER_PER_MIN = 3;
 const senderWindow = new SlidingWindow(BROADCAST_SENDER_PER_MIN, 60_000);
-
-// Web Push subscription slot — written by the browser app's "enable
-// notifications" flow (src/app/notifications.rs), under each owner's MAIN
-// tokenId (fallback: the name's own id), v1 plaintext JSON. Same slot
-// notify.ts / scheduler.ts read.
-const PUSH_SUB_KEY = bytesToHex(
-  keccak_256(new TextEncoder().encode('localharness.push_sub')),
-);
 
 // ---- CORS (same policy as notify.ts; isAllowedOrigin shared via _auth.ts) -----
 
@@ -161,65 +146,6 @@ async function subscribersOf(targetId: bigint): Promise<string[]> {
     out.push('0x' + h.slice(wordStart + 24, wordStart + 64).toLowerCase());
   }
   return out;
-}
-
-/** Decode an ABI-encoded dynamic `bytes` return into UTF-8 text ('' if empty). */
-function decodeAbiBytesUtf8(resultHex: string): string {
-  const h = stripHex(resultHex);
-  if (h.length < 128) return ''; // needs at least offset + length words
-  const off = Number(BigInt('0x' + h.slice(0, 64))) * 2;
-  const len = Number(BigInt('0x' + h.slice(off, off + 64)));
-  if (len === 0) return '';
-  const dataStart = off + 64;
-  if (h.length < dataStart + len * 2) return '';
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = parseInt(h.slice(dataStart + i * 2, dataStart + i * 2 + 2), 16);
-  }
-  return new TextDecoder().decode(bytes);
-}
-
-/**
- * Resolve ONE subscriber address to ALL its published Web Push subscriptions
- * ([] when none). Slot rule mirrors notify.ts / scheduler.ts. Best-effort.
- */
-async function pushSubsOf(address: string): Promise<PushSubscriptionJson[]> {
-  // OFF-CHAIN store first (the live enroll path), then the UNION of the LEGACY
-  // on-chain slots, ALL device entries (each holds a JSON array; legacy single
-  // objects still parse). Store entries win the dedupe — they're freshest.
-  const out: PushSubscriptionJson[] = [];
-  // 1) The GitHub push store (`push-subs/<address>.json`) — POST /api/push-sub
-  //    writes it on the bell tap / app open. Never throws ([] on any failure).
-  out.push(...(await storePushSubs(address)));
-  // 2) LEGACY address-keyed (PushFacet.pushSubOf) — devices that self-registered
-  //    on-chain before the off-chain migration. Reaches a bare device key with
-  //    NO registered MAIN identity (mainOf == 0).
-  try {
-    const data =
-      '0x' + selector('pushSubOf(address)') + encodeAddressWord(address);
-    out.push(...parsePushSubs(decodeAbiBytesUtf8(await ethCall(data)).trim()));
-  } catch {
-    /* best-effort — continue to the MAIN-keyed metadata slot */
-  }
-
-  // 3) LEGACY MAIN tokenId metadata slot (owner-published via the old
-  //    admin → notifications on-chain flow).
-  try {
-    const main = BigInt(
-      await ethCall('0x' + selector('mainOf(address)') + encodeAddressWord(address)),
-    );
-    if (main !== 0n) {
-      const data =
-        '0x' +
-        selector('metadata(uint256,bytes32)') +
-        encodeUint256Word(main) +
-        PUSH_SUB_KEY;
-      out.push(...parsePushSubs(decodeAbiBytesUtf8(await ethCall(data)).trim()));
-    }
-  } catch {
-    /* best-effort */
-  }
-  return dedupeSubs(out);
 }
 
 // ---- handler ----------------------------------------------------------------
@@ -371,12 +297,9 @@ export default async function handler(req: Request): Promise<Response> {
       const batch = targets.slice(i, i + BATCH);
       const results = await Promise.all(
         batch.map(async (addr): Promise<'sent' | 'failed' | 'none'> => {
-          let subs: PushSubscriptionJson[];
-          try {
-            subs = await pushSubsOf(addr);
-          } catch {
-            return 'failed';
-          }
+          // The GitHub push store (`push-subs/<address>.json`) is the ONLY
+          // enroll source. Never throws ([] on any failure).
+          const subs = await storePushSubs(addr);
           if (subs.length === 0) return 'none'; // never enabled — not a failure
           // Fan out to EVERY device the subscriber enrolled; one acceptance
           // counts the subscriber as reached. sendWebPushAll never throws.

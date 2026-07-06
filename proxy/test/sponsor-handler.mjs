@@ -184,8 +184,8 @@ const token = authToken(senderPriv, senderAddr, ts);
 {
   stubBalance('1bc16d674ec80000'); // 2 $LH > 1 $LH ceiling
   // openSession is allowlisted but NOT gate-exempt — register / createInvite /
-  // settle / transfer / submitFeedback are now exempt, so use a still-gated
-  // selector to exercise the onboarding-only funded gate.
+  // settle / transfer are exempt, so use a still-gated selector to exercise
+  // the onboarding-only funded gate.
   const cd = '0x' + sel('openSession()');
   const intent = makeIntent(DIAMOND, cd);
   const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
@@ -195,7 +195,7 @@ const token = authToken(senderPriv, senderAddr, ts);
 
 // --- funded caller, register IS sponsored (always-free onboarding) -----------
 // Claiming a name costs 1 $LH (so the caller is necessarily funded) and can't
-// self-pay gas on mainnet — register is gate-exempt like submitFeedback.
+// self-pay gas on mainnet — register is gate-exempt (always-free).
 {
   stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
   const cd = registerCalldata('relaytest');
@@ -204,20 +204,19 @@ const token = authToken(senderPriv, senderAddr, ts);
   ok('funded caller register-only is sponsored (always-free onboarding)', res.status === 200, `status=${res.status}`);
 }
 
-// --- funded caller, setPushSub-ONLY intent, IS sponsored (always-free) -------
-// Enabling notifications (the header bell auto-enroll) is gas-only and must work
-// on a FUNDED account too — R4: it returned LH_RELAY_FUNDED before the exemption.
-{
-  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
-  // setPushSub(bytes) with a tiny blob: selector + offset(0x20) + len(1) + 1 padded byte
-  const cd = '0x' + sel('setPushSub(bytes)') + word('20') + word('1') + word('00');
+// --- setPushSub / submitFeedback are OFF the allowlist (systems moved off-chain)
+// Push enrollment is proxy /api/push-sub and feedback is /api/telemetry now; the
+// relay must not sponsor writes to the removed on-chain systems.
+for (const sig of ['setPushSub(bytes)', 'submitFeedback(string)']) {
+  stubBalance('0');
+  const cd = '0x' + sel(sig) + word('20') + word('1') + word('00');
   const intent = makeIntent(DIAMOND, cd);
   const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
   const j = await res.json();
   ok(
-    'funded caller setPushSub-only is sponsored (NOT 403 LH_RELAY_FUNDED)',
-    res.status === 200,
-    `status=${res.status} code=${j.code} body=${JSON.stringify(j)}`,
+    `${sig} refused 403 LH_RELAY_SELECTOR (removed system)`,
+    res.status === 403 && j.code === 'LH_RELAY_SELECTOR',
+    `status=${res.status} code=${j.code}`,
   );
 }
 
