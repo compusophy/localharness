@@ -208,8 +208,19 @@ precedent), MCP "returned no result"/rpc-error (Display can't stay
 byte-identical / application-level), `subscribe_step_stream`'s opaque re-wrap,
 the hook-denial (PolicyDenied's prefix would leak into chat text), and
 anthropic's in-band stream error (a network fallback would misclassify
-invalid_request); remaining: slice C app/filesystem/builtins `Error::other`
-sites) · loop_util stall
+invalid_request); slice C1 SHIPPED 2026-07-06: new `Error::Fs{op,path,message}`
+(Display verbatim, STRUCTURAL CORE_IO — deliberately never `classify()`d, fixing
+the OPFS QuotaExceededError→"provider rate-limit" false positive) covers all 49
+native/OPFS filesystem sites, and new `Error::BadArgs{tool,message}` (Display
+verbatim, structural CORE_TOOL_FAILED — no new LH code: nothing branches on the
+BadArgs/ToolFailed distinction) covers builtins' arg parse + face-value
+validation; at-rest decrypt tamper / non-UTF-8 edit read / image base64 ride
+`Decode`. Kept `Error::other` in C1 (recorded): state-dependent tool refusals
+(caps/not-found/overwrite), the protected-path refusal (PolicyDenied prefix
+would change model-visible text), empty image-model responses, run_command
+spawn (neither fs nor prefix-safe Io), configure_agent's opaque re-wraps, the
+encode-direction seal; remaining: slice C2 src/app ~216 `Error::other` sites) ·
+loop_util stall
 (superseded by R3/R7) · money-path E2E proofs run only by hand (~~stale wrong-chain
 scripts~~ SHIPPED 2026-07-03: harvest-feedback.{sh,ps1} now delegate to
 check-feedback.mjs) · templates.rs growth hazard.

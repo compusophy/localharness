@@ -62,7 +62,7 @@ impl Tool for GenerateImage {
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
-            .map_err(|e| Error::other(format!("generate_image args: {e}")))?;
+            .map_err(|e| Error::bad_args("generate_image", format!("generate_image args: {e}")))?;
         let req = GenerateContentRequest {
             contents: vec![Content {
                 role: ContentRole::User,
@@ -81,7 +81,7 @@ impl Tool for GenerateImage {
             if let Part::InlineData { inline_data } = part {
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(&inline_data.data)
-                    .map_err(|e| Error::other(format!("image base64 decode: {e}")))?;
+                    .map_err(|e| Error::decode("image base64 decode", e.to_string()))?;
                 return Ok(json!({
                     "mime_type": inline_data.mime_type,
                     "data_base64": inline_data.data,

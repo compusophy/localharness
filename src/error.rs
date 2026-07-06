@@ -49,6 +49,36 @@ pub enum Error {
         message: String,
     },
 
+    /// A filesystem operation failed (the [`crate::filesystem::Filesystem`]
+    /// impls: native, OPFS, encrypted, rooted). `op` names the operation
+    /// (e.g. `"read"`, `"removeEntry"`), `path` the target when known;
+    /// `message` is the full user-facing text and `Display` prints it
+    /// verbatim (the legacy strings are heterogeneous — the [`Error::HttpStatus`]
+    /// precedent), so surfaced text is byte-identical to the legacy `Other`
+    /// path. Constructed via [`Error::fs`].
+    #[error("{message}")]
+    Fs {
+        /// The filesystem operation that failed (e.g. `"read"`).
+        op: String,
+        /// The path/name involved (empty when the failure has no target).
+        path: String,
+        /// The full formatted error message (what the user sees).
+        message: String,
+    },
+
+    /// A tool rejected its ARGUMENTS before doing any work: the args JSON
+    /// failed to deserialize, or an argument value is invalid on its face
+    /// (empty `old_string`, a malformed glob/regex). `Display` prints
+    /// `message` verbatim; `tool` rides alongside structurally (mirroring
+    /// [`Error::ToolFailed`]'s `name`). Constructed via [`Error::bad_args`].
+    #[error("{message}")]
+    BadArgs {
+        /// The tool whose arguments were rejected.
+        tool: String,
+        /// The full formatted error message (what the model sees).
+        message: String,
+    },
+
     /// An HTTP failure carrying its REAL status code (structured — consumers
     /// read [`Error::http_status_code`] instead of substring-parsing "429"
     /// out of the message). `message` is the full user-facing text; `Display`
@@ -130,6 +160,22 @@ impl Error {
         Self::Decode { what: what.into(), message: message.into() }
     }
 
+    /// Construct a filesystem-operation error: `op` names the operation,
+    /// `path` the target (empty when none); `message` is surfaced verbatim.
+    pub fn fs(
+        op: impl Into<String>,
+        path: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::Fs { op: op.into(), path: path.into(), message: message.into() }
+    }
+
+    /// Construct a bad-arguments error for `tool`; `message` is surfaced
+    /// verbatim.
+    pub fn bad_args(tool: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::BadArgs { tool: tool.into(), message: message.into() }
+    }
+
     /// Construct a structured HTTP error: `msg` is what users see (unchanged
     /// from the legacy string path); `status` rides alongside so
     /// [`Error::code`] classifies off the real number instead of substring
@@ -155,8 +201,10 @@ impl Error {
     /// via [`crate::error_codes::classify`] so an upstream "429"/"401"/… body
     /// resolves to the right `LH3xxx` backend code; [`Error::Transport`] /
     /// [`Error::Decode`] classify the same way but fall back to
-    /// `BACKEND_NETWORK` / `CORE_DECODE`; every other variant maps to its own
-    /// `LH4xxx` core code. Always resolves to a registered code.
+    /// `BACKEND_NETWORK` / `CORE_DECODE`; [`Error::Fs`] / [`Error::BadArgs`]
+    /// map STRUCTURALLY (no substring pass — see the arms); every other
+    /// variant maps to its own `LH4xxx` core code. Always resolves to a
+    /// registered code.
     pub fn code(&self) -> u16 {
         use crate::error_codes as ec;
         match self {
@@ -171,6 +219,18 @@ impl Error {
             // transient instead of failing fast on CORE_OTHER.
             Error::Transport(s) => ec::classify(s).unwrap_or(ec::BACKEND_NETWORK),
             Error::Decode { message, .. } => ec::classify(message).unwrap_or(ec::CORE_DECODE),
+            // Fs maps STRAIGHT to CORE_IO — deliberately NO classify() pass:
+            // fs messages embed user paths + OS/JS error prose that false-
+            // positive the backend patterns (an OPFS "QuotaExceededError"
+            // read as a provider rate-limit through the old Other path; a
+            // filename containing "429" would too). A filesystem failure is
+            // never a provider failure.
+            Error::Fs { .. } => ec::CORE_IO,
+            // Same rationale: arg text is model-authored (paths/globs echoed
+            // back) and must never substring-classify into LH3xxx. Shares
+            // CORE_TOOL_FAILED with ToolFailed — no consumer branches on the
+            // distinction, so a new code doesn't pay (the LH4013 bar).
+            Error::BadArgs { .. } => ec::CORE_TOOL_FAILED,
             Error::HttpStatus { status, message } => {
                 ec::classify_http(*status, message).unwrap_or(ec::CORE_HTTP)
             }
@@ -211,6 +271,8 @@ mod tests {
             Error::http_status(500, "boom"),
             Error::transport("boom"),
             Error::decode("gemini JSON", "boom"),
+            Error::fs("read", "x.txt", "read(x.txt): boom"),
+            Error::bad_args("edit_file", "edit_file args: boom"),
             Error::Closed,
             Error::NotStarted,
             Error::AlreadyStarted,
@@ -300,6 +362,29 @@ mod tests {
         let d = Error::decode("tools/call decode", "missing field `content`");
         assert_eq!(d.to_string(), "tools/call decode: missing field `content`");
         assert_eq!(d.code(), ec::CORE_DECODE);
+    }
+
+    /// Slice C1 of the Error migration: filesystem-op failures and builtin
+    /// bad-args are typed, `Display` verbatim, and classify STRUCTURALLY —
+    /// deliberately NO substring pass, so OS/JS/model-authored prose can no
+    /// longer false-positive into an LH3xxx backend class (an OPFS
+    /// QuotaExceededError used to read as a provider rate-limit).
+    #[test]
+    fn slice_c_fs_and_bad_args_classification() {
+        use crate::error_codes as ec;
+        let f = Error::fs("write", "a.txt", "write(a.txt): QuotaExceededError: quota exceeded");
+        assert_eq!(f.to_string(), "write(a.txt): QuotaExceededError: quota exceeded");
+        assert_eq!(f.code(), ec::CORE_IO); // NOT BACKEND_RATE_LIMIT despite "quota"
+        assert_eq!(Error::fs("read", "429.log", "read(429.log): denied").code(), ec::CORE_IO);
+
+        let b = Error::bad_args("edit_file", "edit_file args: missing field `path`");
+        assert_eq!(b.to_string(), "edit_file args: missing field `path`");
+        assert_eq!(b.code(), ec::CORE_TOOL_FAILED);
+        // Model-echoed arg text must not classify either.
+        assert_eq!(
+            Error::bad_args("find_file", "invalid glob 'quota-**': nested `**`").code(),
+            ec::CORE_TOOL_FAILED
+        );
     }
 
     #[test]

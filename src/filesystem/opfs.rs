@@ -67,15 +67,18 @@ impl OpfsFilesystem {
         if let Some(h) = cached {
             return Ok(h);
         }
-        let window = web_sys::window().ok_or_else(|| Error::other("no window: not in a browser"))?;
+        let window = web_sys::window()
+            .ok_or_else(|| Error::fs("getDirectory", "", "no window: not in a browser"))?;
         let storage = window.navigator().storage();
         let promise = storage.get_directory();
         let val = JsFuture::from(promise)
             .await
-            .map_err(|e| Error::other(format!("getDirectory: {}", js_err(&e))))?;
+            .map_err(|e| Error::fs("getDirectory", "", format!("getDirectory: {}", js_err(&e))))?;
         let handle: FileSystemDirectoryHandle = val
             .dyn_into()
-            .map_err(|_| Error::other("getDirectory: not a FileSystemDirectoryHandle"))?;
+            .map_err(|_| {
+                Error::fs("getDirectory", "", "getDirectory: not a FileSystemDirectoryHandle")
+            })?;
         // Cache in a brief, await-free borrow. Two concurrent first-init callers
         // each resolve their own `getDirectory()` (OPFS returns the same logical
         // root every time), so a double-init just caches the equivalent handle
@@ -119,42 +122,48 @@ impl OpfsFilesystem {
 impl Filesystem for OpfsFilesystem {
     async fn read(&self, path: &str) -> Result<Vec<u8>> {
         let (parent, name) = self.resolve_parent(path, false).await?;
-        let name = name.ok_or_else(|| Error::other(format!("read({path}): path is empty")))?;
+        let name =
+            name.ok_or_else(|| Error::fs("read", path, format!("read({path}): path is empty")))?;
         let file_handle = get_file(&parent, &name, false).await?;
         let file_val = JsFuture::from(file_handle.get_file())
             .await
-            .map_err(|e| Error::other(format!("getFile({path}): {}", js_err(&e))))?;
+            .map_err(|e| Error::fs("getFile", path, format!("getFile({path}): {}", js_err(&e))))?;
         let file: File = file_val
             .dyn_into()
-            .map_err(|_| Error::other(format!("getFile({path}): not a File")))?;
+            .map_err(|_| Error::fs("getFile", path, format!("getFile({path}): not a File")))?;
         let buf = JsFuture::from(file.array_buffer())
             .await
-            .map_err(|e| Error::other(format!("arrayBuffer({path}): {}", js_err(&e))))?;
+            .map_err(|e| {
+                Error::fs("arrayBuffer", path, format!("arrayBuffer({path}): {}", js_err(&e)))
+            })?;
         let array = Uint8Array::new(&buf);
         Ok(array.to_vec())
     }
 
     async fn write_atomic(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let (parent, name) = self.resolve_parent(path, true).await?;
-        let name =
-            name.ok_or_else(|| Error::other(format!("write_atomic({path}): path is empty")))?;
+        let name = name.ok_or_else(|| {
+            Error::fs("write_atomic", path, format!("write_atomic({path}): path is empty"))
+        })?;
         let file_handle = get_file(&parent, &name, true).await?;
         let writable_val = JsFuture::from(file_handle.create_writable())
             .await
-            .map_err(|e| Error::other(format!("createWritable({path}): {}", js_err(&e))))?;
+            .map_err(|e| {
+                Error::fs("createWritable", path, format!("createWritable({path}): {}", js_err(&e)))
+            })?;
         let writable: FileSystemWritableFileStream = writable_val
             .dyn_into()
-            .map_err(|_| Error::other("createWritable: not a writable stream"))?;
+            .map_err(|_| Error::fs("createWritable", path, "createWritable: not a writable stream"))?;
         let array = Uint8Array::from(bytes);
         let write_promise = writable
             .write_with_buffer_source(&array)
-            .map_err(|e| Error::other(format!("write({path}): {}", js_err(&e))))?;
+            .map_err(|e| Error::fs("write", path, format!("write({path}): {}", js_err(&e))))?;
         JsFuture::from(write_promise)
             .await
-            .map_err(|e| Error::other(format!("write({path}): {}", js_err(&e))))?;
+            .map_err(|e| Error::fs("write", path, format!("write({path}): {}", js_err(&e))))?;
         JsFuture::from(writable.close())
             .await
-            .map_err(|e| Error::other(format!("close({path}): {}", js_err(&e))))?;
+            .map_err(|e| Error::fs("close", path, format!("close({path}): {}", js_err(&e))))?;
         Ok(())
     }
 
@@ -172,10 +181,10 @@ impl Filesystem for OpfsFilesystem {
             Ok(fh) => {
                 let file_val = JsFuture::from(fh.get_file())
                     .await
-                    .map_err(|e| Error::other(format!("getFile({path}): {}", js_err(&e))))?;
+                    .map_err(|e| Error::fs("getFile", path, format!("getFile({path}): {}", js_err(&e))))?;
                 let file: File = file_val
                     .dyn_into()
-                    .map_err(|_| Error::other(format!("getFile({path}): not a File")))?;
+                    .map_err(|_| Error::fs("getFile", path, format!("getFile({path}): not a File")))?;
                 Ok(Some(Metadata {
                     kind: EntryKind::File,
                     size: file.size() as u64,
@@ -214,13 +223,17 @@ impl Filesystem for OpfsFilesystem {
     async fn delete(&self, path: &str) -> Result<()> {
         let (parent, name) = self.resolve_parent(path, false).await?;
         let name =
-            name.ok_or_else(|| Error::other(format!("delete({path}): cannot delete OPFS root")))?;
+            name.ok_or_else(|| {
+                Error::fs("delete", path, format!("delete({path}): cannot delete OPFS root"))
+            })?;
         let opts = FileSystemRemoveOptions::new();
         opts.set_recursive(true);
         let promise = parent.remove_entry_with_options(&name, &opts);
         JsFuture::from(promise)
             .await
-            .map_err(|e| Error::other(format!("removeEntry({path}): {}", js_err(&e))))?;
+            .map_err(|e| {
+                Error::fs("removeEntry", path, format!("removeEntry({path}): {}", js_err(&e)))
+            })?;
         Ok(())
     }
 }
@@ -242,9 +255,16 @@ async fn get_subdir(
     let promise = parent.get_directory_handle_with_options(name, &opts);
     let val = JsFuture::from(promise)
         .await
-        .map_err(|e| Error::other(format!("getDirectoryHandle({name}): {}", js_err(&e))))?;
-    val.dyn_into()
-        .map_err(|_| Error::other(format!("getDirectoryHandle({name}): wrong type")))
+        .map_err(|e| {
+            Error::fs(
+                "getDirectoryHandle",
+                name,
+                format!("getDirectoryHandle({name}): {}", js_err(&e)),
+            )
+        })?;
+    val.dyn_into().map_err(|_| {
+        Error::fs("getDirectoryHandle", name, format!("getDirectoryHandle({name}): wrong type"))
+    })
 }
 
 async fn get_file(
@@ -257,34 +277,39 @@ async fn get_file(
     let promise = parent.get_file_handle_with_options(name, &opts);
     let val = JsFuture::from(promise)
         .await
-        .map_err(|e| Error::other(format!("getFileHandle({name}): {}", js_err(&e))))?;
+        .map_err(|e| {
+            Error::fs("getFileHandle", name, format!("getFileHandle({name}): {}", js_err(&e)))
+        })?;
     val.dyn_into()
-        .map_err(|_| Error::other(format!("getFileHandle({name}): wrong type")))
+        .map_err(|_| Error::fs("getFileHandle", name, format!("getFileHandle({name}): wrong type")))
 }
 
 /// Iterate a directory's entries via the JS async iterator protocol.
 async fn collect_entries(dir: &FileSystemDirectoryHandle) -> Result<Vec<DirEntry>> {
     let iter_method =
-        Reflect::get(dir, &JsValue::from_str("entries")).map_err(|_| Error::other("entries"))?;
+        Reflect::get(dir, &JsValue::from_str("entries"))
+            .map_err(|_| Error::fs("entries", "", "entries"))?;
     let iter_fn = iter_method
         .dyn_ref::<js_sys::Function>()
-        .ok_or_else(|| Error::other("entries() not callable"))?;
+        .ok_or_else(|| Error::fs("entries", "", "entries() not callable"))?;
     let iterator = iter_fn
         .call0(dir)
-        .map_err(|e| Error::other(format!("entries(): {}", js_err(&e))))?;
+        .map_err(|e| Error::fs("entries", "", format!("entries(): {}", js_err(&e))))?;
     let next_fn = Reflect::get(&iterator, &JsValue::from_str("next"))
-        .map_err(|_| Error::other("iterator.next"))?
+        .map_err(|_| Error::fs("iterator.next", "", "iterator.next"))?
         .dyn_into::<js_sys::Function>()
-        .map_err(|_| Error::other("iterator.next not a function"))?;
+        .map_err(|_| Error::fs("iterator.next", "", "iterator.next not a function"))?;
 
     let mut out = Vec::new();
     loop {
         let promise = next_fn
             .call0(&iterator)
-            .map_err(|e| Error::other(format!("iterator.next: {}", js_err(&e))))?;
+            .map_err(|e| Error::fs("iterator.next", "", format!("iterator.next: {}", js_err(&e))))?;
         let result = JsFuture::from(js_sys::Promise::from(promise))
             .await
-            .map_err(|e| Error::other(format!("iterator await: {}", js_err(&e))))?;
+            .map_err(|e| {
+                Error::fs("iterator await", "", format!("iterator await: {}", js_err(&e)))
+            })?;
         let done = Reflect::get(&result, &JsValue::from_str("done"))
             .ok()
             .and_then(|v| v.as_bool())
@@ -293,28 +318,28 @@ async fn collect_entries(dir: &FileSystemDirectoryHandle) -> Result<Vec<DirEntry
             break;
         }
         let value = Reflect::get(&result, &JsValue::from_str("value"))
-            .map_err(|_| Error::other("iterator value"))?;
+            .map_err(|_| Error::fs("iterator value", "", "iterator value"))?;
         // value is [name, handle] tuple (a 2-element array).
         let pair: js_sys::Array = value
             .dyn_into()
-            .map_err(|_| Error::other("entry value not an array"))?;
+            .map_err(|_| Error::fs("entries", "", "entry value not an array"))?;
         let name = pair
             .get(0)
             .as_string()
-            .ok_or_else(|| Error::other("entry[0] not a string"))?;
+            .ok_or_else(|| Error::fs("entries", "", "entry[0] not a string"))?;
         let handle_val = pair.get(1);
         let handle: FileSystemHandle = handle_val
             .dyn_into()
-            .map_err(|_| Error::other("entry[1] not a FileSystemHandle"))?;
+            .map_err(|_| Error::fs("entries", "", "entry[1] not a FileSystemHandle"))?;
         let (kind, size) = match handle.kind() {
             FileSystemHandleKind::File => {
                 let fh: FileSystemFileHandle = handle.unchecked_into();
                 let file_val = JsFuture::from(fh.get_file())
                     .await
-                    .map_err(|e| Error::other(format!("getFile: {}", js_err(&e))))?;
+                    .map_err(|e| Error::fs("getFile", "", format!("getFile: {}", js_err(&e))))?;
                 let file: File = file_val
                     .dyn_into()
-                    .map_err(|_| Error::other("getFile: not a File"))?;
+                    .map_err(|_| Error::fs("getFile", "", "getFile: not a File"))?;
                 (EntryKind::File, Some(file.size() as u64))
             }
             FileSystemHandleKind::Directory => (EntryKind::Directory, None),

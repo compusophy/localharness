@@ -61,11 +61,11 @@ impl Tool for EditFile {
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
-            .map_err(|e| Error::other(format!("edit_file args: {e}")))?;
+            .map_err(|e| Error::bad_args("edit_file", format!("edit_file args: {e}")))?;
         let replace_all = args.replace_all.unwrap_or(false);
 
         if args.old_string.is_empty() {
-            return Err(Error::other("old_string must not be empty"));
+            return Err(Error::bad_args("edit_file", "old_string must not be empty"));
         }
         // Editing the seed/device key would corrupt the identity (and reads it).
         if crate::builtins::is_protected_path(&args.path) {
@@ -82,8 +82,9 @@ impl Tool for EditFile {
         }
 
         let bytes = self.fs.read(&args.path).await?;
-        let original = String::from_utf8(bytes)
-            .map_err(|e| Error::other(format!("read({}): not valid UTF-8: {e}", args.path)))?;
+        let original = String::from_utf8(bytes).map_err(|e| {
+            Error::decode(format!("read({})", args.path), format!("not valid UTF-8: {e}"))
+        })?;
 
         let count = original.matches(&args.old_string).count();
         if count == 0 {
@@ -164,7 +165,8 @@ mod tests {
                 None,
             )
             .await;
-        assert!(res.is_err(), "empty old_string should error");
+        // Slice C1: arg rejections are the typed BadArgs (CORE_TOOL_FAILED).
+        assert!(matches!(res.unwrap_err(), Error::BadArgs { ref tool, .. } if tool == "edit_file"));
         let _ = std::fs::remove_file(p);
     }
 

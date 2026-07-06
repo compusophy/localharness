@@ -52,9 +52,9 @@ impl Tool for RenameFile {
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
-            .map_err(|e| Error::other(format!("rename_file args: {e}")))?;
+            .map_err(|e| Error::bad_args("rename_file", format!("rename_file args: {e}")))?;
         if args.from == args.to {
-            return Err(Error::other("from and to are identical"));
+            return Err(Error::bad_args("rename_file", "from and to are identical"));
         }
         // Renaming the seed/device key away (or clobbering one) bricks identity.
         if crate::builtins::is_protected_path(&args.from) {

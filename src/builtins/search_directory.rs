@@ -56,15 +56,19 @@ impl Tool for SearchDirectory {
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
-            .map_err(|e| Error::other(format!("search_directory args: {e}")))?;
+            .map_err(|e| Error::bad_args("search_directory", format!("search_directory args: {e}")))?;
         let regex = RegexBuilder::new(&args.pattern)
             .case_insensitive(!args.case_sensitive.unwrap_or(false))
             .build()
-            .map_err(|e| Error::other(format!("invalid regex '{}': {e}", args.pattern)))?;
+            .map_err(|e| {
+                Error::bad_args("search_directory", format!("invalid regex '{}': {e}", args.pattern))
+            })?;
         let file_matcher: Option<GlobMatcher> = match &args.file_glob {
             Some(g) => Some(
                 Glob::new(g)
-                    .map_err(|e| Error::other(format!("invalid file_glob '{g}': {e}")))?
+                    .map_err(|e| {
+                        Error::bad_args("search_directory", format!("invalid file_glob '{g}': {e}"))
+                    })?
                     .compile_matcher(),
             ),
             None => None,

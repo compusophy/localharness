@@ -47,6 +47,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model/tokenizer loads construct `Error::decode` (`LH4013`). All other
   surfaced text stays byte-identical; retry tests now exercise the typed
   variants production emits. Slice C (app/filesystem/builtins) pending.
+- **Error typed-variant migration slice C1 (filesystem + builtins)** — every
+  filesystem-impl failure (native + OPFS, 49 sites) constructs the new
+  `Error::Fs { op, path, message }`: Display verbatim, mapping STRUCTURALLY to
+  `LH4001` (CORE_IO) with deliberately NO substring classify — an OPFS
+  `QuotaExceededError` (or a "429" in a filename) no longer misreads as a
+  provider rate-limit through the old `Other` path. Builtin tools' argument
+  rejections (args-JSON parse + face-value validation: empty `old_string`,
+  `from == to`, bad glob/regex, content over cap) construct the new
+  `Error::BadArgs { tool, message }`: Display verbatim, `LH4009`
+  (CORE_TOOL_FAILED) structurally — no new code registered, nothing branches
+  on the BadArgs/ToolFailed distinction. The at-rest decrypt tamper error,
+  edit_file's non-UTF-8 read, and generate_image's base64 failure ride the
+  existing `Error::decode` (`LH4013`). All surfaced text byte-identical.
+  Deliberately still `Error::other` (recorded per-site): state-dependent tool
+  refusals (size caps / not-found / multi-match / overwrite / start>end), the
+  protected-path policy refusal (PolicyDenied's prefix would leak into
+  model-visible text), empty image-model responses (the MCP no-result
+  precedent), `run_command` spawn, configure_agent's opaque re-wraps, and the
+  encode-direction at-rest encrypt. Slice C2 (src/app, ~216 sites) pending.
 
 ## [0.69.0] - 2026-07-06
 

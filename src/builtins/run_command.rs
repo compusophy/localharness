@@ -53,7 +53,7 @@ impl Tool for RunCommand {
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
-            .map_err(|e| Error::other(format!("run_command args: {e}")))?;
+            .map_err(|e| Error::bad_args("run_command", format!("run_command args: {e}")))?;
         let timeout_dur = Duration::from_secs(
             args.timeout_sec
                 .unwrap_or(DEFAULT_TIMEOUT_SEC)
@@ -79,6 +79,8 @@ impl Tool for RunCommand {
 
         let mut child = cmd
             .spawn()
+            // Stays `Error::other`: a spawn failure is an OS error but neither
+            // an fs op (`Fs` would lie) nor `Io` (its "io: " prefix changes text).
             .map_err(|e| Error::other(format!("spawn: {e}")))?;
         let mut stdout = child.stdout.take().expect("stdout pipe present");
         let mut stderr = child.stderr.take().expect("stderr pipe present");

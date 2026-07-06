@@ -40,6 +40,14 @@ reason. If you migrate a resident anyway, keep a frozen byte-identity test.
 - **`run_cartridge`/`render_html`** drive the display framebuffer; `compile_rustlite`
   STUBS host imports so a compile-only check needs no run.
 
+## Errors
+Arg rejections (args-JSON parse + face-value validation like an empty
+`old_string` / bad glob) are `Error::bad_args(tool, msg)` — Display verbatim,
+CORE_TOOL_FAILED structurally (never substring-classified; model-echoed arg
+text must not read as a backend failure). State-dependent refusals (caps,
+not-found, overwrite) stay `Error::other`; the protected-path refusal stays
+`other` too (PolicyDenied's prefix would change model-visible text).
+
 ## Registration
 The default tool SETS + `Step` constructors live in `src/types.rs` (no hand-written
 wire literals). A builtin is registered there; `BuiltinDeps` carries its deps (fs,

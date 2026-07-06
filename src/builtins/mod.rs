@@ -101,7 +101,9 @@ pub(crate) fn is_protected_basename(base: &str) -> bool {
 
 /// The error a filesystem builtin returns when asked to touch a protected
 /// identity file. Phrased so the model understands it's a hard policy, not a
-/// transient failure, and stops retrying.
+/// transient failure, and stops retrying. Deliberately `Error::other`, NOT
+/// `PolicyDenied` — that variant's `"policy denied: "` Display prefix would
+/// change this model-visible text (the slice-B hook-denial precedent).
 pub(crate) fn protected_path_error(path: &str) -> crate::error::Error {
     let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
     crate::error::Error::other(format!(

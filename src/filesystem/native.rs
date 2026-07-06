@@ -56,7 +56,7 @@ impl Filesystem for NativeFilesystem {
         let p = PathBuf::from(path);
         tokio::fs::read(&p)
             .await
-            .map_err(|e| Error::other(format!("read({}): {e}", p.display())))
+            .map_err(|e| Error::fs("read", path, format!("read({}): {e}", p.display())))
     }
 
     async fn write_atomic(&self, path: &str, bytes: &[u8]) -> Result<()> {
@@ -69,20 +69,35 @@ impl Filesystem for NativeFilesystem {
 
         tokio::task::spawn_blocking(move || -> Result<()> {
             if let Some(p) = &parent {
-                std::fs::create_dir_all(p)
-                    .map_err(|e| Error::other(format!("create_dir_all({}): {e}", p.display())))?;
+                std::fs::create_dir_all(p).map_err(|e| {
+                    Error::fs(
+                        "create_dir_all",
+                        p.display().to_string(),
+                        format!("create_dir_all({}): {e}", p.display()),
+                    )
+                })?;
             }
             let dir = parent.as_deref().unwrap_or(Path::new("."));
-            let mut tmp = NamedTempFile::new_in(dir)
-                .map_err(|e| Error::other(format!("tempfile in {}: {e}", dir.display())))?;
+            let mut tmp = NamedTempFile::new_in(dir).map_err(|e| {
+                Error::fs(
+                    "tempfile",
+                    dir.display().to_string(),
+                    format!("tempfile in {}: {e}", dir.display()),
+                )
+            })?;
             tmp.write_all(&owned)
-                .map_err(|e| Error::other(format!("write: {e}")))?;
-            tmp.persist(&target)
-                .map_err(|e| Error::other(format!("rename to {}: {e}", target.display())))?;
+                .map_err(|e| Error::fs("write", "", format!("write: {e}")))?;
+            tmp.persist(&target).map_err(|e| {
+                Error::fs(
+                    "rename",
+                    target.display().to_string(),
+                    format!("rename to {}: {e}", target.display()),
+                )
+            })?;
             Ok(())
         })
         .await
-        .map_err(|e| Error::other(format!("write_atomic join: {e}")))?
+        .map_err(|e| Error::fs("write_atomic join", "", format!("write_atomic join: {e}")))?
     }
 
     async fn metadata(&self, path: &str) -> Result<Option<Metadata>> {
@@ -99,7 +114,7 @@ impl Filesystem for NativeFilesystem {
                 }))
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(Error::other(format!("metadata({}): {e}", p.display()))),
+            Err(e) => Err(Error::fs("metadata", path, format!("metadata({}): {e}", p.display()))),
         }
     }
 
@@ -107,17 +122,17 @@ impl Filesystem for NativeFilesystem {
         let p = PathBuf::from(path);
         let mut read = tokio::fs::read_dir(&p)
             .await
-            .map_err(|e| Error::other(format!("read_dir({}): {e}", p.display())))?;
+            .map_err(|e| Error::fs("read_dir", path, format!("read_dir({}): {e}", p.display())))?;
         let mut entries: Vec<DirEntry> = Vec::new();
         while let Some(entry) = read
             .next_entry()
             .await
-            .map_err(|e| Error::other(format!("next_entry: {e}")))?
+            .map_err(|e| Error::fs("next_entry", path, format!("next_entry: {e}")))?
         {
             let meta = entry
                 .metadata()
                 .await
-                .map_err(|e| Error::other(format!("metadata: {e}")))?;
+                .map_err(|e| Error::fs("metadata", path, format!("metadata: {e}")))?;
             let ft = meta.file_type();
             let kind = classify(&meta, ft);
             let size = if matches!(kind, EntryKind::File) {
@@ -176,7 +191,7 @@ impl Filesystem for NativeFilesystem {
             out
         })
         .await
-        .map_err(|e| Error::other(format!("walk join: {e}")))?;
+        .map_err(|e| Error::fs("walk join", path, format!("walk join: {e}")))?;
         Ok(result)
     }
 
@@ -184,15 +199,15 @@ impl Filesystem for NativeFilesystem {
         let p = PathBuf::from(path);
         let meta = tokio::fs::symlink_metadata(&p)
             .await
-            .map_err(|e| Error::other(format!("delete({path}): {e}")))?;
+            .map_err(|e| Error::fs("delete", path, format!("delete({path}): {e}")))?;
         if meta.is_dir() {
             tokio::fs::remove_dir_all(&p)
                 .await
-                .map_err(|e| Error::other(format!("delete({path}): {e}")))?;
+                .map_err(|e| Error::fs("delete", path, format!("delete({path}): {e}")))?;
         } else {
             tokio::fs::remove_file(&p)
                 .await
-                .map_err(|e| Error::other(format!("delete({path}): {e}")))?;
+                .map_err(|e| Error::fs("delete", path, format!("delete({path}): {e}")))?;
         }
         Ok(())
     }
@@ -203,7 +218,7 @@ impl Filesystem for NativeFilesystem {
     async fn rename(&self, from: &str, to: &str) -> Result<()> {
         tokio::fs::rename(from, to)
             .await
-            .map_err(|e| Error::other(format!("rename({from} -> {to}): {e}")))
+            .map_err(|e| Error::fs("rename", from, format!("rename({from} -> {to}): {e}")))
     }
 }
 
@@ -272,6 +287,17 @@ mod tests {
             .unwrap();
         assert_eq!(bytes, vec![0, 1, 2, 3, 255]);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Slice C1: fs-op failures construct the typed `Error::Fs` (CORE_IO,
+    /// Display verbatim, structurally attributed) — never the Other catch-all.
+    #[tokio::test]
+    async fn errors_are_typed_fs_variants() {
+        let fs = NativeFilesystem::new();
+        let err = fs.read("/definitely/does/not/exist/lh-nfs-zzz").await.unwrap_err();
+        assert!(matches!(&err, Error::Fs { op, .. } if op == "read"), "{err:?}");
+        assert_eq!(err.code(), crate::error_codes::CORE_IO);
+        assert!(err.to_string().starts_with("read("), "{err}");
     }
 
     #[tokio::test]

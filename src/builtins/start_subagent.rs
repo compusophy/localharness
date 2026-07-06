@@ -194,7 +194,7 @@ impl Tool for StartSubagent {
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
-            .map_err(|e| Error::other(format!("start_subagent args: {e}")))?;
+            .map_err(|e| Error::bad_args("start_subagent", format!("start_subagent args: {e}")))?;
 
         // The subagent's isolated tool runner (reduced allowlist) + the wire
         // function declarations the model sees — built from the SAME tools, so

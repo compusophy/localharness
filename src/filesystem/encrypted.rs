@@ -170,10 +170,15 @@ impl EncryptedFilesystem {
         let mut nonce = [0u8; NONCE_LEN];
         nonce.copy_from_slice(&sealed[nonce_start..ct_start]);
         let nonce = Nonce::from(nonce);
+        // A sealed blob failing to open IS a decode failure of the LHE1
+        // format — typed `Error::decode` (LH4013), Display byte-identical.
+        // (The encode-direction `seal` failure above stays `Error::other`,
+        // the slice-A encode-site precedent.)
         self.cipher.decrypt(&nonce, &sealed[ct_start..]).map_err(|_| {
-            Error::other(format!(
-                "at-rest decrypt failed for '{path}': wrong key or tampered ciphertext (GCM auth)"
-            ))
+            Error::decode(
+                format!("at-rest decrypt failed for '{path}'"),
+                "wrong key or tampered ciphertext (GCM auth)",
+            )
         })
     }
 }

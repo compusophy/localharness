@@ -54,7 +54,7 @@ impl Tool for CreateFile {
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
-            .map_err(|e| Error::other(format!("create_file args: {e}")))?;
+            .map_err(|e| Error::bad_args("create_file", format!("create_file args: {e}")))?;
 
         // Never let a tool create/clobber the seed or device-key path.
         if crate::builtins::is_protected_path(&args.path) {
@@ -62,7 +62,7 @@ impl Tool for CreateFile {
         }
 
         if args.content.len() > MAX_FILE_BYTES {
-            return Err(Error::other(format!(
+            return Err(Error::bad_args("create_file", format!(
                 "content is {} bytes, over the {MAX_FILE_BYTES}-byte create_file cap",
                 args.content.len()
             )));

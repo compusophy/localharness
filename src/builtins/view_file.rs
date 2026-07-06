@@ -59,7 +59,7 @@ impl Tool for ViewFile {
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
-            .map_err(|e| Error::other(format!("view_file args: {e}")))?;
+            .map_err(|e| Error::bad_args("view_file", format!("view_file args: {e}")))?;
 
         // Never let a tool read the wallet seed / device key into the transcript.
         if crate::builtins::is_protected_path(&args.path) {

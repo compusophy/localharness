@@ -186,11 +186,14 @@ failure) and `Decode { what, message }` (falls back to `LH4013`) variants. The s
 response) classifies off its **real status code** via `classify_http()` /
 `classify_status()` — no substring parsing — falling back to the message string for
 unmapped statuses, and to `LH4003` when nothing matches. Consumers can read the raw
-status via `Error::http_status_code()`.
+status via `Error::http_status_code()`. The `Fs { op, path, message }` and
+`BadArgs { tool, message }` variants map STRUCTURALLY (`LH4001` / `LH4009`) with
+**no** `classify()` pass — their messages embed user paths / model-authored args
+that must not false-positive into a backend class.
 
 | Code | `Error` variant | Meaning |
 |------|-----------------|---------|
-| `LH4001` | `Io` | an OS-level I/O error |
+| `LH4001` | `Io` / `Fs` | an OS-level I/O error / a filesystem-operation failure |
 | `LH4002` | `Json` | a JSON (de)serialization error |
 | `LH4003` | `Http` / `HttpStatus` | an HTTP transport error not matched by classification |
 | `LH4004` | `Closed` | the connection closed unexpectedly |
@@ -198,7 +201,7 @@ status via `Error::http_status_code()`.
 | `LH4006` | `AlreadyStarted` | `start()` was called more than once |
 | `LH4007` | `Config` | invalid configuration |
 | `LH4008` | `ToolNotFound` | no tool registered under that name |
-| `LH4009` | `ToolFailed` | a tool errored during execution |
+| `LH4009` | `ToolFailed` / `BadArgs` | a tool errored during execution / rejected its arguments |
 | `LH4010` | `PolicyDenied` | a policy blocked the operation |
 | `LH4011` | `Timeout` | an operation exceeded its deadline |
 | `LH4012` | `Other` | a catch-all not matched by `classify()` |

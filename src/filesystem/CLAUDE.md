@@ -34,6 +34,11 @@ The pinned `EXEMPT_FILES` are NEVER encrypted, and this is load-bearing:
 If you add a file that must be readable before the seed is loaded, add it to
 `EXEMPT_FILES` or it bricks boot. Never "just encrypt everything."
 
+## Errors: fs-op failures are `Error::fs(op, path, msg)` (Display verbatim,
+LH4001 CORE_IO STRUCTURALLY — never substring-`classify()`d, so an OPFS
+QuotaExceededError / a "429" in a filename can't read as a backend failure).
+Don't reintroduce `Error::other` here.
+
 ## wasm: this is one of the few subsystems that runs identically on native + wasm
 (the builtins gate on a supplied `Filesystem`, not `feature=native`). Keep new
 methods cfg-clean — guard `fs_builtins_gate_on_filesystem_not_native`.

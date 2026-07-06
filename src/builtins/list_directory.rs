@@ -45,7 +45,7 @@ impl Tool for ListDirectory {
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
-            .map_err(|e| Error::other(format!("list_directory args: {e}")))?;
+            .map_err(|e| Error::bad_args("list_directory", format!("list_directory args: {e}")))?;
         let entries = self.fs.read_dir(&args.path).await?;
 
         let entry_values: Vec<Value> = entries

@@ -53,9 +53,9 @@ impl Tool for FindFile {
 
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
-            .map_err(|e| Error::other(format!("find_file args: {e}")))?;
+            .map_err(|e| Error::bad_args("find_file", format!("find_file args: {e}")))?;
         let matcher: GlobMatcher = Glob::new(&args.pattern)
-            .map_err(|e| Error::other(format!("invalid glob '{}': {e}", args.pattern)))?
+            .map_err(|e| Error::bad_args("find_file", format!("invalid glob '{}': {e}", args.pattern)))?
             .compile_matcher();
 
         let entries = self

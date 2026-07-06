@@ -272,7 +272,10 @@ pub const BACKEND_STALE_AUTH: u16 = 3008;
 pub const BACKEND_SEND: u16 = 3009;
 
 // ── LH4xxx — SDK CORE codes (one per `Error` variant) ───────────────────────
-/// `LH4001` — `Error::Io`: an OS-level I/O error.
+/// `LH4001` — `Error::Io` / `Error::Fs`: an OS-level I/O error or a
+/// filesystem-operation failure (native/OPFS impls). `Fs` maps here
+/// STRUCTURALLY — never through [`classify`](crate::error_codes::classify),
+/// so path/OS/JS prose can't false-positive into an `LH3xxx` backend class.
 pub const CORE_IO: u16 = 4001;
 /// `LH4002` — `Error::Json`: a (de)serialization error.
 pub const CORE_JSON: u16 = 4002;
@@ -290,6 +293,9 @@ pub const CORE_CONFIG: u16 = 4007;
 /// `LH4008` — `Error::ToolNotFound`: no tool registered under that name.
 pub const CORE_TOOL_NOT_FOUND: u16 = 4008;
 /// `LH4009` — `Error::ToolFailed`: a tool errored during execution.
+/// (`Error::BadArgs` — a tool rejecting its arguments — shares this code
+/// structurally: no consumer branches on the distinction, so a new code
+/// doesn't pay.)
 pub const CORE_TOOL_FAILED: u16 = 4009;
 /// `LH4010` — `Error::PolicyDenied`: a policy blocked the operation.
 pub const CORE_POLICY_DENIED: u16 = 4010;
