@@ -66,6 +66,11 @@ pub(crate) async fn reputation(caller: Option<&str>, rest: &[String]) -> i32 {
             }
         },
         Some("attest") => reputation_attest(caller, &rest[1..]).await,
+        // `rep <agent>` (no subcommand) = show — the help advertises the short
+        // form, so a bare agent name must work (fleet-found).
+        Some(agent) if !agent.starts_with('-') && rest.len() == 1 => {
+            reputation_show(agent).await
+        }
         _ => {
             eprintln!("{REPUTATION_USAGE}");
             2
