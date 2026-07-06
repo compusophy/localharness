@@ -105,8 +105,25 @@ pub fn bounty_preflight(
                 b.status_label()
             )),
         },
+        "reclaim" => match b.status {
+            1 | 2 => Ok(()),
+            0 => Err(format!(
+                "bounty #{id} is still open — `bounty cancel` refunds an unclaimed bounty"
+            )),
+            _ => Err(format!(
+                "bounty #{id} is already {} — nothing to reclaim",
+                b.status_label()
+            )),
+        },
         _ => Ok(()),
     }
+}
+
+/// Seconds until `b` passes the facet's `reclaimExpired` ttl gate (None =
+/// already expired / no ttl set). Pure; pair with the "reclaim" preflight arm —
+/// an early reclaim submits a REVERTING tx, so callers refuse client-side.
+pub fn reclaim_wait_secs(b: &Bounty, now: u64) -> Option<u64> {
+    (b.expiry != 0 && b.expiry > now).then(|| b.expiry - now)
 }
 
 /// Read `id`'s state (resolving the claimant's name for a sharper message) and
@@ -700,5 +717,26 @@ mod tests {
         let e = bounty_preflight(1, &mk(1, 7), "accept", None).unwrap_err();
         assert!(e.contains("no submitted result"), "got: {e}");
         assert!(bounty_preflight(1, &mk(3, 7), "accept", None).is_err());
+        // reclaim: Claimed/Submitted pass the status gate; Open coaches cancel.
+        assert!(bounty_preflight(1, &mk(1, 7), "reclaim", None).is_ok());
+        assert!(bounty_preflight(1, &mk(2, 7), "reclaim", None).is_ok());
+        let e = bounty_preflight(1, &mk(0, 0), "reclaim", None).unwrap_err();
+        assert!(e.contains("bounty cancel"), "got: {e}");
+        assert!(bounty_preflight(1, &mk(3, 7), "reclaim", None).is_err());
+    }
+
+    #[test]
+    fn reclaim_wait_gates_on_ttl() {
+        let mut b = Bounty {
+            poster: "0xabc".into(),
+            reward_wei: 1,
+            expiry: 100,
+            status: 1,
+            claimant_token_id: 7,
+        };
+        assert_eq!(reclaim_wait_secs(&b, 40), Some(60)); // not yet expired
+        assert_eq!(reclaim_wait_secs(&b, 100), None); // expired exactly
+        b.expiry = 0;
+        assert_eq!(reclaim_wait_secs(&b, 40), None); // no ttl gate set
     }
 }

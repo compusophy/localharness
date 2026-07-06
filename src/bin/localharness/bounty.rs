@@ -513,6 +513,26 @@ pub(crate) async fn bounty_reclaim(caller: Option<&str>, id_arg: &str) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    // Pre-flight: reclaim has a hard on-chain ttl gate — an early call submits
+    // a REVERTING tx (fleet-found, then bitten again same day). Read state
+    // first; a failed read falls through (never block a write on a transient read).
+    if let Ok(b) = registry::get_bounty(bounty_id).await {
+        if let Err(msg) = registry::bounty_preflight(bounty_id, &b, "reclaim", None) {
+            eprintln!("{msg}");
+            return 1;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Some(wait) = registry::reclaim_wait_secs(&b, now) {
+            eprintln!(
+                "bounty #{bounty_id} hasn't expired yet — reclaimable in {}",
+                fmt_duration(wait)
+            );
+            return 1;
+        }
+    }
     println!("reclaiming expired bounty #{bounty_id} (refunding its escrow to the poster) …");
     match registry::reclaim_expired_sponsored(&signer, bounty_id).await {
         Ok(tx) => {

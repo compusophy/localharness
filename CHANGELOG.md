@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bounty reclaim` pre-flights instead of broadcasting a reverting tx** —
+  the facet's `reclaimExpired` ttl gate now checks client-side (shared
+  `bounty_preflight` "reclaim" arm + pure `reclaim_wait_secs`): an early call
+  prints the remaining time, a wrong-status call names the cause; no gas burned
+  (fleet-found, then reproduced first-hand the same day).
+- **Honest guild/company CLI surfaces** (fleet-found) — the funded-relay
+  refusal explains the real gate instead of dead-end "self-pay your fees"
+  advice; `guild treasury` on a nonexistent guild errors like `members` instead
+  of printing a phantom balance; `company status/plan/payroll <name>` resolves
+  any guild name globally (registry name→id map), key-free for non-members.
+- **`discover` surfaces persona-less published apps** (fleet-found) — the
+  shared match core appends an app-store tier below persona/name hits, so a
+  published cartridge whose owner never set a persona is no longer invisible.
+
 ### Changed
 
 - **Error typed-variant migration slice B (backends config/MCP/engine)** —
