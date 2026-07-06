@@ -23,7 +23,8 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   onboarding-only gate (funded callers → `LH_RELAY_FUNDED`) + rate window + float
   breaker. Gate-EXEMPT (funded callers still relayed): `ALWAYS_FREE_SELECTORS`
   (submitFeedback/register/releaseName/setPushSub), `SELF_PAY_SELECTORS` (settle/
-  approve(diamond)/transfer/createInvite/withdrawCredits — caller's OWN $LH),
+  approve(diamond)/transfer/createInvite/reclaimInvite/withdrawCredits/
+  depositCredits/redeem — caller's OWN $LH or owner-issued one-shot codes),
   `BOUNTY_LIFECYCLE_SELECTORS`, and `setMetadata` ≤4096B self-edits (live-probed:
   1KB→200, 5KB→`LH_RELAY_FUNDED`; `test/relay-gate-probe.mjs`). The TS tx
   wire-port is PINNED to Rust golden vectors — keep them in sync.

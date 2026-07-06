@@ -220,6 +220,15 @@ const SELF_PAY_SELECTORS = new Set([
   // from. Without this, a funded operator could createInvite but never take
   // it back (LH_RELAY_FUNDED on reclaim — found by the 2026-07-05 fleet).
   selector('reclaimInvite(bytes32)'),
+  // depositCredits is withdrawCredits' EXACT inverse (wallet→meter, msg.sender
+  // both sides) — a funded agent MUST be able to fund its own meter, yet
+  // `topup` hit LH_RELAY_FUNDED for exactly that caller (2026-07-06 fleet).
+  selector('depositCredits(uint256)'),
+  // redeem mints against an owner-issued ONE-SHOT code (amount fixed at
+  // addRedeemCodes time, claimed-flag dedup) — the relay only ever pays gas,
+  // never the mint, and supply stays owner-controlled. Without it a funded
+  // agent could never redeem a top-up code (LH_RELAY_FUNDED, same fleet).
+  selector('redeem(string)'),
 ]);
 
 // ALWAYS-FREE writes — sponsored regardless of the caller's $LH balance because

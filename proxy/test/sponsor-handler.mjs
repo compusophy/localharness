@@ -271,6 +271,46 @@ const token = authToken(senderPriv, senderAddr, ts);
   );
 }
 
+// --- funded caller, approve+depositCredits batch, IS sponsored (self-pay) ----
+// `topup` batches approve(diamond)+depositCredits — the withdrawCredits inverse,
+// moving the caller's OWN wallet $LH into its meter. A funded agent couldn't
+// fund its own meter before the exemption (LH_RELAY_FUNDED, 2026-07-06 fleet).
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  const approveCd = '0x' + sel('approve(address,uint256)') + word(DIAMOND.slice(2).toLowerCase()) + word('64');
+  const depositCd = '0x' + sel('depositCredits(uint256)') + word('64');
+  const intent = makeIntent(DIAMOND, depositCd);
+  intent.calls = [
+    { to: hexToBytes(TOKEN.slice(2)), value: 0n, input: hexToBytes(approveCd.slice(2)) },
+    { to: hexToBytes(DIAMOND.slice(2)), value: 0n, input: hexToBytes(depositCd.slice(2)) },
+  ];
+  const res = await handler(makeReq(bodyFromIntent(intent), token));
+  const j = await res.json();
+  ok(
+    'funded caller approve+depositCredits batch is sponsored (self-pay exempt)',
+    res.status === 200,
+    `status=${res.status} code=${j.code} body=${JSON.stringify(j)}`,
+  );
+}
+
+// --- funded caller, redeem-ONLY intent, IS sponsored (self-pay exemption) ----
+// redeem mints against an owner-issued one-shot code; the relay only pays gas.
+// A funded agent must still be able to redeem a top-up code.
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  const codeBytes = new TextEncoder().encode('topup-code');
+  const cd = '0x' + sel('redeem(string)') + word('20') + word(codeBytes.length.toString(16)) +
+    bytesToHex(codeBytes).padEnd(64, '0');
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  const j = await res.json();
+  ok(
+    'funded caller redeem-only is sponsored (self-pay exempt)',
+    res.status === 200,
+    `status=${res.status} code=${j.code} body=${JSON.stringify(j)}`,
+  );
+}
+
 // --- funded caller, SMALL setMetadata self-edit, IS sponsored ----------------
 // persona/price/lessons are owner-gated gas-only self-edits; a funded agent must be
 // able to manage its own identity on mainnet (before: LH_RELAY_FUNDED).

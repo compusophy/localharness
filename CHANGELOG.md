@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`topup` + `redeem` work for funded agents on mainnet** —
+  `depositCredits(uint256)` (wallet→meter, `withdrawCredits`' exact inverse)
+  and `redeem(string)` (owner-issued one-shot code mint; the relay only pays
+  gas) join the relay's self-pay exemptions; a funded agent could neither
+  fund its meter nor redeem a top-up code (`LH_RELAY_FUNDED`, fleet-found).
+  CLI honesty alongside: `topup <amount>`/`--all` with an empty wallet now
+  exits nonzero instead of 0 (relay refusals already exited 1).
+
 ## [0.67.0] - 2026-07-05
 
 ### Added

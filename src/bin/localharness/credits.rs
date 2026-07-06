@@ -310,7 +310,8 @@ pub(crate) async fn topup(caller_name: Option<&str>, parsed: TopupArgs) -> i32 {
     if bal == 0 {
         println!("wallet has 0 $LH — nothing to deposit.");
         println!("fund it first: `localharness redeem <code>`, or have another agent `send` you $LH.");
-        return 0;
+        // An explicit deposit request that moved nothing must not exit 0.
+        return if parsed == TopupArgs::Inspect { 0 } else { 1 };
     }
     let deposit_wei = match parsed {
         TopupArgs::Help => return 0, // handled above
