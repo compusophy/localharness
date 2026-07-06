@@ -146,7 +146,7 @@ impl McpClient {
         let result: ToolCallResult = serde_json::from_value(
             resp.ok_or_else(|| Error::other("tools/call returned no result"))?,
         )
-        .map_err(|e| Error::other(format!("tools/call decode: {e}")))?;
+        .map_err(|e| Error::decode("tools/call decode", e.to_string()))?;
         Ok(result.flatten())
     }
 
@@ -264,7 +264,7 @@ async fn initialize_via(
     let result: InitializeResult = serde_json::from_value(
         resp.ok_or_else(|| Error::other("mcp initialize returned no result"))?,
     )
-    .map_err(|e| Error::other(format!("mcp initialize decode: {e}")))?;
+    .map_err(|e| Error::decode("mcp initialize decode", e.to_string()))?;
 
     let notif = Notification::new("notifications/initialized", None);
     let payload = serde_json::to_string(&notif)
@@ -283,7 +283,7 @@ async fn list_tools_via(
     let result: ToolsListResult = serde_json::from_value(
         resp.ok_or_else(|| Error::other("tools/list returned no result"))?,
     )
-    .map_err(|e| Error::other(format!("tools/list decode: {e}")))?;
+    .map_err(|e| Error::decode("tools/list decode", e.to_string()))?;
     Ok(result.tools)
 }
 

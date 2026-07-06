@@ -197,8 +197,18 @@ Other error variants (consider before 1.0 alongside R6; slice A SHIPPED
 2026-07-06: typed `Error::Transport(String)` + `Error::Decode{what,message}`,
 Display byte-identical, Transport→LH3007 fallback / Decode→new LH4013,
 `Error::Http` deprecated with zero production constructors, backends'
-POST/chunk-read + JSON/SSE/history-decode sites migrated; remaining: slice B
-config/MCP/spawn sites, slice C engine/app/filesystem/builtins `Error::other`
+POST/chunk-read + JSON/SSE/history-decode sites migrated; slice B SHIPPED
+2026-07-06: backend client-build/invalid-url sites → the existing
+`Error::Config` (CORE_CONFIG; the `"config: "` prefix is the slice's one
+deliberate Display change), MCP stdio spawn/pipe + the engine's mid-stream
+stall → `Transport`, MCP response decodes + local model/tokenizer loads →
+`Decode`; retry.rs tests now construct the typed variants production emits.
+DELIBERATELY still `Error::other`: encode-direction serde sites (slice A
+precedent), MCP "returned no result"/rpc-error (Display can't stay
+byte-identical / application-level), `subscribe_step_stream`'s opaque re-wrap,
+the hook-denial (PolicyDenied's prefix would leak into chat text), and
+anthropic's in-band stream error (a network fallback would misclassify
+invalid_request); remaining: slice C app/filesystem/builtins `Error::other`
 sites) · loop_util stall
 (superseded by R3/R7) · money-path E2E proofs run only by hand (~~stale wrong-chain
 scripts~~ SHIPPED 2026-07-03: harvest-feedback.{sh,ps1} now delegate to

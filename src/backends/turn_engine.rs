@@ -366,7 +366,10 @@ where
                         break;
                     }
                     NextChunk::IdleTimeout => {
-                        let e = Error::other(format!(
+                        // A dead/stalled socket IS a transport failure —
+                        // Transport's LH3007 fallback buckets it as network
+                        // for telemetry (it never reaches the open-retry).
+                        let e = Error::transport(format!(
                             "model stream stalled — no data for {}s",
                             idle_ms / 1000
                         ));

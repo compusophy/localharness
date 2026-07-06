@@ -214,9 +214,9 @@ async fn load_engine(config: &LocalBackendConfig) -> Result<Option<Engine>> {
     let cfg = GemmaConfig::gemma_3_270m();
     let model = GemmaModel::<LocalBackend>::init(cfg, &device);
     let model = weights::load_gemma(model, &weights, &device)
-        .map_err(|e| Error::other(format!("local model load: {e}")))?;
+        .map_err(|e| Error::decode("local model load", e.to_string()))?;
     let tokenizer = tokenizer::load(&tok_bytes)
-        .map_err(|e| Error::other(format!("local tokenizer load: {e}")))?;
+        .map_err(|e| Error::decode("local tokenizer load", e.to_string()))?;
     Ok(Some(Engine {
         model,
         tokenizer,

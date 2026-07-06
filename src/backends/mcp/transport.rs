@@ -41,16 +41,16 @@ impl StdioTransport {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| Error::other(format!("mcp spawn '{command}': {e}")))?;
+            .map_err(|e| Error::transport(format!("mcp spawn '{command}': {e}")))?;
 
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| Error::other("mcp child has no stdin"))?;
+            .ok_or_else(|| Error::transport("mcp child has no stdin"))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| Error::other("mcp child has no stdout"))?;
+            .ok_or_else(|| Error::transport("mcp child has no stdout"))?;
 
         let (tx, rx) = mpsc::channel::<String>(INBOUND_CAPACITY);
         let reader = tokio::spawn(async move {
@@ -97,15 +97,15 @@ impl StdioTransport {
         stdin
             .write_all(payload.as_bytes())
             .await
-            .map_err(|e| Error::other(format!("mcp write: {e}")))?;
+            .map_err(|e| Error::transport(format!("mcp write: {e}")))?;
         stdin
             .write_all(b"\n")
             .await
-            .map_err(|e| Error::other(format!("mcp write nl: {e}")))?;
+            .map_err(|e| Error::transport(format!("mcp write nl: {e}")))?;
         stdin
             .flush()
             .await
-            .map_err(|e| Error::other(format!("mcp flush: {e}")))?;
+            .map_err(|e| Error::transport(format!("mcp flush: {e}")))?;
         Ok(())
     }
 

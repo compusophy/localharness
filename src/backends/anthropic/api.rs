@@ -69,7 +69,7 @@ impl AnthropicClient {
         let builder = builder.timeout(DEFAULT_TIMEOUT);
         let http = builder
             .build()
-            .map_err(|e| Error::other(format!("reqwest client build: {e}")))?;
+            .map_err(|e| Error::config(format!("reqwest client build: {e}")))?;
         Ok(Self {
             http,
             api_key: api_key.into().into_boxed_str(),
@@ -122,7 +122,7 @@ impl AnthropicClient {
     fn messages_url(&self) -> Result<Url> {
         self.base_url
             .join("v1/messages")
-            .map_err(|e| Error::other(format!("invalid messages url: {e}")))
+            .map_err(|e| Error::config(format!("invalid messages url: {e}")))
     }
 
     /// Non-streaming `POST /v1/messages`. Used for one-shot completions

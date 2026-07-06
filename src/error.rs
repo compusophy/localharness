@@ -284,6 +284,24 @@ mod tests {
         );
     }
 
+    /// Slice B of the Error migration: backend client-construction failures
+    /// ride the existing `Config` variant (its established `"config: "` Display
+    /// prefix is the ONE deliberate text change of the slice), MCP stdio
+    /// process/pipe failures + a mid-stream stall are `Transport` (LH3007
+    /// network fallback), and MCP response decodes are `Decode`.
+    #[test]
+    fn slice_b_config_transport_decode_classification() {
+        use crate::error_codes as ec;
+        let c = Error::config("invalid model url: relative URL without a base");
+        assert_eq!(c.to_string(), "config: invalid model url: relative URL without a base");
+        assert_eq!(c.code(), ec::CORE_CONFIG);
+        assert_eq!(Error::transport("model stream stalled — no data for 90s").code(), ec::BACKEND_NETWORK);
+        assert_eq!(Error::transport("mcp spawn 'srv': No such file or directory").code(), ec::BACKEND_NETWORK);
+        let d = Error::decode("tools/call decode", "missing field `content`");
+        assert_eq!(d.to_string(), "tools/call decode: missing field `content`");
+        assert_eq!(d.code(), ec::CORE_DECODE);
+    }
+
     #[test]
     #[allow(deprecated)]
     fn http_status_display_and_accessor() {

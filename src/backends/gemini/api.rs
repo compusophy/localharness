@@ -61,7 +61,7 @@ impl GeminiClient {
         let builder = builder.timeout(DEFAULT_TIMEOUT);
         let http = builder
             .build()
-            .map_err(|e| Error::other(format!("reqwest client build: {e}")))?;
+            .map_err(|e| Error::config(format!("reqwest client build: {e}")))?;
         Ok(Self {
             http,
             api_key: api_key.into().into_boxed_str(),
@@ -118,7 +118,7 @@ impl GeminiClient {
         let url = self
             .base_url
             .join(&path)
-            .map_err(|e| Error::other(format!("invalid model url: {e}")))?;
+            .map_err(|e| Error::config(format!("invalid model url: {e}")))?;
 
         let response = self
             .apply_extra_headers(
@@ -164,7 +164,7 @@ impl GeminiClient {
         let mut url = self
             .base_url
             .join(&path)
-            .map_err(|e| Error::other(format!("invalid model url: {e}")))?;
+            .map_err(|e| Error::config(format!("invalid model url: {e}")))?;
         url.query_pairs_mut().append_pair("alt", "sse");
 
         let response = self

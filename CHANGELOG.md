@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Error typed-variant migration slice B (backends config/MCP/engine)** —
+  backend client-construction failures (reqwest client build, invalid base-url
+  joins) now construct `Error::config` (`LH4004` instead of the `LH4012`
+  catch-all; their text gains the variant's established `config: ` prefix —
+  the slice's one deliberate Display change), MCP stdio spawn/pipe failures
+  and the engine's mid-stream idle-stall construct `Error::transport`
+  (`LH3007` network fallback), and MCP response decodes + local
+  model/tokenizer loads construct `Error::decode` (`LH4013`). All other
+  surfaced text stays byte-identical; retry tests now exercise the typed
+  variants production emits. Slice C (app/filesystem/builtins) pending.
+
 ## [0.69.0] - 2026-07-06
 
 ### Fixed

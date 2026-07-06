@@ -243,7 +243,7 @@ mod tests {
             let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
             async move {
                 if n < MAX_STREAM_ATTEMPTS {
-                    Err(crate::error::Error::other("HTTP 503 internal server error"))
+                    Err(crate::error::Error::http_status(503, "HTTP 503 internal server error"))
                 } else {
                     Ok("stream")
                 }
@@ -261,7 +261,7 @@ mod tests {
         let calls = AtomicU32::new(0);
         let err = open_stream_with_retry(|| {
             calls.fetch_add(1, Ordering::SeqCst);
-            async { Err::<(), _>(crate::error::Error::other("HTTP 401 Unauthorized: bad API key")) }
+            async { Err::<(), _>(crate::error::Error::http_status(401, "HTTP 401 Unauthorized: bad API key")) }
         })
         .await
         .expect_err("auth must not retry");
@@ -281,7 +281,7 @@ mod tests {
             let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
             async move {
                 if n < 2 {
-                    Err(crate::error::Error::other("gemini POST: error sending request"))
+                    Err(crate::error::Error::transport("gemini POST: error sending request"))
                 } else {
                     Ok("stream")
                 }
@@ -295,7 +295,7 @@ mod tests {
         let calls = AtomicU32::new(0);
         let err = open_stream_with_retry(|| {
             calls.fetch_add(1, Ordering::SeqCst);
-            async { Err::<(), _>(crate::error::Error::other("gemini POST: error sending request")) }
+            async { Err::<(), _>(crate::error::Error::transport("gemini POST: error sending request")) }
         })
         .await
         .expect_err("still-dead network surfaces the error");
@@ -354,7 +354,7 @@ mod tests {
                 async move {
                     // Stop pressed just as the transient failure surfaces.
                     cancel.store(true, Ordering::Release);
-                    Err::<(), _>(crate::error::Error::other("HTTP 503 internal server error"))
+                    Err::<(), _>(crate::error::Error::http_status(503, "HTTP 503 internal server error"))
                 }
             },
             &cancel,
@@ -376,7 +376,7 @@ mod tests {
                 let n = attempts.fetch_add(1, Ordering::SeqCst) + 1;
                 async move {
                     if n < MAX_STREAM_ATTEMPTS {
-                        Err(crate::error::Error::other("HTTP 503 internal server error"))
+                        Err(crate::error::Error::http_status(503, "HTTP 503 internal server error"))
                     } else {
                         Ok("stream")
                     }
@@ -396,7 +396,7 @@ mod tests {
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async {
-                    Err::<(), _>(crate::error::Error::other("HTTP 401 Unauthorized: bad API key"))
+                    Err::<(), _>(crate::error::Error::http_status(401, "HTTP 401 Unauthorized: bad API key"))
                 }
             },
             &cancel,
@@ -416,7 +416,7 @@ mod tests {
         let calls = AtomicU32::new(0);
         let err = open_stream_with_retry(|| {
             calls.fetch_add(1, Ordering::SeqCst);
-            async { Err::<(), _>(crate::error::Error::other("HTTP 503 internal server error")) }
+            async { Err::<(), _>(crate::error::Error::http_status(503, "HTTP 503 internal server error")) }
         })
         .await
         .expect_err("all attempts failed");
