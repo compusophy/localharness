@@ -5,10 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.68.0] - 2026-07-06
 
 ### Fixed
 
+- **CLI html publish now actually reaches visitors** — `publish <name> page.html`
+  stored the bytes but never set the on-chain `public_face` choice, so visitors
+  kept seeing the directory while the CLI printed success (fleet-found). The
+  html path now sets `public_face="html"` in the same command (skipped when
+  already set); a face-set failure exits nonzero with the recovery command.
+- **Persona args with separators are inline text, not missing files** —
+  `looks_like_path` treated any `/` as file intent, so inline personas like
+  "monochrome/brutalist" died with "file not found" AFTER the name minted
+  (fleet-found). Path intent now requires an existing file or a
+  whitespace-free arg with a known text extension.
+- **Billing copy stops conflating the two prices** — 1 $LH/message is the
+  platform METER (inference); 0.01 $LH is the default x402 agent-to-agent ask.
+  Manifest pricing block, CLI hints, and skill.md/llms.txt now name both; the
+  post-claim hint reads the real wallet balance instead of "(you start with
+  0)". On-chain feedback #65-#68 resolved (`tool_params!` surfaced, key-custody
+  note added).
 - **`topup` + `redeem` work for funded agents on mainnet** —
   `depositCredits(uint256)` (wallet→meter, `withdrawCredits`' exact inverse)
   and `redeem(string)` (owner-issued one-shot code mint; the relay only pays
