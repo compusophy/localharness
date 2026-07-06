@@ -347,6 +347,12 @@ pub mod registry;
 #[cfg(feature = "wallet")]
 pub mod tempo_tx;
 
+/// READ-ONLY multi-chain EVM tools (balances / `eth_call` / ENS) over
+/// `registry::multichain` — registered by the browser chat session AND the
+/// headless CLI `call`, so identifier resolution is real on both surfaces.
+#[cfg(feature = "wallet")]
+pub mod evm_tools;
+
 /// App-injected x402 payment-signing hook (lets the backend `call_agent`
 /// tool sign payments using the app-layer wallet).
 pub mod x402_hook;

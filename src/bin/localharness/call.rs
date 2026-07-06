@@ -500,6 +500,37 @@ pub(crate) async fn ensure_meter_funded(caller: &k256::ecdsa::SigningKey) {
 /// authorization (also accepts `x-x402-authorization`; case-insensitive).
 const X402_PAYMENT_HEADER: &str = "X-PAYMENT";
 
+/// Custom tools require an explicit policy (Phase 0b): deny-by-default plus an
+/// allow for exactly the given read-only set — nothing else is reachable.
+/// Rebuilt per agent start (`Policy` is deliberately not `Clone`).
+fn evm_read_policies(
+    tools: &[std::sync::Arc<dyn localharness::tools::Tool>],
+) -> Vec<localharness::Policy> {
+    std::iter::once(localharness::deny_all())
+        .chain(tools.iter().map(|t| localharness::Policy::allow(t.name())))
+        .collect()
+}
+
+/// The system-prompt line that keeps headless identifier answers HONEST
+/// (fleet F2: a tool-free `call` turn confidently emitted a from-memory
+/// address when asked to "resolve" a name). With the evm read tools
+/// registered (`evm_tools = true`, the meter path) it directs the model to
+/// them; without (the x402 single-request path — a tool round-trip would
+/// replay the one-shot nonce) it instructs an explicit REFUSAL. Pure.
+pub(crate) fn identifier_note(evm_tools: bool) -> &'static str {
+    if evm_tools {
+        "Never state an address, hash, key, or other identifier from memory: \
+         resolve it with your read-only EVM tools (resolve_ens, evm_balance, \
+         evm_call, evm_chains) and answer only from their output. If no tool \
+         can verify it, say so instead of guessing."
+    } else {
+        "You have NO lookup tools on this call. If asked to resolve, state, or \
+         confirm an identifier (address, hash, key, ENS name) you cannot \
+         verify, refuse and say you have no lookup tools here — never produce \
+         one from memory."
+    }
+}
+
 /// The provider + model id the proxy `/prices` table is keyed by: a `claude-*`
 /// id routes to `anthropic`, anything else to `gemini` (the only providers the
 /// CLI `call` uses). Returns `(provider, model_id)` — model `""` for Gemini,
@@ -668,12 +699,13 @@ pub(crate) async fn run_agent_turn(
     // unfunded, RPC) falls back UNCHANGED to the meter path below.
     //
     // INVARIANT (load-bearing): the X-PAYMENT carries a ONE-SHOT nonce, valid for
-    // exactly ONE request. This turn fires exactly one upstream request (`caps`
-    // below disables builtins + subagents, no compaction is set), so the header
+    // exactly ONE request. An x402-bearing turn fires exactly one upstream request
+    // (`caps` below disables builtins + subagents, no compaction is set, and the
+    // evm read tools below register ONLY when this header is ABSENT), so the header
     // (attached at the connection level) is never replayed. Do NOT enable
-    // compaction / subagents / image on an x402-bearing turn — a second request
-    // would replay the spent nonce and 402 mid-turn with no meter fallback. If
-    // ever needed, scope X-PAYMENT per request (fresh nonce each) instead.
+    // compaction / subagents / image / tools on an x402-bearing turn — a second
+    // request would replay the spent nonce and 402 mid-turn with no meter fallback.
+    // If ever needed, scope X-PAYMENT per request (fresh nonce each) instead.
     let x402_header = try_build_x402_payment(&caller, model).await;
     if x402_header.is_none() {
         // Pay PER REQUEST via the meter: fund it so the proxy debits ~CALL_COST_WEI
@@ -682,6 +714,19 @@ pub(crate) async fn run_agent_turn(
         // unfunded (the proxy 402s, the hint says to redeem).
         ensure_meter_funded(&caller).await;
     }
+
+    // EVM READ tools (fleet F2): a tool-free headless turn fabricated
+    // from-memory addresses when asked to "resolve" a name. On the METER path
+    // (billed per request — a tool round-trip is just another metered request)
+    // register the pure-read evm_* set so resolution is REAL. The x402 path
+    // must stay tool-free per the one-shot-nonce invariant above, so there the
+    // system note instructs the model to REFUSE unverifiable identifier asks.
+    let evm_tools = if x402_header.is_none() {
+        localharness::evm_tools::read_toolset()
+    } else {
+        Vec::new()
+    };
+    system = format!("{system}\n\n{}", identifier_note(!evm_tools.is_empty()));
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -717,6 +762,12 @@ pub(crate) async fn run_agent_turn(
                     .with_model(model.clone())
                     .with_system_instructions(system.clone())
                     .with_capabilities(caps.clone());
+                if !evm_tools.is_empty() {
+                    cfg = cfg.with_policies(evm_read_policies(&evm_tools));
+                    for t in &evm_tools {
+                        cfg = cfg.with_tool(t.clone());
+                    }
+                }
                 if let Some((name, value)) = x402_header.clone() {
                     cfg = cfg.with_extra_header(name, value);
                 }
@@ -743,6 +794,12 @@ pub(crate) async fn run_agent_turn(
             .with_base_url(base.clone())
             .with_system_instructions(system.clone())
             .with_capabilities(caps.clone());
+        if !evm_tools.is_empty() {
+            cfg = cfg.with_policies(evm_read_policies(&evm_tools));
+            for t in &evm_tools {
+                cfg = cfg.with_tool(t.clone());
+            }
+        }
         if let Some((name, value)) = x402_header.clone() {
             cfg = cfg.with_extra_header(name, value);
         }
@@ -1090,6 +1147,62 @@ mod tests {
         assert!(verify_reply("the answer is yes", &required)
             .unwrap_err()
             .contains("not JSON"));
+    }
+
+    /// The meter-path tool wiring END-TO-END on the SHIPPED turn engine
+    /// (offline Mock backend): the real `read_toolset()` under the real
+    /// `evm_read_policies()` + the same caps as `run_agent_turn` — the policy
+    /// ALLOWS the read set and the tool actually EXECUTES (fleet F2's fix is
+    /// real tools, not silently no-oping declarations).
+    #[tokio::test]
+    async fn evm_read_toolset_executes_under_its_policies() {
+        use localharness::backends::mock::MockConnection;
+        let tools = localharness::evm_tools::read_toolset();
+        let backend = MockConnection::builder()
+            .turn(|t| t.tool_call("evm_chains", serde_json::json!({})).text("done"))
+            .build();
+        let mut cfg = localharness::MockAgentConfig::new(backend)
+            .with_capabilities(localharness::types::CapabilitiesConfig {
+                enabled_tools: Some(Vec::new()),
+                enable_subagents: false,
+                ..Default::default()
+            })
+            .with_policies(evm_read_policies(&tools));
+        for t in &tools {
+            cfg = cfg.with_tool(t.clone());
+        }
+        let agent = localharness::Agent::start_mock(cfg).await.expect("agent starts");
+        let reply = agent.chat("what chains can you read?").await.unwrap().text().await.unwrap();
+        assert_eq!(reply, "done");
+        // The tool RAN (deny-all would have blocked it) and returned the REAL
+        // chain table — evm_chains is pure, so this is a full offline execute.
+        let executed = agent.conversation().history().iter().any(|s| {
+            s.tool_results.iter().any(|r| {
+                r.name == "evm_chains"
+                    && r.error.is_none()
+                    && r.result.as_ref().is_some_and(|v| v.to_string().contains("tempo"))
+            })
+        });
+        assert!(executed, "evm_chains must EXECUTE under evm_read_policies");
+        agent.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn identifier_note_directs_to_tools_when_present_refuses_when_absent() {
+        // Meter path (tools registered): the note points at the evm read set
+        // and bans from-memory identifiers.
+        let with = identifier_note(true);
+        for tool in ["resolve_ens", "evm_balance", "evm_call", "evm_chains"] {
+            assert!(with.contains(tool), "tool note must name {tool}");
+        }
+        assert!(with.contains("memory"));
+        // x402 path (tool-free by the one-shot-nonce invariant): the note says
+        // there are NO lookup tools and instructs refusal — never fabrication.
+        let without = identifier_note(false);
+        assert!(without.contains("NO lookup tools"));
+        assert!(without.contains("refuse"));
+        assert!(without.contains("never produce one from memory"));
+        assert_ne!(with, without);
     }
 
     #[test]

@@ -94,6 +94,8 @@ src/                  library crate
 │                     is_mainnet()) + abi/rpc/tx
 │                     plumbing (read_view, sponsored_diamond_call skeletons);
 │                     mod.rs re-exports keep the flat registry:: surface
+├── evm_tools.rs      the pure-read evm_* ClosureTools over registry::multichain,
+│                     shared by the browser session AND headless CLI call (F2)
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
 │                     call_agent (feature "wallet")
 ├── tempo_tx.rs       Tempo Transaction (tx 0x76) encoder; see Tempo section

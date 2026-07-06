@@ -35,7 +35,12 @@ Names are sanitized (no path traversal) before any key write / on-chain register
 per caller/target under `.localharness/history`. This is NOT the browser's hidden
 `?rpc=1` iframe (that's caller-machine-local and only serves YOUR OWN agents).
 `--pay <amt|auto>` settles a caller-signed x402 payment to the target's TBA.
-`abtest.rs` runs the same turn across personas.
+`abtest.rs` runs the same turn across personas. METER-path turns register the
+pure-read `evm_*` toolset (`crate::evm_tools`, deny-by-default + allowlist) so
+identifier resolution is REAL (fleet F2: tool-free turns fabricated addresses);
+the x402 pay-per-call path stays TOOL-FREE (one-shot nonce ⇒ exactly one
+upstream request) and its system note (`identifier_note`) instructs the model
+to REFUSE unverifiable identifier asks instead.
 
 ## Sponsorship on mainnet = the KEYLESS RELAY
 Sponsored writes route through `registry::sponsor_relay` → `proxy/api/sponsor.ts`
