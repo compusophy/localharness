@@ -189,6 +189,7 @@ pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("apps", "list published apps in the off-chain app store (read-only, free)"),
     ("whoami", "profile of a name: owner, wallet, persona, advertised price"),
     ("status", "read-only economy dashboard (identity, balances, jobs, …)"),
+    ("fee", "what a call to a target costs before paying (read-only, free)"),
     ("list", "the subdomains you own"),
     ("models", "list the valid --model ids"),
     ("redeem", "mint $LH from a one-time bootstrap code"),

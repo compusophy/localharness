@@ -195,11 +195,27 @@ pub(crate) fn resolve_caller_file(name: Option<&str>) -> Result<String, String> 
                 .to_string(),
         ),
         1 => Ok(found.remove(0)),
-        _ => Err(format!(
-            "multiple identities ({}) — pick one with --as <name>",
-            found.join(", ")
-        )),
+        _ => Err(multiple_identities_msg(&found)),
     }
+}
+
+/// The "multiple identities" error: list the bare NAMES, not the full key-file
+/// paths — 38 absolute paths joined on one line was unreadable (on-chain
+/// feedback #85). Pure + testable.
+pub(crate) fn multiple_identities_msg(files: &[String]) -> String {
+    let names: Vec<&str> = files
+        .iter()
+        .map(|f| {
+            // Split on BOTH separators (not Path::file_name) so the rendering —
+            // and its test — is identical across platforms.
+            let base = f.rsplit(['/', '\\']).next().unwrap_or(f);
+            base.strip_suffix(KEY_SUFFIX).unwrap_or(base)
+        })
+        .collect();
+    format!(
+        "multiple identities ({}) — pick one with --as <name>",
+        names.join(", ")
+    )
 }
 
 /// The thread label (key-file stem) to act as — what conversation history is
@@ -279,6 +295,20 @@ mod tests {
         assert_eq!(pick_key_read_path(cwd.clone(), false, home.clone(), false), None);
         // no home dir resolvable and no cwd key → None
         assert_eq!(pick_key_read_path(cwd, false, None, false), None);
+    }
+
+    #[test]
+    fn multiple_identities_msg_lists_bare_names_not_paths() {
+        // The #85 complaint: 38 full key-file paths dumped in one line. Both a
+        // cwd-relative and an absolute config-home path must reduce to the name.
+        let files = vec![
+            "alice.localharness.key".to_string(),
+            "/home/me/.localharness/keys/bob.localharness.key".to_string(),
+            "C:\\Users\\me\\.localharness\\keys\\carol.localharness.key".to_string(),
+        ];
+        let msg = multiple_identities_msg(&files);
+        assert_eq!(msg, "multiple identities (alice, bob, carol) — pick one with --as <name>");
+        assert!(!msg.contains(KEY_SUFFIX) && !msg.contains('/') && !msg.contains('\\'));
     }
 
     #[test]

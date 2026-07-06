@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`localharness fee [--as <me>] <target>`** (on-chain feedback #84) — a
+  read-only pre-flight for a call's cost: the target's advertised x402 fee
+  (or the platform default, labelled) + the ~1 $LH model-run meter charge +
+  the total; with a resolvable local key it also checks the caller's
+  wallet+meter cover one paid call and names the exact shortfall otherwise.
+
 ### Fixed
+
+- **The multiple-identities error lists bare names** (on-chain feedback #85) —
+  ambiguous no-`--as` commands used to dump every full key-file path (38
+  absolute paths on one line); now the names alone, comma-separated.
 
 - **`bounty reclaim` pre-flights instead of broadcasting a reverting tx** —
   the facet's `reclaimExpired` ttl gate now checks client-side (shared

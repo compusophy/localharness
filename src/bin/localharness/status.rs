@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, fmt_interval, fmt_lh, job_is_terminal, load_signer, registry, resolve_caller_label, resolve_key_read_path, truncate_words, wallet};
+use crate::{bytes_to_hex_str, fmt_interval, fmt_lh, job_is_terminal, load_signer, registry, resolve_caller_key, resolve_caller_label, resolve_key_read_path, truncate_words, wallet, CALL_COST_WEI};
 
 pub(crate) const WHOAMI_USAGE: &str = "usage: localharness whoami [--json] [--as] <name>";
 
@@ -562,6 +562,101 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
     0
 }
 
+// ---- fee (pre-flight call-cost query, on-chain feedback #84) --------------
+
+pub(crate) const FEE_USAGE: &str = "usage: localharness fee [--as <me>] <target>\n  \
+     read-only: what a `call <target>` costs BEFORE paying — the agent's advertised\n  \
+     x402 fee + the ~1 $LH model-run meter charge; with a local key it also checks\n  \
+     your balance covers it.  e.g. localharness fee venture";
+
+/// Render the `fee <target>` cost breakdown. `price_wei` = the target's
+/// advertised x402 price (`None` = never set → the platform default);
+/// `balances` = the caller's `(wallet, meter)` `$LH` when a local key resolved
+/// (`None` = no key — the estimate still prints). Pure + testable.
+pub(crate) fn format_fee(
+    target: &str,
+    price_wei: Option<u128>,
+    balances: Option<(u128, u128)>,
+) -> String {
+    let (agent_fee, label) = match price_wei {
+        Some(w) => (w, "advertised on-chain"),
+        None => (registry::DEFAULT_ASK_PRICE_WEI, "platform default — no price set"),
+    };
+    let total = agent_fee + CALL_COST_WEI;
+    let mut out = format!(
+        "cost to call '{target}' (read-only estimate):\n  \
+         agent fee   {}/call   ({label}; `call --pay auto` / `mcp-call` settles this to the agent)\n  \
+         model run   {}/message   (metered by the credit proxy)\n  \
+         total       ~{} per `call --pay auto`  (plain `call` skips the agent fee)\n",
+        fmt_lh(agent_fee),
+        fmt_lh(CALL_COST_WEI),
+        fmt_lh(total)
+    );
+    if let Some((wallet_lh, meter_lh)) = balances {
+        let held = wallet_lh + meter_lh;
+        let verdict = if held >= total {
+            "✓ funded for one paid call".to_string()
+        } else {
+            format!(
+                "✗ short {} — fund with `localharness redeem <code>` or a $LH transfer",
+                fmt_lh(total - held)
+            )
+        };
+        out.push_str(&format!(
+            "your funds\n  \
+             wallet   {}   <- pays the agent fee (x402) + tops up the meter\n  \
+             meter    {}   <- the model run debits this\n  \
+             {verdict}\n",
+            fmt_lh(wallet_lh),
+            fmt_lh(meter_lh)
+        ));
+    }
+    out
+}
+
+/// `fee [--as <me>] <target>` — what a call to `<target>` costs BEFORE paying
+/// (on-chain feedback #84): the target's advertised x402 fee + the ~1 $LH
+/// model-run meter charge. Read-only — no `$LH`, no tx. With `--as` (or a sole
+/// local key) it also reads the caller's balances and says whether they cover
+/// one paid call; without a resolvable key the estimate alone prints.
+pub(crate) async fn fee(caller: Option<&str>, target: &str) -> i32 {
+    let id = match registry::id_of_name(target).await {
+        Ok(id) if id != 0 => id,
+        Ok(_) => {
+            eprintln!("fee: '{target}' is not registered — nothing to call");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("fee: RPC error resolving '{target}': {e}");
+            return 1;
+        }
+    };
+    // Advertised price; a failed read degrades to the default (never sinks).
+    let price_wei = registry::x402_price_of(id).await.ok().flatten();
+    // Caller balances: an explicit --as must resolve (its error is real); with
+    // no --as, a sole local key is a silent convenience and anything else
+    // (zero keys / several) just omits the balance section.
+    let addr = match caller {
+        Some(_) => match load_signer(caller) {
+            Ok(s) => Some(bytes_to_hex_str(&wallet::address(&s))),
+            Err(code) => return code,
+        },
+        None => resolve_caller_key(None)
+            .ok()
+            .and_then(|(_f, hex)| wallet::from_private_key_hex(&hex).ok())
+            .map(|s| bytes_to_hex_str(&wallet::address(&s))),
+    };
+    let balances = match addr {
+        Some(a) => Some((
+            registry::token_balance_of(&a).await.unwrap_or(0),
+            registry::credit_balance_of(&a).await.unwrap_or(0),
+        )),
+        None => None,
+    };
+    print!("{}", format_fee(target, price_wei, balances));
+    0
+}
+
 /// Parse `list`'s optional `--as <name>` / `--json` flags (order-independent).
 /// `list` takes no positional args — anything else is an error.
 pub(crate) fn parse_list_flags(args: &[String]) -> Result<(Option<String>, bool), String> {
@@ -918,6 +1013,33 @@ mod tests {
             format_reputation_inline(Some((3, 10))),
             "reputation 3.33 from 3 attestations"
         );
+    }
+
+    #[test]
+    fn format_fee_breaks_down_advertised_vs_default_price() {
+        // Advertised 0.10 LH → agent fee + the 1 LH meter charge + total.
+        let out = format_fee("venture", Some(100_000_000_000_000_000), None);
+        assert!(out.contains("agent fee   0.10 LH/call   (advertised on-chain"));
+        assert!(out.contains("model run   1.00 LH/message"));
+        assert!(out.contains("total       ~1.10 LH per `call --pay auto`"));
+        assert!(!out.contains("your funds"), "no key → no balance section");
+        // Never set → the platform default, labelled as such.
+        let out = format_fee("bare", None, None);
+        assert!(out.contains("agent fee   0.01 LH/call   (platform default — no price set"));
+        assert!(out.contains("total       ~1.01 LH"));
+    }
+
+    #[test]
+    fn format_fee_balance_verdict_covers_or_names_the_shortfall() {
+        // wallet+meter ≥ total → funded (0.10 fee + 1.00 meter = 1.10; held 1.50).
+        let price = Some(100_000_000_000_000_000u128);
+        let out = format_fee("venture", price, Some((1_000_000_000_000_000_000, 500_000_000_000_000_000)));
+        assert!(out.contains("wallet   1.00 LH"));
+        assert!(out.contains("meter    0.50 LH"));
+        assert!(out.contains("✓ funded for one paid call"));
+        // Short → the exact shortfall + the funding hint (held 0.60, need 1.10).
+        let out = format_fee("venture", price, Some((500_000_000_000_000_000, 100_000_000_000_000_000)));
+        assert!(out.contains("✗ short 0.50 LH — fund with `localharness redeem <code>`"));
     }
 
     #[test]

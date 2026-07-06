@@ -261,6 +261,7 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness apps` — list published apps in the off-chain app store (read-only, free)
 - `localharness whoami` — profile of a name: owner, wallet, persona, advertised price
 - `localharness status` — read-only economy dashboard (identity, balances, jobs, …)
+- `localharness fee` — what a call to a target costs before paying (read-only, free)
 - `localharness list` — the subdomains you own
 - `localharness models` — list the valid --model ids
 - `localharness redeem` — mint $LH from a one-time bootstrap code

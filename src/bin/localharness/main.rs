@@ -90,6 +90,7 @@
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
+//!   fee [--as <me>] <target> what a `call <target>` costs BEFORE paying (read-only)
 //!   status [--as <me>] [<name>]
 //!                            one read-only dashboard: identity, $LH balances,
 //!                            reputation, guilds, bounties, scheduled jobs
@@ -267,6 +268,10 @@ IDENTITY & PROFILE
                                          unset names cost callers the platform
                                          default (0.01 $LH)
   localharness whoami [--json] <name>    profile of <name> (owner, wallet, …; alias: lookup)
+  localharness fee [--as <me>] <target>  what a `call <target>` costs BEFORE paying:
+                                         its advertised x402 fee + the ~1 $LH
+                                         model-run meter charge (read-only; with
+                                         a key, also checks your balance covers it)
   localharness status [--as <me>] [<name>]
                                          ONE read-only economy dashboard for an agent:
                                          identity, $LH balances (wallet + per-call
@@ -629,6 +634,7 @@ fn command_usage(cmd: &str) -> Option<&'static str> {
         "send" => "usage: localharness send [--as <me>] <recipient> <amount>\n  send $LH to a 0x address or a name's owner.  e.g. localharness send claude 0.5",
         "credits" => "usage: localharness credits [--as <me>] [--reclaim]\n  show your $LH wallet (pays CLI `call` via x402) + chat meter + session (read-only).\n  --reclaim: pull unspent meter $LH back into your wallet (sponsored withdrawCredits;\n  rescues sub-price meter dust the wallet-x402 path would otherwise strand).",
         "whoami" | "lookup" => WHOAMI_USAGE,
+        "fee" => FEE_USAGE,
         "discover" => "usage: localharness discover <query...>\n  find agents by capability (name/persona search); keywords are ORed and ranked.\n  e.g. localharness discover \"solidity auditor\"",
         "remind" => REMIND_USAGE,
         "schedule" => SCHEDULE_USAGE,
@@ -1082,6 +1088,22 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("fee") => match take_as_flag(&args[1..]) {
+            // ONE positional target; read-only, so --as is optional (it only
+            // adds the caller's balance check). On-chain feedback #84.
+            Ok((caller, rest)) => {
+                if rest.len() != 1 || rest[0].starts_with("--") {
+                    eprintln!("{FEE_USAGE}");
+                    2
+                } else {
+                    fee(caller.as_deref(), &rest[0]).await
+                }
+            }
+            Err(e) => {
+                util::print_err(&e);
+                2
+            }
+        },
         Some("discover") => match util::take_as_flag(&args[1..]) {
             // `--as` is accepted-and-ignored (discover is identity-free); any other
             // `--flag` is a usage error, NOT part of the query (it used to be joined
@@ -1220,7 +1242,7 @@ mod tests {
         // command can't ship undocumented for beta testers reading `help`.
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "abtest", "list", "buy",
-            "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
+            "feedback", "probe", "triage", "threads", "forget", "whoami", "status", "fee",
             "invite", "bounty", "colony", "reputation", "guild", "company", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "remind", "jobs", "unschedule", "notify", "models", "sh",
             "onboard", "onramp", "link",
@@ -1257,6 +1279,7 @@ mod tests {
             ("bounty", "bounty <post|list"),
             ("sh", "bashlite"),
             ("whoami", "whoami [--json]"),
+            ("fee", "fee [--as <me>] <target>"),
         ] {
             let u = command_usage(cmd).unwrap_or_else(|| panic!("`{cmd}` missing from the table"));
             assert!(u.contains(needle), "`{cmd}` usage lost its syntax line: {u}");
