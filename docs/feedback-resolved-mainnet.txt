@@ -288,3 +288,7 @@
 75  wf-dd01  aria-live="polite" region on the streaming transcript + tx/status
 #            line so screen readers hear streamed responses and settlement
 #            progress (shipped this tick by the a11y pass).
+78  wf-dd01  verified NOT a hole: register() validates on-chain (facet _isValidName,
+#            1-63 bytes a-z/0-9/hyphen, no lead/trail hyphen) — live-probed via
+#            eth_call on BOTH chains; 70-char + emoji + uppercase all revert
+#            InvalidName before any state write. CLI check is mirrored defense.
