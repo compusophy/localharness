@@ -277,11 +277,62 @@ pub fn rank_agent_matches(agents: &[(String, String)], query: &str) -> Vec<(Stri
         .collect()
 }
 
+/// Synthetic match corpus for a persona-less agent with a PUBLISHED app —
+/// what discover shows (and matches on) instead of an empty persona.
+fn app_corpus(name: &str) -> String {
+    format!("published app: https://{name}.localharness.xyz/")
+}
+
+/// Pure: [`rank_agent_matches`] plus a published-APP tier BELOW it (fleet-found:
+/// an app whose owner never set a persona — slither — was invisible to
+/// capability queries). Persona-less agents with a cartridge in the app-store
+/// catalog get the synthetic corpus [`app_corpus`]; matches on it append AFTER
+/// every name/persona hit (persona matches first, app matches after), deduped
+/// against tier 1. Surfaced persona-less published agents display the app
+/// descriptor instead of "(no persona)".
+pub fn rank_agent_matches_with_apps(
+    agents: &[(String, String)],
+    published: &[String],
+    query: &str,
+) -> Vec<(String, String)> {
+    let mut ranked = rank_agent_matches(agents, query);
+    let seen: std::collections::HashSet<&str> = ranked.iter().map(|(n, _)| n.as_str()).collect();
+    let synthetic: Vec<(String, String)> = agents
+        .iter()
+        .filter(|(n, p)| {
+            p.trim().is_empty() && !seen.contains(n.as_str()) && published.iter().any(|a| a == n)
+        })
+        .map(|(n, _)| (n.clone(), app_corpus(n)))
+        .collect();
+    ranked.extend(rank_agent_matches(&synthetic, query));
+    for (name, persona) in ranked.iter_mut() {
+        if persona.trim().is_empty() && published.iter().any(|a| a == name) {
+            *persona = app_corpus(name);
+        }
+    }
+    ranked
+}
+
+/// Names with a published cartridge in the OFF-CHAIN app store (the proxy's
+/// FREE `/api/apps` catalog, one name per line). Read-only, no auth, no `$LH`.
+pub async fn published_app_names() -> Result<Vec<String>, String> {
+    let bytes = http_get_bytes(&format!("{CREDIT_PROXY_URL}api/apps"))
+        .await?
+        .unwrap_or_default();
+    Ok(String::from_utf8_lossy(&bytes)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
+}
+
 /// Discover agents by capability/keyword — the "Agent Yellow Pages". Scans the
 /// most recent `scan` registered agents, fetches each one's on-chain persona,
 /// and returns `(name, persona)` matches for `query`, ranked by relevance (name
-/// hit first, then persona hit; newest-first within a tier). Read-only; an agent
-/// (or `localharness discover`) uses it to FIND a peer, then `call`/`mcp-call` it.
+/// hit first, then persona hit, then published-app hit; newest-first within a
+/// tier). Read-only; an agent (or `localharness discover`) uses it to FIND a
+/// peer, then `call`/`mcp-call` it.
 pub async fn discover_agents(query: &str, scan: u64) -> Result<Vec<(String, String)>, String> {
     let agents = list_recent_agents(scan).await?;
     if agents.is_empty() {
@@ -294,7 +345,10 @@ pub async fn discover_agents(query: &str, scan: u64) -> Result<Vec<(String, Stri
         .zip(personas)
         .map(|((_, name), persona)| (name, persona.unwrap_or_default()))
         .collect();
-    Ok(rank_agent_matches(&pairs, query))
+    // Published-app tier (fleet-found): best-effort — a store outage degrades
+    // to persona/name matching, never sinks discover.
+    let published = published_app_names().await.unwrap_or_default();
+    Ok(rank_agent_matches_with_apps(&pairs, &published, query))
 }
 
 // --- Published app cartridge (OFF-CHAIN app store) -------------------
@@ -845,6 +899,46 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].0, "chess-game");
         assert_eq!(hits[1].0, "arcade");
+    }
+
+    /// Fleet-found: a published app with NO persona (slither) was invisible to
+    /// capability queries. Persona-less published agents now match on the
+    /// synthetic app corpus, appended BELOW persona/name hits.
+    #[test]
+    fn rank_agent_matches_with_apps_surfaces_personaless_apps() {
+        let agents = vec![
+            ("gamer".to_string(), "plays board games".to_string()),
+            ("slither".to_string(), "".to_string()), // published app, no persona
+            ("quiet".to_string(), "".to_string()),   // no persona, no app
+        ];
+        let published = vec!["slither".to_string()];
+
+        // "app" hits only slither's synthetic corpus; persona shows the app URL.
+        let hits = rank_agent_matches_with_apps(&agents, &published, "app");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0], ("slither".to_string(), app_corpus("slither")));
+
+        // Ranking sane: persona hit first, app-tier hit after ("published"
+        // hits gamer? no — "games" hits gamer's persona, slither's corpus
+        // via "published"). Persona tier beats app tier.
+        let hits = rank_agent_matches_with_apps(&agents, &published, "games published");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, "gamer");
+        assert_eq!(hits[1].0, "slither");
+
+        // A NAME hit on a persona-less published agent is not duplicated into
+        // the app tier, and displays the descriptor instead of "".
+        let hits = rank_agent_matches_with_apps(&agents, &published, "slither");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, app_corpus("slither"));
+
+        // No app, no persona, no match → still invisible; behavior without a
+        // catalog is byte-identical to rank_agent_matches.
+        assert!(rank_agent_matches_with_apps(&agents, &published, "nonexistent").is_empty());
+        assert_eq!(
+            rank_agent_matches_with_apps(&agents, &[], "games"),
+            rank_agent_matches(&agents, "games")
+        );
     }
 
     #[test]
