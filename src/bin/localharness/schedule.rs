@@ -275,7 +275,7 @@ pub(crate) async fn remind(caller_name: Option<&str>, rest: &[String]) -> i32 {
         .await
     {
         Ok(id) => {
-            println!("✓ reminder scheduled — job {id} (off-chain, free)");
+            println!("✓ reminder scheduled — job {id} (off-chain, free; may take a few seconds to appear in `jobs`)");
             println!("  it web-pushes you at the due time (enable notifications in the browser app to receive it).");
             println!("  cancel: localharness unschedule {id}");
             0
@@ -321,7 +321,7 @@ async fn submit_job(caller_name: Option<&str>, parsed: ParsedSchedule, goal_mode
         .await
     {
         Ok(id) => {
-            println!("✓ job {id}: {target} every {every}, ~{max_runs} runs (off-chain)");
+            println!("✓ job {id}: {target} every {every}, ~{max_runs} runs (off-chain; may take a few seconds to appear in `jobs`)");
             if goal_mode {
                 println!("  goal loop: each fire re-feeds the goal and the agent takes ONE step;");
                 println!("  it self-ends when the agent declares the goal complete (finish_goal).");
@@ -408,7 +408,7 @@ pub(crate) async fn list_jobs(caller_name: Option<&str>) -> i32 {
     let now = now_unix();
 
     // OFF-CHAIN jobs (the primary store).
-    let offchain_jobs = match registry::list_offchain_jobs(&signer, now).await {
+    let mut offchain_jobs = match registry::list_offchain_jobs(&signer, now).await {
         Ok(j) => j,
         Err(e) => {
             eprintln!("(off-chain list unavailable: {e})");
@@ -417,6 +417,15 @@ pub(crate) async fn list_jobs(caller_name: Option<&str>) -> i32 {
     };
     // LEGACY on-chain jobs (ScheduleFacet) — best-effort, shown after.
     let ids = registry::jobs_of(&addr).await.unwrap_or_default();
+
+    // The store's directory listing lags a write by a few seconds (GitHub
+    // Contents-API read-after-write consistency), so `jobs` right after
+    // `schedule`/`remind` sees an empty list and looks like a silent failure
+    // (telemetry #44). On empty, retry ONCE after ~2s before concluding.
+    if offchain_jobs.is_empty() && ids.is_empty() {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        offchain_jobs = registry::list_offchain_jobs(&signer, now).await.unwrap_or_default();
+    }
 
     if offchain_jobs.is_empty() && ids.is_empty() {
         println!("no scheduled jobs for {addr}");
