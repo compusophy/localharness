@@ -269,3 +269,22 @@
 #            exist in the app — the UI is already monochrome brutalist.
 80  wf-eaed  closed, false premise: the apex web claim flow exists and works on
 #            mobile; the CLI is not required to claim a name.
+#
+# --- 2026-07-06 doc-honesty batch (#72/#76) + a11y (#75) ---------------------
+72  wf-dd01  the local dry-run EXISTS and is now documented: `localharness
+#            compile app.rl [out.wasm]` compiles fully OFFLINE (no network/key/
+#            $LH) with the frame/render entry check + publish size cap; publish
+#            itself is off-chain/free (no $LH settles), and in-browser
+#            compile_rustlite/run_cartridge preview without publishing —
+#            iterate-free workflow added to skill.md + llms.txt.
+76  wf-dd01  honest x402 failure/timeout spec shipped in skill.md + llms.txt:
+#            there is NO escrow and none is needed — ask_agent/`call --pay` is
+#            SETTLE-ON-SUCCESS (settle submitted only AFTER a successful
+#            non-empty answer). Target error/timeout → payment NOT taken (nonce
+#            unused, auth expires at validBefore; retry the SAME auth). Settle
+#            revert after an answer → served unpaid (platform loss). Unconfirmed
+#            receipt → retry the SAME auth, never a fresh nonce. Escrow proper =
+#            the bounty board (post/cancel/reclaim).
+75  wf-dd01  aria-live="polite" region on the streaming transcript + tx/status
+#            line so screen readers hear streamed responses and settlement
+#            progress (shipped this tick by the a11y pass).
