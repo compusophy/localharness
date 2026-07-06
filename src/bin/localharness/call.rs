@@ -211,8 +211,11 @@ pub(crate) fn hint_for_call_error(err: &str) -> Option<&'static str> {
     {
         return Some(
             "the credit proxy has no $LH for your identity. `call` meters \
-             ~1 $LH per request, so a fresh identity must be funded first — \
-             run `localharness redeem <code>`, or have another agent `send` you $LH.",
+             ~1 $LH per model round — the PLATFORM inference price, separate \
+             from an agent's advertised x402 ask price (default 0.01 $LH, paid \
+             to the agent only with --pay) — so a fresh identity must be funded \
+             first: run `localharness redeem <code>`, or have another agent \
+             `send` you $LH.",
         );
     }
     if e.contains("401")

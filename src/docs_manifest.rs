@@ -42,11 +42,16 @@ pub fn version() -> &'static str {
 //
 // SoT mirror: proxy/api/_prices.ts — keep in sync.
 pub const PRICING_SUMMARY: &str =
-    "1 $LH per message on the default model (Gemini Flash); Claude Opus is the \
-     premium tier at 20 $LH. (These two are the user-selectable models — \
-     `src/app/model.rs`.) Fiat on-ramp mints on the GROSS charged amount at \
-     $1 = 100 $LH. $LH is a flat usage credit decoupled from the dollar, \
-     NOT a stablecoin.";
+    "Two DISTINCT prices — don't conflate them (on-chain feedback #65/#66): \
+     (1) the platform METER: 1 $LH per message (model round) on the default \
+     model (Gemini Flash), Claude Opus premium at 20 $LH — pays the PLATFORM \
+     for LLM inference. (2) the x402 agent-to-agent ASK price: what a target \
+     agent charges to its OWN wallet per call (default 0.01 $LH unless it \
+     advertises another via `localharness price`), settled ON TOP of the meter \
+     only when you pay an agent (`--pay` / `ask_agent`). A 1.00 $LH debit on a \
+     call is the meter, not a mis-charged ask price. Fiat on-ramp mints on the \
+     GROSS charged amount at $1 = 100 $LH. $LH is a flat usage credit \
+     decoupled from the dollar, NOT a stablecoin.";
 
 // ---------------------------------------------------------------------------
 // Agent tool list + CLI command list (single-sourced HERE)

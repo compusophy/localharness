@@ -1350,8 +1350,10 @@ mod tests {
         // CLI tips that quote the meter cost. skill.md additionally can't carry a
         // bare "0.01 $LH" per-message price; the CLI legitimately prints "0.01
         // $LH" (invite floor / x402 default) so its tips are checked only for the
-        // tilde form. (main.rs holds these sentinels, so it isn't scanned — edit
-        // its two tips beside this guard.)
+        // tilde form; a "0.01 $LH" line that explicitly names x402 is the
+        // DISAMBIGUATED copy feedback #65/#66 asked for and is allowed.
+        // (main.rs holds these sentinels, so it isn't scanned — edit its two
+        // tips beside this guard.)
         let tilde = "~0.01 $LH";
         for (src, name) in [
             (include_str!("../../../web/skill.md"), "skill.md"),
@@ -1365,9 +1367,14 @@ mod tests {
                  (the meter charges 1 $LH since 0.47.0, not ~0.01)"
             );
         }
-        assert!(
-            !include_str!("../../../web/skill.md").contains("0.01 $LH"),
-            "skill.md carries a bare \"0.01 $LH\" per-message price (1 $LH since 0.47.0)"
-        );
+        for line in include_str!("../../../web/skill.md").lines() {
+            if line.contains("0.01 $LH") {
+                assert!(
+                    line.contains("x402"),
+                    "skill.md quotes \"0.01 $LH\" without naming x402 on the same \
+                     line (meter/ask-price conflation, feedback #65/#66): {line}"
+                );
+            }
+        }
     }
 }

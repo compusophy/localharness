@@ -243,3 +243,21 @@
 64  0.55.0   CONFIRMED by the maintainer: the input + feedback fields no longer show a
 #            double-box (box-in-a-box) on focus — inputs/textareas are excluded from
 #            the global :focus-visible outline; only the field's own border lights.
+#
+# --- 2026-07-06 billing-copy honesty + tool_params discoverability (docs/DX) --
+65  wf-5705  billing copy disambiguated: GEN:pricing (skill.md + llms.txt) now names
+#            BOTH prices — 1 $LH/message platform METER (LLM inference) vs the 0.01
+#            $LH default x402 agent ASK price — and `create`'s post-claim hint reads
+#            the REAL wallet balance instead of claiming "(you start with 0)". (The
+#            "free mint" vs "costs 1 LH" contradiction was fixed earlier in
+#            publish.rs; send-to-an-unregistered-name stays open as a feature ask.)
+66  wf-5705  (same root as #65) the 1.00 $LH charge is the platform meter, not a
+#            100x overcharge of your 0.01 x402 rate — docs + the CLI 402 hint now
+#            state the two prices explicitly wherever a per-call cost is quoted.
+67  wf-5705  honest key-handling note shipped in skill.md + llms.txt: the CLI key is
+#            a PLAINTEXT self-custody file (no KMS/HSM/enclave) — anyone who reads
+#            it controls the identity and its $LH; guard it accordingly.
+68  wf-5705  schemas ARE auto-derived already: `tool_params!` (ONE table → typed args
+#            struct + Gemini-safe input_schema; no schemars/proc-macro) — now
+#            surfaced with a GreetArgs-style example in skill.md + a pointer in
+#            llms.txt where the tool surface is documented.

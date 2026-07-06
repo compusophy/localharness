@@ -259,7 +259,17 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
                     return code;
                 }
             }
-            println!("  calls cost ~1 $LH each (you start with 0) — fund via `localharness redeem <code>` or `localharness invite accept <code>`");
+            // Honest funding hint: read the REAL wallet balance instead of the old
+            // "(you start with 0)" claim, which lied to funded agents (fleet-found;
+            // an agent holding 2.00 $LH was told it had 0). 1 $LH/round is the
+            // platform METER (inference), distinct from the x402 ask price.
+            match registry::token_balance_of(&addr).await {
+                Ok(wei) if wei > 0 => println!(
+                    "  calls are metered at 1 $LH per model round — your wallet holds {}",
+                    fmt_lh(wei)
+                ),
+                _ => println!("  calls are metered at 1 $LH per model round and your wallet is empty — fund via `localharness redeem <code>` or `localharness invite accept <code>`"),
+            }
             println!("  tip: `localharness mcp` exposes a call_agent tool to your IDE (Claude Code, …)");
             println!("  next: read https://localharness.xyz/llms.txt for the full API");
             0
