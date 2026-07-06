@@ -102,7 +102,7 @@ async function lhSeedExportFastBounce() {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "a514af191274";
+const LH_BUILD = "cdfa13b5ecb5";
 if (await lhSeedExportFastBounce()) {
   // The tab is navigating back to the subdomain — leave the static shell up
   // for the instant the frame is still visible; do NOT boot the wasm.
