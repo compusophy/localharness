@@ -396,6 +396,11 @@ function parseRequest(body: any): SponsorRequest {
     validBefore: optBig(body.validBefore, 'validBefore'),
     validAfter: optBig(body.validAfter, 'validAfter'),
     feeToken,
+    // CONTRACT-CREATION intent (CLI `facet deploy` / `facet diamond`): the
+    // sender hash encodes each call's `to` EMPTY (rlp_create_call) — without
+    // this flag the recompute used the 20-byte `to` and every sponsored deploy
+    // 403'd LH_RELAY_SIG (telemetry #45). Anything but literal true = false.
+    create: body.create === true,
   };
   return { intent, senderAddress, senderSignature };
 }
@@ -431,6 +436,26 @@ function checkAllowlist(calls: TempoCallIntent[]): string | null {
     } else {
       return `calls[${i}]: to ${to} is not the diamond or $LH token`;
     }
+  }
+  return null;
+}
+
+// CREATE intents have NO selector/`to` to allowlist — the init-code IS the
+// payload. A deploy is gas-only (zero value; it can't move anyone's $LH or the
+// sponsor's fee-token float), so like releaseName it is also gate-EXEMPT below:
+// child-diamond genesis / `facet deploy` are normal-user ops and a funded agent
+// still can't self-pay gas on mainnet. Bounds: exactly ONE call (the Rust
+// `create_sponsored` shape), zero value, non-empty init-code capped at the
+// EIP-3860 limit — plus the shared rate caps + float breaker + MAX_GAS_LIMIT.
+const MAX_INITCODE_BYTES = 49152;
+
+function checkCreate(calls: TempoCallIntent[]): string | null {
+  if (calls.length !== 1) return 'create tx must contain exactly one call';
+  const c = calls[0];
+  if (c.value !== 0n) return 'create: raw value sends are not sponsorable';
+  if (c.input.length === 0) return 'create: init-code must be non-empty';
+  if (c.input.length > MAX_INITCODE_BYTES) {
+    return `create: init-code exceeds ${MAX_INITCODE_BYTES} bytes (EIP-3860)`;
   }
   return null;
 }
@@ -552,8 +577,9 @@ export default async function handler(req: Request): Promise<Response> {
   if (intent.gasLimit === 0n || intent.gasLimit > MAX_GAS_LIMIT) {
     return json({ error: 'gas limit out of range', code: 'LH_RELAY_GAS' }, 400, origin);
   }
-  // 6. Selector allowlist (default-deny).
-  const allowErr = checkAllowlist(intent.calls);
+  // 6. Selector allowlist (default-deny) — or the CREATE bounds when there is
+  //    no selector/`to` to check (sponsored contract deployment).
+  const allowErr = intent.create ? checkCreate(intent.calls) : checkAllowlist(intent.calls);
   if (allowErr) return json({ error: allowErr, code: 'LH_RELAY_SELECTOR' }, 403, origin);
 
   // 7. Onboarding-only spend gate: sponsor only zero/near-zero-$LH callers —
@@ -561,8 +587,9 @@ export default async function handler(req: Request): Promise<Response> {
   //    settle + $LH transfer — a funded agent can't hold the fee token to pay its
   //    own gas) OR always-free (register/releaseName — the name lifecycle must
   //    never be locked behind funding). A mix with any other (onboarding/economy)
-  //    write still gates.
-  const gateExempt = intent.calls.every(isGateExemptCall);
+  //    write still gates. CREATE intents are gas-only deploys (checkCreate) —
+  //    exempt like releaseName; funded agents genesis diamonds / deploy facets.
+  const gateExempt = intent.create || intent.calls.every(isGateExemptCall);
   if (!gateExempt) {
     try {
       const bal = await lhBalanceOf(caller);

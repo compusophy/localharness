@@ -91,12 +91,21 @@ export interface TempoIntent {
   validBefore: bigint | null;
   validAfter: bigint | null;
   feeToken: Uint8Array; // 20 bytes (real token — sponsored fee_token)
+  /** CONTRACT CREATION: each call's `to` is RLP-encoded EMPTY (0x80, the EVM
+   * null-target convention) so `input` runs as init-code. Mirrors
+   * `TempoTx.create` / `rlp_create_call` (pinned by GOLDEN_CREATE_SENDER_HASH);
+   * optional — absent/false = plain calls (every pre-existing intent). */
+  create?: boolean;
 }
 
 /** The 10-item prefix shared by sender hash, fee_payer hash, and the tx body. */
 function commonRlpItems(tx: TempoIntent): Uint8Array[] {
   const callItems = tx.calls.map((c) =>
-    rlpList([rlpBytes(c.to), rlpUint(c.value), rlpBytes(c.input)]),
+    rlpList([
+      rlpBytes(tx.create ? new Uint8Array(0) : c.to),
+      rlpUint(c.value),
+      rlpBytes(c.input),
+    ]),
   );
   const optInt = (v: bigint | null) =>
     v === null ? rlpBytes(new Uint8Array(0)) : rlpUint(v);

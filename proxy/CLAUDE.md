@@ -28,7 +28,10 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   approve(diamond)/transfer/createInvite/reclaimInvite/withdrawCredits/
   depositCredits/redeem — caller's OWN $LH or owner-issued one-shot codes),
   `BOUNTY_LIFECYCLE_SELECTORS`, and `setMetadata` ≤4096B self-edits (live-probed:
-  1KB→200, 5KB→`LH_RELAY_FUNDED`; `test/relay-gate-probe.mjs`). The TS tx
+  1KB→200, 5KB→`LH_RELAY_FUNDED`; `test/relay-gate-probe.mjs`). CREATE intents
+  (`create:true` — `facet deploy`/`facet diamond`) have no selector: `checkCreate`
+  bounds them (1 call, 0 value, ≤49152B init-code) and they're gate-exempt
+  (gas-only, telemetry #45); the hash recompute encodes `to` EMPTY. The TS tx
   wire-port is PINNED to Rust golden vectors — keep them in sync.
 - `scheduler.ts` — Vercel-Cron no-tab job worker (`vercel.json` `* * * * *`, 1-min);
   calls `recordRun` (SCHEDULER-ROLE, CAS-guarded). Sub-minute can't ride this.

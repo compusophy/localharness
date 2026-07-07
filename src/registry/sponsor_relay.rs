@@ -71,6 +71,11 @@ fn build_request_json(
         "validBefore": tx.valid_before,
         "validAfter": tx.valid_after,
         "feeToken": format!("0x{}", bytes_to_hex(&fee_token)),
+        // CONTRACT-CREATION flag (`facet deploy` / `facet diamond`): the sender
+        // signed a hash whose calls encode an EMPTY `to` (rlp_create_call), so
+        // the relay must recompute the SAME shape or its ecrecover mismatches
+        // (the telemetry #45 LH_RELAY_SIG 403). Always sent; false = plain calls.
+        "create": tx.create,
         "senderAddress": format!("0x{}", bytes_to_hex(sender_address)),
         "senderSignature": format!("0x{}", bytes_to_hex(sender_sig)),
     }))
@@ -225,6 +230,18 @@ mod tests {
         assert_eq!(j["senderAddress"], "0x1111111111111111111111111111111111111111");
         assert_eq!(j["senderSignature"].as_str().unwrap().len(), 2 + 130);
         assert_eq!(j["feeToken"], "0x2020202020202020202020202020202020202020");
+        // Plain call → create:false; a `.create()` tx (facet deploy / diamond
+        // genesis) → create:true, so the relay recomputes the empty-`to` hash.
+        assert_eq!(j["create"], false);
+        let create_tx = crate::tempo_tx::TempoTxBuilder::new(42431)
+            .gas_limit(25_000_000)
+            .fee_token([0x20u8; 20])
+            .call(crate::tempo_tx::TempoCall { to: [0u8; 20], value_wei: 0, input: vec![0x60] })
+            .sponsored()
+            .create()
+            .build();
+        let jc = build_request_json(&create_tx, &sender, &sig).unwrap();
+        assert_eq!(jc["create"], true);
     }
 
     #[test]

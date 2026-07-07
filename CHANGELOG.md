@@ -26,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sponsored CREATE 403'd `LH_RELAY_SIG` on mainnet** (telemetry #45) —
+  `facet deploy` / `facet diamond` sign the CREATE tx shape (empty `to`,
+  `rlp_create_call`) but the relay intent carried no create indicator, so
+  `proxy/api/_tempo.ts` recomputed the sender hash over the 20-byte `to` and
+  ecrecover mismatched. The relay request now carries `create:true`,
+  `_tempo.ts` mirrors the empty-`to` encoding (pinned by a new Rust
+  `GOLDEN_CREATE_*` vector + TS parity test), and `sponsor.ts` handles create
+  intents deliberately: `checkCreate` (1 call, 0 value, ≤49152B init-code) +
+  gate-exempt like the other gas-only writes. **Proxy redeploy required.**
+
 - **The multiple-identities error lists bare names** (on-chain feedback #85) —
   ambiguous no-`--as` commands used to dump every full key-file path (38
   absolute paths on one line); now the names alone, comma-separated.

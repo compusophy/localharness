@@ -61,6 +61,9 @@ $LH = in-system credits, not gas). Fee token is AlphaUSD (testnet) / USDC.e (mai
   refused for value-sponsorship — `LH_RELAY_FUNDED`). `proxy/` is a SEPARATE deploy
   (`cd proxy && vercel --prod`) — a registry-side selector change needs the proxy
   redeployed to take effect. TS wire-port is pinned to Rust golden vectors.
+  CREATE txs (`create_sponsored` — empty `to` in the hashes) carry `create:true`
+  in the relay intent so the proxy recomputes the SAME shape; omitting it is the
+  telemetry-#45 `LH_RELAY_SIG` 403 (golden: `GOLDEN_CREATE_SENDER_HASH`).
 
 ## Two $LH pots, auto-bridged
 Proxy debits the per-request METER (`creditOf`); `send`/`redeem` fund the WALLET;

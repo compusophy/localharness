@@ -903,6 +903,29 @@ mod tests {
          3352b344cad1fadc97aee9f08ddbc42d1648e76f6e16a937f6aa8703636b79c1c0b8419b\
          46f696dddfbd4739b1bbf7a108ee4cde2de6826dcf49079fba621ca473a5f51f20fd463c\
          4c1573accb51f4021bc108a1bfb44d2fbecd2bff45faf9969dcf6900";
+    /// `keccak256(0x76 || rlp(..))` for [`golden_create_tx`] — the SPONSORED
+    /// CREATE branch: every call's `to` RLP-encoded EMPTY (0x80) so `input`
+    /// runs as init-code. Mirrored by `proxy/api/_tempo.ts` (`create` intents);
+    /// the relay recomputes THIS hash to verify the sender signature — a drift
+    /// here is the exact LH_RELAY_SIG 403 that broke `facet deploy`/`facet
+    /// diamond` on mainnet (telemetry #45).
+    const GOLDEN_CREATE_SENDER_HASH: &str =
+        "8ab02d6dcd60133884d552c6d653009c557598b09f1e2f9b9efc74719931448d";
+    /// `keccak256(0x78 || rlp(..))` for [`golden_create_tx`] — the fee_payer
+    /// commitment over the same empty-`to` calls.
+    const GOLDEN_CREATE_FEE_PAYER_HASH: &str =
+        "3ad4d733941509176da33faf5b2acd14e990cd778f15087f5ac0fca075122105";
+    /// Full `sign_sponsored` output for [`golden_create_tx`]: same envelope as
+    /// the sponsored vector but with the empty-`to` (0x80) call slot.
+    const GOLDEN_CREATE_RAW_TX: &str =
+        "76f9010182a5bf843b9aca00847735940084017d7840f84af8488080b84460806040520001\
+         02030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526\
+         2728292a2b2c2d2e2f303132333435363738393a3b3c3d3ec0800380809420c00000000000\
+         00000000000000000000000001f84380a038ddd6e58b90e11aa31c79f1d8334930f75677e4\
+         2012b750611b547866ff48a1a0763fc78a4ff004d92cd611c0aa9da517f8fcd66c51217d80\
+         b4c28620c595acefc0b84186e2ac307710837396b9f2a3d4adfdddb1d3b893a4c1d6de4fa6\
+         fb0f27fd237542ae83290907b2021cad9cd363828a113b13ed987f0f36a8e789970229b87e\
+         8800";
     /// Full `sign_self_paid` output: fee_payer slot 0x80, same trailing
     /// flat sender sig encoding.
     const GOLDEN_SELF_PAID_RAW_TX: &str =
@@ -938,6 +961,60 @@ mod tests {
                 input,
             })
             .build()
+    }
+
+    /// Deterministic CREATE fixture: same chain/fee_token as [`golden_tx`],
+    /// nonce 3, the `facet diamond` 25M gas budget, `.sponsored().create()`,
+    /// ONE call whose 68-byte init-code pins the long-form (0xb8) branch. The
+    /// fixture's `to` is deliberately NON-zero ([0xd7; 20]) to pin that a
+    /// create tx IGNORES it on-wire (encodes 0x80).
+    fn golden_create_tx() -> TempoTx {
+        let mut alpha_usd = [0u8; 20];
+        alpha_usd[0] = 0x20;
+        alpha_usd[1] = 0xc0;
+        alpha_usd[19] = 0x01;
+        let mut init = vec![0x60, 0x80, 0x60, 0x40, 0x52]; // solc-style preamble
+        init.extend(0u8..63);
+        debug_assert!(init.len() > 55);
+        TempoTxBuilder::new(42431)
+            .max_priority_fee_per_gas(1_000_000_000)
+            .max_fee_per_gas(2_000_000_000)
+            .gas_limit(25_000_000)
+            .nonce(3)
+            .fee_token(alpha_usd)
+            .call(TempoCall { to: [0xd7; 20], value_wei: 0, input: init })
+            .sponsored()
+            .create()
+            .build()
+    }
+
+    #[test]
+    fn create_tx_golden_vector() {
+        let (sender, fee_payer) = golden_keys();
+        let tx = golden_create_tx();
+        let sender_addr = wallet::address(&sender);
+
+        assert_eq!(
+            hex(&tx.sender_hash()),
+            GOLDEN_CREATE_SENDER_HASH,
+            "CREATE sender-hash preimage changed — the relay's recompute would \
+             mismatch and every sponsored deploy 403s LH_RELAY_SIG (telemetry #45)"
+        );
+        assert_eq!(
+            hex(&tx.fee_payer_hash(&sender_addr)),
+            GOLDEN_CREATE_FEE_PAYER_HASH,
+            "CREATE fee_payer-hash preimage changed — sponsor signature would \
+             no longer validate"
+        );
+        let raw = sign_sponsored(tx, &sender, &fee_payer);
+        assert_eq!(
+            hex(&raw),
+            GOLDEN_CREATE_RAW_TX,
+            "serialized sponsored CREATE 0x76 tx changed — the WIRE FORMAT \
+             moved; prove the new bytes live before regenerating"
+        );
+        // The fixture's non-zero `to` must NOT leak into any of the committed bytes.
+        assert!(!raw.windows(20).any(|w| w == [0xd7; 20]));
     }
 
     /// Fixed keys — k256 RFC6979 makes every signature over them

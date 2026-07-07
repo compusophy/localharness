@@ -130,6 +130,7 @@ function bodyFromIntent(intent) {
     validBefore: optStr(intent.validBefore),
     validAfter: optStr(intent.validAfter),
     feeToken: '0x' + bytesToHex(intent.feeToken),
+    create: intent.create === true,
     senderAddress: senderAddr,
     senderSignature: '0x' + bytesToHex(senderSig),
   };
@@ -345,6 +346,63 @@ function setMetadataCalldata(valueLenBytes) {
     res.status === 403 && j.code === 'LH_RELAY_FUNDED',
     `status=${res.status} code=${j.code}`,
   );
+}
+
+// --- CREATE intents (facet deploy / child-diamond genesis, telemetry #45) ----
+// The sender signs the empty-`to` (rlp_create_call) hash; the relay must
+// recompute the SAME shape (create flag) or ecrecover mismatches → LH_RELAY_SIG.
+function makeCreateIntent(initLen = 100) {
+  const init = new Uint8Array(initLen).fill(0x60);
+  const intent = makeIntent('0x' + '00'.repeat(20), '0x' + bytesToHex(init));
+  intent.gasLimit = 25_000_000n;
+  intent.create = true;
+  return intent;
+}
+
+// Funded caller, create → sponsored (gas-only deploy is gate-exempt) and the
+// fee_payer hash/sig match the CLI's empty-`to` recompute.
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  const intent = makeCreateIntent();
+  const res = await handler(makeReq(bodyFromIntent(intent), token));
+  const j = await res.json();
+  ok('funded caller CREATE is sponsored', res.status === 200, `status=${res.status} code=${j.code} body=${JSON.stringify(j)}`);
+  if (res.status === 200) {
+    const localHash = feePayerHash(intent, hexToBytes(senderAddr.slice(2)));
+    ok('create: feePayerHash matches CLI recompute', j.feePayerHash === '0x' + bytesToHex(localHash));
+    const recovered = recoverAddressFromDigest(hexToBytes(j.feePayerSignature.slice(2)), localHash);
+    ok('create: signature recovers to sponsor', recovered.toLowerCase() === SPONSOR_ADDR);
+  }
+}
+
+// A create-signed sender submitted WITHOUT the flag must still refuse — the
+// original #45 shape (hash recomputed over the 20-byte `to`) stays an error,
+// never a silently-signed wrong commitment.
+{
+  stubBalance('0');
+  const intent = makeCreateIntent();
+  const body = bodyFromIntent(intent); // sender sig over the CREATE hash
+  body.create = false;
+  const res = await handler(makeReq(body, token));
+  const j = await res.json();
+  ok('create-signed intent without the flag refused LH_RELAY_SIG', res.status === 403 && j.code === 'LH_RELAY_SIG', `status=${res.status} code=${j.code}`);
+}
+
+// CREATE bounds: one call only / zero value / init-code within EIP-3860.
+{
+  stubBalance('0');
+  const intent = makeCreateIntent();
+  intent.calls = [intent.calls[0], intent.calls[0]];
+  const res = await handler(makeReq(bodyFromIntent(intent), token));
+  const j = await res.json();
+  ok('create with two calls refused LH_RELAY_SELECTOR', res.status === 403 && j.code === 'LH_RELAY_SELECTOR', `status=${res.status} code=${j.code}`);
+}
+{
+  stubBalance('0');
+  const intent = makeCreateIntent(49153); // > EIP-3860 init-code cap
+  const res = await handler(makeReq(bodyFromIntent(intent), token));
+  const j = await res.json();
+  ok('create with oversized init-code refused LH_RELAY_SELECTOR', res.status === 403 && j.code === 'LH_RELAY_SELECTOR', `status=${res.status} code=${j.code}`);
 }
 
 // --- transfer on the token IS sponsorable (send_lh moves the caller's $LH) ---
