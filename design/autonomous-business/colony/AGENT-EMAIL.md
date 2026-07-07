@@ -5,9 +5,18 @@ Goal: give the localharness agent a **real, self-sovereign email address** at
 reach the world — pursued as far as it can go *autonomously*, with the one genuine
 physical limit (if any) named as a fact.
 
-**TL;DR — RECEIVING is LIVE and was set up fully autonomously. SENDING
-DKIM-authenticated mail *from* the domain is the one step that needs a human (a
-provider account signup that gates on CAPTCHA/email-confirm).**
+**TL;DR (updated 2026-07-07) — RECEIVING is NOT live on the free tier. The DNS is
+fully + correctly wired for ForwardEmail (MX + `forward-email` TXT + SPF), but
+ForwardEmail's FREE tier now REFUSES to process mail for `localharness.xyz` because
+WHOIS/RDAP flags it as a newly-created domain (registered 2026-05-23). Re-probed
+live 2026-07-07 (`node scripts/smtp-send.mjs --to probe@localharness.xyz`): the
+domain's own MX returns `421 4.4.2 … newly created or transferred domain … upgrade
+to a paid plan` at the DATA terminator — nothing is delivered. The §6 theory is now
+confirmed fact. Unblock = ONE human step: put the domain on ForwardEmail's paid plan
+($3/mo, no DNS change needed — same records already serve it) OR switch to a
+different provider (ImprovMX free, requires DNS swap + account). SPF was also
+reverted 2026-07-07 to drop the stale dynamic residential IP: now
+`v=spf1 a include:spf.forwardemail.net -all` (id `rec_a0432f0f00eaef3affd39394`).**
 
 ---
 
