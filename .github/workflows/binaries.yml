@@ -1,0 +1,73 @@
+name: Binaries
+
+# Build the `localharness` CLI for each platform and attach it to the GitHub
+# release — plus a `curl | sh` installer (scripts/install.sh). Onboarding fix
+# (telemetry #62 / #82): "under 60 seconds is a lie if I have to cargo install
+# and wait for rustc to compile wallet features" — prebuilt binaries skip the
+# rustc build entirely.
+#
+# Triggers: a PUBLISHED release (attach the assets) OR workflow_dispatch (build
+# + upload as run artifacts, so the build can be verified without cutting a
+# release). This does NOT publish to crates.io — scripts/release.{sh,ps1}
+# remains the single publisher.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write # upload release assets
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: localharness-linux-x86_64
+            ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: localharness-macos-arm64
+            ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: localharness-windows-x86_64
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --release --features wallet --bin localharness --target ${{ matrix.target }}
+      - name: package
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/localharness${{ matrix.ext }}"
+          test -f "$BIN" || { echo "binary not found: $BIN"; exit 1; }
+          mkdir -p dist
+          if [ -n "${{ matrix.ext }}" ]; then
+            # windows: zip (7z ships on the runner)
+            7z a "dist/${{ matrix.name }}.zip" "$(pwd)/$BIN" >/dev/null
+          else
+            tar -C "$(dirname "$BIN")" -czf "dist/${{ matrix.name }}.tar.gz" "localharness${{ matrix.ext }}"
+          fi
+          ls -la dist
+      - name: attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+      - name: upload run artifact (dispatch build check)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
