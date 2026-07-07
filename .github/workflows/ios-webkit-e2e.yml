@@ -1,0 +1,89 @@
+name: iOS WebKit E2E
+
+# Autonomous end-to-end proof of the iOS OPFS write path on REAL Mobile Safari
+# — no physical iPhone. A GitHub macOS runner boots an iOS Simulator (same
+# WebKit as the device, persistent OPFS — unlike Playwright's bundled WebKit,
+# whose OPFS is broken on every platform: playwright#18235), mirrors the
+# DEPLOYED bundle from localharness.xyz onto localhost (the sim shares the
+# host network), and drives MobileSafari with `simctl openurl` — the page
+# self-reports to a local sink, so there is no Appium/WebDriver to flake.
+#
+#   phase 1: the shipped /opfs-worker.js broker, driven with its real
+#            protocol — write via createSyncAccessHandle + page-side readback.
+#            Runs on an iOS-18.x sim when available: that engine has NO
+#            createWritable, i.e. the exact class the broker exists to fix.
+#   phase 2: the real wasm app boots (Host::Other) and mints .lh_device_key
+#            through the broker — polled from the same origin's OPFS.
+#
+# Tests the LIVE deployment's artifacts (what iPhones actually get), so run it
+# after a web deploy, or on demand.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "web/opfs-worker.js"
+      - "web/boot.js"
+      - "src/filesystem/opfs.rs"
+      - "scripts/tab-e2e/ios-sim-server.mjs"
+      - "scripts/tab-e2e/e2e-ios-probe.html"
+      - ".github/workflows/ios-webkit-e2e.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ios-sim-safari:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: mirror the deployed bundle onto localhost
+        run: |
+          mkdir -p _site/pkg
+          for f in index.html boot.js styles.css sw.js opfs-worker.js manifest.webmanifest; do
+            curl -fsSL "https://localharness.xyz/$f" -o "_site/$f"
+          done
+          for f in localharness.js localharness_bg.wasm; do
+            curl -fsSL "https://localharness.xyz/pkg/$f" -o "_site/pkg/$f"
+          done
+          cp scripts/tab-e2e/e2e-ios-probe.html _site/
+          ls -la _site _site/pkg
+
+      - name: serve + boot an iPhone simulator (prefer iOS 18.x — no createWritable)
+        run: |
+          node scripts/tab-e2e/ios-sim-server.mjs _site 8080 &
+          xcrun simctl list devices available
+          UDID=$(xcrun simctl list devices available | awk '
+            /^-- iOS 18/ { in18 = 1; next }
+            /^--/        { in18 = 0; next }
+            /iPhone/ && in18 && !u18 { u18 = $0 }
+            /iPhone/ && !uany        { uany = $0 }
+            END {
+              line = (u18 != "" ? u18 : uany)
+              n = split(line, a, /[()]/); print a[2]
+            }')
+          echo "picked UDID=$UDID"
+          test -n "$UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: phase 1 — shipped broker protocol on real Mobile Safari
+        run: |
+          xcrun simctl openurl "$UDID" "http://localhost:8080/e2e-ios-probe.html?phase=1"
+          for i in $(seq 1 45); do [ -f e2e-report-phase1.json ] && break; sleep 2; done
+          test -f e2e-report-phase1.json || { echo "phase 1: no report within 90s"; exit 1; }
+          cat e2e-report-phase1.json
+          node -e "const r=require('./e2e-report-phase1.json'); if (r.ok !== true) { console.error('phase 1 FAILED'); process.exit(1); }"
+
+      - name: phase 2 — the real app boots + writes its device key via the broker
+        run: |
+          xcrun simctl openurl "$UDID" "http://localhost:8080/"
+          sleep 45   # foreground boot time: wasm init + Host::Other paint + device-key write
+          xcrun simctl openurl "$UDID" "http://localhost:8080/e2e-ios-probe.html?phase=2"
+          for i in $(seq 1 75); do [ -f e2e-report-phase2.json ] && break; sleep 2; done
+          test -f e2e-report-phase2.json || { echo "phase 2: no report within 150s"; exit 1; }
+          cat e2e-report-phase2.json
+          node -e "const r=require('./e2e-report-phase2.json'); if (r.ok !== true) { console.error('phase 2 FAILED'); process.exit(1); }"

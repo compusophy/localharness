@@ -1,0 +1,91 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lh iOS OPFS e2e probe</title>
+<!--
+  CI-only probe page for the iOS-simulator WebKit E2E (never deployed; served
+  by ios-sim-server.mjs next to a MIRROR of the deployed bundle). Opened in
+  the simulator's REAL MobileSafari via `xcrun simctl openurl`. No automation
+  driver touches the DOM — the page SELF-REPORTS to /lh-e2e-report.
+
+  phase=1 — drive the REAL shipped /opfs-worker.js with its REAL protocol
+            ({id, path, bytes} -> {id, ok, err?, unsupported?}): write through
+            the worker's createSyncAccessHandle path, then read the file back
+            from the PAGE context (cross-context visibility). Also records
+            whether this engine has createWritable at all (iOS <= 18: no ->
+            the broker is the ONLY write path, i.e. the June-2026 bug class).
+  phase=2 — the workflow opened the real app (/) beforehand and gave it
+            foreground time to boot; this phase polls the SAME ORIGIN's OPFS
+            for the .lh_device_key the app mints on Host::Other boot -> proof
+            the real wasm app completed a broker write on real Mobile Safari.
+-->
+<pre id="log" style="font: 12px monospace; white-space: pre-wrap"></pre>
+<script>
+  const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+  const phase = new URLSearchParams(location.search).get('phase') || '1';
+  const report = async (data) => {
+    data.phase = phase;
+    data.ua = navigator.userAgent;
+    data.vendor = navigator.vendor || '';
+    log(JSON.stringify(data, null, 1));
+    try {
+      await fetch('/lh-e2e-report?phase=' + phase, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      log('reported.');
+    } catch (e) { log('report failed: ' + e); }
+  };
+  const T = (ms, p) => Promise.race([
+    p,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT ' + ms + 'ms')), ms)),
+  ]);
+
+  (async () => {
+    const steps = {};
+    try {
+      if (!navigator.storage || typeof navigator.storage.getDirectory !== 'function') {
+        return report({ ok: false, err: 'no navigator.storage.getDirectory on this engine' });
+      }
+      const root = await T(8000, navigator.storage.getDirectory());
+      steps.getDirectory = true;
+
+      if (phase === '1') {
+        const engineFh = await T(8000, root.getFileHandle('lh_e2e_engine.txt', { create: true }));
+        steps.createWritable_exists = typeof engineFh.createWritable === 'function';
+
+        const w = new Worker('/opfs-worker.js'); // the REAL shipped broker
+        const payload = 'ios-e2e-' + Date.now();
+        const bytes = new TextEncoder().encode(payload);
+        const reply = await T(15000, new Promise((res) => {
+          w.onmessage = (e) => res(e.data);
+          w.postMessage({ id: 7, path: 'lh_e2e_probe.txt', bytes: bytes.buffer });
+        }));
+        steps.broker_reply = reply;
+        if (!reply || reply.ok !== true) return report({ ok: false, steps, err: 'broker reply not ok' });
+
+        const fh = await root.getFileHandle('lh_e2e_probe.txt');
+        const text = await (await fh.getFile()).text();
+        steps.readback = text === payload;
+        return report({ ok: steps.readback === true, steps });
+      }
+
+      // phase 2 — poll for the app-minted device key (>= 64 chars).
+      const t0 = Date.now();
+      while (Date.now() - t0 < 90000) {
+        try {
+          const fh = await root.getFileHandle('.lh_device_key');
+          const text = await (await fh.getFile()).text();
+          if (text.length >= 64) {
+            return report({ ok: true, steps: { deviceKeyLen: text.length, waitedMs: Date.now() - t0 } });
+          }
+        } catch { /* not yet */ }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      return report({ ok: false, steps, err: '.lh_device_key never appeared (>=64 chars) within 90s' });
+    } catch (e) {
+      return report({ ok: false, steps, err: String(e) });
+    }
+  })();
+</script>
