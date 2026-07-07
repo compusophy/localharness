@@ -20,6 +20,15 @@ name: iOS WebKit E2E
 
 on:
   workflow_dispatch:
+    inputs:
+      invite_code:
+        description: "OPTIONAL bearer invite (inv-…) — runs phase 3: FULL real onboarding on the sim (auto-redeem via the relay; consumes the invite, real $LH). Mint one: localharness invite create --as claude"
+        required: false
+        default: ""
+      funder:
+        description: "the invite's funder address (escrowedOf must DROP after the sim accepts)"
+        required: false
+        default: "0x63140875e00ca87ffab5110d5927698195bf8561"
   push:
     paths:
       - "web/opfs-worker.js"
@@ -79,6 +88,9 @@ jobs:
           node -e "const r=require('./e2e-report-phase1.json'); if (r.ok !== true) { console.error('phase 1 FAILED'); process.exit(1); }"
 
       - name: phase 2 — the real app boots + writes its device key via the broker
+        # Skipped on a phase-3 run: opening the bare app first would mint the
+        # device key WITHOUT the invite, muddying the full-onboarding proof.
+        if: github.event.inputs.invite_code == ''
         run: |
           xcrun simctl openurl "$UDID" "http://localhost:8080/"
           sleep 45   # foreground boot time: wasm init + Host::Other paint + device-key write
@@ -87,3 +99,21 @@ jobs:
           test -f e2e-report-phase2.json || { echo "phase 2: no report within 150s"; exit 1; }
           cat e2e-report-phase2.json
           node -e "const r=require('./e2e-report-phase2.json'); if (r.ok !== true) { console.error('phase 2 FAILED'); process.exit(1); }"
+
+      - name: phase 3 — FULL onboarding via a real invite (dispatch-only)
+        if: github.event.inputs.invite_code != ''
+        env:
+          INVITE: ${{ github.event.inputs.invite_code }}
+          FUNDER: ${{ github.event.inputs.funder }}
+        run: |
+          E0=$(node scripts/tab-e2e/escrowed-of.mjs "$FUNDER"); echo "escrowedOf(funder) BEFORE: $E0"
+          test "$E0" != "0" || { echo "funder has NO escrowed invites — mint one first (localharness invite create)"; exit 1; }
+          xcrun simctl openurl "$UDID" "http://localhost:8080/?invite=$INVITE"
+          sleep 60   # boot + auto-redeem: sponsored acceptInvite via the relay (a real mainnet tx)
+          xcrun simctl openurl "$UDID" "http://localhost:8080/e2e-ios-probe.html?phase=3"
+          for i in $(seq 1 75); do [ -f e2e-report-phase3.json ] && break; sleep 2; done
+          test -f e2e-report-phase3.json || { echo "phase 3: no report within 150s"; exit 1; }
+          cat e2e-report-phase3.json
+          node -e "const r=require('./e2e-report-phase3.json'); if (r.ok !== true) { console.error('phase 3 page-side FAILED'); process.exit(1); }"
+          E1=$(node scripts/tab-e2e/escrowed-of.mjs "$FUNDER"); echo "escrowedOf(funder) AFTER: $E1"
+          node -e "const [a,b]=[BigInt('$E0'),BigInt('$E1')]; if (!(b < a)) { console.error('on-chain escrow did NOT drop — the accept never landed'); process.exit(1); } console.log('on-chain PROOF: escrow dropped by', (a-b).toString(), 'wei — the sim accepted a REAL invite');"

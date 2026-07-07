@@ -18,6 +18,14 @@
             foreground time to boot; this phase polls the SAME ORIGIN's OPFS
             for the .lh_device_key the app mints on Host::Other boot -> proof
             the real wasm app completed a broker write on real Mobile Safari.
+  phase=3 — FULL ONBOARDING: the workflow opened /?invite=<code> (a real
+            InviteFacet bearer invite) — the app auto-redeems it into the
+            local device key via the sponsored relay (a REAL mainnet accept
+            from real Mobile Safari). Same-origin success signals polled here:
+            .lh_device_key in OPFS + localStorage lh_model_access ===
+            'credits' (set ONLY on redeem success — events/credits.rs). The
+            AUTHORITATIVE check is CI-side: the funder's on-chain escrowedOf
+            must DROP (scripts/tab-e2e/escrowed-of.mjs).
 -->
 <pre id="log" style="font: 12px monospace; white-space: pre-wrap"></pre>
 <script>
@@ -71,19 +79,39 @@
         return report({ ok: steps.readback === true, steps });
       }
 
-      // phase 2 — poll for the app-minted device key (>= 64 chars).
+      // phases 2 + 3 — poll for the app-minted device key (>= 64 chars);
+      // phase 3 additionally requires the invite-redeem success signal.
       const t0 = Date.now();
       while (Date.now() - t0 < 90000) {
         try {
           const fh = await root.getFileHandle('.lh_device_key');
           const text = await (await fh.getFile()).text();
           if (text.length >= 64) {
-            return report({ ok: true, steps: { deviceKeyLen: text.length, waitedMs: Date.now() - t0 } });
+            steps.deviceKeyLen = text.length;
+            if (phase !== '3') {
+              return report({ ok: true, steps: { deviceKeyLen: text.length, waitedMs: Date.now() - t0 } });
+            }
+            // lh_model_access is set to 'credits' ONLY on a successful
+            // on-chain invite accept/redeem (events/credits.rs) — the
+            // same-origin success signal. Keep polling until it lands
+            // (the sponsored tx takes seconds after the key exists).
+            steps.modelAccess = localStorage.getItem('lh_model_access') || '';
+            steps.pendingInviteCleared = !localStorage.getItem('lh_pending_invite');
+            if (steps.modelAccess === 'credits') {
+              steps.waitedMs = Date.now() - t0;
+              return report({ ok: true, steps });
+            }
           }
         } catch { /* not yet */ }
         await new Promise((r) => setTimeout(r, 2000));
       }
-      return report({ ok: false, steps, err: '.lh_device_key never appeared (>=64 chars) within 90s' });
+      return report({
+        ok: false,
+        steps,
+        err: phase === '3'
+          ? 'full onboarding incomplete within 90s (need .lh_device_key + lh_model_access=credits)'
+          : '.lh_device_key never appeared (>=64 chars) within 90s',
+      });
     } catch (e) {
       return report({ ok: false, steps, err: String(e) });
     }
