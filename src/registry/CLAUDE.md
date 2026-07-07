@@ -10,6 +10,10 @@
 Per-facet addresses are NOT pinned — facets churn via `diamondCut`. NEVER hardcode
 a facet address; query live via DiamondLoupe (`facetAddress(selector)`). The
 diamond address (`registry::REGISTRY_ADDRESS` / `chain::*`) is the one stable handle.
+ONE exception: the CHILD-diamond genesis seed facets (guarded cut / loupe /
+ownership) are pinned PER CHAIN in `chain.rs` — stateless delegatecall code, and
+the guarded cut isn't behind the parent diamond at all (telemetry #45 layer 2:
+Moderato-only consts in the CLI made mainnet genesis revert).
 
 ## Chain selection (runtime, not compile-time)
 `chain.rs` holds `MAINNET` (4217) + `MODERATO` (42431). `resolve_chain` defaults

@@ -17,15 +17,14 @@ use localharness::soliditylite::compile;
 use localharness::tempo_tx::TempoCall;
 use localharness::wallet;
 
-// Prod stateless core facets to seed a child diamond with (reused as code via
-// delegatecall in the child's own storage). Loupe/Ownership are queried from the
-// canonical diamond's loupe; the cut entry point is the GUARDED cut facet (the
-// §7 on-chain twin of `cut_guard`) so a child diamond is safe-by-construction —
-// its owner can't `diamondCut` a reserved selector or an init delegatecall even
-// by signing a raw tx (`GuardedDiamondCutFacet.sol`, deployed 2026-06-14).
-const GUARDED_CUT_FACET: &str = "0xa4c8a030607090e0C8602311F104471381E94eb1";
-const LOUPE_FACET: &str = "0x28577026cDEeAb9b9E723666e16c530b94c9EED3";
-const OWN_FACET: &str = "0x9D157FaAEB76956986aAc1b96afCE9Efe0D1CEc4";
+// The stateless core facets a child diamond is seeded with (reused as code via
+// delegatecall in the child's own storage) are PER-CHAIN —
+// `registry::chain::active()` pins guarded cut / loupe / ownership for each
+// network (telemetry #45 layer 2: Moderato-only consts here made mainnet
+// genesis revert). The cut entry point is the GUARDED cut facet (the §7
+// on-chain twin of `cut_guard`) so a child diamond is safe-by-construction —
+// its owner can't `diamondCut` a reserved selector or an init delegatecall
+// even by signing a raw tx (`GuardedDiamondCutFacet.sol`).
 
 const USAGE: &str = "usage:\n  localharness facet deploy  [--as <me>] <name> <src.sol>\n  localharness facet diamond [--as <me>]\n  localharness facet cut     [--as <me>] <diamond-addr> <facet-addr> <src.sol>";
 
@@ -100,10 +99,19 @@ async fn facet_diamond(caller: Option<&str>) -> i32 {
         Err(c) => return c,
     };
     let owner = wallet::address(&signer);
+    // Chain-aware seed facets: refuse client-side if any is unset/zero on the
+    // active chain — a genesis CREATE against 0x-code facets reverts on-chain
+    // after burning ~1M gas (telemetry #45 layer 2).
+    let chain = registry::chain::active();
+    let seeds = [chain.guarded_cut_facet, chain.loupe_facet, chain.ownership_facet];
+    if seeds.iter().any(|a| addr20(a) == [0u8; 20]) {
+        eprintln!("genesis unavailable on {}: its child-diamond seed facets (guarded cut / loupe / ownership) are not deployed there yet", chain.name);
+        return 1;
+    }
     let gcuts = vec![
-        FacetCut { facet: addr20(GUARDED_CUT_FACET), action: 0, selectors: vec![[0x1f, 0x93, 0x1c, 0x1c]] },
-        FacetCut { facet: addr20(LOUPE_FACET), action: 0, selectors: vec![[0x7a,0x0e,0xd6,0x27],[0xad,0xfc,0xa1,0x5e],[0x52,0xef,0x6b,0x2c],[0xcd,0xff,0xac,0xc6],[0x01,0xff,0xc9,0xa7]] },
-        FacetCut { facet: addr20(OWN_FACET), action: 0, selectors: vec![[0xf2,0xfd,0xe3,0x8b],[0x8d,0xa5,0xcb,0x5b]] },
+        FacetCut { facet: addr20(chain.guarded_cut_facet), action: 0, selectors: vec![[0x1f, 0x93, 0x1c, 0x1c]] },
+        FacetCut { facet: addr20(chain.loupe_facet), action: 0, selectors: vec![[0x7a,0x0e,0xd6,0x27],[0xad,0xfc,0xa1,0x5e],[0x52,0xef,0x6b,0x2c],[0xcd,0xff,0xac,0xc6],[0x01,0xff,0xc9,0xa7]] },
+        FacetCut { facet: addr20(chain.ownership_facet), action: 0, selectors: vec![[0xf2,0xfd,0xe3,0x8b],[0x8d,0xa5,0xcb,0x5b]] },
     ];
     init.extend_from_slice(&registry::encode_diamond_constructor_args(&owner, &gcuts));
     println!("genesis-ing a child diamond owned by you (0x{}), guarded cut facet, via sponsored CREATE …", hex(&owner));

@@ -32,6 +32,18 @@ pub struct ChainConfig {
     /// `{explorer_url}/address/{addr}` links from this so it never hardcodes a
     /// per-chain explorer host (which used to point mainnet links at the testnet).
     pub explorer_url: &'static str,
+    /// CHILD-diamond genesis seed facets (`localharness facet diamond`): the
+    /// guarded cut / loupe / ownership code a fresh agent-owned diamond points
+    /// its core selectors at. Stateless delegatecall code, so children on one
+    /// chain share ONE deployment — but the addresses are PER-CHAIN (telemetry
+    /// #45 layer 2: the old Moderato-only consts made mainnet genesis revert).
+    /// Loupe/ownership are the parent diamond's own facets (live-queried via
+    /// its loupe, then pinned); the guarded cut is a standalone deploy (it is
+    /// NOT behind the parent). Empty string = not deployed on that chain →
+    /// genesis refuses client-side instead of submitting a doomed CREATE.
+    pub guarded_cut_facet: &'static str,
+    pub loupe_facet: &'static str,
+    pub ownership_facet: &'static str,
 }
 
 /// Tempo Moderato testnet — the native CLI/SDK default + the wasm-no-mainnet
@@ -48,6 +60,11 @@ pub const MODERATO: ChainConfig = ChainConfig {
     lh_token: "0x90B84c7234Aae89BadA7f69160B9901B9bc37B17",
     fee_token: "0x20c0000000000000000000000000000000000001", // AlphaUSD
     explorer_url: "https://moderato.tempo.xyz",
+    // GuardedDiamondCutFacet deployed 2026-06-14; loupe/ownership = the parent
+    // diamond's facets (verified via `facetAddress(0xcdffacc6/0x8da5cb5b)`).
+    guarded_cut_facet: "0xa4c8a030607090e0C8602311F104471381E94eb1",
+    loupe_facet: "0x28577026cDEeAb9b9E723666e16c530b94c9EED3",
+    ownership_facet: "0x9D157FaAEB76956986aAc1b96afCE9Efe0D1CEc4",
 };
 
 /// Tempo mainnet (chain 4217, live since 2026-03-18). rpc/chain are confirmed;
@@ -69,6 +86,14 @@ pub const MAINNET: ChainConfig = ChainConfig {
     fee_token: "0x20c000000000000000000000b9537d11c60e8b50",
     // Tempo mainnet block explorer (Blockscout-style /address/{0x…}), chain 4217.
     explorer_url: "https://explore.tempo.xyz",
+    // GuardedDiamondCutFacet deployed 2026-07-06 (tx 0x9e2b43fe694fc30909a14008
+    // d183807bfbf8ac87d8ea0a6b444ffdf310f5fad7; runtime byte-identical to the
+    // Moderato deploy). Loupe/ownership are the mainnet parent diamond's own
+    // facets, live-queried via its loupe then pinned (code byte-identical to
+    // the Moderato pair). Telemetry #45 layer 2.
+    guarded_cut_facet: "0x1B71F1A33DFaD7e43b386E4801894d230c6425AA",
+    loupe_facet: "0x8e2865ee2f234870E4A1Ba44a01ec4B233C20bbC",
+    ownership_facet: "0x1408dd20f55a7265cD40e1800b4F8271e364A3F1",
 };
 
 /// The active chain, resolved ONCE on first read. Native: from `LH_CHAIN`
@@ -172,6 +197,24 @@ mod tests {
         assert_eq!(MAINNET.diamond, "0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77");
         assert_eq!(MAINNET.lh_token, "0x7ba3c9a39596e438b05c56dfc779700b58aea814");
         assert_eq!(MAINNET.fee_token, "0x20c000000000000000000000b9537d11c60e8b50");
+    }
+
+    /// Child-diamond genesis seed facets are pinned PER CHAIN and well-formed
+    /// (telemetry #45 layer 2: the Moderato-only consts made mainnet genesis
+    /// revert — mainnet held 0x code at the guarded-cut/loupe addresses).
+    #[test]
+    fn child_diamond_seed_facets_pinned_per_chain() {
+        for c in [&MAINNET, &MODERATO] {
+            for a in [c.guarded_cut_facet, c.loupe_facet, c.ownership_facet] {
+                assert!(a.len() == 42 && a.starts_with("0x"), "{}: bad seed facet `{a}`", c.name);
+                assert!(a[2..].chars().all(|ch| ch.is_ascii_hexdigit()), "{}: non-hex `{a}`", c.name);
+                assert_ne!(&a[2..], "0".repeat(40), "{}: zero seed facet", c.name);
+            }
+        }
+        // Deployed 2026-07-06 (tx 0x9e2b43fe…f5fad7) vs the 2026-06-14 Moderato deploy.
+        assert_eq!(MAINNET.guarded_cut_facet, "0x1B71F1A33DFaD7e43b386E4801894d230c6425AA");
+        assert_eq!(MODERATO.guarded_cut_facet, "0xa4c8a030607090e0C8602311F104471381E94eb1");
+        assert_ne!(MAINNET.loupe_facet, MODERATO.loupe_facet);
     }
 
     /// SSOT drift guard (tech-debt report §3): `proxy/api/_chain.ts` falls back to
