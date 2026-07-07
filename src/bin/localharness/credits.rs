@@ -202,15 +202,44 @@ pub(crate) async fn send_lh(caller_name: Option<&str>, recipient: &str, amount: 
     }
 }
 
+/// Pre-flight for `session`: refuse an underfunded wallet BEFORE broadcasting
+/// (an on-chain revert burned a broadcast + named nothing, and the generic hint
+/// steered users deeper into a LEGACY surface — telemetry #46). Pure + testable;
+/// `Err` names the exact price/balance/shortfall and steers to the live path.
+pub(crate) fn session_preflight(price_wei: u128, wallet_wei: u128) -> Result<(), String> {
+    if wallet_wei >= price_wei {
+        return Ok(());
+    }
+    Err(format!(
+        "a session costs {} but your wallet holds {} (short {}) — no tx sent.\n\
+         note: sessions are LEGACY; per-call metering is the live path. Fund with\n\
+         `localharness buy <usd>` then `localharness topup <amount>` instead.",
+        fmt_lh(price_wei),
+        fmt_lh(wallet_wei),
+        fmt_lh(price_wei - wallet_wei)
+    ))
+}
+
 /// `localharness session` — open a time-boxed proxy session by spending
-/// `sessionPrice()` `$LH` (sponsored gas). Grants `sessionDuration()` of proxy
-/// access without per-request metering. Needs `$LH` in your WALLET (redeem a code
-/// or receive `send`).
+/// `sessionPrice()` `$LH` (sponsored gas). LEGACY: SessionFacet is shelved —
+/// per-call metering (`topup`) is the live path. Needs `$LH` in your WALLET.
 pub(crate) async fn open_session(caller_name: Option<&str>) -> i32 {
     let signer = match load_signer(caller_name) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    // Read-only preflight (telemetry #46): a wallet below sessionPrice() reverts
+    // on-chain naming nothing. A failed read falls through to the write.
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
+    if let (Ok(price), Ok(bal)) = (
+        registry::session_price().await,
+        registry::token_balance_of(&addr).await,
+    ) {
+        if let Err(msg) = session_preflight(price, bal) {
+            eprintln!("{msg}");
+            return 1;
+        }
+    }
     match registry::open_session_sponsored(&signer).await {
         Ok(tx) => {
             println!("session opened  tx: {tx}");
@@ -394,6 +423,19 @@ mod tests {
         assert!(parse_topup_args(&args(&["nope"])).is_err()); // non-numeric
         assert!(parse_topup_args(&args(&["-1"])).is_err()); // negative / unknown flag
         assert!(parse_topup_args(&args(&["1", "2"])).is_err()); // two amounts
+    }
+
+    #[test]
+    fn session_preflight_names_the_shortfall_and_steers_to_the_live_path() {
+        // Funded (or exactly at price) → proceed.
+        assert!(session_preflight(10, 10).is_ok());
+        assert!(session_preflight(10, 11).is_ok());
+        // Underfunded → refuse BEFORE any tx, naming price/balance/shortfall
+        // and steering to buy/topup, not deeper into the legacy surface.
+        let e = session_preflight(10_000_000_000_000_000_000, 100_000_000_000_000_000)
+            .unwrap_err();
+        assert!(e.contains("10.00 LH") && e.contains("0.10 LH") && e.contains("9.90 LH"), "got: {e}");
+        assert!(e.contains("LEGACY") && e.contains("topup"), "got: {e}");
     }
 
     #[test]

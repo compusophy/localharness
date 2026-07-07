@@ -170,10 +170,21 @@ pub(crate) fn code_hint(code: &str) -> String {
     }
 }
 
-/// Map an on-chain invite `status` (0 Open, 1 Accepted, 2 Reclaimed) + its
-/// `expiry` to a one-word listing state, distinguishing an Open-but-expired
-/// invite (reclaimable) from a live one. Pure + testable.
-pub(crate) fn invite_row_state(status: u8, expiry: u64, now: u64) -> &'static str {
+/// True when a `getInvite` funder is the zero address — the tuple a code the
+/// chain never saw (or wiped) decodes to. Shared by the accept/reclaim
+/// preflights + the list renderer (telemetry #48).
+pub(crate) fn is_zero_funder(funder: &str) -> bool {
+    funder.trim_start_matches("0x").chars().all(|c| c == '0')
+}
+
+/// Map a `getInvite` tuple to a one-word listing state, distinguishing an
+/// Open-but-expired invite (reclaimable) from a live one. A ZERO tuple (funder
+/// all-zero — not on-chain) is "stale", never "open": rendering it [open] +
+/// advising reclaim made users submit reverting txs (telemetry #48). Pure.
+pub(crate) fn invite_row_state(funder: &str, status: u8, expiry: u64, now: u64) -> &'static str {
+    if is_zero_funder(funder) {
+        return "stale — not on-chain";
+    }
     match status {
         1 => "claimed",
         2 => "reclaimed",
@@ -340,7 +351,7 @@ pub(crate) fn invite_accept_preflight(
     status: u8,
     now: u64,
 ) -> Result<(), String> {
-    if funder.trim_start_matches("0x").chars().all(|c| c == '0') {
+    if is_zero_funder(funder) {
         return Err("no such invite — check the code (it's case-sensitive)".to_string());
     }
     match status {
@@ -396,6 +407,36 @@ pub(crate) async fn invite_accept(caller: Option<&str>, code: &str) -> i32 {
     }
 }
 
+/// The READ-ONLY preflight verdict for `invite reclaim` — same shape as
+/// `invite_accept_preflight` / `registry::bounty_preflight`: name the revert
+/// cause BEFORE broadcasting (users submitted doomed reclaims off a stale
+/// [open] listing — 2 reverting txs, telemetry #48). Pure + testable.
+pub(crate) fn invite_reclaim_preflight(
+    funder: &str,
+    expiry: u64,
+    status: u8,
+    now: u64,
+) -> Result<(), String> {
+    if is_zero_funder(funder) {
+        return Err(
+            "no such invite on-chain — the code is stale (never created, or wiped); nothing to reclaim"
+                .to_string(),
+        );
+    }
+    match status {
+        1 => return Err("this invite was already claimed — there's nothing to reclaim".to_string()),
+        2 => return Err("this invite was already reclaimed".to_string()),
+        _ => {}
+    }
+    if expiry == 0 || expiry > now {
+        return Err(format!(
+            "this invite hasn't expired yet (expires in {}) — reclaim works only after expiry",
+            fmt_duration(expiry.saturating_sub(now))
+        ));
+    }
+    Ok(())
+}
+
 /// `invite reclaim <code>` — refund an EXPIRED, unclaimed invite back to its
 /// funder. Permissionless (the `$LH` only goes to the recorded funder); hash the
 /// code locally and call `reclaimInvite(codeHash)`.
@@ -404,6 +445,21 @@ pub(crate) async fn invite_reclaim(caller: Option<&str>, code: &str) -> i32 {
     if code.is_empty() {
         eprintln!("invite reclaim: empty code");
         return 2;
+    }
+    // Read-only preflight: a stale / claimed / not-yet-expired code reverts
+    // on-chain naming nothing (telemetry #48). A failed read is non-fatal —
+    // it falls through to the write.
+    if let Ok((funder, _amount, expiry, status)) =
+        registry::get_invite(registry::invite_code_hash(code)).await
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Err(msg) = invite_reclaim_preflight(&funder, expiry, status, now) {
+            eprintln!("{msg}");
+            return 1;
+        }
     }
     let signer = match load_signer(caller) {
         Ok(pair) => pair,
@@ -461,11 +517,13 @@ pub(crate) async fn invite_list(caller: Option<&str>) -> i32 {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     println!("  {} invite(s) you created from this device:", records.len());
+    let mut any_expired = false;
     for r in &records {
         let state = match registry::get_invite(registry::invite_code_hash(&r.code)).await {
-            Ok((_funder, _amount, expiry, status)) => invite_row_state(status, expiry, now),
+            Ok((funder, _amount, expiry, status)) => invite_row_state(&funder, status, expiry, now),
             Err(_) => "?",
         };
+        any_expired |= state == "expired";
         let expires = if r.expiry == 0 || r.expiry <= now {
             "—".to_string()
         } else {
@@ -477,7 +535,12 @@ pub(crate) async fn invite_list(caller: Option<&str>) -> i32 {
             amount = fmt_lh(r.amount_wei),
         );
     }
-    println!("  reclaim an expired one with `invite reclaim <code>` to get its $LH back.");
+    // Only advise reclaim when a row is ACTUALLY expired-open on-chain — the
+    // blanket hint next to stale/claimed rows sent users into reverting txs
+    // (telemetry #48).
+    if any_expired {
+        println!("  reclaim an expired one with `invite reclaim <code>` to get its $LH back.");
+    }
     0
 }
 
@@ -627,16 +690,44 @@ mod tests {
     }
 
     #[test]
-    fn invite_row_state_distinguishes_open_expired_terminal() {
+    fn invite_row_state_distinguishes_open_expired_terminal_stale() {
         let now = 1_000u64;
+        let real = "0xabc0000000000000000000000000000000000001";
         // Open + future expiry → open; Open + past → expired (reclaimable).
-        assert_eq!(invite_row_state(0, now + 100, now), "open");
-        assert_eq!(invite_row_state(0, now - 1, now), "expired");
+        assert_eq!(invite_row_state(real, 0, now + 100, now), "open");
+        assert_eq!(invite_row_state(real, 0, now - 1, now), "expired");
         // Unset expiry never reads expired.
-        assert_eq!(invite_row_state(0, 0, now), "open");
+        assert_eq!(invite_row_state(real, 0, 0, now), "open");
         // Terminal states win regardless of expiry.
-        assert_eq!(invite_row_state(1, now - 1, now), "claimed");
-        assert_eq!(invite_row_state(2, now + 100, now), "reclaimed");
+        assert_eq!(invite_row_state(real, 1, now - 1, now), "claimed");
+        assert_eq!(invite_row_state(real, 2, now + 100, now), "reclaimed");
+        // A ZERO tuple (code not on-chain) is stale, NEVER [open] — rendering
+        // it open + advising reclaim caused real reverting txs (telemetry #48).
+        let zero = "0x0000000000000000000000000000000000000000";
+        assert_eq!(invite_row_state(zero, 0, 0, now), "stale — not on-chain");
+    }
+
+    #[test]
+    fn invite_reclaim_preflight_names_the_revert_cause() {
+        let real = "0xabc0000000000000000000000000000000000001";
+        let zero = "0x0000000000000000000000000000000000000000";
+        let now = 1_000_000u64;
+        // Open + past expiry → reclaim may proceed.
+        assert!(invite_reclaim_preflight(real, now - 1, 0, now).is_ok());
+        // Zero tuple → stale, refuse before any tx (telemetry #48).
+        assert!(invite_reclaim_preflight(zero, 0, 0, now).unwrap_err().contains("stale"));
+        // Claimed / reclaimed are named distinctly.
+        assert!(invite_reclaim_preflight(real, now - 1, 1, now)
+            .unwrap_err()
+            .contains("already claimed"));
+        assert!(invite_reclaim_preflight(real, now - 1, 2, now)
+            .unwrap_err()
+            .contains("already reclaimed"));
+        // Not yet expired (incl. unset expiry) → refuse; reclaim is post-expiry.
+        assert!(invite_reclaim_preflight(real, now + 3600, 0, now)
+            .unwrap_err()
+            .contains("hasn't expired"));
+        assert!(invite_reclaim_preflight(real, 0, 0, now).is_err());
     }
 
     #[test]

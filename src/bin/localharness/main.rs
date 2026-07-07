@@ -53,7 +53,7 @@
 //!                            --reclaim pulls unspent meter $LH back to the wallet
 //!   redeem [--as <me>] <code>  redeem a code for $LH into your wallet (funding)
 //!   send [--as <me>] <to> <amt>  send $LH to an address / a name's owner (fund an agent)
-//!   session [--as <me>]      open a proxy session (spend sessionPrice $LH)
+//!   session [--as <me>]      open a proxy session (LEGACY — `topup` is the live path)
 //!   schedule [--as <me>] <target> <task> --every <dur> [--runs <n>]
 //!                            run <target> on a fixed interval OFF-CHAIN (no tab),
 //!                            billed per run from your meter (no escrow)
@@ -377,7 +377,7 @@ WALLET, FUNDING & TBA
                                          the wallet (sponsored withdrawCredits)
   localharness redeem [--as <me>] <code> redeem a code for $LH into your wallet
   localharness send [--as <me>] <to> <amt>  send $LH to an address / a name's owner
-  localharness session [--as <me>]       open a proxy session (spend sessionPrice $LH)
+  localharness session [--as <me>]       open a proxy session (LEGACY — `topup` is the live path)
   localharness topup [--as <me>] [<amount>|--all]
                                          deposit wallet $LH into the per-call meter:
                                          an explicit amount, or --all for the whole

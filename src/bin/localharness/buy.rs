@@ -44,41 +44,64 @@ wallet on-chain. `join` is an alias that buys the $1 entry amount.";
 const MIN_USD_CENTS: u64 = 100; // $1
 const MAX_USD_CENTS: u64 = 50_000; // $500
 
+/// Parsed `buy` args. Pure so EVERY malformed shape errors uniformly — `buy -5`
+/// used to be silently swallowed as an unknown flag and fell through to a LIVE
+/// $1 checkout link (telemetry #47). Malformed input never reaches real money.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum BuyArgs {
+    /// `--help` / `-h` — print usage, touch nothing.
+    Help,
+    /// The validated amount to buy, in USD cents (bare `buy` = the $1 minimum).
+    Cents(u64),
+}
+
+pub(crate) fn parse_buy_args(rest: &[String]) -> Result<BuyArgs, String> {
+    if rest.iter().any(|a| a == "--help" || a == "-h") {
+        return Ok(BuyArgs::Help);
+    }
+    let mut amount: Option<&String> = None;
+    for a in rest {
+        // Unknown flags (and `-5`-shaped negatives) error like any bad amount.
+        if a.starts_with('-') {
+            return Err(format!("buy: unexpected argument '{a}'\n{BUY_USAGE}"));
+        }
+        if amount.replace(a).is_some() {
+            return Err(BUY_USAGE.to_string()); // at most one positional amount
+        }
+    }
+    let cents = match amount {
+        Some(raw) => parse_usd_cents(raw).ok_or_else(|| {
+            format!("buy: invalid amount '{raw}' (expected dollars, e.g. 1 or 2.50)\n{BUY_USAGE}")
+        })?,
+        None => MIN_USD_CENTS,
+    };
+    if !(MIN_USD_CENTS..=MAX_USD_CENTS).contains(&cents) {
+        return Err(format!(
+            "buy: amount must be between ${:.2} and ${:.2}",
+            MIN_USD_CENTS as f64 / 100.0,
+            MAX_USD_CENTS as f64 / 100.0
+        ));
+    }
+    Ok(BuyArgs::Cents(cents))
+}
+
 /// `localharness buy [--as <me>] [<usd>]` (and the `join` alias) — create a
 /// Stripe Checkout session for `<usd>` (default $1, the onboarding amount) and
 /// print the hosted URL to pay at.
 pub(crate) async fn buy(caller_name: Option<&str>, rest: &[String]) -> i32 {
-    // `--help` short-circuits before identity resolution.
-    if rest.iter().any(|a| a == "--help" || a == "-h") {
-        println!("{BUY_USAGE}");
-        return 0;
-    }
-    // At most one positional USD amount; bare `buy` / `join` = the $1 minimum.
-    let positional: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect();
-    if positional.len() > 1 {
-        eprintln!("{BUY_USAGE}");
-        return 2;
-    }
-    let cents = match positional.first() {
-        Some(raw) => match parse_usd_cents(raw) {
-            Some(c) => c,
-            None => {
-                eprintln!(
-                    "buy: invalid amount '{raw}' (expected dollars, e.g. 1 or 2.50)\n{BUY_USAGE}"
-                );
-                return 2;
-            }
-        },
-        None => MIN_USD_CENTS,
+    // Parse purely FIRST — help short-circuits before identity resolution and
+    // any malformed shape errors before a checkout session exists.
+    let cents = match parse_buy_args(rest) {
+        Ok(BuyArgs::Help) => {
+            println!("{BUY_USAGE}");
+            return 0;
+        }
+        Ok(BuyArgs::Cents(c)) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
     };
-    if !(MIN_USD_CENTS..=MAX_USD_CENTS).contains(&cents) {
-        eprintln!(
-            "buy: amount must be between ${:.2} and ${:.2}",
-            MIN_USD_CENTS as f64 / 100.0,
-            MAX_USD_CENTS as f64 / 100.0
-        );
-        return 2;
-    }
 
     let signer = match load_signer(caller_name) {
         Ok(s) => s,
@@ -167,5 +190,22 @@ mod tests {
         // `--help` must print usage and exit 0 without touching keys or network.
         assert_eq!(buy(None, &args(&["--help"])).await, 0);
         assert_eq!(buy(None, &args(&["-h"])).await, 0);
+    }
+
+    #[test]
+    fn parse_buy_args_is_uniform_never_defaults_on_junk() {
+        // Valid shapes: bare = the $1 minimum; one positional amount.
+        assert_eq!(parse_buy_args(&args(&[])), Ok(BuyArgs::Cents(100)));
+        assert_eq!(parse_buy_args(&args(&["5"])), Ok(BuyArgs::Cents(500)));
+        assert_eq!(parse_buy_args(&args(&["--help"])), Ok(BuyArgs::Help));
+        // `buy -5` used to be swallowed as a flag → the $1 default's LIVE link.
+        assert!(parse_buy_args(&args(&["-5"])).is_err());
+        assert!(parse_buy_args(&args(&["--bogus"])).is_err());
+        // The other malformed shapes error the same way, never a checkout.
+        assert!(parse_buy_args(&args(&["0"])).is_err());
+        assert!(parse_buy_args(&args(&["abc"])).is_err());
+        assert!(parse_buy_args(&args(&["0.5"])).is_err()); // below the $1 min
+        assert!(parse_buy_args(&args(&["501"])).is_err()); // above the $500 max
+        assert!(parse_buy_args(&args(&["1", "2"])).is_err()); // two amounts
     }
 }
