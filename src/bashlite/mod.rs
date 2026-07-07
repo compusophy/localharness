@@ -40,7 +40,8 @@
 //! - Value-MOVING `lh-*` commands (`lh-send`, `lh-create`, …) + the
 //!   dry-run-manifest confirm flow. (Read-only `lh-*` ship in [`platform`].)
 //! - `break` / `continue` / `return`, functions,
-//!   here-docs, redirection (`>`/`>>`/`<`), real regex grep, file-arg `wc`,
+//!   here-docs, redirection (`>`/`>>`/`<` — REJECTED with a parse error, never
+//!   lexed as literal args), real regex grep, file-arg `wc`,
 //!   field splitting of unquoted expansions OUTSIDE `for` items, globbing,
 //!   arithmetic `$(( ))`.
 
@@ -370,6 +371,32 @@ mod tests {
         assert_eq!(lexer::lex("echo \"oops").unwrap_err().kind, BashErrorKind::Parse);
         assert_eq!(lexer::lex("echo 'oops").unwrap_err().kind, BashErrorKind::Parse);
         assert_eq!(lexer::lex("x=$(echo").unwrap_err().kind, BashErrorKind::Parse);
+    }
+
+    /// Telemetry #50: unsupported redirection must be a PARSE ERROR, not literal
+    /// echo args (a silent no-op "write"). Quoted/escaped `>` stays a literal.
+    #[tokio::test]
+    async fn lex_rejects_redirection_operators() {
+        for src in ["echo hi > out.txt", "echo hi >> out.txt", "cat < in.txt", "echo hi>out"] {
+            let err = lexer::lex(src).unwrap_err();
+            assert_eq!(err.kind, BashErrorKind::Parse, "{src}");
+            assert!(err.message.contains("redirection"), "{}", err.message);
+        }
+        assert_eq!(run_ok(&[], r#"echo "a > b" '<'"#).await.stdout, "a > b <\n");
+    }
+
+    /// Telemetry #49: non-ASCII must round-trip through the lexer — byte-casting
+    /// (`c as char`) Latin-1-mangled every multi-byte char (mojibake output +
+    /// invalid unicode filenames on Windows).
+    #[tokio::test]
+    async fn unicode_round_trips_through_echo_and_files() {
+        let r = run_ok(&[], "echo \"🦀 héllo ワールド\" '🦀' na\\ïve").await;
+        assert_eq!(r.stdout, "🦀 héllo ワールド 🦀 naïve\n");
+        // A unicode filename written then read back stays byte-identical.
+        let r = run_ok(&[], "write /héllo-🦀.txt こんにちは\ncat /héllo-🦀.txt\nls /").await;
+        assert_eq!(r.exit_code, 0, "{}", r.stderr);
+        assert!(r.stdout.contains("こんにちは"), "{}", r.stdout);
+        assert!(r.stdout.contains("héllo-🦀.txt"), "{}", r.stdout);
     }
 
     #[test]

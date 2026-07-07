@@ -57,6 +57,13 @@ impl Lexer<'_> {
                         ));
                     }
                 }
+                // Redirection is v2-deferred BY DESIGN — reject loudly instead of
+                // lexing `>`/`<` as literal args (a silent no-op, telemetry #50).
+                b'>' | b'<' => {
+                    return Err(BashError::parse(
+                        "redirection ('>', '>>', '<') is not supported; use `write PATH CONTENT` / pipes instead",
+                    ));
+                }
                 _ => out.push(self.word()?),
             }
         }
@@ -107,16 +114,16 @@ impl Lexer<'_> {
 
         while let Some(b) = self.peek() {
             match b {
-                // Word terminators (unquoted).
-                b' ' | b'\t' | b'\r' | b'\n' | b';' | b'|' | b'&' => break,
+                // Word terminators (unquoted). `>`/`<` break the word so `run`
+                // rejects them (redirection is unsupported, telemetry #50).
+                b' ' | b'\t' | b'\r' | b'\n' | b';' | b'|' | b'&' | b'>' | b'<' => break,
                 b'\'' => {
                     self.pos += 1;
                     while let Some(c) = self.peek() {
                         if c == b'\'' {
                             break;
                         }
-                        lit.push(c as char);
-                        self.pos += 1;
+                        self.push_char(&mut lit);
                     }
                     if self.peek() != Some(b'\'') {
                         return Err(BashError::parse("unterminated single quote"));
@@ -151,10 +158,7 @@ impl Lexer<'_> {
                                 flush!();
                                 parts.push(self.dollar()?);
                             }
-                            Some(c) => {
-                                lit.push(c as char);
-                                self.pos += 1;
-                            }
+                            Some(_) => self.push_char(&mut lit),
                         }
                     }
                 }
@@ -165,24 +169,36 @@ impl Lexer<'_> {
                     match self.peek() {
                         None => lit.push('\\'),
                         Some(b'\n') => self.pos += 1,
-                        Some(c) => {
-                            lit.push(c as char);
-                            self.pos += 1;
-                        }
+                        Some(_) => self.push_char(&mut lit),
                     }
                 }
                 b'$' => {
                     flush!();
                     parts.push(self.dollar()?);
                 }
-                c => {
-                    lit.push(c as char);
-                    self.pos += 1;
-                }
+                _ => self.push_char(&mut lit),
             }
         }
         flush!();
         Ok(Token::Word(parts))
+    }
+
+    /// Consume the FULL UTF-8 char at `pos` and append it to `lit`. `src` came
+    /// from a `&str`, so the sequence is always valid and complete. (Casting the
+    /// lead byte with `as char` instead Latin-1-mangled every non-ASCII char —
+    /// mojibake output + invalid filenames on Windows, telemetry #49.)
+    fn push_char(&mut self, lit: &mut String) {
+        let len = match self.src[self.pos] {
+            b if b < 0x80 => 1,
+            b if b < 0xE0 => 2,
+            b if b < 0xF0 => 3,
+            _ => 4,
+        };
+        lit.push_str(
+            std::str::from_utf8(&self.src[self.pos..self.pos + len])
+                .expect("lexer input is a &str, so char boundaries are valid"),
+        );
+        self.pos += len;
     }
 
     /// Lex a `$`-expansion starting at the `$`: `$name`, `${name}`, or `$(...)`.
