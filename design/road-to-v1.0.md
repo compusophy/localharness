@@ -67,10 +67,11 @@ routes it to Track B).
    under a mainnet-sounding heading; `chain.rs:62`'s comment is false. Pin one set from
    `docs_manifest.rs` at the reset.
 8. **Deliberate, messaged decision on iOS + the paid-only front door** — _medium,
-   NEW/undocumented._ Fresh iPhone visitors hit a hard "not available on iOS" dead-end (~half
-   of US mobile, on a phone-first launch); the apex is paid-entry-only ($2) with no free try.
-   Neither must be *fixed* for 1.0, but each needs an honest decision rather than an
-   apparent-bug dead-end.
+   NEW/undocumented._ **iOS half RESOLVED 2026-07-07**: the "not available on iOS"
+   gate is removed — WebKit OPFS writes broker through a worker
+   `createSyncAccessHandle` path (`web/opfs-worker.js`; root cause was Safari
+   lacking `createWritable` pre-Safari-26). Residual: real-device verification on
+   an actual iPhone. The paid-entry-only ($2) front-door question still stands.
 
 ## Should-have (strongly wanted, not strictly blocking)
 

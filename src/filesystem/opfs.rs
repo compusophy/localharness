@@ -18,22 +18,29 @@
 //! component as a directory (or final file). Leading slashes are
 //! ignored; OPFS-rooted paths and relative paths are equivalent.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use js_sys::{Object, Reflect, Uint8Array};
+use js_sys::{Function, Object, Promise, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     File, FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemGetDirectoryOptions,
     FileSystemGetFileOptions, FileSystemHandle, FileSystemHandleKind, FileSystemRemoveOptions,
-    FileSystemWritableFileStream,
+    FileSystemWritableFileStream, MessageEvent, Worker,
 };
 
 use super::{DirEntry, EntryKind, Filesystem, Metadata, WalkEntry};
 use crate::error::{Error, Result};
+
+/// Wall-clock bound on a single OPFS write (either path). The 2026-06-18 iOS
+/// gate existed because a WebKit write stalled FOREVER and froze the
+/// single-thread wasm app mid-onboarding — a pathological engine must surface
+/// as an ERROR the UI can show, never an infinite hang.
+const WRITE_TIMEOUT_MS: u32 = 15_000;
 
 /// Hard cap on entries a single `walk` collects. find_file/search_directory
 /// cap their own RESULTS, but they collect the whole walk first, so without
@@ -116,6 +123,199 @@ impl OpfsFilesystem {
         }
         Ok(dir)
     }
+
+    /// The main-thread `FileSystemWritableFileStream` write (non-WebKit
+    /// engines, and the fallback when the broker is unsupported). Callers wrap
+    /// it in [`bounded`] — never call it bare from the trait surface.
+    async fn write_atomic_stream(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        let (parent, name) = self.resolve_parent(path, true).await?;
+        let name = name.ok_or_else(|| {
+            Error::fs("write_atomic", path, format!("write_atomic({path}): path is empty"))
+        })?;
+        let file_handle = get_file(&parent, &name, true).await?;
+        let writable_val = JsFuture::from(file_handle.create_writable())
+            .await
+            .map_err(|e| {
+                Error::fs("createWritable", path, format!("createWritable({path}): {}", js_err(&e)))
+            })?;
+        let writable: FileSystemWritableFileStream = writable_val
+            .dyn_into()
+            .map_err(|_| Error::fs("createWritable", path, "createWritable: not a writable stream"))?;
+        // `Uint8Array::from(&[u8])` COPIES into a fresh standalone buffer
+        // (byteOffset 0, length == payload). Never "optimize" this to
+        // `Uint8Array::view` of wasm memory: WebKit bug 302733 (open through
+        // Safari 26.4) ignores a view's byteOffset and writes the ENTIRE
+        // underlying ArrayBuffer — for a wasm-memory view, the whole heap.
+        let array = Uint8Array::from(bytes);
+        let write_promise = writable
+            .write_with_buffer_source(&array)
+            .map_err(|e| Error::fs("write", path, format!("write({path}): {}", js_err(&e))))?;
+        JsFuture::from(write_promise)
+            .await
+            .map_err(|e| Error::fs("write", path, format!("write({path}): {}", js_err(&e))))?;
+        JsFuture::from(writable.close())
+            .await
+            .map_err(|e| Error::fs("close", path, format!("close({path}): {}", js_err(&e))))?;
+        Ok(())
+    }
+}
+
+/// Race `fut` against a wall-clock deadline. On timeout the abandoned future
+/// is dropped mid-flight (its JS promise may still settle later — harmless);
+/// the caller gets a typed error instead of a frozen app.
+async fn bounded(
+    ms: u32,
+    op: &'static str,
+    path: &str,
+    fut: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
+    use futures_util::future::{select, Either};
+    match select(Box::pin(fut), Box::pin(crate::runtime::sleep_ms(ms))).await {
+        Either::Left((res, _)) => res,
+        Either::Right(((), _)) => Err(Error::fs(
+            op,
+            path,
+            format!("{op}({path}): timed out after {ms}ms (engine OPFS stall) — data NOT saved"),
+        )),
+    }
+}
+
+// ---- WebKit write broker (the iOS fix) --------------------------------------
+// web/opfs-worker.js performs writes via the worker-only
+// `createSyncAccessHandle` (iOS 15.2+). The client here is feature-detected
+// end-to-end: a spawn failure or an `unsupported` reply latches the broker
+// DEAD and every write falls back to the bounded main-thread stream.
+
+thread_local! {
+    static BROKER: RefCell<Option<Broker>> = const { RefCell::new(None) };
+    /// Sticky "stop trying the worker" latch (spawn failed / no sync API).
+    static BROKER_DEAD: Cell<bool> = const { Cell::new(false) };
+}
+
+struct Broker {
+    worker: Worker,
+    /// id → the pending write's Promise `resolve`. Only ever borrowed in
+    /// straight-line code — NEVER across an await (the RefCell-across-await
+    /// iOS panic class; see `root_handle`).
+    pending: Rc<RefCell<HashMap<u32, Function>>>,
+    next_id: Cell<u32>,
+    _onmessage: Closure<dyn FnMut(MessageEvent)>,
+}
+
+enum BrokerWrite {
+    Done(Result<()>),
+    /// This engine can't broker (no worker / no sync-access API) — caller
+    /// falls through to the main-thread path. Latched, so it costs once.
+    Unsupported,
+}
+
+/// WebKit detection: `navigator.vendor` is "Apple Computer, Inc." on Safari
+/// AND every iOS browser shell (CriOS/FxiOS — WebKit is mandatory outside the
+/// EU). `window.LH_FORCE_WORKER_FS = 1` forces the broker on any engine so
+/// E2E can exercise it under Chromium (which has OPFS in automation).
+fn engine_prefers_broker() -> bool {
+    if BROKER_DEAD.with(Cell::get) {
+        return false;
+    }
+    let Some(win) = web_sys::window() else { return false };
+    if Reflect::get(&win, &JsValue::from_str("LH_FORCE_WORKER_FS"))
+        .map(|v| v.is_truthy())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    // `navigator.vendor` via Reflect (web-sys doesn't bind it): "Apple
+    // Computer, Inc." on every WebKit shell; "Google Inc." on Chromium.
+    Reflect::get(&win.navigator(), &JsValue::from_str("vendor"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .is_some_and(|v| v.starts_with("Apple"))
+}
+
+fn broker_spawn() -> Option<Broker> {
+    let worker = Worker::new("/opfs-worker.js").ok()?;
+    let pending: Rc<RefCell<HashMap<u32, Function>>> = Rc::new(RefCell::new(HashMap::new()));
+    let map = Rc::clone(&pending);
+    let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+        let data = e.data();
+        let id = Reflect::get(&data, &JsValue::from_str("id"))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(-1.0) as u32;
+        let resolve = map.borrow_mut().remove(&id);
+        if let Some(resolve) = resolve {
+            let _ = resolve.call1(&JsValue::NULL, &data);
+        }
+    });
+    worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+    Some(Broker { worker, pending, next_id: Cell::new(1), _onmessage: onmessage })
+}
+
+async fn broker_write(path: &str, bytes: &[u8]) -> BrokerWrite {
+    // All setup is SYNCHRONOUS (spawn-if-needed, stash resolve, postMessage);
+    // the only await is on the reply promise, outside every borrow.
+    let fut = BROKER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = broker_spawn();
+        }
+        let b = slot.as_ref()?;
+        let id = b.next_id.get();
+        b.next_id.set(id.wrapping_add(1));
+        let pending = Rc::clone(&b.pending);
+        let promise = Promise::new(&mut |resolve, _reject| {
+            pending.borrow_mut().insert(id, resolve);
+        });
+        let msg = Object::new();
+        let _ = Reflect::set(&msg, &JsValue::from_str("id"), &JsValue::from_f64(id as f64));
+        let _ = Reflect::set(&msg, &JsValue::from_str("path"), &JsValue::from_str(path));
+        // Fresh copy (byteOffset 0) — same bug-302733 rule as the stream path.
+        let _ = Reflect::set(&msg, &JsValue::from_str("bytes"), &Uint8Array::from(bytes).buffer());
+        if b.worker.post_message(&msg).is_err() {
+            b.pending.borrow_mut().remove(&id);
+            return None;
+        }
+        Some(JsFuture::from(promise))
+    });
+    let Some(fut) = fut else {
+        BROKER_DEAD.with(|d| d.set(true));
+        return BrokerWrite::Unsupported;
+    };
+    use futures_util::future::{select, Either};
+    let reply = match select(Box::pin(fut), Box::pin(crate::runtime::sleep_ms(WRITE_TIMEOUT_MS)))
+        .await
+    {
+        Either::Left((Ok(v), _)) => v,
+        Either::Left((Err(e), _)) => {
+            return BrokerWrite::Done(Err(Error::fs(
+                "write_atomic",
+                path,
+                format!("write broker({path}): {}", js_err(&e)),
+            )));
+        }
+        // Timed out: do NOT fall back (a late-settling worker write racing a
+        // fallback write to the same file could corrupt it) and do NOT latch
+        // (a slow-but-alive device shouldn't lose the broker forever).
+        Either::Right(((), _)) => {
+            return BrokerWrite::Done(Err(Error::fs(
+                "write_atomic",
+                path,
+                format!("write broker({path}): timed out after {WRITE_TIMEOUT_MS}ms — data NOT saved"),
+            )));
+        }
+    };
+    let get = |k: &str| Reflect::get(&reply, &JsValue::from_str(k)).ok();
+    if get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        return BrokerWrite::Done(Ok(()));
+    }
+    if get("unsupported").and_then(|v| v.as_bool()) == Some(true) {
+        // No sync-access on this engine — latch + fall back (nothing was
+        // written; the worker failed BEFORE touching the file).
+        BROKER_DEAD.with(|d| d.set(true));
+        return BrokerWrite::Unsupported;
+    }
+    let err = get("err").and_then(|v| v.as_string()).unwrap_or_else(|| "unknown".into());
+    BrokerWrite::Done(Err(Error::fs("write_atomic", path, format!("write broker({path}): {err}"))))
 }
 
 #[async_trait(?Send)]
@@ -141,30 +341,21 @@ impl Filesystem for OpfsFilesystem {
     }
 
     async fn write_atomic(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        let (parent, name) = self.resolve_parent(path, true).await?;
-        let name = name.ok_or_else(|| {
-            Error::fs("write_atomic", path, format!("write_atomic({path}): path is empty"))
-        })?;
-        let file_handle = get_file(&parent, &name, true).await?;
-        let writable_val = JsFuture::from(file_handle.create_writable())
+        // WebKit engines (Safari, and EVERY iOS browser — CriOS/Firefox-iOS are
+        // WebKit shells) broker writes through web/opfs-worker.js: Safari had
+        // NO `createWritable` until Safari 26 (undefined on iOS ≤ 18 — the
+        // 2026-06-18 "not available on iOS" gate), while the worker-only
+        // `createSyncAccessHandle` has worked since iOS 15.2. One brokered
+        // path covers iOS 15.2→26.x; `Unsupported` falls through to the
+        // (timeout-bounded) main-thread stream below.
+        if engine_prefers_broker() {
+            match broker_write(path, bytes).await {
+                BrokerWrite::Done(res) => return res,
+                BrokerWrite::Unsupported => {}
+            }
+        }
+        bounded(WRITE_TIMEOUT_MS, "write_atomic", path, self.write_atomic_stream(path, bytes))
             .await
-            .map_err(|e| {
-                Error::fs("createWritable", path, format!("createWritable({path}): {}", js_err(&e)))
-            })?;
-        let writable: FileSystemWritableFileStream = writable_val
-            .dyn_into()
-            .map_err(|_| Error::fs("createWritable", path, "createWritable: not a writable stream"))?;
-        let array = Uint8Array::from(bytes);
-        let write_promise = writable
-            .write_with_buffer_source(&array)
-            .map_err(|e| Error::fs("write", path, format!("write({path}): {}", js_err(&e))))?;
-        JsFuture::from(write_promise)
-            .await
-            .map_err(|e| Error::fs("write", path, format!("write({path}): {}", js_err(&e))))?;
-        JsFuture::from(writable.close())
-            .await
-            .map_err(|e| Error::fs("close", path, format!("close({path}): {}", js_err(&e))))?;
-        Ok(())
     }
 
     async fn metadata(&self, path: &str) -> Result<Option<Metadata>> {

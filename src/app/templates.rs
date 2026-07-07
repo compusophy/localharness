@@ -14,12 +14,15 @@ use crate::types::{BuiltinTool, ToolCall, ToolResult};
 use super::tenant::Host;
 use super::VerifyState;
 
-/// True on iOS / iPadOS WebKit — the platform localharness can't yet support,
-/// because Safari's OPFS write (`createWritable`/`close`) stalls and hangs the
-/// single-threaded wasm app mid-onboarding. Used to gate the apex create CTA
-/// ([`crate::landing::ios_unavailable`]). UA covers iPhone/iPad/iPod; iPadOS 13+
-/// reports as "Macintosh" but has a touchscreen, so include Mac-UA-with-touch.
-fn is_ios() -> bool {
+/// True on iOS / iPadOS WebKit. iOS is SUPPORTED (writes broker through the
+/// worker `createSyncAccessHandle` path — `filesystem/opfs.rs`; the old
+/// createWritable-hang gate is gone); this detect now only drives the
+/// Home-Screen storage nudge ([`crate::landing::ios_storage_note`]): Safari's
+/// ITP evicts a BROWSER-TAB origin's storage after 7 days unused — seed
+/// included — and only Add-to-Home-Screen exempts it. UA covers
+/// iPhone/iPad/iPod; iPadOS 13+ reports as "Macintosh" but has a touchscreen,
+/// so include Mac-UA-with-touch.
+pub(crate) fn is_ios() -> bool {
     let Some(nav) = web_sys::window().map(|w| w.navigator()) else {
         return false;
     };
@@ -1242,13 +1245,7 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                 // durable storage (kit-qa #). Above the onboarding so a fresh
                 // visitor sees it before minting a key they could lose on close.
                 div #storage-warn-slot {}
-                @if fresh && is_ios() {
-                    // iOS/iPadOS Safari hangs the wasm app on its first OPFS
-                    // write (createWritable stalls the single-thread executor),
-                    // so onboarding can't complete there. Gate it off honestly
-                    // instead of shipping a flow that freezes mid-checkout.
-                    (crate::landing::ios_unavailable())
-                } @else if fresh {
+                @if fresh {
                     // ONE front door: create a wallet (paid entry that creates
                     // AND funds it, so a 0-$LH visitor never exists). Invited
                     // users skip this — `?invite=` links auto-redeem on mount.

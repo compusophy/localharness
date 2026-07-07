@@ -102,8 +102,27 @@ async function lhSeedExportFastBounce() {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "2fe397bbd364";
-if (await lhSeedExportFastBounce()) {
+const LH_BUILD = "8e513979a178";
+
+// Hard capability gate: the whole app persists to OPFS, so a browser without
+// `navigator.storage.getDirectory` (iOS/Safari < 15.2, exotic embedded views)
+// can only fail LATER, asynchronously, inside the wasm mount — which leaves
+// the static "loading…" shell up forever with no error. Fail HONESTLY here
+// instead, before fetching a byte of wasm. (Every supported engine — Chrome,
+// Firefox, Safari/iOS 15.2+, WebViews thereof — passes this.)
+function lhStorageSupported() {
+  try {
+    return !!(navigator.storage && typeof navigator.storage.getDirectory === "function");
+  } catch {
+    return false;
+  }
+}
+
+if (!lhStorageSupported()) {
+  document.documentElement.dataset.lhError = "1";
+  const root = document.getElementById("root");
+  if (root) root.textContent = "this browser is too old for localharness — needs iOS/Safari 15.2+ or a current Chrome/Firefox";
+} else if (await lhSeedExportFastBounce()) {
   // The tab is navigating back to the subdomain — leave the static shell up
   // for the instant the frame is still visible; do NOT boot the wasm.
 } else {

@@ -241,17 +241,24 @@ pub(crate) fn create_wallet_cta() -> Markup {
     }
 }
 
-/// Shown on the apex front door INSTEAD of the create CTA when the visitor is on
-/// iOS / iPadOS (detected in `templates::is_ios`). iOS Safari's OPFS writes stall
-/// the single-threaded wasm app, so onboarding can't reliably complete there —
-/// gate it off with an honest message rather than ship a broken flow. Same
-/// `#apex-onboard` shell so the page layout is unchanged.
-pub(crate) fn ios_unavailable() -> Markup {
+/// iOS storage nudge (painted into `#storage-warn-slot` by
+/// `events::warn_if_storage_volatile` when `templates::is_ios` and NOT
+/// installed to the Home Screen). Safari's ITP deletes a BROWSER-TAB origin's
+/// script-writable storage — the identity seed included — after 7 days
+/// without a visit, and `navigator.storage.persist()` does NOT exempt it
+/// (WebKit bug 209563); only Add-to-Home-Screen does. Advisory, not blocking:
+/// same muted single-line language as [`crate::app::templates::volatile_storage_warning`].
+pub(crate) fn ios_storage_note() -> Markup {
     html! {
-        section #apex-onboard .apex-onboard {
-            p style="font-size:14px;margin:0" {
-                "not available on iOS"
+        div .volatile-storage-warn role="status" {
+            "iPhone: Safari deletes this site's storage — your identity key "
+            "included — after 7 days unused. add this page to your Home Screen "
+            "(share → add to Home Screen) to make it permanent, or back the key "
+            "up via "
+            a href="https://localharness.xyz/?adopt=1" target="_top" rel="noopener" {
+                "add a device"
             }
+            "."
         }
     }
 }
@@ -432,7 +439,12 @@ mod tests {
         ] {
             assert!(svg.into_string().contains("<svg"));
         }
-        assert!(ios_unavailable().into_string().contains("not available on iOS"));
+        // iOS is un-gated (worker OPFS broker); the note nudges Home-Screen
+        // install because ITP evicts browser-tab storage after 7 days unused.
+        let note = ios_storage_note().into_string();
+        assert!(note.contains("Home Screen"));
+        assert!(note.contains("adopt=1"));
+        assert!(!note.contains("not available"));
     }
 
     /// The explore-directory entry point is authed-only: the fresh front door

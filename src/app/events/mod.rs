@@ -121,7 +121,23 @@ pub(super) async fn warn_if_storage_volatile() {
             "storage-warn-slot",
             &templates::volatile_storage_warning().into_string(),
         );
+        return; // incognito wipe-on-close outranks the 7-day note
     }
+    // iOS browser-tab storage is ITP-evictable after 7 days unused (seed
+    // included; persist() does NOT exempt it — WebKit bug 209563). Nudge
+    // toward Home Screen install, which IS exempt. Skip when already
+    // installed (`navigator.standalone` — the iOS-only flag, exactly our case).
+    if templates::is_ios() && !ios_standalone() {
+        dom::swap_inner("storage-warn-slot", &crate::landing::ios_storage_note().into_string());
+    }
+}
+
+/// True when running as an installed iOS Home-Screen web app.
+fn ios_standalone() -> bool {
+    web_sys::window()
+        .and_then(|w| js_sys::Reflect::get(&w.navigator(), &JsValue::from_str("standalone")).ok())
+        .map(|v| v.is_truthy())
+        .unwrap_or(false)
 }
 pub(crate) use key_sync::{sync_local_key_to_main, try_auto_restore_gemini_key};
 pub(crate) use subdomains::{run_batch_create_subdomains, run_bulk_release, run_release_subdomain};

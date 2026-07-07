@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **iOS / iPhone support (Safari + Chrome-on-iOS)** — the apex "not available
+  on iOS" gate is REMOVED. Root cause: Safari/WebKit had no
+  `FileSystemFileHandle.createWritable()` until Safari 26 (undefined on
+  iOS ≤ 18), so the app's first OPFS write killed onboarding. OPFS writes on
+  WebKit engines now broker through a dedicated worker using
+  `createSyncAccessHandle` (supported since iOS 15.2; the SQLite-wasm/RxDB
+  route) — `web/opfs-worker.js` + a feature-detected client in
+  `filesystem/opfs.rs` with a sticky fallback to the (now timeout-bounded)
+  main-thread stream. Chromium E2E forces the broker end-to-end
+  (`scripts/tab-e2e/opfs-broker-e2e.mjs`); parity guard
+  `tests/opfs_worker_parity.rs`.
+- **No more silent-forever "loading…"** — boot.js gates on
+  `navigator.storage.getDirectory` BEFORE fetching wasm and paints an honest
+  "browser too old" line (iOS < 15.2 / exotic views); any OPFS write that
+  stalls now times out (15s) into a typed error instead of hanging the app.
+
+### Added
+
+- **iOS storage nudge** — iPhone browser-tab storage is ITP-evicted after 7
+  days unused (seed included; `persist()` doesn't exempt it — only
+  Add-to-Home-Screen does), so non-installed iOS visitors get a one-line
+  Home-Screen/back-up note in the storage-warn slot.
+
 ## [0.70.0] - 2026-07-06
 
 ### Added
