@@ -17,6 +17,17 @@ What lives here:
 
 ---
 
+## ⭐ Major open direction — cross-platform / omni-client (for Fable)
+
+**[`cross-platform-rust-architecture.md`](cross-platform-rust-architecture.md)** —
+research + phased plan to run the EXACT SAME app across desktop web, mobile web
+(incl. iOS WebKit), native iOS, native Android (no Expo), and the CLI, maximizing
+Rust and minimizing JS, with API routes as first-class citizens. Current-web-sourced
+(2026-07-07, cited). Recommendation: three rings (Rust core / Rust API / thin
+shells) + three phases (API-first Rust proxy → Tauri v2 native shells → framebuffer/
+wgpu renderer). **Planning only — refactor is Fable's on reset.** Re-verify version
+facts before executing.
+
 ## ⚡ Awaiting maintainer activation (built + staged this loop, NOT live)
 
 The autonomous loop hardened the codebase (~13 bugs fixed; every money/security
