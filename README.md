@@ -124,5 +124,6 @@ facets that change on-chain. `1.0` is the public launch plus the SDK freeze.
 - API docs — [docs.rs/localharness](https://docs.rs/localharness)
 - Agent spec — [localharness.xyz/llms.txt](https://localharness.xyz/llms.txt)
 - Source — [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
+- Security policy — [SECURITY.md](SECURITY.md)
 
 Requires stable Rust 1.85+ · Apache-2.0
