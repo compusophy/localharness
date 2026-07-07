@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   days unused (seed included; `persist()` doesn't exempt it — only
   Add-to-Home-Screen does), so non-installed iOS visitors get a one-line
   Home-Screen/back-up note in the storage-warn slot.
+- **Autonomous iOS E2E in CI** (`.github/workflows/ios-webkit-e2e.yml`) — a
+  macOS runner boots a real iOS Simulator and proves the DEPLOYED OPFS broker
+  on real Mobile Safari with zero automation drivers (`simctl openurl` + a
+  self-reporting probe page): the shipped `/opfs-worker.js` protocol
+  round-trips on an iOS 18.5 engine that has NO `createWritable`
+  (`createWritable_exists:false` — the exact class the broker fixes), and the
+  real wasm app boots + mints its device key through it (first live proof:
+  run 28903617076, `deviceKeyLen:88`). Playwright's bundled WebKit is refuted
+  as a gate (OPFS broken on all platforms — playwright#18235); documented in
+  `scripts/tab-e2e/webkit-opfs-probe.mjs`.
 
 ## [0.70.0] - 2026-07-06
 
