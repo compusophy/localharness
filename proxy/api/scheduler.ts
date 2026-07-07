@@ -97,7 +97,7 @@ export const config = { runtime: 'edge' };
 
 // ---- constants (shared with gemini.ts / mcp.ts) ----------------------------
 
-import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
+import { TEMPO_RPC, REGISTRY, CHAIN_ID, FEE_TOKEN } from './_chain';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 // Mirrors mcp.ts ASK_MODEL / the headless `call` default. No per-job model
 // selection in the MVP — every scheduled run uses the platform Gemini model.
@@ -145,6 +145,19 @@ import {
   type OffchainJob,
 } from './_jobstore';
 import { meterDebit, creditOf } from './_auth';
+
+// Env assertions + the hourly health self-check (road-to-v1 step 2: the proxy
+// is the SPOF and had zero monitoring). The sponsor address / breaker floor are
+// the live values sponsor.ts itself signs with — one source of truth.
+import { missingEnv } from './_env';
+import {
+  envHealth,
+  sponsorFloatHealth,
+  githubHealth,
+  alertHealth,
+  type HealthCheck,
+} from './_health';
+import { SPONSOR_ADDRESS, MIN_FLOAT_WEI } from './sponsor';
 
 // ---- per-TICK spend caps (#1 — the strongest bill-shock fix) ----------------
 //
@@ -2278,6 +2291,62 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+// ---- env assertions + hourly health self-check (road-to-v1 step 2) ----------
+//
+// The scheduler is the platform's heartbeat (it already fires every minute), so
+// it carries (a) the fail-LOUD assertion for ITS critical env — a missing
+// GEMINI_API_KEY bills owners for runs that can never succeed (error runs still
+// recordRun); a missing PROXY_METER_KEY runs the model then can't bill = free
+// inference — and (b) the HOURLY health block (minute==0): sponsor-float
+// headroom (warn at 10x the LH_RELAY_MIN_FLOAT_WEI breaker floor, not at
+// death), GitHub store reachability (one cheap read), and an env dry-run across
+// routes. A failing set files ONE deduped telemetry issue (_ghissue rails) +
+// best-effort LH_ALERT_OWNER web-push (unset ⇒ the issue IS the alert).
+const SCHEDULER_REQUIRED_ENV = ['GEMINI_API_KEY', 'PROXY_METER_KEY'];
+// Cross-route dry-run set for the hourly check. LH_SPONSOR_KEY is only required
+// on mainnet (testnet keeps the committed play-money fallback by design);
+// optional-by-design toggles (VAPID_*, TURN_*, LH_METER_PAYEE) are NOT here.
+const HEALTH_ENV = [
+  ...SCHEDULER_REQUIRED_ENV,
+  'CRON_SECRET',
+  ...(CHAIN_ID === 4217 ? ['LH_SPONSOR_KEY'] : []),
+];
+// Every GitHub-store route (jobs/push/apps/chat/signal) falls back to the
+// telemetry PAT — at least one of the pair must exist.
+const HEALTH_ENV_ANYOF = [['GH_JOBS_TOKEN', 'GH_TELEMETRY_TOKEN']];
+
+function alertDeps() {
+  return {
+    repo: process.env.LH_TELEMETRY_REPO ?? 'compusophy/localharness-telemetry',
+    token: process.env.GH_TELEMETRY_TOKEN ?? '',
+    pushOwner: process.env.LH_ALERT_OWNER,
+    push: sendOwnerPush,
+  };
+}
+
+/** The hourly checks (each I/O read is 5s-capped in _health.ts, so a health
+ * pass can't eat the tick's wall-clock budget). */
+async function runHealthChecks(): Promise<HealthCheck[]> {
+  return [
+    envHealth(HEALTH_ENV, HEALTH_ENV_ANYOF),
+    await sponsorFloatHealth(TEMPO_RPC, FEE_TOKEN, SPONSOR_ADDRESS, MIN_FLOAT_WEI),
+    await githubHealth(
+      process.env.GH_JOBS_REPO ?? 'compusophy/localharness-jobs',
+      process.env.GH_JOBS_TOKEN ?? process.env.GH_TELEMETRY_TOKEN ?? '',
+    ),
+  ];
+}
+
+function misconfigResponse(missing: string[]): Response {
+  return new Response(
+    JSON.stringify({
+      error: `scheduler misconfigured: missing ${missing.join(', ')}`,
+      code: 'LH_PROXY_MISCONFIG',
+    }),
+    { status: 503, headers: { 'content-type': 'application/json' } },
+  );
+}
+
 export default async function handler(req: Request): Promise<Response> {
   // CRON_SECRET gate — Vercel's cron sends `Authorization: Bearer ${CRON_SECRET}`.
   // The same header gates a manual dogfood POST. The public can NEVER trigger a
@@ -2289,6 +2358,12 @@ export default async function handler(req: Request): Promise<Response> {
     });
   }
 
+  // FAIL-LOUD env assertion — BOTH the poke and cron paths spend (see the
+  // SCHEDULER_REQUIRED_ENV block above). Cron-authed callers also get the
+  // deduped alert filed below; a public poke just gets the 503 (no GitHub
+  // call rides on an unauthenticated probe).
+  const misconfigured = missingEnv(SCHEDULER_REQUIRED_ENV);
+
   // PUBLIC keeper poke (decentralized heartbeat, krafto #1.5): `?poke=<jobId>`
   // runs ONE job. No cron secret needed — processJob re-validates (known + Active
   // + due) and recordRun is CAS-guarded, so a poke can only run a genuinely-due
@@ -2299,6 +2374,7 @@ export default async function handler(req: Request): Promise<Response> {
   {
     const poke = new URL(req.url).searchParams.get('poke');
     if (poke !== null) {
+      if (misconfigured.length > 0) return misconfigResponse(misconfigured);
       // Platform-TRUSTED client IP for the rate-limit key. The LEFTMOST
       // x-forwarded-for entry is CLIENT-SUPPLIED (an attacker prepends a random
       // value per request to mint a fresh rate key, defeating the 60/min cap —
@@ -2355,6 +2431,32 @@ export default async function handler(req: Request): Promise<Response> {
   const auth = req.headers.get('authorization') ?? '';
   if (!timingSafeEqual(auth, `Bearer ${secret}`)) {
     return unauthorized();
+  }
+
+  // Cron-authed misconfig: file the deduped alert (self-alerting within one
+  // cron minute — one open issue per missing-set) then fail loud.
+  if (misconfigured.length > 0) {
+    await alertHealth(
+      [{ name: 'env', ok: false, detail: `missing ${misconfigured.join(', ')}` }],
+      alertDeps(),
+    );
+    return misconfigResponse(misconfigured);
+  }
+
+  // HOURLY health self-check (minute==0; `?health=1` forces it on an authed
+  // manual POST). Runs BEFORE the batch so a low sponsor float / unreachable
+  // GitHub store is alerted even on a tick with no due jobs; issue dedupe makes
+  // an extra run (isolate churn, forced runs) a no-op.
+  let health: HealthCheck[] | undefined;
+  if (new URL(req.url).searchParams.has('health') || new Date().getUTCMinutes() === 0) {
+    health = await runHealthChecks();
+    const failing = health.filter((c) => !c.ok);
+    if (failing.length > 0) {
+      const alert = await alertHealth(failing, alertDeps());
+      console.warn(
+        `[scheduler] health: ${failing.length} failing — issue ${alert.url ?? 'not filed'}${alert.deduped ? ' (deduped)' : ''}`,
+      );
+    }
   }
 
   const tickStart = Date.now();
@@ -2489,6 +2591,8 @@ export default async function handler(req: Request): Promise<Response> {
     globalTickCapWei: GLOBAL_TICK_CAP_WEI.toString(),
     perOwnerTickCapWei: PER_OWNER_TICK_CAP_WEI.toString(),
     durationMs: Date.now() - tickStart,
+    // Hourly self-check results (only on the minute==0 / ?health=1 ticks).
+    health,
     jobs: results,
     // On-chain scan error (if any) — off-chain jobs still fired despite it.
     onchainError,

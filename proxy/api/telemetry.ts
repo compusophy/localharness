@@ -14,6 +14,7 @@
 
 import { verifyAuthToken } from './_stripe';
 import { SlidingWindow } from './_ratelimit';
+import { fileIssueDeduped } from './_ghissue';
 
 export const config = { runtime: 'edge' };
 
@@ -121,48 +122,23 @@ export default async function handler(req: Request): Promise<Response> {
     `Auto-submitted from \`${addr}\` — REDACTED on-device (no seed/keys).\n\n` +
     `${body}\n\n---\n*localharness telemetry · design/telemetry-and-global-lessons.md*`;
 
-  const ghHeaders = {
-    authorization: `Bearer ${GH_TOKEN}`,
-    accept: 'application/vnd.github+json',
-    'content-type': 'application/json',
-    'user-agent': 'localharness-telemetry',
-  };
-
-  // Dedup: if an OPEN issue already carries this exact signature in its title,
-  // skip instead of opening a duplicate. This is what kills the "23 identical
-  // 429 issues" spam — one issue per (code+)signature. Best-effort: any search
-  // hiccup just falls through to a normal create.
-  if (sig) {
-    try {
-      const q = encodeURIComponent(`repo:${TELEMETRY_REPO} is:issue is:open in:title ${sig}`);
-      const sres = await fetch(`https://api.github.com/search/issues?q=${q}&per_page=5`, {
-        headers: ghHeaders,
-      });
-      if (sres.ok) {
-        const found = (await sres.json()) as {
-          items?: Array<{ number: number; html_url: string; title: string }>;
-        };
-        const hit = found.items?.find((i) => i.title.includes(`(${sig})`));
-        if (hit) {
-          return json({ filed: true, deduped: true, url: hit.html_url, number: hit.number }, 200, origin);
-        }
-      }
-    } catch {
-      /* fall through to create */
-    }
-  }
-
-  const res = await fetch(`https://api.github.com/repos/${TELEMETRY_REPO}/issues`, {
-    method: 'POST',
-    headers: ghHeaders,
-    // `labels:[kind]` self-sorts reports (error / feedback / cartridge); GitHub
-    // auto-creates the label on first use.
-    body: JSON.stringify({ title: issueTitle, body: issueBody, labels: [kind] }),
+  // Search-dedupe + create moved to the SHARED `_ghissue.ts` (the scheduler's
+  // health alerts ride the same rails). `labels:[kind]` self-sorts reports
+  // (error / feedback / cartridge); GitHub auto-creates the label on first use.
+  const r = await fileIssueDeduped({
+    repo: TELEMETRY_REPO,
+    token: GH_TOKEN,
+    title: issueTitle,
+    body: issueBody,
+    signature: sig || undefined,
+    labels: [kind],
   });
-  if (!res.ok) {
-    const detail = (await res.text()).slice(0, 200);
-    return json({ error: 'github filing failed', status: res.status, detail }, 502, origin);
+  if (!r.filed) {
+    return json({ error: 'github filing failed', status: r.status, detail: r.detail }, 502, origin);
   }
-  const issue = (await res.json()) as { html_url?: string; number?: number };
-  return json({ filed: true, url: issue.html_url, number: issue.number }, 200, origin);
+  return json(
+    { filed: true, ...(r.deduped ? { deduped: true } : {}), url: r.url, number: r.number },
+    200,
+    origin,
+  );
 }

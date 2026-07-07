@@ -47,6 +47,7 @@ import { TEMPO_RPC, REGISTRY, CHAIN_ID, LH_TOKEN, FEE_TOKEN } from './_chain';
 // (metering) can't be replayed to the fee-payer relay inside the 300s window.
 import { verifyAuthToken, isAllowedOrigin } from './_authcore';
 import { SlidingWindow } from './_ratelimit';
+import { envGuard } from './_env';
 import { welcomeNewAgent } from './_welcome';
 import { waitUntil } from '@vercel/functions';
 
@@ -85,7 +86,8 @@ const globalWindow = new SlidingWindow(GLOBAL_LIMIT, RATE_WINDOW_MS);
 const TESTNET_SPONSOR_KEY =
   '0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43';
 const SPONSOR_KEY = process.env.LH_SPONSOR_KEY ?? TESTNET_SPONSOR_KEY;
-const SPONSOR_ADDRESS = addressFromPrivKey(SPONSOR_KEY); // lowercase 0x
+// Exported for the scheduler's hourly float health check (_health.ts).
+export const SPONSOR_ADDRESS = addressFromPrivKey(SPONSOR_KEY); // lowercase 0x
 
 const DIAMOND = REGISTRY.toLowerCase();
 const TOKEN = LH_TOKEN.toLowerCase();
@@ -493,7 +495,7 @@ function lhBalanceOf(addr: string): Promise<bigint> {
 // Floor in fee_token base units (USDC.e is 6-dec) — default 0.05 USDC.e; env
 // LH_RELAY_MIN_FLOAT_WEI tunes it (0 disables). The balance is cached per-isolate
 // for a short TTL so we don't eth_call on every request.
-const MIN_FLOAT_WEI = BigInt(process.env.LH_RELAY_MIN_FLOAT_WEI ?? '50000');
+export const MIN_FLOAT_WEI = BigInt(process.env.LH_RELAY_MIN_FLOAT_WEI ?? '50000');
 const FLOAT_CACHE_MS = 30_000;
 let floatCache: { token: string; wei: bigint; at: number } | null = null;
 
@@ -518,6 +520,19 @@ export default async function handler(req: Request): Promise<Response> {
   const origin = req.headers.get('origin');
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(origin) });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405, origin);
+
+  // MAINNET fail-LOUD (road-to-v1 step 2): with LH_SPONSOR_KEY unset the relay
+  // silently falls back to the COMMITTED testnet key — a public, unfunded
+  // fee-payer on mainnet, so every sponsorship fails confusingly (or signs with
+  // a key anyone holds). 503 with a named code instead. Testnet keeps the
+  // committed play-money fallback by design.
+  const misconfig = envGuard(
+    'sponsor',
+    CHAIN_ID === 4217 ? ['LH_SPONSOR_KEY'] : [],
+    [],
+    corsHeaders(origin),
+  );
+  if (misconfig) return misconfig;
 
   const token = req.headers.get('x-goog-api-key') ?? '';
   // Route-bind the token to THIS endpoint (audit L9): a token minted for a cheap

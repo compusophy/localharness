@@ -35,6 +35,23 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   wire-port is PINNED to Rust golden vectors — keep them in sync.
 - `scheduler.ts` — Vercel-Cron no-tab job worker (`vercel.json` `* * * * *`, 1-min);
   calls `recordRun` (SCHEDULER-ROLE, CAS-guarded). Sub-minute can't ride this.
+- `_env.ts` — FAIL-LOUD env assertions (road-to-v1 step 2): handlers assert THEIR
+  critical vars up front → named 503 `LH_PROXY_MISCONFIG` instead of silently
+  mis-metering. gemini: PROXY_METER_KEY (missing = session callers served free +
+  funded callers 502 AFTER the platform paid the provider); sponsor on MAINNET
+  (CHAIN_ID 4217): LH_SPONSOR_KEY (else it silently signs with the COMMITTED
+  public testnet key); scheduler: GEMINI_API_KEY + PROXY_METER_KEY (missing =
+  owners billed for runs that can't succeed / model run then unbilled).
+  Optional-BY-DESIGN toggles (VAPID_*/TURN_*/LH_METER_PAYEE/GEMINI_API_KEYS) are
+  never asserted.
+- `_health.ts` + `_ghissue.ts` — HOURLY self-check riding the scheduler cron
+  (minute==0, or authed `?health=1`): sponsor-float headroom (warns at 10x
+  LH_RELAY_MIN_FLOAT_WEI, not at death), GitHub-store reachability (one cheap
+  read), env dry-run. A failing set files ONE deduped telemetry issue
+  (`fileIssueDeduped` — factored from telemetry.ts; one incident = one OPEN
+  issue, close it to re-arm) + best-effort `LH_ALERT_OWNER` web-push via the
+  push store (unset ⇒ the issue IS the alert). Results land in the tick summary
+  (`health`).
 - `notify.ts` + `_webpush.ts` — web-push (self or cross-agent `to`), dedup by the
   per-device `dev` field (NOT endpoint — one device's cross-origin endpoints collapse).
   Push-service 404/410 = DEAD sub → pruned from the store + honest "no live push

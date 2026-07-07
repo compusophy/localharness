@@ -62,6 +62,7 @@ import {
 } from './_auth';
 import { verifyX402Payment, settleX402NoWait, settleUptoNoWait, type X402Auth } from './_x402';
 import { meteredAmountWei } from './_usage';
+import { envGuard } from './_env';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const ANTHROPIC_BASE = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -541,6 +542,14 @@ export default async function handler(req: Request): Promise<Response> {
   if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_BYTES) {
     return json({ error: 'request body too large' }, 413, origin);
   }
+  // FAIL-LOUD env assertion (road-to-v1 step 2): without the meter key the
+  // debit path only throws AFTER the upstream call — x402 settles 502, funded
+  // callers 502 after the platform already paid the provider, and free-beta
+  // session callers get served un-metered forever. 503 with a named code
+  // instead of silently mis-metering. (Provider keys are asserted per-provider
+  // below, before the gate — already a named error with no charge.)
+  const misconfig = envGuard('gemini', ['PROXY_METER_KEY'], [], corsHeaders(origin));
+  if (misconfig) return misconfig;
 
   // In-isolate floor reservation tracked at function scope so the `finally`
   // releases it on every exit. Set when the meter floor is reserved below.
