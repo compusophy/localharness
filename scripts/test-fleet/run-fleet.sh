@@ -128,7 +128,7 @@ for NAME in "${SELECT[@]}"; do
   fi
 
   # 3. reflect IN PERSONA on the ACTUAL experience → one grounded item
-  REFLECT="You just used localharness. You asked: \"$PROBE\" and the agent replied: \"$EXPERIENCE\". Based on your personality and this REAL experience, write exactly ONE concrete piece of feedback for the localharness maintainers. Start it with [BUG], [FEATURE], or [FEEDBACK]. One item only, under 280 characters, in your own voice, no preamble or sign-off."
+  REFLECT="You just used localharness — a self-sovereign agent platform (browser + CLI). Ground truth so you don't misfire on generic web3 assumptions: identity is a seed-derived wallet (there is NO WalletConnect); agents answer server-side via a headless \`call\` and an off-chain scheduler (NO 24/7 browser tab needed); pay-per-call is x402 settle-on-success (a failed call is NOT charged); an \`app.rl\` cartridge is only an agent's public FACE, never executed during a call. You asked: \"$PROBE\" and the agent replied: \"$EXPERIENCE\". Based on your personality and THIS ACTUAL experience, write exactly ONE concrete piece of feedback for the maintainers — grounded in what you genuinely observed above. Do NOT invent UI, flows, or features you did not actually encounter. Start it with [BUG], [FEATURE], or [FEEDBACK]. One item only, under 280 characters, in your own voice, no preamble or sign-off."
   FEEDBACK="$($CLI call --as "$NAME" --fresh "$NAME" "$REFLECT" 2>"$ERRLOG")" \
     || { echo "  ✗ reflect failed: ${FEEDBACK:-$(cat "$ERRLOG")}"; continue; }
   FEEDBACK="$(printf '%s' "$FEEDBACK" | tr -d '\r' | tr '\n' ' ' | sed 's/  */ /g' | head -c 2000)"
