@@ -77,11 +77,21 @@ jobs:
           test -n "$UDID"
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
+          # `bootstatus -b` returns before SpringBoard can service openurl
+          # (NSPOSIXErrorDomain code 60 flake — run 28905890553); pre-warm
+          # MobileSafari so the first real openurl lands on a live process.
+          for i in 1 2 3; do
+            xcrun simctl launch "$UDID" com.apple.mobilesafari && break
+            sleep 10
+          done
           echo "UDID=$UDID" >> "$GITHUB_ENV"
 
       - name: phase 1 — shipped broker protocol on real Mobile Safari
         run: |
-          xcrun simctl openurl "$UDID" "http://localhost:8080/e2e-ios-probe.html?phase=1"
+          for i in 1 2 3; do
+            xcrun simctl openurl "$UDID" "http://localhost:8080/e2e-ios-probe.html?phase=1" && break
+            echo "openurl attempt $i failed — retrying"; sleep 15
+          done
           for i in $(seq 1 45); do [ -f e2e-report-phase1.json ] && break; sleep 2; done
           test -f e2e-report-phase1.json || { echo "phase 1: no report within 90s"; exit 1; }
           cat e2e-report-phase1.json
@@ -92,9 +102,15 @@ jobs:
         # device key WITHOUT the invite, muddying the full-onboarding proof.
         if: github.event.inputs.invite_code == ''
         run: |
-          xcrun simctl openurl "$UDID" "http://localhost:8080/"
+          for i in 1 2 3; do
+            xcrun simctl openurl "$UDID" "http://localhost:8080/" && break
+            echo "openurl attempt $i failed — retrying"; sleep 15
+          done
           sleep 45   # foreground boot time: wasm init + Host::Other paint + device-key write
-          xcrun simctl openurl "$UDID" "http://localhost:8080/e2e-ios-probe.html?phase=2"
+          for i in 1 2 3; do
+            xcrun simctl openurl "$UDID" "http://localhost:8080/e2e-ios-probe.html?phase=2" && break
+            echo "openurl attempt $i failed — retrying"; sleep 15
+          done
           for i in $(seq 1 75); do [ -f e2e-report-phase2.json ] && break; sleep 2; done
           test -f e2e-report-phase2.json || { echo "phase 2: no report within 150s"; exit 1; }
           cat e2e-report-phase2.json
@@ -108,9 +124,15 @@ jobs:
         run: |
           E0=$(node scripts/tab-e2e/escrowed-of.mjs "$FUNDER"); echo "escrowedOf(funder) BEFORE: $E0"
           test "$E0" != "0" || { echo "funder has NO escrowed invites — mint one first (localharness invite create)"; exit 1; }
-          xcrun simctl openurl "$UDID" "http://localhost:8080/?invite=$INVITE"
+          for i in 1 2 3; do
+            xcrun simctl openurl "$UDID" "http://localhost:8080/?invite=$INVITE" && break
+            echo "openurl attempt $i failed — retrying"; sleep 15
+          done
           sleep 60   # boot + auto-redeem: sponsored acceptInvite via the relay (a real mainnet tx)
-          xcrun simctl openurl "$UDID" "http://localhost:8080/e2e-ios-probe.html?phase=3"
+          for i in 1 2 3; do
+            xcrun simctl openurl "$UDID" "http://localhost:8080/e2e-ios-probe.html?phase=3" && break
+            echo "openurl attempt $i failed — retrying"; sleep 15
+          done
           for i in $(seq 1 75); do [ -f e2e-report-phase3.json ] && break; sleep 2; done
           test -f e2e-report-phase3.json || { echo "phase 3: no report within 150s"; exit 1; }
           cat e2e-report-phase3.json
