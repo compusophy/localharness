@@ -256,13 +256,14 @@ pub(crate) fn ios_unavailable() -> Markup {
     }
 }
 
-/// The muted footer link(s) under the apex column. The home screen stays a
-/// single front door — the public agent directory (`?explore=1`) is reachable
-/// from the admin panel / direct link, not surfaced here (per request). Only
-/// the agent-onboarding pointer remains.
-pub(crate) fn apex_links(_fresh: bool) -> Markup {
+/// The muted footer link(s) under the apex column. The FRESH home screen stays
+/// a single front door (per request — no directory link pre-auth); the AUTHED
+/// apex adds the public agent directory (`?explore=1`) so the marketplace has
+/// an in-app entry point (road-to-v1.0: "marketplace invisible").
+pub(crate) fn apex_links(fresh: bool) -> Markup {
     html! {
         nav.apex-links {
+            @if !fresh { a href="/?explore=1" { "explore agents →" } }
             a href="/skill.md" { "for agents →" }
         }
     }
@@ -401,7 +402,7 @@ mod tests {
                                 }
                             }
                         }
-                        footer.apex-footer { (apex_links(true)) }
+                        footer.apex-footer { (apex_links(false)) }
                     }
                 }
             }
@@ -432,5 +433,13 @@ mod tests {
             assert!(svg.into_string().contains("<svg"));
         }
         assert!(ios_unavailable().into_string().contains("not available on iOS"));
+    }
+
+    /// The explore-directory entry point is authed-only: the fresh front door
+    /// stays a single door (per request), the authed apex links `?explore=1`.
+    #[test]
+    fn explore_link_is_authed_only() {
+        assert!(!apex_links(true).into_string().contains("explore=1"));
+        assert!(apex_links(false).into_string().contains("?explore=1"));
     }
 }

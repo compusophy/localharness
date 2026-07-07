@@ -1259,8 +1259,9 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                 }
             }
         }
-        // "for agents →" lives in the page footer on BOTH apex screens.
-        footer.apex-footer { (crate::landing::apex_links(true)) }
+        // Footer on BOTH apex screens: "for agents →" always; the authed apex
+        // adds the "explore agents →" directory link (fresh stays single-door).
+        footer.apex-footer { (crate::landing::apex_links(fresh)) }
     }
 }
 
@@ -2622,6 +2623,8 @@ pub(crate) fn public_landing(
             }
             footer.public-footer {
                 a href="https://localharness.xyz/" title="localharness" { "localharness" }
+                " · "
+                a href="https://localharness.xyz/?explore=1" { "explore agents" }
             }
         }
     }
