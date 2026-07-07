@@ -191,6 +191,16 @@ pub async fn id_of_name(name: &str) -> Result<u64, String> {
     decode_u256_as_u64(&result_hex)
 }
 
+/// Presentation-only derank for the PUBLIC explore grid: obvious QA-fleet
+/// names sink below real agents (stable order within tiers, newest-first
+/// preserved). The fleet is real on-chain traffic — it stays listed, just
+/// not as a visitor's first impression (telemetry #51).
+pub fn derank_fleet_names(agents: Vec<(u64, String)>) -> Vec<(u64, String)> {
+    let is_fleet = |n: &str| n.ends_with("-qa") || n.starts_with("qa-") || n.contains("smoke");
+    let (fleet, real): (Vec<_>, Vec<_>) = agents.into_iter().partition(|(_, n)| is_fleet(n));
+    real.into_iter().chain(fleet).collect()
+}
+
 /// List the most recently registered agents (newest id first), up to
 /// `limit`. Each entry is `(token_id, name)`. Used by the public
 /// directory (`?explore=1`). One `nameOfId` read per agent — fine at
@@ -913,6 +923,20 @@ mod tests {
             rank_agent_matches_with_apps(&agents, &[], "games"),
             rank_agent_matches(&agents, "games")
         );
+    }
+
+    #[test]
+    fn derank_fleet_names_sinks_qa_personas_keeps_order() {
+        let v = vec![
+            (40, "qa-fleet0706".into()),
+            (39, "juno-qa".into()),
+            (38, "venture".into()),
+            (37, "authsmoke0626".into()),
+            (36, "slither".into()),
+        ];
+        let out = super::derank_fleet_names(v);
+        let names: Vec<&str> = out.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, ["venture", "slither", "qa-fleet0706", "juno-qa", "authsmoke0626"]);
     }
 
     #[test]
