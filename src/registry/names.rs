@@ -191,14 +191,26 @@ pub async fn id_of_name(name: &str) -> Result<u64, String> {
     decode_u256_as_u64(&result_hex)
 }
 
-/// Presentation-only derank for the PUBLIC explore grid: obvious QA-fleet
-/// names sink below real agents (stable order within tiers, newest-first
-/// preserved). The fleet is real on-chain traffic — it stays listed, just
-/// not as a visitor's first impression (telemetry #51).
-pub fn derank_fleet_names(agents: Vec<(u64, String)>) -> Vec<(u64, String)> {
-    let is_fleet = |n: &str| n.ends_with("-qa") || n.starts_with("qa-") || n.contains("smoke");
-    let (fleet, real): (Vec<_>, Vec<_>) = agents.into_iter().partition(|(_, n)| is_fleet(n));
-    real.into_iter().chain(fleet).collect()
+/// Filter the PUBLIC explore grid: HIDE non-public registrations entirely
+/// (order preserved). Removes released/burned tokens (empty name — they were
+/// rendering as blank cards), the QA test-fleet, and one-off smoke/worktree
+/// test names — real on-chain registrations, but internal testing traffic a
+/// visitor shouldn't browse. Was a presentation derank (telemetry #51); the
+/// maintainer asked for them GONE, not just sunk.
+pub fn filter_public_agents(agents: Vec<(u64, String)>) -> Vec<(u64, String)> {
+    agents.into_iter().filter(|(_, n)| !is_nonpublic_name(n)).collect()
+}
+
+/// True for a name that must not appear in the public directory: a
+/// released/burned token (empty name), the QA fleet (`*-qa` / `qa-*` /
+/// `qaw…`), a smoke test (`*smoke*`), or a worktree test (`wt<digit>…`).
+fn is_nonpublic_name(n: &str) -> bool {
+    n.is_empty()
+        || n.ends_with("-qa")
+        || n.starts_with("qa-")
+        || n.starts_with("qaw")
+        || n.contains("smoke")
+        || (n.starts_with("wt") && n.as_bytes().get(2).is_some_and(|b| b.is_ascii_digit()))
 }
 
 /// List the most recently registered agents (newest id first), up to
@@ -926,17 +938,20 @@ mod tests {
     }
 
     #[test]
-    fn derank_fleet_names_sinks_qa_personas_keeps_order() {
+    fn filter_public_agents_removes_test_and_released() {
         let v = vec![
-            (40, "qa-fleet0706".into()),
-            (39, "juno-qa".into()),
-            (38, "venture".into()),
-            (37, "authsmoke0626".into()),
-            (36, "slither".into()),
+            (44, "qa-fleet0706".into()), // qa- prefix
+            (43, "juno-qa".into()),      // -qa suffix
+            (38, "venture".into()),      // REAL
+            (20, "authsmoke0626".into()), // smoke
+            (19, "slither".into()),      // REAL
+            (15, "".into()),             // released token (blank card bug)
+            (12, "wt0621y".into()),      // worktree test
+            (31, "qaw1".into()),         // qaw prefix
         ];
-        let out = super::derank_fleet_names(v);
+        let out = super::filter_public_agents(v);
         let names: Vec<&str> = out.iter().map(|(_, n)| n.as_str()).collect();
-        assert_eq!(names, ["venture", "slither", "qa-fleet0706", "juno-qa", "authsmoke0626"]);
+        assert_eq!(names, ["venture", "slither"]); // junk gone, order preserved
     }
 
     #[test]

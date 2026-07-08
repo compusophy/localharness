@@ -1524,9 +1524,10 @@ async fn paint_explore() {
     };
     match listed {
         Ok(agents) => {
-            // QA-fleet names sink below real agents — a visitor's first six
-            // cards were all synthetic personas (telemetry #51).
-            let agents = registry::derank_fleet_names(agents);
+            // Hide non-public registrations (released/blank, QA fleet, smoke/
+            // worktree tests) from the visitor directory (was a derank #51 —
+            // the maintainer asked for them GONE).
+            let agents = registry::filter_public_agents(agents);
             // Batch-fetch every agent's on-chain persona in ONE eth_call so
             // each card shows what the agent actually DOES (not just a name).
             // `personas_of` is index-aligned with `ids`, degrading any unset /

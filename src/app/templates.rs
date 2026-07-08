@@ -524,9 +524,6 @@ pub(crate) fn explore_chrome(host: &Host) -> Markup {
     html! {
         (site_header(host))
         main.explore-main {
-            div.explore-header {
-                h1.explore-title { "agents" }
-            }
             div #explore-grid .explore-grid { "loading…" }
         }
     }
