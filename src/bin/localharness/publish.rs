@@ -472,10 +472,124 @@ pub(crate) fn compile_big_stack(src: &str) -> Result<Vec<u8>, localharness::rust
         .expect("rustlite compile thread panicked")
 }
 
+/// Parse the wasm import section (id 2) and return every `host::<module>::<func>`
+/// the cartridge binds — its exact platform-call surface (its "tool schemas" in
+/// cartridge-author terms) — sorted + deduped. Imports are emitted as
+/// `host_<module>` (codegen), so the `host_` prefix is stripped. Conservative:
+/// malformed / truncated bytes yield an empty Vec, never a panic.
+pub(crate) fn cartridge_host_calls(wasm: &[u8]) -> Vec<String> {
+    fn leb(b: &[u8], i: &mut usize) -> Option<u64> {
+        let (mut result, mut shift) = (0u64, 0u32);
+        loop {
+            let byte = *b.get(*i)?;
+            *i += 1;
+            result |= ((byte & 0x7f) as u64) << shift;
+            if byte & 0x80 == 0 {
+                return Some(result);
+            }
+            shift += 7;
+            if shift >= 64 {
+                return None;
+            }
+        }
+    }
+    // Skip a wasm `limits` (flag byte, min, optional max) — table/mem imports.
+    fn skip_limits(b: &[u8], i: &mut usize) -> Option<()> {
+        let flag = leb(b, i)?;
+        leb(b, i)?; // min
+        if flag & 0x01 != 0 {
+            leb(b, i)?; // max
+        }
+        Some(())
+    }
+    fn parse(wasm: &[u8]) -> Option<Vec<String>> {
+        if wasm.len() < 8 || &wasm[0..4] != b"\0asm" {
+            return None;
+        }
+        let mut calls: Vec<String> = Vec::new();
+        let mut i = 8; // skip magic + version
+        while i < wasm.len() {
+            let id = wasm[i];
+            i += 1;
+            let size = leb(wasm, &mut i)?;
+            let section_end = i.checked_add(size as usize)?;
+            if section_end > wasm.len() {
+                return None;
+            }
+            if id == 2 {
+                let mut j = i;
+                let count = leb(wasm, &mut j)?;
+                for _ in 0..count {
+                    let mod_len = leb(wasm, &mut j)? as usize;
+                    let module = wasm.get(j..)?.get(..mod_len)?;
+                    j += mod_len;
+                    let field_len = leb(wasm, &mut j)? as usize;
+                    let field = wasm.get(j..)?.get(..field_len)?;
+                    j += field_len;
+                    let kind = *wasm.get(j)?;
+                    j += 1;
+                    match kind {
+                        0x00 => {
+                            leb(wasm, &mut j)?; // func: type index
+                            if let Some(m) = module.strip_prefix(b"host_") {
+                                if let (Ok(m), Ok(f)) =
+                                    (std::str::from_utf8(m), std::str::from_utf8(field))
+                                {
+                                    calls.push(format!("host::{m}::{f}"));
+                                }
+                            }
+                        }
+                        0x01 => {
+                            j += 1; // table: elem type
+                            skip_limits(wasm, &mut j)?;
+                        }
+                        0x02 => skip_limits(wasm, &mut j)?, // mem
+                        0x03 => j += 2,                     // global: valtype + mut
+                        _ => return None,
+                    }
+                }
+            }
+            i = section_end;
+        }
+        calls.sort();
+        calls.dedup();
+        Some(calls)
+    }
+    parse(wasm).unwrap_or_default()
+}
+
+/// Parse `compile <source.rl> [out.wasm] [--out <file>] [--host-calls|--schemas]`.
+/// A bare 2nd positional is the out path (back-compat); `--out` is the flag form.
+/// `--host-calls` (telemetry #52 alias `--schemas`) dumps the cartridge's
+/// host-call surface. Pure/testable. Returns `(source, out, host_calls)`.
+pub(crate) fn parse_compile_args(rest: &[String]) -> Result<(String, Option<String>, bool), String> {
+    const USAGE: &str =
+        "usage: localharness compile <source.rl> [out.wasm] [--out <file>] [--host-calls]";
+    let (mut source, mut out, mut host_calls) = (None, None, false);
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--host-calls" | "--schemas" => host_calls = true,
+            "--out" => {
+                i += 1;
+                // A following flag is a missing value, not the out path.
+                out = Some(rest.get(i).filter(|s| !s.starts_with("--")).ok_or(USAGE)?.clone());
+            }
+            s if s.starts_with("--") => return Err(USAGE.to_string()),
+            s if source.is_none() => source = Some(s.to_string()),
+            s if out.is_none() => out = Some(s.to_string()),
+            _ => return Err(USAGE.to_string()),
+        }
+        i += 1;
+    }
+    Ok((source.ok_or(USAGE)?, out, host_calls))
+}
+
 /// Compile-check a rustlite cartridge locally and report its size — NO on-chain
 /// write. Lets an author iterate before spending a sponsored publish. With
-/// `out_path`, also writes the compiled `.wasm` (handy for local validation).
-pub(crate) fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
+/// `out_path`, also writes the compiled `.wasm`. With `host_calls`, dumps the
+/// `host::<module>::<func>` platform-call surface the cartridge binds.
+pub(crate) fn compile_check(source_path: &str, out_path: Option<&str>, host_calls: bool) -> i32 {
     let src = match read_file_clean(source_path) {
         Ok(s) => s,
         Err(e) => {
@@ -492,6 +606,19 @@ pub(crate) fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
                     return 1;
                 }
                 println!("  wrote {out}");
+            }
+            // Dump BEFORE the entry/cap gates: an entry-less or over-cap cartridge
+            // is exactly the broken case an author wants to introspect (telemetry #52).
+            if host_calls {
+                let calls = cartridge_host_calls(&wasm);
+                if calls.is_empty() {
+                    println!("  host-calls: none (binds no host:: platform calls)");
+                } else {
+                    println!("  host-calls ({}):", calls.len());
+                    for c in &calls {
+                        println!("    {c}");
+                    }
+                }
             }
             if !cartridge_has_entry(&wasm) {
                 eprintln!(
@@ -510,6 +637,12 @@ pub(crate) fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
             println!(
                 "  fits the {APPSTORE_PUBLISH_CAP}-byte publish cap ({} bytes to spare)",
                 APPSTORE_PUBLISH_CAP - wasm.len()
+            );
+            // No native wasm host exists — the host_* imports are browser closures.
+            // Point authors at the real exec surface instead of faking a headless run.
+            println!(
+                "  run it live via the in-browser run_cartridge tool, or open \
+                 https://<name>.localharness.xyz after publish"
             );
             0
         }
@@ -1123,6 +1256,79 @@ mod tests {
         assert!(!cartridge_has_entry(b""));
         assert!(!cartridge_has_entry(b"\0asm")); // header only
         assert!(!cartridge_has_entry(b"\0asm\x01\0\0\0\x07\xff")); // bogus section size
+    }
+
+    #[test]
+    fn cartridge_host_calls_lists_bound_platform_calls() {
+        // The dump is the cartridge's OWN host-call surface, sorted + deduped.
+        let wasm = localharness::rustlite::compile(
+            "fn frame(t: i32) { host::display::clear(0); host::display::present(); }",
+        )
+        .unwrap();
+        assert_eq!(
+            cartridge_host_calls(&wasm),
+            vec![
+                "host::display::clear".to_string(),
+                "host::display::present".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn cartridge_host_calls_spans_modules_and_strips_host_prefix() {
+        // A second module (net) proves the `host_`-prefix strip is per-import.
+        let wasm = localharness::rustlite::compile(
+            "fn frame(t: i32) { host::display::present(); let h: i32 = host::net::open(0); }",
+        )
+        .unwrap();
+        let calls = cartridge_host_calls(&wasm);
+        assert!(calls.contains(&"host::net::open".to_string()), "got: {calls:?}");
+        assert!(calls.contains(&"host::display::present".to_string()), "got: {calls:?}");
+    }
+
+    #[test]
+    fn cartridge_host_calls_dedups_repeated_binds() {
+        // The same call in two branches yields a single import → one entry.
+        let wasm = localharness::rustlite::compile(
+            "fn frame(t: i32) { if t > 0 { host::display::present(); } else { host::display::present(); } }",
+        )
+        .unwrap();
+        assert_eq!(cartridge_host_calls(&wasm), vec!["host::display::present".to_string()]);
+    }
+
+    #[test]
+    fn cartridge_host_calls_robust_to_garbage() {
+        // Malformed / truncated bytes never panic and report no calls.
+        assert!(cartridge_host_calls(b"").is_empty());
+        assert!(cartridge_host_calls(b"\0asm").is_empty()); // header only
+        assert!(cartridge_host_calls(b"\0asm\x01\0\0\0\x02\xff").is_empty()); // bogus section size
+    }
+
+    #[test]
+    fn parse_compile_args_flags_and_aliases() {
+        // `--host-calls` and its `--schemas` alias resolve to the same bool.
+        let hc = parse_compile_args(&args_of(&["app.rl", "--host-calls"])).unwrap();
+        let sc = parse_compile_args(&args_of(&["app.rl", "--schemas"])).unwrap();
+        assert_eq!(hc, ("app.rl".to_string(), None, true));
+        assert_eq!(sc, ("app.rl".to_string(), None, true));
+        // `--out <path>` resolves the out path; a bare 2nd positional still works.
+        assert_eq!(
+            parse_compile_args(&args_of(&["app.rl", "--out", "o.wasm"])).unwrap(),
+            ("app.rl".to_string(), Some("o.wasm".to_string()), false)
+        );
+        assert_eq!(
+            parse_compile_args(&args_of(&["app.rl", "o.wasm"])).unwrap(),
+            ("app.rl".to_string(), Some("o.wasm".to_string()), false)
+        );
+        // Missing source or a dangling `--out` is an error, not a panic.
+        assert!(parse_compile_args(&args_of(&["--host-calls"])).is_err());
+        assert!(parse_compile_args(&args_of(&["app.rl", "--out"])).is_err());
+        // `--out` must not swallow a following flag as its value.
+        assert!(parse_compile_args(&args_of(&["app.rl", "--out", "--host-calls"])).is_err());
+    }
+
+    fn args_of(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]

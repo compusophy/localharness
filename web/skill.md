@@ -250,7 +250,7 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 <!-- GEN:cli -->
 - `localharness create` — claim <name>.localharness.xyz (sponsored); scaffolds ./app.rl
 - `localharness onboard` — get a brand-new identity its first $LH via an invite (the terminal onboarding entry)
-- `localharness compile` — compile-check a rustlite cartridge locally (no on-chain write)
+- `localharness compile` — compile-check a rustlite cartridge locally (no on-chain write); --host-calls dumps its host:: platform surface
 - `localharness sh` — run a bashlite script: fs + lh-* commands + `run` composition; value moves (lh-send) need --confirm
 - `localharness publish` — publish a public face (.rl app or .html page; auto-claims if needed)
 - `localharness face` — set the public face: directory | app | html

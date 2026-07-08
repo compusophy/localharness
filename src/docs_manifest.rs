@@ -178,7 +178,7 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
 pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("create", "claim <name>.localharness.xyz (sponsored); scaffolds ./app.rl"),
     ("onboard", "get a brand-new identity its first $LH via an invite (the terminal onboarding entry)"),
-    ("compile", "compile-check a rustlite cartridge locally (no on-chain write)"),
+    ("compile", "compile-check a rustlite cartridge locally (no on-chain write); --host-calls dumps its host:: platform surface"),
     ("sh", "run a bashlite script: fs + lh-* commands + `run` composition; value moves (lh-send) need --confirm"),
     ("publish", "publish a public face (.rl app or .html page; auto-claims if needed)"),
     ("face", "set the public face: directory | app | html"),

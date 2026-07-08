@@ -18,7 +18,9 @@
 //!                            the public face so a live URL exists immediately
 //!   face <name> <directory|app|html>
 //!                            set the subdomain's public face (visitor view)
-//!   compile <src.rl>         compile-check a rustlite cartridge locally (no write)
+//!   compile <src.rl> [--host-calls]
+//!                            compile-check a rustlite cartridge locally (no write;
+//!                            --host-calls dumps its host:: platform-call surface)
 //!   publish <name> <src.rl>  compile a rustlite cartridge + publish it as
 //!                            <name>'s public face on-chain (served to every
 //!                            visitor 24/7, no browser tab required); CLAIMS the
@@ -293,7 +295,9 @@ IDENTITY & PROFILE
                                          app store (each name + its live URL)
 
 CARTRIDGES & PUBLISHING
-  localharness compile <src.rl>          compile-check a cartridge locally (no write)
+  localharness compile <src.rl> [--host-calls]
+                                         compile-check a cartridge locally (no write);
+                                         --host-calls dumps its host:: platform surface
   localharness sh <script.bl> [--as <name>] [--confirm]
   localharness sh -c '<inline script>' [--as <name>] [--confirm]
                                          run a bashlite script (file or -c inline):
@@ -770,9 +774,15 @@ async fn run(args: &[String]) -> i32 {
             eprintln!("usage: localharness face <name> <directory|app|html>");
             2
         }
-        Some("compile") if args.len() >= 2 => compile_check(&args[1], args.get(2).map(String::as_str)),
+        Some("compile") if args.len() >= 2 => match parse_compile_args(&args[1..]) {
+            Ok((src, out, host_calls)) => compile_check(&src, out.as_deref(), host_calls),
+            Err(u) => {
+                eprintln!("{u}");
+                2
+            }
+        },
         Some("compile") => {
-            eprintln!("usage: localharness compile <source.rl> [out.wasm]");
+            eprintln!("usage: localharness compile <source.rl> [out.wasm] [--host-calls]");
             2
         }
         Some("price") if args.len() >= 3 => set_price(&args[1], &args[2]).await,
