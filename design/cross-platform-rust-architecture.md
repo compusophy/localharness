@@ -213,10 +213,19 @@ last**, where it collapses into `registry::sponsor_relay`). **Payoff:** deletes 
 LOC of TS, makes "API routes first-class" a structural fact, and makes the host
 swappable — all with *zero* dependency on the UI/mobile question. **This is the
 safest, highest-leverage move and should start on day one of the reset.**
-- ⚠️ Spike **SSE streaming on `vercel_runtime` v2** before the inference port (docs
-  confirm Fluid streaming but no explicit SSE example was found). Fallback: a
-  long-running Axum host (Fly/CF-Containers) where streaming is trivial — and the
-  `lh-server` Router makes that a config change, not a rewrite.
+- ✅ **SSE risk RESOLVED (2026-07-08, Opus 4.8 — re-verified against current web).**
+  Vercel's *official* `rust/axum` example ships a live `/stream` route consumed by a
+  browser `getReader()` loop, so **streaming on the Rust runtime is a supported,
+  documented path** — no spike needed. Golden pattern (validated, cited below):
+  `vercel_runtime = { version = "2.4", features = ["axum"] }` hosts ONE `axum::Router`
+  behind a `vercel.json` `"/(.*)" → "/api/<bin>"` rewrite (so the whole proxy is one
+  binary, not 25 `[[bin]]`s), wraps it in `VercelLayer::new()`, and streams via
+  `vercel_runtime::axum::stream_response` fed by a `tokio::mpsc` channel of `Bytes`
+  chunks — the exact shape `gemini.ts`'s SSE passthrough needs. Only 3 of 25 endpoints
+  stream at all (`gemini`/`fetch`/`mcp`); the other 22 are buffered JSON. **Phase 0 is
+  therefore un-gated: even the streaming trio ports cleanly; no hybrid Node fallback
+  required.** The Fly/CF-Containers escape hatch stays a config change, not a
+  contingency. Source: [vercel/examples rust/axum](https://github.com/vercel/examples/tree/main/rust/axum).
 
 ### Phase 1 — Tauri v2 shell → native iOS + Android + desktop, NOW
 Wrap the **existing** wasm/maud app in Tauri v2. Ships to the friends' iPhones this
@@ -284,9 +293,10 @@ a Phase-2 decision; **don't pick it now** — Phases 0–1 don't depend on it.
   *demonstrated-possible, not proven*. **Highest-uncertainty item.** Check current
   Review Guidelines (4.2 webview-wrapper, 2.5.2 interpreted-code, 4.7 mini-apps)
   against a "Rust-renders-cartridges" model *before* building the iOS submission.
-- **Vercel Rust runtime is public beta (Dec 2025)** — cold-start latency and API
-  stability unproven; **SSE on `vercel_runtime` v2 is unverified** at code level.
-  Spike both before the money-path relay and the inference proxy.
+- **Vercel Rust runtime is public beta (Dec 2025)** — cold-start latency under our
+  load is still unproven (worth a real deploy measurement before the money-path relay
+  cutover). ~~SSE unverified~~ **RESOLVED 2026-07-08**: streaming is a supported path
+  (official `rust/axum` `/stream` example via `stream_response`; see §3d Phase-0 note).
 - **The iOS identity refactor (multi-origin → single-origin) is inferred, not sized.**
   It clearly interacts with `tenant::current()`, the signer flow, and owner
   verification. Net-positive (kills the partitioning hacks) but budget it as the main
