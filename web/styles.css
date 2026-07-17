@@ -2113,6 +2113,26 @@ button.ready:hover {
   overflow-wrap: anywhere;
 }
 .inline-card .ic-meta { color: var(--muted); font-size: 11px; }
+/* update_plan checklist (telemetry #75/#69). The count sits at the right of the
+   head; steps are a plain list — a done step is muted + struck, so progress
+   reads at a glance without color. */
+.plan-card .ic-meta { margin-left: auto; }
+.plan-card .plan-steps { list-style: none; margin: 0; padding: 6px 8px; }
+.plan-card .plan-step {
+  padding: 2px 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.plan-card .plan-step .plan-box { color: var(--muted); }
+.plan-card .plan-step.done {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.plan-card .plan-note {
+  padding: 4px 8px 6px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
 .inline-card .ic-head button {
   margin-left: auto;
   font-size: 11px;

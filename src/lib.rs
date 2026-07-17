@@ -228,6 +228,11 @@ pub mod cut_guard;
 /// `cargo test`. See `src/turn_flow.rs`.
 pub mod turn_flow;
 
+/// Pure plan/checklist core — the agent's cross-turn record of a multi-phase
+/// objective, and the signal that keeps the turn loop alive through a
+/// text-only planning turn. See `src/plan.rs`.
+pub mod plan;
+
 /// Pure state machine for the turn-stage micro-pipeline ("paying → thinking
 /// → streaming") shown inside a pending assistant turn (native-testable,
 /// same hoisting pattern as `turn_flow`). See `src/turn_stage.rs`.

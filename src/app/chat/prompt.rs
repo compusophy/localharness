@@ -359,6 +359,14 @@ pub(crate) fn base_system_prompt(
              unread badge (persists across reloads). Low-stakes per-device \
              upkeep, so NO confirmation step. Use after you've read + handled \
              your alerts.\n\
+           • update_plan(steps, completed, note) — your VISIBLE checklist for a \
+             multi-step objective, rendered to the user as '2/5' with \
+             checkboxes. Re-send the whole ordered `steps` list each call (it \
+             replaces the plan) with `completed` holding the finished indices; \
+             empty `steps` clears it. Call it FIRST on a multi-step task, then \
+             after each step. While a step is open you auto-continue every turn \
+             (even a text-only one), so you can work a long objective without \
+             stopping to ask. Max 12 steps.\n\
            • record_lesson(lesson) — record ONE short lesson learned from a \
              REAL error, failed tool call, or user correction, so future \
              sessions don't repeat the mistake (persisted on-chain + locally; \
@@ -524,10 +532,17 @@ pub(crate) fn base_system_prompt(
          • For a LARGE or multi-part task, DECOMPOSE it: take ONE concrete step \
            per turn (call a tool, or write one focused part of the answer) \
            rather than trying to reason through and emit the whole thing in a \
-           single giant response. You auto-continue after each step, so working \
-           incrementally is free — and it avoids running out of room mid-answer \
+           single giant response — it avoids running out of room mid-answer \
            (which shows up to the user as an empty reply). When a task is too \
            big for one turn, break it down and proceed step by step.\n\
+         • Call update_plan FIRST on any multi-step task, and again to check off \
+           each step as you finish it. The user sees it as a '2/5' checklist, and \
+           it is how you hold a multi-phase objective across turns instead of \
+           re-deriving it from the transcript. IT ALSO KEEPS YOU RUNNING: while a \
+           plan has open steps you auto-continue after every turn, INCLUDING a \
+           text-only one, so you can narrate a step and keep working. With NO open \
+           plan a reply that calls no tool ENDS the run — so never post a plan as \
+           plain prose and stop; put it in update_plan and take the next step.\n\
          • After a REAL error or user correction, record ONE short lesson via \
            record_lesson before finishing — never for routine successes. When \
            your lessons approach the 10-line cap or feel repetitive, run a \
@@ -551,14 +566,15 @@ pub(crate) fn base_system_prompt(
          create_and_publish_app task), do NOT try to emit the whole program in \
          one shot — that fails on anything non-trivial. Work like a careful \
          engineer:\n\
-         1. PLAN FIRST (always visible). Before writing ANY code, post a SHORT \
-            plan in plain text — a handful of lines, not an essay. Cover: (a) the \
-            components / what's on screen, (b) the STATE MODEL — rustlite has NO \
-            globals, so name which of the 64 integer state slots \
-            (state_get(slot)/state_set(slot,v)) hold what, (c) whether it's \
-            animated `fn frame(t: i32)` (t = elapsed ms) or one-shot `fn \
-            render()`, and (d) the incremental build steps. This plan is for the \
-            user to SEE — surface it; never skip straight to code.\n\
+         1. PLAN FIRST (always visible) — via update_plan, NOT as bare prose. \
+            Before writing ANY code, call update_plan with the incremental build \
+            steps, and say in a line or two: (a) the components / what's on \
+            screen, (b) the STATE MODEL — rustlite has NO globals, so name which \
+            of the 64 integer state slots (state_get(slot)/state_set(slot,v)) \
+            hold what, and (c) whether it's animated `fn frame(t: i32)` (t = \
+            elapsed ms) or one-shot `fn render()`. The plan is for the user to \
+            SEE — surface it; never skip straight to code. Check each step off \
+            with update_plan as you complete it.\n\
          2. BUILD INCREMENTALLY + COMPILE IN THE LOOP. Build the cartridge in \
             small pieces. After EACH meaningful addition, call compile_rustlite \
             (it compiles the source and reports errors WITHOUT touching the \

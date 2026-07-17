@@ -48,8 +48,9 @@ impl Cartridge {
         }
     }
 
-    /// Call an exported function with i32 arguments, returns i32.
-    pub fn call_i32(&self, name: &str, args: &[i32]) -> Result<i32, CompileError> {
+    /// Call an exported function with i32 arguments. `Ok(None)` = the export ran
+    /// and returned unit (`frame`/`render`); `Ok(Some(n))` = it returned an i32.
+    pub fn call_i32(&self, name: &str, args: &[i32]) -> Result<Option<i32>, CompileError> {
         #[cfg(target_arch = "wasm32")]
         {
             call_export_i32(&self.instance, name, args)
@@ -757,7 +758,7 @@ fn call_export_i32(
     instance: &wasm_bindgen::JsValue,
     name: &str,
     args: &[i32],
-) -> Result<i32, CompileError> {
+) -> Result<Option<i32>, CompileError> {
     use js_sys::Reflect;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::JsValue;
@@ -779,10 +780,10 @@ fn call_export_i32(
         .apply(&JsValue::NULL, &js_args)
         .map_err(|e| CompileError::new(format!("call failed: {e:?}")))?;
 
-    result
-        .as_f64()
-        .map(|v| v as i32)
-        .ok_or_else(|| CompileError::new("function did not return a number"))
+    // A unit-returning export (`frame`/`render` — the cartridge contract) yields
+    // JS `undefined`. That is a SUCCESSFUL void call, not a failure: report it as
+    // `None` and let the caller decide (telemetry #72).
+    Ok(result.as_f64().map(|v| v as i32))
 }
 
 #[cfg(target_arch = "wasm32")]

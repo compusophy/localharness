@@ -130,6 +130,7 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
         "Self-edit / learning",
         &[
             "set_persona",
+            "update_plan",
             "record_lesson",
             "consolidate_lessons",
             "set_lessons",

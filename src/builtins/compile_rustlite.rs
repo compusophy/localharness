@@ -1,9 +1,9 @@
 //! `compile_rustlite` — compile and run Rust-subset source code.
 //!
 //! The agent writes rustlite source, the tool compiles it to wasm
-//! via `rustlite::compile`, instantiates it via the cartridge loader,
-//! and calls the named function (default: `handle`). Returns the
-//! result or compilation/runtime errors.
+//! via `rustlite::compile` and instantiates it via the cartridge loader.
+//! An export is called ONLY when `function` names one — a bare
+//! `{source}` call is a compile-check and reports `compiled: true`.
 
 use std::sync::Arc;
 use async_trait::async_trait;
@@ -21,7 +21,7 @@ crate::tool_params! {
     /// (`""` source, `"handle"` function, empty `args`).
     struct Args: lenient {
         source: req_str = "Rustlite source code to compile",
-        function: opt_str = "Function name to call after compilation (default: 'handle')",
+        function: opt_str = "Optional export to call after compiling. OMIT for a plain compile-check (cartridges export frame/render, which take no call here)",
         args: opt_i64_array = "i32 arguments to pass to the function",
     }
 }
@@ -55,7 +55,11 @@ impl Tool for CompileRustlite {
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let p = Args::lenient(&args);
         let source = p.source;
-        let function = p.function.as_deref().unwrap_or("handle").to_string();
+        // No `function` = a plain compile-check (the documented contract, and what
+        // cartridge work actually wants). The old `unwrap_or("handle")` test-ran an
+        // export no cartridge has — every CORRECT cartridge reported "execution
+        // failed" and the model then chased a phantom bug (telemetry #72/#67).
+        let function = p.function;
         // Historical `filter_map(as_i64 → as i32)` — the table's `opt_i64_array`
         // is the same filter_map; only the i32 narrowing stays here.
         let fn_args: Vec<i32> = p
@@ -101,8 +105,26 @@ impl Tool for CompileRustlite {
 
             let exports = cartridge.exports();
 
+            // Compiled AND instantiated — the check the agent asked for.
+            let Some(function) = function else {
+                return Ok(json!({
+                    "compiled": true,
+                    "exports": exports,
+                    "wasm_size": wasm_bytes.len()
+                }));
+            };
+
             match cartridge.call_i32(&function, &fn_args) {
-                Ok(result) => Ok(json!({
+                // A unit-returning export (`frame`/`render`) is a clean run, not a
+                // failure — report it as such and omit `result` (telemetry #72).
+                Ok(None) => Ok(json!({
+                    "compiled": true,
+                    "function": function,
+                    "returned": "unit",
+                    "exports": exports,
+                    "wasm_size": wasm_bytes.len()
+                })),
+                Ok(Some(result)) => Ok(json!({
                     "result": result,
                     "function": function,
                     "exports": exports,
@@ -111,6 +133,9 @@ impl Tool for CompileRustlite {
                 Err(err) => Ok(json!({
                     "error": "execution failed",
                     "detail": err.to_string(),
+                    "hint": "the source COMPILED — this is a call-time failure of the \
+                             function you named. Cartridges export `frame(t)`/`render()`; \
+                             omit `function` for a plain compile-check.",
                     "exports": exports,
                     "wasm_size": wasm_bytes.len()
                 })),
@@ -146,7 +171,7 @@ mod tests {
                 },
                 "function": {
                     "type": "string",
-                    "description": "Function name to call after compilation (default: 'handle')"
+                    "description": "Optional export to call after compiling. OMIT for a plain compile-check (cartridges export frame/render, which take no call here)"
                 },
                 "args": {
                     "type": "array",
@@ -167,10 +192,10 @@ mod tests {
         assert_eq!((p.source.as_str(), p.function, p.args), ("", None, None));
         let p = Args::lenient(&serde_json::json!({
             "source": "fn handle() -> i32 { 1 }",
-            "function": 7,                 // wrong type → the "handle" default
+            "function": 7,                 // wrong type → absent, NOT a call
             "args": [1, -2, "3", 4.5],     // non-i64 entries drop, sign kept
         }));
-        assert_eq!(p.function.as_deref().unwrap_or("handle"), "handle");
+        assert_eq!(p.function, None);
         let fn_args: Vec<i32> = p
             .args
             .map(|v| v.into_iter().map(|n| n as i32).collect())

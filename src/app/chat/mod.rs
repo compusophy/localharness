@@ -24,6 +24,7 @@ use super::APP;
 mod access;
 mod confirm_guard;
 mod dedup;
+mod plan_state;
 mod prompt;
 mod router_wire;
 mod session;
@@ -396,6 +397,7 @@ pub(crate) async fn run_send() {
             // the start of the NEXT user message.
             PENDING_COMPACT.with(|c| c.set(false));
             agent.clear_history(); // wipe the model's working context
+            plan_state::clear(); // the plan belongs to the wiped objective
             super::history::clear_persisted().await; // wipe the durable OPFS copy
             dom::swap_inner("transcript", ""); // instant visible wipe, no refresh
             break; // the context is gone — nothing left to continue toward
@@ -936,12 +938,18 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
     // to the cap. Stop instead — like a `FinalAnswer` — so control returns to
     // the user (whose next message refreshes `LAST_USER_MSG`).
     let awaiting_confirmation = confirm_guard::take_awaiting_confirmation();
+    // `finish` is the end of the objective — a leftover plan must never hold a
+    // later conversational turn open.
+    if saw_finish {
+        plan_state::clear();
+    }
     let outcome = classify_turn(
         saw_finish,
         saw_question,
         saw_tool_call,
         any_visible,
         retryable_empty,
+        plan_state::is_active(),
     );
     if awaiting_confirmation && matches!(outcome, TurnOutcome::Incomplete) {
         return TurnOutcome::FinalAnswer;

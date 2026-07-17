@@ -531,6 +531,24 @@ crate::tool_params! {
 }
 
 crate::tool_params! {
+    /// `update_plan` — the agent's multi-phase checklist (`crate::plan`). Two
+    /// FLAT arrays, not an array of `{text, done}` objects, so the table can
+    /// express it (the grammar has no object-items kind) and the wire schema
+    /// stays Gemini-safe by construction.
+    pub struct UpdatePlanParams: lenient {
+        steps: req_str_array = "The COMPLETE ordered list of steps, re-sent in full \
+                    on every call (this REPLACES the plan; it is not a delta). Max 12 \
+                    steps, each a short label under 120 chars. Send an empty list to \
+                    clear the plan once the objective is done.",
+        completed: opt_i64_array = "Zero-based indices of the steps that are DONE \
+                    (e.g. [0, 1] once the first two are finished). Omit or send an \
+                    empty list when nothing is complete yet.",
+        note: opt_str = "Optional one-line status shown with the checklist (e.g. what \
+                    you are doing right now, or what changed).",
+    }
+}
+
+crate::tool_params! {
     /// Args for the browser `notify` tool (`src/app/chat/tools/misc.rs`)
     /// — local device notification or cross-agent inbox push.
     pub struct NotifyParams: lenient {
@@ -1124,6 +1142,7 @@ mod tests {
             ("PostBountyParams", PostBountyParams::schema()),
             ("SetPersonaParams", SetPersonaParams::schema()),
             ("RecordLessonParams", RecordLessonParams::schema()),
+            ("UpdatePlanParams", UpdatePlanParams::schema()),
             ("NotifyParams", NotifyParams::schema()),
             ("ClaimBountyParams", ClaimBountyParams::schema()),
             ("SubmitResultParams", SubmitResultParams::schema()),

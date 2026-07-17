@@ -37,7 +37,7 @@ use super::tools::misc::{
     clear_notifications_tool, consult_model_tool, create_skill_tool, delete_skill_tool, dwell_tool,
     execute_script_tool, clear_context_tool, compact_context_tool, consolidate_lessons_tool,
     list_notifications_tool, list_skills_tool, notify_tool, record_lesson_tool, run_wasm_cli_tool,
-    cancel_task_tool, schedule_task_tool, set_lessons_tool, set_persona_tool,
+    cancel_task_tool, schedule_task_tool, set_lessons_tool, set_persona_tool, update_plan_tool,
     spawn_recursive_subagent_tool,
     submit_feedback_tool, web_fetch_tool,
 };
@@ -128,6 +128,7 @@ fn chat_toolset(
         clear_notifications_tool(),
         schedule_task_tool(),
         cancel_task_tool(),
+        update_plan_tool(),
         record_lesson_tool(),
         consolidate_lessons_tool(),
         set_lessons_tool(),

@@ -974,6 +974,16 @@ pub(crate) fn inline_result_card(
             let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("app");
             Some(embed_app_card(name))
         }
+        "update_plan" => {
+            // The multi-phase checklist (telemetry #75/#69) — "2/5" plus the
+            // steps. Pure fn of the result payload, so replay repaints each
+            // turn's snapshot exactly as it was live.
+            let total = value.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+            if total == 0 {
+                return None; // an empty list CLEARS the plan — nothing to show
+            }
+            Some(plan_card(value))
+        }
         "run_wasm_cli" => {
             // CLI sandbox (on-chain feedback #6): a terminal card showing the
             // captured stdout + exit code inline. The tool returns the run
@@ -1053,6 +1063,41 @@ mod terminal_card_tests {
 /// `image-rendering: pixelated`, like the fullscreen display. Pointer input
 /// routes here while it's the active cartridge (see `events::mod`). v1: one
 /// LIVE embed at a time (single worker).
+/// Inline checklist card for `update_plan` (telemetry #75/#69): "2/5" plus each
+/// step, done ones marked. Read-only — the AGENT owns the plan and checks steps
+/// off via the tool, so there is no interactive control here to desync from it.
+fn plan_card(value: &serde_json::Value) -> Markup {
+    let done = value.get("done").and_then(|v| v.as_u64()).unwrap_or(0);
+    let total = value.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+    let note = value.get("note").and_then(|v| v.as_str()).unwrap_or("");
+    let steps = value
+        .get("plan")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    html! {
+        div.inline-card.plan-card {
+            div.ic-head {
+                span.ic-title { "plan" }
+                span.ic-meta { (done) "/" (total) }
+            }
+            ul.plan-steps {
+                @for step in &steps {
+                    @let text = step.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    @let is_done = step.get("done").and_then(|v| v.as_bool()) == Some(true);
+                    li.plan-step.done[is_done] {
+                        span.plan-box { @if is_done { "[x]" } @else { "[ ]" } }
+                        " " (text)
+                    }
+                }
+            }
+            @if !note.is_empty() {
+                div.plan-note { (note) }
+            }
+        }
+    }
+}
+
 fn embed_app_card(name: &str) -> Markup {
     html! {
         div.inline-card.embed-app-card {

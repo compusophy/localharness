@@ -156,18 +156,23 @@ pub fn tool_result_embeds_cartridge(
 /// - `any_visible`: anything (text or a tool block) was rendered.
 /// - `retryable_empty`: the turn was empty BECAUSE it was truncated mid-answer
 ///   (max tokens / all-thinking) → `EmptyTruncated`, which the loop retries.
+/// - `plan_active`: an `update_plan` checklist with OPEN steps is live. This is
+///   the only thing separating "narrating the next step of a plan" from "done
+///   talking" on a text-only turn — see the `else` branch.
 ///
 /// Precedence: `finish` wins over everything (the model can call other tools
 /// then `finish` in the same turn — that's still "done"). A blocking question
 /// stops next. Then empty turns — a TRUNCATED empty retries (`EmptyTruncated`),
 /// any other empty stops (`Empty`). Then a goal-step-only turn auto-continues
-/// (`Incomplete`). A pure text reply with no tool activity is a `FinalAnswer`.
+/// (`Incomplete`). A pure text reply auto-continues ONLY while a plan has open
+/// steps; with no plan it's a `FinalAnswer`.
 pub fn classify_turn(
     saw_finish: bool,
     saw_question: bool,
     saw_tool_call: bool,
     any_visible: bool,
     retryable_empty: bool,
+    plan_active: bool,
 ) -> TurnOutcome {
     if saw_finish {
         TurnOutcome::Finished
@@ -189,9 +194,17 @@ pub fn classify_turn(
         // Ended right after tool activity with no explicit completion —
         // the model probably has more to do. Auto-continue.
         TurnOutcome::Incomplete
+    } else if plan_active {
+        // Pure text WITH open plan steps — the model narrated a step ("here's
+        // the plan" / "next I'll wire X") mid-objective. The prompt ORDERS this
+        // shape ("PLAN FIRST … post a SHORT plan in plain text") and promises
+        // "you auto-continue after each step"; before this branch the loop broke
+        // instead, so the agent posted its plan and silently stopped at step one
+        // — the reported "you just stop weird" (telemetry #75/#69/#67).
+        TurnOutcome::Incomplete
     } else {
-        // Pure text reply, no tool calls — a conversational answer or a
-        // question. Don't auto-continue (would spam empty turns).
+        // Pure text reply, no tool calls, no open plan — a conversational answer
+        // or a question. Don't auto-continue (would spam empty turns).
         TurnOutcome::FinalAnswer
     }
 }
@@ -274,17 +287,17 @@ mod tests {
     fn finish_wins_over_everything() {
         // finish + a goal-step tool in the same turn is still "done".
         assert_eq!(
-            classify_turn(true, false, true, true, false),
+            classify_turn(true, false, true, true, false, false),
             TurnOutcome::Finished
         );
         // finish alone.
         assert_eq!(
-            classify_turn(true, false, false, true, false),
+            classify_turn(true, false, false, true, false, false),
             TurnOutcome::Finished
         );
         // finish even alongside a question.
         assert_eq!(
-            classify_turn(true, true, true, true, false),
+            classify_turn(true, true, true, true, false, false),
             TurnOutcome::Finished
         );
     }
@@ -295,13 +308,13 @@ mod tests {
         // (saw_tool_call) → Incomplete → auto-continue, spamming the model and
         // never letting the user answer. It must stop like a FinalAnswer.
         assert_eq!(
-            classify_turn(false, true, false, true, false),
+            classify_turn(false, true, false, true, false, false),
             TurnOutcome::FinalAnswer
         );
         // A question accompanied by some other goal-step tool still stops:
         // the question is the blocking signal.
         assert_eq!(
-            classify_turn(false, true, true, true, false),
+            classify_turn(false, true, true, true, false, false),
             TurnOutcome::FinalAnswer
         );
     }
@@ -309,7 +322,7 @@ mod tests {
     #[test]
     fn goal_step_tool_only_auto_continues() {
         assert_eq!(
-            classify_turn(false, false, true, true, false),
+            classify_turn(false, false, true, true, false, false),
             TurnOutcome::Incomplete
         );
     }
@@ -325,21 +338,21 @@ mod tests {
     fn finish_stops_the_loop_in_every_shape() {
         // finish + text → stop (a normal closing turn).
         assert_eq!(
-            classify_turn(true, false, false, true, false),
+            classify_turn(true, false, false, true, false, false),
             TurnOutcome::Finished
         );
         // finish after a goal-step tool, no closing text → stop, NOT
         // Incomplete (the #100 root cause: an undetected finish here used to
         // auto-continue with the "continue toward the goal" nudge).
         assert_eq!(
-            classify_turn(true, false, true, true, false),
+            classify_turn(true, false, true, true, false, false),
             TurnOutcome::Finished
         );
         // BARE finish — no text, no other tool, nothing visible → Finished,
         // NOT Empty (the #101 root cause: a missed finish dead-ended as a
         // "(empty response)" bubble).
         assert_eq!(
-            classify_turn(true, false, false, false, false),
+            classify_turn(true, false, false, false, false, false),
             TurnOutcome::Finished
         );
     }
@@ -351,7 +364,7 @@ mod tests {
     #[test]
     fn pure_tool_without_finish_continues() {
         assert_eq!(
-            classify_turn(false, false, true, true, false),
+            classify_turn(false, false, true, true, false, false),
             TurnOutcome::Incomplete
         );
     }
@@ -359,21 +372,55 @@ mod tests {
     #[test]
     fn pure_text_reply_is_final_answer() {
         assert_eq!(
-            classify_turn(false, false, false, true, false),
+            classify_turn(false, false, false, true, false, false),
             TurnOutcome::FinalAnswer
+        );
+    }
+
+    /// THE regression behind "you just stop weird" (telemetry #75/#69/#67): the
+    /// prompt orders the model to post a plain-text plan before any code and
+    /// promises it auto-continues — but the text-only turn broke the loop, so the
+    /// agent stopped at step one. With open plan steps it must keep going.
+    #[test]
+    fn pure_text_mid_plan_auto_continues() {
+        assert_eq!(
+            classify_turn(false, false, false, true, false, true),
+            TurnOutcome::Incomplete
+        );
+    }
+
+    /// The plan must not outlive its last step, or the loop would auto-continue
+    /// on every conversational reply until it hit the cap.
+    #[test]
+    fn plan_does_not_override_the_other_stops() {
+        // Explicit completion still wins over an unfinished plan.
+        assert_eq!(
+            classify_turn(true, false, false, true, false, true),
+            TurnOutcome::Finished
+        );
+        // Blocking on the user still stops (a continue would loop 10x on a
+        // "skipped" answer, plan or no plan).
+        assert_eq!(
+            classify_turn(false, true, false, true, false, true),
+            TurnOutcome::FinalAnswer
+        );
+        // An empty turn is still empty — a plan is not visible output.
+        assert_eq!(
+            classify_turn(false, false, false, false, false, true),
+            TurnOutcome::Empty
         );
     }
 
     #[test]
     fn nothing_visible_is_empty() {
         assert_eq!(
-            classify_turn(false, false, false, false, false),
+            classify_turn(false, false, false, false, false, false),
             TurnOutcome::Empty
         );
         // No-visible takes precedence over a stray tool flag (can't have run a
         // tool with nothing rendered, but the ordering must be deterministic).
         assert_eq!(
-            classify_turn(false, false, true, false, false),
+            classify_turn(false, false, true, false, false, false),
             TurnOutcome::Empty
         );
     }
@@ -384,13 +431,13 @@ mod tests {
     #[test]
     fn truncated_empty_is_retryable_not_dead_end() {
         assert_eq!(
-            classify_turn(false, false, false, false, true),
+            classify_turn(false, false, false, false, true, false),
             TurnOutcome::EmptyTruncated
         );
         // finish/question still win over a truncated-empty flag (defensive —
         // can't really co-occur, but precedence must be deterministic).
         assert_eq!(
-            classify_turn(true, false, false, false, true),
+            classify_turn(true, false, false, false, true, false),
             TurnOutcome::Finished
         );
     }
@@ -477,12 +524,12 @@ mod tests {
     fn only_incomplete_or_truncated_continues() {
         let continues =
             |o: TurnOutcome| o == TurnOutcome::Incomplete || o == TurnOutcome::EmptyTruncated;
-        assert!(!continues(classify_turn(true, false, false, true, false))); // Finished
-        assert!(!continues(classify_turn(false, true, false, true, false))); // FinalAnswer (question)
-        assert!(!continues(classify_turn(false, false, false, true, false))); // FinalAnswer (text)
-        assert!(!continues(classify_turn(false, false, false, false, false))); // Empty (blank)
-        assert!(continues(classify_turn(false, false, true, true, false))); // Incomplete
-        assert!(continues(classify_turn(false, false, false, false, true))); // EmptyTruncated
+        assert!(!continues(classify_turn(true, false, false, true, false, false))); // Finished
+        assert!(!continues(classify_turn(false, true, false, true, false, false))); // FinalAnswer (question)
+        assert!(!continues(classify_turn(false, false, false, true, false, false))); // FinalAnswer (text)
+        assert!(!continues(classify_turn(false, false, false, false, false, false))); // Empty (blank)
+        assert!(continues(classify_turn(false, false, true, true, false, false))); // Incomplete
+        assert!(continues(classify_turn(false, false, false, false, true, false))); // EmptyTruncated
     }
 
     /// Mirrors the loop's increment/break: an always-`Incomplete` turn can fire
@@ -496,7 +543,7 @@ mod tests {
             iterations += 1;
             // Always Incomplete (the worst case for the loop).
             if matches!(
-                classify_turn(false, false, true, true, false),
+                classify_turn(false, false, true, true, false, false),
                 TurnOutcome::Incomplete
             ) {
                 if auto >= MAX_AUTO_CONTINUATIONS {
@@ -524,7 +571,7 @@ mod tests {
         loop {
             iterations += 1;
             if matches!(
-                classify_turn(false, false, false, false, true),
+                classify_turn(false, false, false, false, true, false),
                 TurnOutcome::EmptyTruncated
             ) {
                 if auto >= MAX_AUTO_CONTINUATIONS {

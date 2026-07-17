@@ -98,6 +98,51 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// `keccak256("localharness.lessons")` so it survives sessions and devices.
 /// Every surface (browser session, headless CLI `call`, scheduler worker)
 /// folds the blob into the system prompt via `compose_section`.
+/// `update_plan` — maintain the visible multi-phase checklist.
+///
+/// The plan is the agent's only structured cross-turn record of a multi-step
+/// objective (before it, the raw transcript was). It is ALSO load-bearing for
+/// the turn loop: `turn_flow::classify_turn` reads `plan_state::is_active()` to
+/// tell a mid-plan narration turn from a conversational stop, so an agent that
+/// posts a plan in plain text no longer silently ends the run at step one
+/// (telemetry #75/#69/#67).
+pub(crate) fn update_plan_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    // Hoisted table: `crate::tool_params::UpdatePlanParams`.
+    let schema = crate::tool_params::UpdatePlanParams::schema();
+    ClosureTool::new(
+        "update_plan",
+        "Maintain a VISIBLE checklist for a multi-step objective, shown to the user \
+         as '2/5' with checkboxes. Call it FIRST on any task with more than a couple \
+         of steps (before writing code), then AGAIN after each step to check it off \
+         — that is how the user follows your progress and how you keep your place \
+         across turns. Re-send the COMPLETE `steps` list every time (it replaces the \
+         plan) with `completed` holding the finished indices. While any step is open \
+         you keep going automatically, so don't stop to ask whether to continue; \
+         clear the plan (empty `steps`) or call `finish` when the objective is done. \
+         Max 12 steps. Returns { plan, done, total, current }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let p = crate::tool_params::UpdatePlanParams::lenient(&args);
+            let plan = crate::plan::Plan::from_wire(&p.steps, &p.completed.unwrap_or_default());
+            let (done, total) = plan.progress();
+            let current = plan.current().map(|s| s.to_string());
+            let steps: Vec<serde_json::Value> = plan
+                .steps
+                .iter()
+                .map(|s| serde_json::json!({ "text": s.text, "done": s.done }))
+                .collect();
+            super::super::plan_state::set(plan);
+            Ok(serde_json::json!({
+                "plan": steps,
+                "done": done,
+                "total": total,
+                "current": current,
+                "note": p.note,
+            }))
+        },
+    )
+}
+
 pub(crate) fn record_lesson_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     // Hoisted table: `crate::tool_params::RecordLessonParams`.
     let schema = crate::tool_params::RecordLessonParams::schema();
