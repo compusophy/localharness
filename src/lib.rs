@@ -233,6 +233,11 @@ pub mod turn_flow;
 /// text-only planning turn. See `src/plan.rs`.
 pub mod plan;
 
+/// The canonical agent tool surface (`AGENT_TOOLS`), read by the doc generator
+/// AND the browser's allowlist grid. Ungated — unlike `docs_manifest`, which is
+/// wallet+native only. See `src/agent_tools.rs`.
+pub mod agent_tools;
+
 /// Pure state machine for the turn-stage micro-pipeline ("paying → thinking
 /// → streaming") shown inside a pending assistant turn (native-testable,
 /// same hoisting pattern as `turn_flow`). See `src/turn_stage.rs`.

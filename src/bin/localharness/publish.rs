@@ -55,7 +55,7 @@ const STARTER_CARTRIDGE: &str = r#"// app.rl — your agent's public face (a rus
 // on-chain as what every visitor sees at <name>.localharness.xyz —
 // served 24/7, no tab needed. Edit, publish again to update.
 //
-// The display is a 320x240 framebuffer by default; export `fn dims() -> i32`
+// The display is a 512x512 framebuffer by default; export `fn dims() -> i32`
 // (= (width<<16)|height, each 16..1024) for a custom size. Draw via host::display:
 //   clear(rgb)  fill_rect(x, y, w, h, rgb)  set_pixel(x, y, rgb)
 //   draw_line(x0, y0, x1, y1, rgb)  fill_triangle(x0, y0, x1, y1, x2, y2, rgb)

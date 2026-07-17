@@ -306,6 +306,25 @@ where
         };
         let mut pause_resumes = 0u32;
 
+        /// A mid-stream failure (the radio died on a WiFi→5G handoff, the tab was
+        /// backgrounded, the socket stalled) used to `return Err` straight past
+        /// the persist below — so the partial answer was dropped from history
+        /// while STAYING painted on screen. History then ended on a dangling user
+        /// turn: the transcript showed an answer the model had no memory of, and
+        /// the next message made it redo the work (telemetry #68/#71).
+        ///
+        /// Keep the text. TEXT ONLY — half-accumulated tool calls must never
+        /// reach history (a tool_use with no tool_result is a wire error next
+        /// round), so this passes no calls.
+        macro_rules! fail_keeping_partial_answer {
+            ($acc:expr, $err:expr) => {{
+                if let Some(msg) = P::assemble_assistant_message($acc, &ctx.text, &[]) {
+                    deps.state.history.lock().push(msg);
+                }
+                return Err(turn_fail(&deps.state, $err));
+            }};
+        }
+
         // Stream(-resume) loop: normally one pass; `StreamEnd::Resume`
         // re-requests against identical history with accumulators retained.
         // Break value: end the turn after persisting (skip tool dispatch).
@@ -373,15 +392,15 @@ where
                             "model stream stalled — no data for {}s",
                             idle_ms / 1000
                         ));
-                        return Err(turn_fail(&deps.state, e));
+                        fail_keeping_partial_answer!(acc, e);
                     }
                 };
                 let ev = match ev_res {
                     Ok(c) => c,
-                    Err(e) => return Err(turn_fail(&deps.state, e)),
+                    Err(e) => fail_keeping_partial_answer!(acc, e),
                 };
                 if let Err(e) = P::fold_event(&mut acc, &mut ctx, ev) {
-                    return Err(turn_fail(&deps.state, e));
+                    fail_keeping_partial_answer!(acc, e);
                 }
             }
 
@@ -787,6 +806,57 @@ mod tests {
     /// the scaffold (mirrors the gemini loop's pinning test): a denied turn
     /// never pushes the prompt, never opens a stream, emits the System/Error
     /// turn_error shape, and releases the idle guard.
+    /// Drive one turn whose stream emits `text` and THEN dies mid-stream — the
+    /// WiFi→5G / backgrounded-tab shape (telemetry #68/#71).
+    async fn run_failing_midstream(text: &'static str) -> Arc<LoopState<String>> {
+        let (tx, _rx) = broadcast::channel::<Step>(64);
+        let state = Arc::new(LoopState::new(tx));
+        let deps = EngineDeps::<MockProvider> {
+            config: (),
+            state: state.clone(),
+            tool_runner: None,
+            hook_runner: None,
+            session_ctx: None,
+        };
+        let res = run_turn::<MockProvider, _, _, _, _, _>(
+            deps,
+            "user:hi".to_string(),
+            Content::text("hi"),
+            move |_req| async move {
+                Ok(futures_util::stream::iter(vec![
+                    Ok::<_, Error>(Ev::Text(text)),
+                    Err(Error::transport("error sending request".to_string())),
+                ]))
+            },
+            || async {},
+        )
+        .await;
+        assert!(res.is_err(), "a mid-stream drop must still fail the turn");
+        state
+    }
+
+    /// The partial answer is PAINTED as it streams; dropping it from history
+    /// left the transcript showing an answer the model had no memory of, and the
+    /// next message redid the work. Keep the text (telemetry #68/#71).
+    #[tokio::test]
+    async fn mid_stream_failure_keeps_the_partial_answer_in_history() {
+        let state = run_failing_midstream("partial ans").await;
+        let history = state.history.lock().clone();
+        assert_eq!(
+            history,
+            vec!["user:hi".to_string(), "assistant:partial ans:0".to_string()],
+            "history must not end on a dangling user turn"
+        );
+        assert!(state.idle.load(Ordering::Acquire), "idle guard must release");
+    }
+
+    /// A drop before ANY text must not push an empty assistant turn.
+    #[tokio::test]
+    async fn mid_stream_failure_with_no_text_persists_nothing() {
+        let state = run_failing_midstream("").await;
+        assert_eq!(state.history.lock().clone(), vec!["user:hi".to_string()]);
+    }
+
     #[tokio::test]
     async fn pre_turn_deny_keeps_prompt_out_of_history() {
         let hooks = Arc::new(HookRunner::new());

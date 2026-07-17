@@ -79,8 +79,11 @@ async fn publish_persona_onchain(text: &str) -> Result<bool, String> {
 }
 
 pub(super) fn save_tool_allowlist_pressed() {
-    use crate::types::BuiltinTool;
-    let mut enabled = Vec::new();
+    // Collect raw NAMES, builtins and closure tools alike. Narrowing to
+    // `BuiltinTool` here dropped every closure name from the saved list, and
+    // `closure_tool_allowed` denies what the list doesn't name — so a save
+    // silently stripped ~71 tools (telemetry #76).
+    let mut enabled: Vec<String> = Vec::new();
     if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
         if let Ok(checkboxes) = doc.query_selector_all(".tool-checkbox") {
             for i in 0..checkboxes.length() {
@@ -88,21 +91,25 @@ pub(super) fn save_tool_allowlist_pressed() {
                     let input: web_sys::HtmlInputElement = JsCast::unchecked_into(el);
                     if input.checked() {
                         if let Some(name) = input.get_attribute("data-tool") {
-                            if let Some(tool) = BuiltinTool::ALL.iter().find(|t| t.wire_name() == name) {
-                                enabled.push(*tool);
-                            }
+                            enabled.push(name);
                         }
                     }
                 }
             }
         }
     }
+    // Every box ticked = unrestricted. Persisting the full list instead would
+    // freeze today's surface into the manifest, so a tool added later would be
+    // denied to an agent whose owner never restricted anything.
+    if enabled.len() >= crate::app::tool_allowlist::total_tools() {
+        enabled.clear();
+    }
     dom::swap_inner(
         "tool-allowlist-msg",
         "<span style=\"color:var(--muted)\">saving…</span>",
     );
     wasm_bindgen_futures::spawn_local(async move {
-        match crate::app::tool_allowlist::save(&enabled).await {
+        match crate::app::tool_allowlist::save_names(&enabled).await {
             Ok(()) => {
                 let summary = crate::app::tool_allowlist::summary(&enabled);
                 dom::swap_inner(
@@ -136,7 +143,7 @@ pub(super) fn reset_tool_allowlist_pressed() {
         }
     }
     wasm_bindgen_futures::spawn_local(async move {
-        match crate::app::tool_allowlist::save(&[]).await {
+        match crate::app::tool_allowlist::save_names(&[]).await {
             Ok(()) => {
                 dom::swap_inner(
                     "tool-allowlist-msg",
@@ -624,15 +631,14 @@ pub(super) fn header_admin_toggle() {
                     }
                 }
             }
-            if let Some(allowed) = crate::app::tool_allowlist::load().await {
+            if let Some(allowed) = crate::app::tool_allowlist::load_names().await {
                 if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                     if let Ok(checkboxes) = doc.query_selector_all(".tool-checkbox") {
                         for i in 0..checkboxes.length() {
                             if let Some(el) = checkboxes.get(i) {
                                 let input: web_sys::HtmlInputElement = JsCast::unchecked_into(el);
                                 if let Some(name) = input.get_attribute("data-tool") {
-                                    let is_allowed = allowed.iter().any(|t| t.wire_name() == name);
-                                    input.set_checked(is_allowed);
+                                    input.set_checked(allowed.contains(&name));
                                 }
                             }
                         }

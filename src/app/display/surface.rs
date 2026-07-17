@@ -41,6 +41,40 @@ pub(super) fn reset_pointer_down() {
     POINTER_DOWN.with(|d| d.set(0));
 }
 
+/// Dismiss an inline cartridge embed (telemetry #66 — a rendered embed had no
+/// close control at all). Stops the cartridge ONLY when this canvas owns the
+/// live worker: embeds share one worker slot, so a later cartridge may already
+/// have superseded this one, and stopping then would kill the wrong run. The
+/// card is replaced by an empty same-id placeholder, so a second close (or a
+/// replay swap) is a harmless no-op.
+pub(crate) fn close_embed(canvas_id: &str) {
+    let owns_worker = ACTIVE_CANVAS_ID.with(|c| *c.borrow() == canvas_id);
+    if owns_worker {
+        super::stop();
+    }
+    let card_id = crate::app::templates::embed_card_id(canvas_id);
+    crate::app::dom::swap_outer(
+        &card_id,
+        &format!("<div id=\"{card_id}\" class=\"embed-card-closed\"></div>"),
+    );
+}
+
+/// Is a drag in progress? `POINTER_DOWN` is only ever set by a press that
+/// STARTED on a cartridge canvas, so this doubles as "the cartridge owns the
+/// pointer right now" — a drag that wanders off the canvas keeps tracking.
+pub(crate) fn pointer_is_down() -> bool {
+    POINTER_DOWN.with(|d| d.get()) == 1
+}
+
+/// Should a move event at `target_id` reach the cartridge? Only when it is OVER
+/// a cartridge canvas, or continues a drag that began on one. Moves used to
+/// forward whenever a canvas existed ANYWHERE in the document, so scrolling or
+/// swiping the transcript drove the cartridge's pointer from outside it — an
+/// unfocused embed reacting to the page around it (telemetry #65).
+pub(crate) fn should_track_move(target_id: &str) -> bool {
+    is_cartridge_canvas_id(target_id) || pointer_is_down()
+}
+
 /// Update the primary-button state from mousedown/mouseup over the
 /// canvas. Called from the delegated listeners in `events.rs`.
 pub(crate) fn set_pointer_down(down: bool) {
@@ -211,18 +245,10 @@ pub(crate) fn is_cartridge_canvas_id(id: &str) -> bool {
     id == "display-canvas" || id.starts_with("embed-canvas")
 }
 
-/// `true` when a cartridge canvas is currently mounted (overlay OR an embed
-/// card), so `mousemove`/`touchmove` know whether to bother updating the
-/// poll-model pointer. Cheap DOM presence check (no worker query).
-pub(crate) fn cartridge_canvas_present() -> bool {
-    if dom::by_id("display-canvas").is_some() {
-        return true;
-    }
-    web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.query_selector("canvas.embed-app-canvas").ok().flatten())
-        .is_some()
-}
+// `cartridge_canvas_present` (a bare "is a canvas mounted ANYWHERE?" check) is
+// gone: it was the move listeners' gate, and a document-wide presence test is
+// exactly why events outside an embed drove it (telemetry #65). Moves now ask
+// `should_track_move` WHERE the event landed.
 
 /// Mount the display overlay (fullscreen, dismissable — the unified
 /// stream's display surface) with a fresh canvas, then size + grab its

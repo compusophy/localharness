@@ -1622,7 +1622,7 @@ mod tests {
         // VARIABLE FRAMEBUFFER RESOLUTION: a cartridge MAY export `dims() ->
         // i32` returning a packed `(w << 16) | h` so the host (worker) sizes the
         // framebuffer to the cartridge's chosen dimensions instead of the fixed
-        // 320×240 default. rustlite exports EVERY top-level fn, so `dims` needs
+        // 512x512 default. rustlite exports EVERY top-level fn, so `dims` needs
         // no codegen change — this guards that the export is genuinely emitted
         // (parsed out of the real export section, not a substring) alongside
         // `frame`, so the worker's `instance.exports.dims` lookup finds it.

@@ -71,8 +71,8 @@ mod worker;
 
 pub(crate) use bridge::feed::prime_feed_permission_on_gesture;
 pub(crate) use surface::{
-    broadcast_composer_open, broadcast_send, cartridge_canvas_present, close_broadcast_composer,
-    is_cartridge_canvas_id, launch_pending_embed, next_embed_canvas_id,
+    broadcast_composer_open, broadcast_send, close_broadcast_composer, close_embed,
+    is_cartridge_canvas_id, launch_pending_embed, next_embed_canvas_id, should_track_move,
     relaunch_last_in_fullscreen, set_pointer, set_pointer_down, snapshot_data_url,
     stash_pending_embed,
 };
@@ -93,8 +93,10 @@ pub(crate) use surface::{
 /// clamped to `[16, 1024]` in the worker; out of range falls back to the
 /// default. These consts remain the default + the composition/HTML-render path
 /// (single fixed surface).
-const FB_W: u32 = 512;
-const FB_H: u32 = 512;
+// Single-sourced from the loader (`rustlite::loader::DEFAULT_FB_*`), so the
+// compile-check surface and the real display can't disagree about the default.
+const FB_W: u32 = crate::rustlite::loader::DEFAULT_FB_W as u32;
+const FB_H: u32 = crate::rustlite::loader::DEFAULT_FB_H as u32;
 
 thread_local! {
     /// Generation counter for cartridge launches. Each launch bumps it so a

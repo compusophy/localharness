@@ -22,11 +22,6 @@ pub(crate) fn set(plan: Plan) {
     });
 }
 
-/// Read the current plan.
-pub(crate) fn get() -> Option<Plan> {
-    ACTIVE.with(|p| p.borrow().clone())
-}
-
 /// Does a plan with OPEN steps exist? This is the signal that keeps the turn
 /// loop alive through a text-only planning turn.
 pub(crate) fn is_active() -> bool {

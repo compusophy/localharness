@@ -2660,6 +2660,17 @@ button.danger:hover { color: var(--bg); background: var(--error); }
   gap: 2px 12px;
   margin: 8px 0;
 }
+/* Family heading above each grid (telemetry #76): the allowlist now lists the
+   WHOLE ~90-tool surface, which is unreadable as one flat run of checkboxes. */
+.tool-group-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 10px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
 .tool-checkbox-label {
   font-size: 11px;
   color: var(--fg);

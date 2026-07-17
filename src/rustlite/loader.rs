@@ -9,6 +9,18 @@
 
 use crate::rustlite::CompileError;
 
+/// The DEFAULT cartridge framebuffer — what a cartridge gets when it exports no
+/// `dims()`. Canonical here (the loader is compiled on every target) and re-used
+/// by `app::display`; `web/cartridge-worker.js` hand-ports it as
+/// `FB_W_DEFAULT`/`FB_H_DEFAULT` and MUST match.
+///
+/// It is 512x512, not the 320x240 that docs, tool descriptions, and worker
+/// comments claimed for a long while — agents read those, laid out for the wrong
+/// surface, and drew their buttons off-screen with no diagnostic (telemetry #73).
+pub const DEFAULT_FB_W: i32 = 512;
+/// Height half of [`DEFAULT_FB_W`].
+pub const DEFAULT_FB_H: i32 = 512;
+
 pub struct Cartridge {
     #[cfg(target_arch = "wasm32")]
     instance: wasm_bindgen::JsValue,
@@ -255,7 +267,14 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
         |_a, _b, _c, _d, _e, _f, _g| {},
     );
     let disp_present = Closure::<dyn Fn()>::new(|| {});
+    // Pointer queries: no input on this surface.
     let disp_query = Closure::<dyn Fn() -> i32>::new(|| 0);
+    // width()/height() report the REAL default surface, not 0. A cartridge that
+    // sizes its layout off width()/height() got a degenerate 0 here and laid
+    // itself out for a 0-pixel screen — one more way the framebuffer's size was
+    // misreported to the model (telemetry #73).
+    let disp_width = Closure::<dyn Fn() -> i32>::new(|| DEFAULT_FB_W);
+    let disp_height = Closure::<dyn Fn() -> i32>::new(|| DEFAULT_FB_H);
     let disp_state_get = Closure::<dyn Fn(i32) -> i32>::new(|_a| 0);
     let disp_state_set = Closure::<dyn Fn(i32, i32)>::new(|_a, _b| {});
     let _ = Reflect::set(&host_display, &JsValue::from_str("clear"), disp_clear.as_ref());
@@ -266,8 +285,8 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     let _ = Reflect::set(&host_display, &JsValue::from_str("draw_line"), disp_void5.as_ref());
     let _ = Reflect::set(&host_display, &JsValue::from_str("fill_triangle"), disp_tri.as_ref());
     let _ = Reflect::set(&host_display, &JsValue::from_str("present"), disp_present.as_ref());
-    let _ = Reflect::set(&host_display, &JsValue::from_str("width"), disp_query.as_ref());
-    let _ = Reflect::set(&host_display, &JsValue::from_str("height"), disp_query.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("width"), disp_width.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("height"), disp_height.as_ref());
     let _ = Reflect::set(&host_display, &JsValue::from_str("pointer_x"), disp_query.as_ref());
     let _ = Reflect::set(&host_display, &JsValue::from_str("pointer_y"), disp_query.as_ref());
     let _ = Reflect::set(&host_display, &JsValue::from_str("pointer_down"), disp_query.as_ref());
@@ -279,6 +298,8 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     disp_tri.forget();
     disp_present.forget();
     disp_query.forget();
+    disp_width.forget();
+    disp_height.forget();
     disp_state_get.forget();
     disp_state_set.forget();
     let _ = Reflect::set(&imports, &JsValue::from_str("host_display"), &host_display);

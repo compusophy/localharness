@@ -208,6 +208,10 @@ enum Action {
     /// The inline `run_cartridge` card's [fullscreen] button (#52a): relaunch
     /// the most-recently-run inline cartridge into the fullscreen overlay.
     RunInDisplay,
+    /// An inline cartridge embed's [close] button (telemetry #66). Arg = the
+    /// embed's canvas id; stops the cartridge if this embed owns the live
+    /// worker, then blanks the card.
+    CloseEmbed(String),
     /// Open/close the CLI-sandbox terminal overlay (feedback #6): the terminal
     /// card's [show] re-opens the last `run_wasm_cli` run; the overlay `×`
     /// closes it. Mirrors `ToggleDisplay`.
@@ -322,6 +326,7 @@ impl Action {
             "save-api-key" => Action::SaveApiKey,
             "toggle-display" => Action::ToggleDisplay,
             "run-in-display" => Action::RunInDisplay,
+            "close-embed" => Action::CloseEmbed(arg.unwrap_or_default()),
             "toggle-terminal" => Action::ToggleTerminal,
             "stop-turn" => Action::StopTurn,
             "broadcast-send" => Action::BroadcastSend(arg.unwrap_or_default()),
@@ -594,9 +599,10 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     // Delegated pointer tracking for the DISPLAY canvas. The display
     // cartridge ABI is poll-model (Orbclient-style): the cartridge reads
     // pointer_x/pointer_y each frame, so we just keep the latest cursor
-    // position fresh. No-op when the canvas isn't mounted.
+    // position fresh. Moves are gated on the event landing ON a cartridge
+    // canvas (or continuing a drag off one) — see `should_track_move`.
     let mousemove = Closure::<dyn FnMut(_)>::new(move |event: MouseEvent| {
-        if super::display::cartridge_canvas_present() {
+        if super::display::should_track_move(&event_target_id(&event.target())) {
             super::display::set_pointer(event.client_x() as f64, event.client_y() as f64);
         }
     });
@@ -651,7 +657,7 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     touchstart.forget();
 
     let touchmove = Closure::<dyn FnMut(_)>::new(move |event: web_sys::TouchEvent| {
-        if super::display::cartridge_canvas_present() {
+        if super::display::should_track_move(&event_target_id(&event.target())) {
             if let Some(t) = event.touches().get(0) {
                 super::display::set_pointer(t.client_x() as f64, t.client_y() as f64);
             }
@@ -690,6 +696,17 @@ thread_local! {
 /// spirit as the dom.rs helpers). No-op on desktop and when no
 /// `visualViewport` exists. Chrome/Android is already handled by the
 /// `interactive-widget=resizes-content` viewport meta; this covers iOS.
+/// The `id` of an event's target element, or "" when there isn't one (text
+/// nodes, the document itself). Lets the pointer listeners ask WHERE an event
+/// landed instead of only whether a canvas exists somewhere.
+fn event_target_id(target: &Option<web_sys::EventTarget>) -> String {
+    target
+        .as_ref()
+        .and_then(|t| t.clone().dyn_into::<Element>().ok())
+        .map(|el| el.id())
+        .unwrap_or_default()
+}
+
 fn install_keyboard_viewport_fix() {
     let Some(win) = web_sys::window() else { return };
     let Some(vv) = win.visual_viewport() else { return };
@@ -836,6 +853,7 @@ fn dispatch(action: Action) {
                 super::display::relaunch_last_in_fullscreen().await;
             });
         }
+        Action::CloseEmbed(canvas_id) => super::display::close_embed(&canvas_id),
         Action::ToggleTerminal => super::cli::toggle_terminal(),
         Action::BroadcastSend(title) => super::display::broadcast_send(title),
         Action::BroadcastCancel => super::display::close_broadcast_composer(),

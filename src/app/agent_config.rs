@@ -104,6 +104,20 @@ pub(crate) async fn set_tools(tools: Option<&[BuiltinTool]>) -> Result<(), Strin
     save(&manifest).await
 }
 
+/// Persist an allowlist of raw tool NAMES — builtins and closure tools alike.
+/// `closure_tool_allowed` matches on the name, so a list written from only
+/// `BuiltinTool` values silently revokes every closure tool (telemetry #76).
+pub(crate) async fn set_tool_names(names: Option<&[String]>) -> Result<(), String> {
+    let mut manifest = load().await;
+    manifest.tools = names.filter(|n| !n.is_empty()).map(|n| n.to_vec());
+    save(&manifest).await
+}
+
+/// The saved allowlist as raw names, or `None` when unrestricted.
+pub(crate) async fn tool_names() -> Option<Vec<String>> {
+    load().await.tools
+}
+
 /// The resolved custom system prompt, or `None` for the default.
 pub(crate) async fn system_prompt() -> Option<String> {
     load()

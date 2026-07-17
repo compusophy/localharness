@@ -34,7 +34,7 @@ impl Tool for RenderHtml {
     }
 
     fn description(&self) -> &str {
-        "Render an HTML document onto the visual display (a 320x240 pixel \
+        "Render an HTML document onto the visual display (a 512x512 pixel \
          framebuffer the user sees). This is a snapshot text renderer, NOT \
          a browser: it shows block-level text (h1-h6, p, ul/li, blockquote, \
          br) laid out and word-wrapped in a bitmap font, monochrome. It does \

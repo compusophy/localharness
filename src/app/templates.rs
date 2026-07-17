@@ -1063,6 +1063,22 @@ mod terminal_card_tests {
 /// `image-rendering: pixelated`, like the fullscreen display. Pointer input
 /// routes here while it's the active cartridge (see `events::mod`). v1: one
 /// LIVE embed at a time (single worker).
+/// The dismiss control every inline cartridge embed carries (telemetry #66):
+/// a rendered embed had NO way to close it — the only exit was launching another
+/// cartridge, which superseded it. Reuses the cards' existing word-button chrome
+/// ([open] / [fullscreen]), not a modal ×.
+fn embed_close_button(canvas_id: &str) -> Markup {
+    html! {
+        button.ghost type="button" data-action="close-embed" data-arg=(canvas_id) { "close" }
+    }
+}
+
+/// The card element id that wraps `canvas_id` — derived, so the close handler
+/// can find the card from the button's canvas arg without a DOM walk.
+pub(crate) fn embed_card_id(canvas_id: &str) -> String {
+    format!("{canvas_id}-card")
+}
+
 /// Inline checklist card for `update_plan` (telemetry #75/#69): "2/5" plus each
 /// step, done ones marked. Read-only — the AGENT owns the plan and checks steps
 /// off via the tool, so there is no interactive control here to desync from it.
@@ -1099,15 +1115,17 @@ fn plan_card(value: &serde_json::Value) -> Markup {
 }
 
 fn embed_app_card(name: &str) -> Markup {
+    let canvas_id = crate::app::display::next_embed_canvas_id();
     html! {
-        div.inline-card.embed-app-card {
+        div.inline-card.embed-app-card id=(embed_card_id(&canvas_id)) {
             div.ic-head {
                 span.ic-title { "▶ " (name) }
                 a.ghost href=(format!("https://{name}.localharness.xyz/"))
                     target="_blank" rel="noopener" { "open" }
+                (embed_close_button(&canvas_id))
             }
             div.embed-app-stage {
-                canvas id=(crate::app::display::next_embed_canvas_id()) .embed-app-canvas {}
+                canvas id=(canvas_id) .embed-app-canvas {}
             }
         }
     }
@@ -1122,14 +1140,16 @@ fn embed_app_card(name: &str) -> Markup {
 /// in `chat::stream_turn` right after this swaps in. Replay paints the same
 /// canvas (it stays black — no stashed bytes).
 fn cartridge_card() -> Markup {
+    let canvas_id = crate::app::display::next_embed_canvas_id();
     html! {
-        div.inline-card.embed-app-card {
+        div.inline-card.embed-app-card id=(embed_card_id(&canvas_id)) {
             div.ic-head {
                 span.ic-title { "▶ cartridge" }
                 button.ghost type="button" data-action="run-in-display" { "fullscreen" }
+                (embed_close_button(&canvas_id))
             }
             div.embed-app-stage {
-                canvas id=(crate::app::display::next_embed_canvas_id()) .embed-app-canvas {}
+                canvas id=(canvas_id) .embed-app-canvas {}
             }
         }
     }
@@ -1143,16 +1163,18 @@ fn cartridge_card() -> Markup {
 /// (dead canvas) and `history.rs` re-derives the wasm from the recorded
 /// `source` to resume it, like run_cartridge.
 fn published_app_card(name: &str) -> Markup {
+    let canvas_id = crate::app::display::next_embed_canvas_id();
     html! {
-        div.inline-card.embed-app-card {
+        div.inline-card.embed-app-card id=(embed_card_id(&canvas_id)) {
             div.ic-head {
                 span.ic-title { "▶ " (name) }
                 a.ghost href=(format!("https://{name}.localharness.xyz/"))
                     target="_blank" rel="noopener" { "open" }
                 button.ghost type="button" data-action="run-in-display" { "fullscreen" }
+                (embed_close_button(&canvas_id))
             }
             div.embed-app-stage {
-                canvas id=(crate::app::display::next_embed_canvas_id()) .embed-app-canvas {}
+                canvas id=(canvas_id) .embed-app-canvas {}
             }
         }
     }
@@ -1735,19 +1757,29 @@ pub(crate) fn admin_app_section() -> Markup {
     }
 }
 
+/// The tool allowlist grid — EVERY tool the agent can hold, grouped by family.
+///
+/// It used to render `BuiltinTool::ALL` alone: 19 checkboxes for a ~90-tool
+/// agent (telemetry #76). The closure tools weren't merely unlisted — they had
+/// no checkbox to stay checked, so pressing [save] wrote a 19-name allowlist and
+/// `closure_tool_allowed` then denied all ~71 of them. Sourcing the grid from
+/// `tool_allowlist::all_tool_groups` makes what you see the whole surface.
 pub(crate) fn admin_tool_allowlist_section() -> Markup {
     html! {
         div.admin-section {
             div.admin-section-title { "tool allowlist" }
             div #tool-allowlist-status .admin-msg-slot { "loading…" }
-            div.tool-allowlist-grid {
-                @for tool in BuiltinTool::ALL {
-                    label.tool-checkbox-label {
-                        input.tool-checkbox
-                            type="checkbox"
-                            data-tool=(tool.wire_name())
-                            checked {}
-                        " " (tool.wire_name())
+            @for (group, tools) in crate::app::tool_allowlist::all_tool_groups() {
+                div.tool-group-label { (group) }
+                div.tool-allowlist-grid {
+                    @for tool in tools {
+                        label.tool-checkbox-label {
+                            input.tool-checkbox
+                                type="checkbox"
+                                data-tool=(tool)
+                                checked {}
+                            " " (tool)
+                        }
                     }
                 }
             }

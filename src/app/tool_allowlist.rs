@@ -27,17 +27,54 @@ pub(crate) const GOLDEN: &[BuiltinTool] = &[
     BuiltinTool::ConfigureAgent,
 ];
 
+/// Every tool an agent can be granted, grouped for the admin grid: the
+/// backend-neutral builtins PLUS the closure tools (`crate::agent_tools::
+/// AGENT_TOOLS` — the canonical published surface).
+///
+/// The grid used to render `BuiltinTool::ALL` alone (19 of ~90). That wasn't
+/// just under-reporting (telemetry #76) — closure tools had no checkbox, yet a
+/// SAVE writes a non-empty allowlist, and `closure_tool_allowed` grants a
+/// closure tool only when the list NAMES it. So saving the all-checked grid
+/// silently revoked ~71 tools the owner never chose to remove.
+pub(crate) fn all_tool_groups() -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut groups: Vec<(&str, Vec<&str>)> = crate::agent_tools::AGENT_TOOLS
+        .iter()
+        .map(|(group, tools)| (*group, tools.to_vec()))
+        .collect();
+    // Builtins the published doc list doesn't carry (`configure_agent` is
+    // golden; `run_command` is native-only) — the grid must still offer every
+    // name a save could drop.
+    let listed: Vec<&str> = groups.iter().flat_map(|(_, t)| t.clone()).collect();
+    let extra: Vec<&str> = BuiltinTool::ALL
+        .iter()
+        .map(|t| t.wire_name())
+        .filter(|n| !listed.contains(n))
+        .collect();
+    if !extra.is_empty() {
+        groups.push(("Runtime", extra));
+    }
+    groups
+}
+
 /// Load the tool allowlist for this origin. Returns `None` when
 /// unrestricted (all tools enabled).
 pub(crate) async fn load() -> Option<Vec<BuiltinTool>> {
     super::agent_config::tool_allowlist().await
 }
 
-/// Persist `tools` as the new allowlist. An empty slice reverts to
+/// The saved allowlist as raw NAMES (builtins + closure tools), or `None` when
+/// unrestricted. `load()` narrows to `BuiltinTool` for the capabilities config
+/// and drops closure names; the grid needs them back to paint its checkboxes.
+pub(crate) async fn load_names() -> Option<Vec<String>> {
+    super::agent_config::tool_names().await
+}
+
+/// Persist `names` as the new allowlist — builtins AND closure tools, since
+/// `closure_tool_allowed` matches on the raw name. An empty slice reverts to
 /// unrestricted.
-pub(crate) async fn save(tools: &[BuiltinTool]) -> Result<(), String> {
-    let arg = if tools.is_empty() { None } else { Some(tools) };
-    super::agent_config::set_tools(arg).await
+pub(crate) async fn save_names(names: &[String]) -> Result<(), String> {
+    let arg = if names.is_empty() { None } else { Some(names) };
+    super::agent_config::set_tool_names(arg).await
 }
 
 /// Whether a NON-builtin closure tool (e.g. the `set_persona` self-edit tool)
@@ -50,10 +87,14 @@ pub(crate) async fn closure_tool_allowed(name: &str) -> bool {
 }
 
 /// Return a human-readable summary for the admin UI.
-pub(crate) fn summary(tools: &[BuiltinTool]) -> String {
-    if tools.is_empty() {
+pub(crate) fn summary(names: &[String]) -> String {
+    if names.is_empty() {
         return "all tools enabled".to_string();
     }
-    let names: Vec<&str> = tools.iter().map(|t| t.wire_name()).collect();
-    format!("{} tools: {}", names.len(), names.join(", "))
+    format!("{} of {} tools enabled", names.len(), total_tools())
+}
+
+/// How many distinct tools the grid offers — the honest denominator.
+pub(crate) fn total_tools() -> usize {
+    all_tool_groups().iter().map(|(_, t)| t.len()).sum()
 }
