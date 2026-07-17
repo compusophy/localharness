@@ -66,7 +66,15 @@ src/                  library crate
 ├── runtime.rs        cfg-gated spawn + sleep_ms + MaybeSendSync marker
 ├── encoding.rs       THE canonical hex/address/amount codecs (don't re-roll one)
 ├── turn_flow.rs      pure turn-classification + MAX_AUTO_CONTINUATIONS (hoisted
-│                     from app::chat so its loop-guard tests run natively)
+│                     from app::chat so its loop-guard tests run natively); a
+│                     text-only turn continues ONLY while a plan has open steps
+├── plan.rs           pure update_plan checklist core; an OPEN plan is what tells
+│                     turn_flow a text-only turn is mid-plan, not a goodbye (else
+│                     the agent posts a plan and the loop silently dies —
+│                     #75/#69/#67). Live copy: app/chat/plan_state.rs
+├── agent_tools.rs    THE canonical tool list (AGENT_TOOLS) — ungated so the docs
+│                     gen AND the browser allowlist grid share it (docs_manifest
+│                     is wallet+native-only). Never fork a 2nd list
 ├── turn_stage.rs     pure stage state machine for the pending-turn "paying →
 │                     thinking → streaming" line (painted by app/chat/stage.rs)
 ├── router.rs         pure INTENT-ROUTER core: exact-allowlist free/metered cost
@@ -87,13 +95,12 @@ src/                  library crate
 ├── registry/         Diamond JSON-RPC + Tempo tx (feature "wallet"): one module
 │                     per facet (names tba credits x402 schedule invite bounty
 │                     party reputation validation guild voting
-│                     signaling) + multichain (READ-ONLY EVM:
-│                     per-chain eth_call/getBalance, ENS namehash+resolve, curated
-│                     CORS RPC table — the evm_* tools) + sponsor_relay(mainnet
-│                     fee_payer relay client; submit chokepoints route here when
-│                     is_mainnet()) + abi/rpc/tx
-│                     plumbing (read_view, sponsored_diamond_call skeletons);
-│                     mod.rs re-exports keep the flat registry:: surface
+│                     signaling) + multichain (READ-ONLY EVM: per-chain
+│                     eth_call/getBalance, ENS resolve, curated CORS RPC table —
+│                     the evm_* tools) + sponsor_relay(mainnet fee_payer relay
+│                     client; submit chokepoints route here when is_mainnet()) +
+│                     abi/rpc/tx plumbing (read_view, sponsored_diamond_call
+│                     skeletons); mod.rs re-exports keep the flat registry::
 ├── evm_tools.rs      the pure-read evm_* ClosureTools over registry::multichain,
 │                     shared by the browser session AND headless CLI call (F2)
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
@@ -101,14 +108,13 @@ src/                  library crate
 ├── tempo_tx.rs       Tempo Transaction (tx 0x76) encoder; see Tempo section
 ├── raster.rs html_fb.rs(pure HTML→framebuffer rasterizer, hoisted from
 │                     app::display) compose.rs sharedfs_reconcile.rs
-│                     signaling_seal.rs kv_reduce.rs
-│                     kv_room.rs lessons.rs push_enroll.rs(pure push-enroll
-│                     verify + bell status, telemetry #40) confirm.rs cut_guard.rs(static
-│                     facet-cut safety lint, reserved selectors) keeper.rs(pure
-│                     decentralized-scheduler keeper decision core) qr.rs(inline
-│                     SVG QR, browser-app) skills.rs(SKILLS LOOP blob core)
-│                     native-testable cores (framebuffer/compose/reconcile/SDP
-│                     seal/#22 KV CRDT + AES op-seal/lessons/confirm/…)
+│                     signaling_seal.rs kv_reduce.rs kv_room.rs lessons.rs
+│                     push_enroll.rs(verify + bell status, #40) confirm.rs
+│                     cut_guard.rs(facet-cut safety lint, reserved selectors)
+│                     keeper.rs(scheduler keeper core) qr.rs(inline SVG QR)
+│                     skills.rs(SKILLS LOOP blob core) — native-testable cores
+│                     (framebuffer/compose/reconcile/SDP seal/#22 KV CRDT + AES
+│                     op-seal/lessons/confirm/…)
 ├── rustlite/         Rust-subset → wasm compiler: lexer / parser / ast /
 │                     typecheck / codegen(wasm emitter) / loader(wasm32 cartridge)
 ├── soliditylite/     Solidity/EVM-subset → EVM-bytecode compiler (the EVM analog
@@ -116,7 +122,7 @@ src/                  library crate
 │                     (bytecode assembler) / mod(compile pipeline). PURE, no deps,
 │                     native+wasm. E2E proofs in `examples/soliditylite_*`.
 ├── bashlite/        tiny sandboxed shell (lexer/parser/eval over a BashHost):
-│                     fs builtins + `run`/`source` script COMPOSITION (fractal,
+│                     fs builtins + `run`/`source` COMPOSITION (fractal,
 │                     fuel-bounded) + `&&`/`||` + for-`$( )` field-split + lh-*
 │                     platform reads/writes (platform.rs, feature wallet) behind
 │                     the dry-run-manifest confirm gate. CLI `sh`, browser
@@ -140,15 +146,17 @@ src/app/ (browser IDE):
     listener set + dispatch in mod.rs; handler bodies per domain: claim admin
     credits identity schedule devices subdomains key_sync public_face layout
     (bounty/guild/governance/tba panels removed 0.47.0 — chat tools now)) chat/(
-    turn loop in mod.rs; session.rs prompt.rs
-    access.rs tools/{platform,bounty,guild,governance,misc})
+    turn loop in mod.rs; session.rs prompt.rs access.rs plan_state.rs(the live
+    update_plan checklist) tools/{platform,bounty,guild,governance,misc})
   history.rs(OPFS conversation + tool-call replay) opfs.rs(file browser/editor
     MODAL off the ADMIN panel — #71 killed the header [files] button)
   display/(framebuffer: runs wasm cartridges off-main-thread in a Web Worker +
     rasterizes HTML via crate::html_fb; main-thread WATCHDOG kills hung workers
     — the brick fix; surface = a fullscreen dismissable OVERLAY, not a
-    tab/panel; worker.rs lifecycle+router, surface.rs mount/pointer/embed/
-    composer UI, bridge/{feed,compose,http,mp,chat,audio}.rs per capability)
+    tab/panel; DEFAULT dims = rustlite::loader::DEFAULT_FB_* (512x512, #73);
+    worker.rs lifecycle+router, surface.rs mount/pointer(should_track_move
+    gates on WHERE an event landed, #65)/embed(close_embed, #66)/composer UI,
+    bridge/{feed,compose,http,mp,chat,audio}.rs per capability)
   gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
   notifications.rs(notify tool: local + `to:` cross-agent; push sub = proxy
     /api/push-sub store ONLY — on-chain slots REMOVED 2026-07-06; bell inbox
@@ -220,12 +228,10 @@ wasm-opt rejects post-MVP features modern rustc emits).
   backends. ADDITIVE — no new deps. BYOK or platform `$LH` via the proxy. OpenAI
   gotcha: streamed `tool_calls` are index-keyed fragments to concat (`openai/loop.rs`).
 - **`local`** (off): in-browser Gemma 3 270M via Burn wgpu/WebGPU (no proxy/key).
-  HEAVY (~570MB); off the DEFAULT browser bundle. The full in-tab path
-  (model selector entry, OPFS download button, `start_local` session wiring) is
-  ALREADY in `browser-app`, feature-gated on `local`; the **`browser-app-local`**
-  composite (`= ["browser-app","local"]`) turns it on — build the local bundle
-  with `--no-default-features --features browser-app-local`. `build-web.sh` ships
-  the lean `browser-app,mainnet` bundle (no `local`). Gotchas: getrandom-0.4 needs
+  HEAVY (~570MB); off the DEFAULT bundle. The full in-tab path (model selector,
+  OPFS download, `start_local` wiring) is ALREADY in `browser-app` gated on
+  `local`; the **`browser-app-local`** composite turns it on. `build-web.sh`
+  ships the lean `browser-app,mainnet` bundle. Gotchas: getrandom-0.4 needs
   `.cargo/config.toml getrandom_backend="wasm_js"` + renamed `getrandom_v04`;
   burn-store DIRECT (memmap2 wasm-broken); GPU read-back MUST
   `into_data_async().await`.
@@ -293,10 +299,9 @@ GH release in one shot. On mid-way failure consult `RELEASING.md`; don't hand-fi
 ## The browser app (`src/app/`, `feature=browser-app` + wasm32)
 
 **Design rule: no imperative DOM.** All HTML from `maud` templates; only DOM ops
-are `set_inner_html`/`set_outer_html`/`insert_adjacent_html` at fixed element ids
-(HTMX-style fragment swaps). ONE delegated `click`/`keydown`/`submit`/`input`
-listener at document level dispatches via `data-action`/`data-arg`. Zero
-`Closure::wrap` outside those four listeners.
+are innerHTML/outerHTML swaps at fixed ids. ONE delegated
+`click`/`keydown`/`submit`/`input` listener set dispatches via
+`data-action`/`data-arg`. (Full rules: `src/app/CLAUDE.md`.)
 
 **UNIFIED STREAM (issue #28): chat IS the app.** One chronological transcript
 fills the content area on every viewport (no mobile FILES/CHAT/DISPLAY tab bar,
@@ -308,15 +313,16 @@ the chat column (feedback #62).
 
 **host::compose (cartridge-in-cartridge, NO iframes — RECURSIVE).** A parent
 `compose::spawn_module(name,x,y,w,h)`s another subdomain's `app.wasm` as a CHILD
-in a sub-rect. Pixel math = `src/compose.rs` (`blit_child`, `map_pointer_into_child`,
+in a sub-rect. THE reuse primitive — the prompt tells agents to compose an
+existing published cartridge before rewriting an engine (telemetry #70). Pixel
+math = `src/compose.rs` (`blit_child`, `map_pointer_into_child`,
 `ComposeBudget::v1` 8/node · 16K · 256K · depth 5 · 24 nodes · FB-area
-1M/child·8M, #78). Worker
-(`cartridge-worker.js`) is a TREE: every node owns a `children`/`focus` table via
-`makeComposeApi(node)`, so a child spawns grandchildren — `compositeChildren`
-recurses. Node AT depth cap → `INERT_COMPOSE` (spawn -1). Handles
-per-node; `compose_spawn`/`compose_bytes` key on a GLOBAL `uid`. JS
-`blitChild`/`mapPointerIntoChild` HAND PORT the Rust impls — parity-tested
-(`test-compose-wiring.mjs`, verify.sh stage 10).
+1M/child·8M, #78). Worker (`cartridge-worker.js`) is a TREE: every node owns a
+`children`/`focus` table via `makeComposeApi(node)`, so a child spawns
+grandchildren — `compositeChildren` recurses. Node AT depth cap →
+`INERT_COMPOSE` (spawn -1). Handles per-node; `compose_spawn`/`compose_bytes`
+key on a GLOBAL `uid`. JS `blitChild`/`mapPointerIntoChild` HAND PORT the Rust
+impls — parity-tested (`test-compose-wiring.mjs`, verify.sh stage 10).
 `composeReset` MUTATES `rootNode` (never reassign — `host_compose` closes over
 it). `examples/cartridges/fractal.rl` = the Droste demo.
 
@@ -347,13 +353,12 @@ it). `examples/cartridges/fractal.rl` = the Droste demo.
 unpublished edits) else published. `PublicFace`: **Cartridge** (`app.rl` /
 `app_wasm_of` → `display::run_in_root_canvas`), **Html** (`index.html` /
 `public_html_of` → `render_html_in_root_canvas`), **Directory**
-(`paint_public_landing`: profile + sibling agents via `list_owned_tokens`, personas
-batch-fetched via `personas_of`). UNSET infers "cartridge if one exists, else
-directory". `Host::Other` uses `try_paint_app` (local `app.rl` only). Published
-content resolves STORE-FIRST (off-chain app store); a store MISS (404/fetch fail —
-pure rule `registry::store_miss_falls_back`) falls back to the LEGACY on-chain
-`setMetadata` slots (`app_wasm_onchain_of`/`public_html_onchain_of`) so pre-pivot
-(2026-06-23) publishes keep their faces (mario/console/frank).
+(`paint_public_landing`: profile + siblings via `list_owned_tokens`, personas via
+`personas_of`). UNSET infers "cartridge if one exists, else directory".
+`Host::Other` uses `try_paint_app` (local `app.rl` only). Published content
+resolves STORE-FIRST (off-chain app store); a store MISS (pure rule
+`registry::store_miss_falls_back`) falls back to the LEGACY on-chain
+`setMetadata` slots so pre-pivot (2026-06-23) publishes keep their faces.
 
 **Picker (admin → "public face").** `[directory] [publish app] [publish html]` →
 `Action::SetPublicFace`. `directory` sets only the choice; `app`/`html`
@@ -368,11 +373,11 @@ as visitor; background `redirect_to_studio_if_owner` navigates to `?edit=1` once
 owner-device working copies; *visitors* see published bytes in the diamond under
 `setMetadata(uint256,bytes32,bytes)` (no new facet). Keys:
 `keccak256("localharness.{app.wasm, public.html, public_face, persona, x402_price}")`.
-`x402_price` = the agent's advertised per-call `$LH` price (decimal-wei UTF-8;
-default 0.01 `$LH` unset; `registry::{x402_price_of, x402_ask_price_of,
-encode_set_x402_price}`; price-LOCKED (floor + 10% ceiling, #72) by ask_agent).
-Generic `registry::{metadata_bytes_of, encode_set_metadata_bytes}` back the
-typed accessors.
+`x402_price` = the advertised per-call `$LH` price (decimal-wei UTF-8; default
+0.01 unset; `registry::{x402_price_of, x402_ask_price_of, encode_set_x402_price}`;
+price-LOCKED — floor + 10% ceiling — by ask_agent). Generic
+`registry::{metadata_bytes_of, encode_set_metadata_bytes}` back the typed
+accessors.
 
 **Identity-gate invariant.** `wallet_store::load_or_create` is GONE. Two callers:
 `load()` (pure read → `Option<MasterWallet>`) and `create_and_persist()` (only from
@@ -397,11 +402,10 @@ each, gotchas only.
 - **ERC721Facet** — every name is an NFT; `tokenURI(id)` → `<name>.localharness.xyz`.
 - **TbaFacet** — EIP-6551 `tokenBoundAccount(id)`/`…ByName`; deploy idempotent.
 - **MainIdentityFacet** — `mainOf`/`mainNameOf`/`isMain`; auto-set on first-claim.
-- **FeedbackFacet** — REMOVED 2026-07-06: selectors CUT from the mainnet
-  diamond (calls revert) and every client path deleted. Feedback + auto
-  error/cartridge reports flow ONLY through the off-chain telemetry repo
-  (`src/app/telemetry.rs` / CLI `feedback` → `proxy/api/telemetry.ts` →
-  GitHub Issues = the task list). Never reintroduce an on-chain path.
+- **FeedbackFacet** — REMOVED 2026-07-06 (selectors CUT; calls revert). Feedback
+  + auto error reports flow ONLY off-chain (`src/app/telemetry.rs` / CLI
+  `feedback` → `proxy/api/telemetry.ts` → GitHub Issues = the task list). Never
+  reintroduce an on-chain path.
 - **CreditsFacet** — `LocalharnessCredits` TIP-20; diamond holds `ISSUER_ROLE`.
   `dailyAllowance` 0 (DISABLED — sybil hole). Funding = redeem + `send_lh`.
 - **RedeemFacet** — owner `addRedeemCodes`, holder `redeem(code)` (mint + burn).
@@ -414,12 +418,12 @@ each, gotchas only.
 - **X402Facet** — x402 EIP-712 "exact" $LH settle (ecrecover + EIP-1271, one-shot
   nonce); `x402DomainSeparator()` read live; price-LOCKED ceiling (#72).
 - **DeviceRegistryFacet** — enumerable `linkDevice/devicesOf/isDeviceLinked`
-  (replaces log scraping; Tempo RPC caps at 100k blocks).
+  (no log scraping; Tempo RPC caps at 100k blocks).
 - **ReleaseFacet** — holder `releaseName` burn (refuses MAIN) + owner
-  `adminBurnNames`/`adminResetAll` (testnet); `_burn` clears `register()` writes.
+  `adminBurnNames`/`adminResetAll` (testnet); `_burn` clears `register()`.
 - **ScheduleFacet** — escrowed recurring jobs; `recordRun` SCHEDULER-ROLE-only
-  (CAS-guarded); recursion via `scheduleChildJob`; `/goal`→`finish_goal`/`completeJob`.
-  Owns `taskOf(uint256)` (BountyFacet must use `bountyTaskOf`).
+  (CAS-guarded); recursion via `scheduleChildJob`; `/goal`→`finish_goal`. Owns
+  `taskOf(uint256)` (BountyFacet must use `bountyTaskOf`).
 - **SignalingFacet** — OWNER-SIGNED on-chain WebRTC signaling/presence (topic =
   `keccak256("localharness.devices"‖owner)` + ecrecover; 10-min TTL).
 - **BountyFacet** — rung 1: escrowed `postBounty`/`claimBounty`/`acceptResult`→
@@ -433,13 +437,13 @@ each, gotchas only.
   CRDT+AES off-chain (`kv_reduce`/`kv_room`); createRoom ≈1.3M gas.
 - **PairingFacet** — REMOVED (QR seed-adoption superseded it).
 
-**ERC-6551 account** (`MultiSignerAccount`): CALL-only; additional device signers on
-top of the NFT holder + EIP-1271 `isValidSignature` (no seed sharing); signers bound
-to enroller → an NFT transfer revokes them; rejects high-s. Detail in
+**ERC-6551 account** (`MultiSignerAccount`): CALL-only; device signers on top of
+the NFT holder + EIP-1271 `isValidSignature` (no seed sharing); signers bound to
+enroller → an NFT transfer revokes them; rejects high-s. Detail in
 `contracts/README.md`.
 
 **Gemini key sync (per-MAIN, on-chain).** The sealed key lives under the owner's
-**MAIN tokenId** (`mainOf(owner)`, fallback the name's own id), NOT per-subdomain —
+**MAIN tokenId** (`mainOf(owner)`, fallback the name's id), NOT per-subdomain —
 every subdomain shares ONE key. On tenant paint, `try_auto_restore_gemini_key`
 fetches + decrypts via the apex iframe BEFORE the api-key modal. Saving best-effort
 `auto_sync_gemini_key`s to the MAIN slot.
@@ -468,6 +472,9 @@ Subdomain tools (declared in `chat.rs::start_session`):
   address or a name's OWNER. Owner-only, amount > 0, challenge-gated, no subagents.
 - **`read_self_docs()`** — read-only; fetches live llms.txt, falls back to embedded
   `self_docs::RUNTIME_SUMMARY` (also injected into every system prompt).
+- **`update_plan(steps, completed, note)`** — the visible "2/5" checklist. Also
+  LOAD-BEARING: an open plan is what makes a text-only turn auto-continue
+  (`src/plan.rs` + `turn_flow`), so the prompt routes PLAN-FIRST through it.
 - **Bounty tools** — `post_bounty` / `discover_bounties` / `claim_bounty` /
   `submit_result` / `accept_result` (over BountyFacet). Mirrored by CLI + admin UI.
 - **`set_persona(text)`** — SELF-EDIT: rewrites the agent's OWN system prompt
@@ -484,13 +491,15 @@ Subdomain tools (declared in `chat.rs::start_session`):
 to completion. `run_send` loops `stream_turn`: first turn carries the prompt; a turn
 that ends with tool activity but no completion signal (`Incomplete`) auto-continues
 with `AUTO_CONTINUE_NUDGE` (no user bubble). Outcomes: `Finished` (called `finish`),
-`FinalAnswer` (pure text → stop), `Incomplete`, `Empty`, `Error`, `Cancelled`.
-Bounded by `MAX_AUTO_CONTINUATIONS = 10`; respects `TURN_CANCEL` + the `TURN_ACTIVE`
-one-turn guard. History/opfs saved after every turn. (Tab-free work is now the
-off-chain scheduler: `schedule_task`/`cancel_task` tools → proxy `/api/schedule`
-GitHub store, fired by the cron — `design/offchain-scheduler.md`. The old on-chain
-[⇪ background] escrow button + `events/schedule::submit_schedule_job` are gone;
-`events/schedule.rs` keeps only `parse_schedule_interval`.)
+`FinalAnswer` (text, NO open plan → stop), `Incomplete`, `Empty`, `Error`,
+`Cancelled`. ⛔ A text-only turn stops the run UNLESS `update_plan` has open steps
+— the prompt orders a plan-first turn, so without that signal the agent posted its
+plan and died at step one (#75/#69/#67). Bounded by `MAX_AUTO_CONTINUATIONS = 10`;
+respects `TURN_CANCEL` + the `TURN_ACTIVE` one-turn guard. History/opfs saved after
+every turn. (Tab-free work = the off-chain scheduler: `schedule_task`/`cancel_task`
+→ proxy `/api/schedule`, fired by cron — `design/offchain-scheduler.md`; the old
+on-chain escrow button is gone, `events/schedule.rs` keeps only
+`parse_schedule_interval`.)
 
 **Ownership = on-chain, not a local cache.** `.lh_owner` stores the on-chain owner
 ADDRESS this device last *proved* it controls (written only after a
@@ -574,13 +583,11 @@ localharnesslite** (CLI `sh` + browser `execute_script`; design/bashlite.md). Op
   through the relay (committed); needs an in-browser onboarding test, then a
   deliberate `build-web.sh` + deploy.
 - **Relay funded-agent writes (CLOSED; residual gate is POLICY)** — a funded agent
-  relays its own-$LH moves (`SELF_PAY_SELECTORS` + the bounty/attest lifecycle), the
-  always-free set, and `setMetadata` self-edits ≤4096B (persona/lessons/price/face
-  choice) — live-probed 2026-07-05. Cartridge publish + scheduling are OFF-CHAIN
-  (proxy `publish.ts` / `api/schedule`), never gated. Still `LH_RELAY_FUNDED` by
-  DESIGN: `setMetadata` >4096B (~7.6k gas/byte cap) + non-exempt diamond writes
-  (guild/party/voting/room/…); no agent self-pays gas (holds $LH, never the fee
-  token — USDC.e on mainnet).
+  relays its own-$LH moves (`SELF_PAY_SELECTORS` + bounty/attest), the always-free
+  set, and `setMetadata` self-edits ≤4096B — live-probed 2026-07-05. Publish +
+  scheduling are OFF-CHAIN, never gated. Still `LH_RELAY_FUNDED` by DESIGN:
+  `setMetadata` >4096B (~7.6k gas/byte) + non-exempt diamond writes; no agent
+  self-pays gas (holds $LH, never the fee token — USDC.e on mainnet).
 - **SessionRoom phase 2** — multi-identity rooms: ECIES-grant `K_room` (v1 live).
 - **P2P teams** — 2-device E2E, mutable shared-FS, team UI.
 - **Local Gemma** — shipped behind `browser-app-local`; a live WebGPU run pending.
@@ -609,17 +616,16 @@ regenerate. Gates enforce it: a `cargo test` drift-test
 `build-web.sh` regenerates pre-build, and `release.{sh,ps1}` run
 `gen-docs -- --check` in PRE-FLIGHT — **a version bump cannot ship stale docs.**
 
-**README.md is HAND-WRITTEN and DECOUPLED from gen-docs** (#56's "one doc"
-derived-copy experiment was REVERSED): a substantive-but-guarded front door —
-no GEN blocks, zero testnet, no images, ≤220 lines; guard
+**README.md is HAND-WRITTEN and DECOUPLED from gen-docs** (#56's derived-copy
+experiment was REVERSED): a substantive-but-guarded front door — no GEN blocks,
+zero testnet, no images, ≤220 lines; guard
 `readme_is_substantive_but_guarded` (`tests/readme_skill_in_sync.rs`).
 Hand-written: **README.md** · **docs.rs** (`///`) · **CLAUDE.md** (under 40K) ·
 **CHANGELOG.md** · skill.md/llms.txt PROSE (only GEN-block facts generated).
 
 **When to update what:** drift-prone fact (chain/version/pricing/tool/CLI) →
-`docs_manifest.rs` + `gen-docs`; new pub API → `///`; new module → CLAUDE.md tree; new agent tool → `AGENT_TOOLS` in the
-manifest + `llms.txt` prose + session prompt; new facet → CLAUDE.md on-chain +
-`contracts/README.md` + `llms.txt`; release → CHANGELOG.
-
-**Verify before release:** `cargo run --bin gen-docs -- --check` (the release
-pre-flight does this) + `cargo doc --no-deps 2>&1 | grep "warning.*missing"`.
+`docs_manifest.rs` + `gen-docs`; new pub API → `///`; new module → CLAUDE.md
+tree; new agent tool → `agent_tools::AGENT_TOOLS` + `llms.txt` prose + session
+prompt; new facet → CLAUDE.md on-chain + `contracts/README.md` + `llms.txt`;
+release → CHANGELOG. **Verify:** `gen-docs -- --check` (release pre-flight runs
+it) + `cargo doc --no-deps 2>&1 | grep "warning.*missing"`.

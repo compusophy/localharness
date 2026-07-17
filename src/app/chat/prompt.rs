@@ -593,7 +593,19 @@ pub(crate) fn base_system_prompt(
             most failures are using a feature rustlite lacks (heap types, \
             traits, generics, references, string ops) or a host fn name/arity \
             that doesn't exist. Simplify to the supported subset rather than \
-            fighting the compiler.\n\n\
+            fighting the compiler.\n\
+         5. REUSE BEFORE REWRITING. Don't rebuild an engine that already exists \
+            on the platform. Published cartridges are composable parts: \
+            `host::compose::spawn_module(\"name\", x, y, w, h) -> handle` runs \
+            ANOTHER subdomain's published app.wasm as a CHILD inside a rect of \
+            your framebuffer (its own isolated instance; focus_module(handle) \
+            routes pointer input to it; children must NOT call present()). It is \
+            RECURSIVE — a child can spawn its own children. So: check \
+            discover_agents / apps for an existing piece, compose it, and build \
+            only the part that's missing. When you write something genuinely \
+            reusable, publish it as its OWN subdomain \
+            (create_and_publish_app) so you and other agents can compose it \
+            later instead of one-shotting it again.\n\n\
          \
          === rustlite — the supported subset (write VALID rustlite first-try) ===\n\
          rustlite is a small Rust SUBSET compiled to wasm in-browser. Numbers are \

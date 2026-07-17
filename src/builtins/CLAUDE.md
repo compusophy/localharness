@@ -38,7 +38,13 @@ reason. If you migrate a resident anyway, keep a frozen byte-identity test.
 - **`start_subagent`** spawns a scoped subagent; it wraps the model stream in a
   bounded RETRY (transport/5xx/timeout only — auth/credits/rate-limit fail fast).
 - **`run_cartridge`/`render_html`** drive the display framebuffer; `compile_rustlite`
-  STUBS host imports so a compile-only check needs no run.
+  STUBS host imports so a compile-only check needs no run. It calls an export ONLY
+  when `function` names one — it used to default to `handle`, which no cartridge
+  has (they export `frame`/`render`), so every CORRECT cartridge reported
+  "execution failed" and the model chased a phantom bug (telemetry #72/#67). A
+  unit-returning export is a clean run (`call_i32` → `Ok(None)`), not a failure.
+  The stub reports the REAL default framebuffer from `loader::DEFAULT_FB_*`
+  (512x512) — never 0, and never the long-stale 320x240 (#73).
 
 ## Errors
 Arg rejections (args-JSON parse + face-value validation like an empty

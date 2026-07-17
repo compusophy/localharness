@@ -9,6 +9,13 @@
 ## Cartridge contract
 A cartridge exports `fn frame(t: i32)` (animated) or `fn render()` (one-shot) — the
 loader calls one. No entry export → `LH0302` (compile) / `LH1004` (runtime).
+The DEFAULT framebuffer is **512x512** — `loader::DEFAULT_FB_*` is the one source
+(`app::display` re-uses it; `cartridge-worker.js` hand-ports it as
+`FB_W_DEFAULT`/`FB_H_DEFAULT`, guard `tests/framebuffer_default_parity.rs`).
+It is NOT 320x240; that stale figure survived in tool descriptions + docs long
+after the code moved, and agents laid out for the wrong surface then drew
+off-screen, where every primitive silently clips (telemetry #73). A cartridge
+overrides via `dims() -> i32` (packed `(w<<16)|h`, each clamped 16..=1024).
 
 ## Host imports are INTEGER-ONLY — do NOT add a string-passing import
 The host ABI crossing the wasm boundary passes only integers: `host::display::*`

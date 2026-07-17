@@ -77,6 +77,12 @@ The stream-OPEN retry (`retry.rs`, #29) keys off these codes — a transport wor
 `classify` misses fails a turn HARD (#41 was the bare "error sending request" on
 mobile → `BACKEND_SEND`, retried ONCE/500ms; a retry past the response can double-
 bill since the proxy floor-debits after upstream 2xx, so it's capped tighter).
+A MID-STREAM failure still fails the turn (no retry — bytes already went out),
+but the engine now PERSISTS the partial assistant text to history first
+(`fail_keeping_partial_answer!`, text only — half-accumulated tool calls must
+never land in history). Dropping it left the transcript painted with an answer
+the model had no memory of and history ending on a dangling user turn, so the
+next message redid the work (telemetry #68/#71).
 The engine opens via `open_stream_with_retry_or_cancel`: the OPEN await itself
 races the cancel flag (100ms slices) — Stop while the POST is in flight drops
 the open future (aborts the request) and NEVER retries; a cancel is a distinct

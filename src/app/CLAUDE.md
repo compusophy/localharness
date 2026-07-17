@@ -130,6 +130,23 @@ Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
   calling embed_app. The ONE success gate is the native-tested
   `crate::turn_flow::tool_result_embeds_cartridge` predicate — the card renderer
   (`templates::inline_result_card`) and the launch site share it; don't fork the check.
+- EMBEDS ARE DISMISSABLE + FOCUSED (telemetry #65/#66): every embed card carries
+  [close] (`Action::CloseEmbed(canvas_id)` → `display::close_embed`), which stops
+  the cartridge ONLY if that canvas owns the shared worker slot (a superseded card
+  must not kill the newer run) and swaps the card for an empty same-id
+  placeholder. Pointer MOVES are gated on `display::should_track_move(target_id)`
+  — the event must land ON a cartridge canvas, or continue a drag that began on
+  one. Never gate moves on "a canvas exists somewhere" (the old
+  `cartridge_canvas_present`): that let transcript scrolls drive an unfocused embed.
+- PLAN CARD: `update_plan` renders the "2/5" checklist (`templates::plan_card`).
+  Read-only by design — the AGENT owns the plan and checks steps off through the
+  tool, so no interactive control can desync from it. `chat::plan_state` holds the
+  live copy and is what keeps a text-only turn from ending the run (`crate::plan`).
+- TOOL ALLOWLIST = NAMES, not just builtins (telemetry #76): the grid renders
+  `tool_allowlist::all_tool_groups()` (the whole ~90-tool surface) and saves raw
+  NAMES, because `closure_tool_allowed` matches on the name — a builtins-only save
+  silently revokes every closure tool. All boxes ticked = unrestricted (never
+  freeze today's surface into the manifest).
 - OWNER LANDING: the studio pins ONE playable card of this subdomain's own app at
   the top of the feed (`#studio-app-slot` in `templates::chrome`, filled by
   `mod.rs::mount_studio_app_card`; resolution = the cartridge public face's — local
