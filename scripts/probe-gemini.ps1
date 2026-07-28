@@ -29,7 +29,7 @@ Get-Content $envFile | ForEach-Object {
 }
 if (-not $key) { Write-Error "GEMINI_API_KEY missing from .env." }
 
-$model = "gemini-3.5-flash"
+$model = "gemini-3.6-flash"
 $base = "https://generativelanguage.googleapis.com"
 
 $body = @{

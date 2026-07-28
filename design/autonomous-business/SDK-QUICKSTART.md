@@ -76,7 +76,7 @@ use localharness::{Agent, GeminiAgentConfig};
 #[tokio::main]
 async fn main() -> localharness::Result<()> {
     let cfg = GeminiAgentConfig::new(std::env::var("GEMINI_API_KEY").unwrap())
-        .with_model("gemini-3.5-flash")
+        .with_model("gemini-3.6-flash")
         .with_system_instructions("You are a concise code reviewer.");
 
     let agent = Agent::start_gemini(cfg).await?;

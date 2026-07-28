@@ -595,17 +595,33 @@ pub(crate) fn base_system_prompt(
             that doesn't exist. Simplify to the supported subset rather than \
             fighting the compiler.\n\
          5. REUSE BEFORE REWRITING. Don't rebuild an engine that already exists \
-            on the platform. Published cartridges are composable parts: \
-            `host::compose::spawn_module(\"name\", x, y, w, h) -> handle` runs \
-            ANOTHER subdomain's published app.wasm as a CHILD inside a rect of \
-            your framebuffer (its own isolated instance; focus_module(handle) \
-            routes pointer input to it; children must NOT call present()). It is \
-            RECURSIVE — a child can spawn its own children. So: check \
-            discover_agents / apps for an existing piece, compose it, and build \
-            only the part that's missing. When you write something genuinely \
-            reusable, publish it as its OWN subdomain \
-            (create_and_publish_app) so you and other agents can compose it \
-            later instead of one-shotting it again.\n\n\
+            on the platform. Published cartridges are composable parts, and \
+            there are TWO ways to reuse one:\n\
+            • AS PIXELS — `host::compose::spawn_module(\"name\", x, y, w, h) -> \
+              handle` runs ANOTHER subdomain's published app.wasm as a CHILD \
+              inside a rect of your framebuffer (its own isolated instance; \
+              focus_module(handle) routes pointer input to it; children must NOT \
+              call present()). RECURSIVE — a child can spawn its own children.\n\
+            • AS A LIBRARY — `host::compose::spawn_lib(\"name\") -> handle` \
+              mounts one HEADLESS (no rect, never drawn), then \
+              `host::compose::call(handle, \"fn_name\", a0, a1, a2, a3) -> i32` \
+              invokes its exported functions. ALWAYS pass 4 int args (pad with \
+              0); the host forwards only as many as that function declares (max \
+              4). The mount is ASYNC — poll `status(handle) == 1` before \
+              calling. `call` returns the function's OWN i32, so 0 is \
+              ambiguous: check `host::compose::call_ok()` (0 ok, -1 bad handle, \
+              -2 not ready, -3 no such function, -4 it trapped, -5 re-entrant, \
+              -6 per-frame call budget, -7 too many params). A library is just \
+              a cartridge whose functions you call instead of whose pixels you \
+              blit — every rustlite `fn` is already exported.\n\
+            So: check discover_agents / apps for an existing piece, compose or \
+            call it, and build only the part that's missing. When you write \
+            something genuinely reusable (physics, pathfinding, a PRNG, an \
+            entity table), publish it as its OWN subdomain \
+            (create_and_publish_app) so you and other agents can call it later \
+            instead of one-shotting it again. A library still needs a `frame` \
+            (it is that subdomain's landing card — a headless mount never runs \
+            it).\n\n\
          \
          === rustlite — the supported subset (write VALID rustlite first-try) ===\n\
          rustlite is a small Rust SUBSET compiled to wasm in-browser. Numbers are \

@@ -52,6 +52,60 @@ fn frame(t: i32) {
 }
 
 #[test]
+fn library_consumer_cartridge_compiles_with_call_imports() {
+    // The CALLABLE-LIBRARY half (telemetry #70): mount a published cartridge
+    // headless with spawn_lib, poll status, then invoke its exports with call —
+    // checking call_ok(), because `call` returns the export's own i32 and 0 is
+    // ambiguous. Composition as functions, not pixels.
+    let src = r#"
+fn frame(t: i32) {
+    host::display::clear(0);
+    if host::display::state_get(0) == 0 {
+        host::display::state_set(0, 1);
+        host::display::state_set(1, host::compose::spawn_lib("lib-physics"));
+    }
+    let h: i32 = host::display::state_get(1);
+    if host::compose::status(h) == 1 {
+        let v: i32 = host::compose::call(h, "integrate", 10, 3, 0, 0);
+        if host::compose::call_ok() == 0 {
+            host::display::draw_number(8, 8, v, 0xffffff, 1);
+        }
+    }
+    host::display::present();
+}
+"#;
+    let wasm = rustlite::compile(src).expect("library consumer compiles");
+    assert_eq!(&wasm[0..4], b"\0asm", "valid wasm magic");
+    let s = String::from_utf8_lossy(&wasm);
+    assert!(s.contains("host_compose"), "host_compose import module present");
+    for name in ["spawn_lib", "call", "call_ok"] {
+        assert!(s.contains(name), "import {name} present");
+    }
+}
+
+#[test]
+fn library_cartridge_exports_are_callable_by_name() {
+    // A LIBRARY is just a cartridge whose functions you use instead of whose
+    // pixels you blit — every rustlite `fn` is already a wasm export, so no new
+    // language feature is needed. It still carries a frame() (that is its
+    // landing card; a headless mount never calls it).
+    let src = r#"
+fn gravity(v: i32) -> i32 { v + 3 }
+fn integrate(p: i32, v: i32) -> i32 { p + v }
+fn frame(t: i32) { host::display::present(); }
+"#;
+    let wasm = rustlite::compile(src).expect("library compiles");
+    let s = String::from_utf8_lossy(&wasm);
+    for name in ["gravity", "integrate", "frame"] {
+        assert!(s.contains(name), "export {name} named in the wasm");
+    }
+    // The ABI can pass at most MAX_CALL_ARGS integers, so the host refuses a
+    // wider export rather than calling it with garbage.
+    assert_eq!(localharness::compose::MAX_CALL_ARGS, 4);
+    assert_eq!(localharness::compose::call_status::OK, 0);
+}
+
+#[test]
 fn compositor_cartridge_wasm_validates() {
     // Structural validation: every emitted cartridge must pass the magic+version
     // check (the codegen regression gate). A host_compose-using parent exercising

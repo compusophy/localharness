@@ -24,7 +24,19 @@ cartridges run in a Web Worker; a main-thread WATCHDOG kills hung workers). For
 10) — edit BOTH sides together. `composeReset` MUTATES `rootNode` (never reassign —
 `host_compose` closes over it). The cartridge host bindings mirror
 `src/rustlite/loader.rs` (integer-only ABI) — add a host fn in BOTH or instantiation
-fails ("module is not an object or function").
+fails ("module is not an object or function"). A new compose fn ALSO needs a key in
+`INERT_COMPOSE`, or a node at the depth cap dies with "not a function".
+
+**Callable libraries (`spawn_lib`/`call`/`call_ok`, telemetry #70).**
+`instantiateChild` RETAINS `child.exports` — that retention is the whole feature;
+it used to drop the exports object on the floor. A `lib` child mounts headless (no
+`dims()`, no `fb`, skipped by `compositeChildren`, refused by `focus_module`) and
+gets `INERT_COMPOSE` (a never-ticked node's children could never draw). ⛔ The
+`call` host fn MUST keep its try/catch: trap containment INVERTS here — a trap
+inside a host import unwinds through the CALLER's wasm frame and kills the whole
+run (LH1002), where the composite walk would merely tombstone the child. Status
+codes + `COMPOSE_MAX_CALLS_PER_FRAME`/`_CALL_ARGS` mirror `src/compose.rs` and are
+parity-asserted in `test-compose-wiring.mjs` stage 8.
 
 ## CSP + headers (vercel.json)
 CSP ships as `Content-Security-Policy-Report-Only` (logs, doesn't block) — validate

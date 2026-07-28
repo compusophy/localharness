@@ -239,6 +239,48 @@ impl<H> Module<H> {
     }
 }
 
+/// Status of the last `host::compose::call` — read with `compose::call_ok()`.
+///
+/// The host ABI is integer-only, so a call's return value is the export's own
+/// `i32` and **0 is ambiguous** (a legitimate result *and* every failure). Every
+/// failure is therefore reported HERE, never in the return value: call, then
+/// check `call_ok()` before trusting the result. Silent-zero was the exact shape
+/// of bug that made agents chase phantoms (telemetry #72/#73).
+///
+/// MIRRORED in `web/cartridge-worker.js` (`CALL_*`) — parity-tested by
+/// `scripts/test-compose-wiring.mjs`.
+pub mod call_status {
+    /// The export ran; the call's return value is its result.
+    pub const OK: i32 = 0;
+    /// No child at that handle.
+    pub const BAD_HANDLE: i32 = -1;
+    /// The child is still loading (or failed) — poll `status(h) == 1` first.
+    pub const NOT_READY: i32 = -2;
+    /// The child exports no function under that name.
+    pub const NO_EXPORT: i32 = -3;
+    /// The export trapped. The child is tombstoned; the CALLER survives.
+    pub const TRAPPED: i32 = -4;
+    /// That child is already inside a call (re-entrancy refused).
+    pub const REENTRANT: i32 = -5;
+    /// This frame's call budget is spent ([`MAX_CALLS_PER_FRAME`]).
+    pub const BUDGET: i32 = -6;
+    /// The export declares more parameters than the ABI can pass
+    /// ([`MAX_CALL_ARGS`]).
+    pub const ARITY: i32 = -7;
+}
+
+/// Calls one node may make per frame. `fuel` is advisory (rustlite emits no fuel
+/// checks), so without this a `for i in 0..1e6 { call(...) }` is an unbounded
+/// synchronous stall whose only backstop is the main-thread watchdog killing the
+/// cartridge. Mirrored as `COMPOSE_MAX_CALLS_PER_FRAME` in the worker.
+pub const MAX_CALLS_PER_FRAME: u32 = 4096;
+
+/// Integer args `compose::call` can forward. The host passes the first
+/// `min(export.arity, MAX_CALL_ARGS)` of them, so a 0-, 1-, 2-, 3- or 4-arg
+/// export is callable through ONE host function; a wider export is refused with
+/// [`call_status::ARITY`] rather than being called with garbage.
+pub const MAX_CALL_ARGS: usize = 4;
+
 /// Resource caps for a composition — the security gate that stops an
 /// attacker-authored or runaway compose graph from exhausting the host (linear
 /// memory) or the sponsor (per-mount fees). The adversarial critique flagged

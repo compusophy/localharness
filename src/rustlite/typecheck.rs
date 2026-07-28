@@ -1352,7 +1352,35 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         // `close_module(handle) -> i32`  tear the child down (drop its instance
         //   + buffer + rect; free the slot, never aliased). 1 ok, 0 bad handle.
         // `module_count() -> i32`  number of live (non-closed) children.
+        //
+        // --- the CALLABLE-LIBRARY half (telemetry #70) --------------------
+        // Composition above is PIXELS: a child draws into a rect. These three
+        // make it FUNCTIONS too, so a published cartridge can be a reusable
+        // LIBRARY (a physics kernel, a PRNG, an entity table) instead of every
+        // game re-implementing the engine. Same mount, same budget; the child
+        // just runs headless and you invoke its exports.
+        //
+        // `spawn_lib(name) -> handle`  mount <name>'s app.wasm HEADLESS: no
+        //   rect, no framebuffer, never ticked or blitted, not focusable. Costs
+        //   wasm bytes + one node slot, ZERO framebuffer budget. Async like
+        //   spawn_module — poll `status(h) == 1` before calling.
+        // `call(handle, fname, a0, a1, a2, a3) -> i32`  invoke the child's
+        //   export named `fname` (a string literal, same pointer ABI as above).
+        //   The first `min(arity, 4)` args are forwarded, so ONE host fn covers
+        //   0..4-arg exports; a wider export is refused (ARITY). Returns the
+        //   export's own i32 (0 for a void export).
+        // `call_ok() -> i32`  status of the LAST call: 0 ok, -1 bad handle,
+        //   -2 not ready, -3 no such export, -4 the export trapped (the callee
+        //   is tombstoned; the CALLER survives), -5 re-entrant, -6 per-frame
+        //   call budget spent, -7 arity too wide. Because `call` returns the
+        //   export's own value, 0 is ambiguous — CHECK THIS, don't assume.
+        //   Codes are `crate::compose::call_status` (mirrored in the worker).
+        // Every rustlite `fn` is already a wasm export, so a library is just a
+        // cartridge whose functions you call instead of whose pixels you blit.
         "compose::spawn_module" => (vec![String, I32, I32, I32, I32], I32),
+        "compose::spawn_lib" => (vec![String], I32),
+        "compose::call" => (vec![I32, String, I32, I32, I32, I32], I32),
+        "compose::call_ok" => (vec![], I32),
         "compose::status" => (vec![I32], I32),
         "compose::move_module" => (vec![I32, I32, I32, I32, I32], I32),
         "compose::focus_module" => (vec![I32], I32),
@@ -1422,6 +1450,34 @@ mod host_fn_tests {
         }
         // The module-elision default (display) must NOT swallow compose fns.
         assert!(resolve_host_fn("compose::spawn_module").is_some());
+    }
+
+    #[test]
+    fn host_compose_call_signatures_resolve() {
+        use ResolvedType::{String as Str, I32};
+        // spawn_lib(name) -> handle: a headless mount takes NO rect.
+        let (m, f, p, r) = resolve_host_fn("host::compose::spawn_lib").expect("spawn_lib resolves");
+        assert_eq!((m.as_str(), f.as_str()), ("compose", "spawn_lib"));
+        assert_eq!(p, vec![Str], "library mount is name-only — no rect");
+        assert_eq!(r, I32);
+
+        // call(handle, fname, a0..a3) -> i32. Fixed 4 int args (the host
+        // forwards min(arity, MAX_CALL_ARGS)), so ONE host fn covers 0..4-arg
+        // exports while staying under the host-closure arity ceiling.
+        let (_m, _f, p, r) = resolve_host_fn("host::compose::call").expect("call resolves");
+        assert_eq!(p, vec![I32, Str, I32, I32, I32, I32]);
+        assert_eq!(r, I32);
+        assert_eq!(
+            p.len(),
+            2 + crate::compose::MAX_CALL_ARGS,
+            "handle + name + exactly MAX_CALL_ARGS integer args"
+        );
+
+        // call_ok() -> i32: the status latch, because a call's return value is
+        // the export's own i32 and 0 is ambiguous.
+        let (_m, _f, p, r) = resolve_host_fn("host::compose::call_ok").expect("call_ok resolves");
+        assert!(p.is_empty());
+        assert_eq!(r, I32);
     }
 
     #[test]

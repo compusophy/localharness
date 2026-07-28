@@ -10,12 +10,13 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 // Default chat model FOR THE GEMINI BACKEND. Verify ids against the live API
-// before changing (model ids flip; re-test 400s). Other backends carry their
-// own default (e.g. `claude-haiku-4-5-20251001` for the Anthropic backend).
+// before changing (model ids flip; re-test 400s) — `scripts/gemini-model-drift.sh`
+// diffs these two consts against the live ListModels catalog. Other backends carry
+// their own default (e.g. `claude-haiku-4-5-20251001` for the Anthropic backend).
 /// Default chat model ID (Gemini backend).
-pub const DEFAULT_MODEL: &str = "gemini-3.5-flash";
+pub const DEFAULT_MODEL: &str = "gemini-3.6-flash";
 /// Default image generation model ID.
-pub const DEFAULT_IMAGE_GENERATION_MODEL: &str = "gemini-2.0-flash-exp-image-generation";
+pub const DEFAULT_IMAGE_GENERATION_MODEL: &str = "gemini-3.1-flash-image";
 
 // =============================================================================
 // Model configuration

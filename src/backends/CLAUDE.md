@@ -22,7 +22,10 @@ backends, it belongs in the shared core.
 
 ## Gemini (the default path — most quirks)
 - **Model IDs FLIP — verify against the LIVE API, never trust memory.**
-  `DEFAULT_MODEL = gemini-3.5-flash`; `gemini-2.5-flash` now 400s. `curl` the live
+  `DEFAULT_MODEL = gemini-3.6-flash`, `DEFAULT_IMAGE_GENERATION_MODEL =
+  gemini-3.1-flash-image`; `gemini-2.5-flash` and `gemini-2.0-flash-exp-image-
+  generation` now 404/400. `scripts/gemini-model-drift.sh` diffs both consts against
+  the live catalog and names any newer Flash — run it before defending a pin. `curl` the live
   `:generateContent` before changing/defending a model constant. If the user says a
   model is wrong, TEST THEIRS FIRST.
 - **Union-type tool schemas 400 → bricks ALL chat.** `input_schema` must use a

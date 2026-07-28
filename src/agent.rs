@@ -265,7 +265,7 @@ impl GeminiAgentConfig {
     /// // agent into an allowlist (only the named tools run), and `with_workspace`
     /// // sandboxes the filesystem builtins to that directory.
     /// let cfg = GeminiAgentConfig::new("my-api-key")
-    ///     .with_model("gemini-3.5-flash")
+    ///     .with_model("gemini-3.6-flash")
     ///     .with_system_instructions("You are a careful coding assistant.")
     ///     .with_workspace("/path/to/project")
     ///     .with_policies(vec![

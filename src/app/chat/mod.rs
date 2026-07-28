@@ -477,7 +477,7 @@ pub(crate) async fn run_send() {
 /// DYNAMIC thinking by default; with no `maxOutputTokens` set, a hard task's
 /// reasoning can exhaust the model's default window before any final-answer
 /// text is emitted — the turn ends `MAX_TOKENS` with empty text, surfacing as
-/// "(empty response)" on mobile. A generous cap (well within gemini-3.5-flash's
+/// "(empty response)" on mobile. A generous cap (well within gemini-3.6-flash's
 /// 65536-token output limit) leaves room for the model to BOTH reason AND
 /// answer in one call. Paired with a bounded thinking level so reasoning can't
 /// monopolise it. (Phones aren't the cause — the same too-small default budget

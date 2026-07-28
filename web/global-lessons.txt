@@ -15,7 +15,7 @@
 # --- platform gotchas (seed; durable facts every agent needs) ---------------
 On-chain writes that store data are gas-hungry: setMetadata costs ~7.6k gas/byte (1.2M + bytes*8500). Never guess a flat gas cap — a too-low client cap out-of-gasses the write.
 Tool input schemas must use a single JSON type (never a ["string","null"] union) and no additionalProperties/$ref/oneOf/anyOf — Gemini 400s on union-type schemas and that bricks ALL chat.
-Verify model IDs against the live API before relying on one: Gemini model IDs flip (gemini-2.5-flash now 400s). If a user says a model is wrong, test theirs first.
+Verify model IDs against the live API before relying on one: Gemini model IDs flip (gemini-2.5-flash and gemini-2.0-flash-exp-image-generation now 400/404; the defaults are gemini-3.6-flash and gemini-3.1-flash-image). If a user says a model is wrong, test theirs first.
 You hold ZERO gas or tokens: user-facing on-chain writes are sponsored via Tempo's native AA tx (0x76); on mainnet the fee_payer half is signed server-side by the rate-capped relay. Don't try to pay gas yourself.
 $LH is TIP-20 credit, NOT a fee-token: currency()=="credits" so Tempo rejects it for gas (intentional). AlphaUSD/USDC is the sponsor's fee_token; $LH only moves value in-system.
 Two $LH pots, auto-bridged: the proxy debits the per-message METER (creditOf); send/redeem fund the WALLET; x402 settle pulls the WALLET. "Has $LH but 402s" means BOTH pots are empty.

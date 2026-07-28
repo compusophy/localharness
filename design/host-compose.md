@@ -227,7 +227,50 @@ close_module(handle)
 
 module_count() -> i32
         Number of live (non-closed) children. Lets the parent enumerate.
+
+──── the CALLABLE-LIBRARY half (SHIPPED, telemetry #70) ───────────────
+spawn_lib(name_ptr) -> handle
+        Mount <name>'s published app.wasm HEADLESS: no rect, no
+        framebuffer, never ticked or blitted, not focusable. Same async
+        mount as spawn_module (poll status(handle) == 1), same node/byte
+        budget, but ZERO framebuffer budget. A library node is a LEAF —
+        it gets the inert compose api, since anything it spawned could
+        never draw.
+
+call(handle, fname_ptr, a0, a1, a2, a3) -> i32
+        Invoke the child's export named `fname` and return its i32 (0 for
+        a void export). The host forwards the first
+        min(arity, MAX_CALL_ARGS=4) args, so ONE host fn covers 0..4-arg
+        exports; a wider export is REFUSED (never called with garbage).
+        Synchronous and in-thread — the same call the composite walk
+        already makes when it runs a child's frame().
+
+call_ok() -> i32
+        Status of the LAST call. 0 ok · -1 bad handle · -2 not ready ·
+        -3 no such export · -4 the export TRAPPED (callee tombstoned, the
+        CALLER survives) · -5 re-entrant · -6 per-frame call budget
+        (MAX_CALLS_PER_FRAME=4096) · -7 arity too wide. Load-bearing:
+        `call` returns the export's own i32, so 0 is ambiguous.
 ```
+
+**Why this closes the "reusable Legos" ask.** Composition was pixels-only: a
+parent could show another cartridge, but a *physics* or *entity-database* agent
+had nothing to expose — so every game one-shot its own engine (the exact
+complaint in telemetry #70). Every rustlite `fn` was ALREADY a wasm export; the
+worker simply discarded the child's exports object at instantiate. Retaining it
+plus a headless mount is the whole mechanism.
+
+**What it is NOT.** Integer-in/integer-out only. Each child owns a separate
+linear memory, and rustlite cannot produce a pointer, so arrays/structs/strings
+cannot cross — a v2 would follow the host-held-data + handle-accessor pattern
+(`http::body_lines`/`draw_line`) rather than passing references. There is also no
+interface version or hash: a library is addressed by NAME, and its author can
+republish different bytes under it.
+
+⛔ **Trap containment inverts here.** In the composite walk a trapping child is
+caught and tombstoned. A trap raised inside a parent's host import unwinds
+through the PARENT's wasm frame — without the try/catch in `call`, one bad
+library would brick every consumer with LH1002.
 
 ### How the child sees a display offset to its rect
 
@@ -591,6 +634,9 @@ by writing ~30 lines of rustlite.
   `public_face` is `html` should render its HTML snapshot into the rect via
   `paint_html_fb`. Straightforward, not in the first cut.
 - **Keyboard routing** to the focused module (cartridges are pointer-only today).
+- **A library ECOSYSTEM** — `call` makes a library *mechanically* possible;
+  discovery, versioning, and a dependency story for composed parts do not exist.
+  A library is addressed by a bare name whose bytes can be republished.
 - **Recursive composition** (a module spawning sub-modules). v1 caps nesting at
   depth 1 — a child's `host_compose.spawn_module` returns `FAILED`. When recursion
   is opened, the bound is `ComposeBudget` (`src/compose.rs`): `max_children` (the

@@ -132,9 +132,15 @@ Genuinely-unbuilt docs, each with a `STATUS: open` header:
   shipped rustlite compiler: neural-net-as-compiler / a model trained to write
   Rust; cartridge composition + macros.
 - [`host-compose.md`](host-compose.md) — framebuffer-resident cartridge
-  composition (a window manager over one shared RGBA buffer, no iframes). The
-  concept is sound; the `host::compose` ABI is unbuilt. Subsumes the open
-  cartridge host-import / rich-context-cartridge frontier.
+  composition (a window manager over one shared RGBA buffer, no iframes).
+  SHIPPED, and now callable: `spawn_lib`/`call`/`call_ok` reuse a published
+  cartridge as a LIBRARY, not just as pixels (telemetry #70). Open: the library
+  ecosystem — discovery, versioning, a dependency story.
+- [`agent-mesh-interop.md`](agent-mesh-interop.md) — what we would (and would
+  NOT) adopt from Buzz / Hermes (telemetry #78): a per-point map of the proposed
+  "unified harness standard" against what this repo actually has. Nostr = a
+  cheap signed lane worth prototyping; portable `.agent/` = right goal, wrong
+  carrier; the Telegram/Discord gateway is one wire from working.
 - [`autonomous-loop.md`](autonomous-loop.md) — the agent "immune system". The
   colony loop shipped, but the jailed `qa_tools` execution surface, the
   three-rung autonomy dial, and the unattended fix-agent (`propose` rung)

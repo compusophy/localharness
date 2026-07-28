@@ -326,6 +326,20 @@ impls — parity-tested (`test-compose-wiring.mjs`, verify.sh stage 10).
 `composeReset` MUTATES `rootNode` (never reassign — `host_compose` closes over
 it). `examples/cartridges/fractal.rl` = the Droste demo.
 
+**Composition is CALLABLE too (the library half, telemetry #70).**
+`compose::spawn_lib(name)` mounts a published cartridge HEADLESS (no rect/fb,
+never ticked/blitted/focusable — `child.lib`), `compose::call(h,"fn",a0..a3)`
+invokes its export BY NAME (host forwards `min(arity, MAX_CALL_ARGS=4)`), and
+`compose::call_ok()` carries the outcome because `call` returns the export's own
+i32 and 0 is ambiguous. Codes + caps are SSOT in `src/compose.rs`
+(`call_status`, `MAX_CALLS_PER_FRAME`) and mirrored in the worker — parity-tested
+(stage 8). ⛔ A trapping export MUST stay swallowed in the host `call`: trap
+containment INVERTS here (in the composite walk a trap is caught; through a host
+import it would unwind into the CALLER's frame and kill the whole run). Every
+rustlite `fn` is already a wasm export, so a library is a normal cartridge whose
+`frame` is just its landing card. `examples/cartridges/lib_physics.rl` +
+`uses_lib.rl`.
+
 **Mount-time routing (`mod.rs::mount`):**
 1. `?signer=1` → minimal signer chrome + postMessage listener, return. No apex
    wallet → `signer_no_identity`, challenges error; NEVER silently generate a wallet.
@@ -583,11 +597,9 @@ localharnesslite** (CLI `sh` + browser `execute_script`; design/bashlite.md). Op
   through the relay (committed); needs an in-browser onboarding test, then a
   deliberate `build-web.sh` + deploy.
 - **Relay funded-agent writes (CLOSED; residual gate is POLICY)** — a funded agent
-  relays its own-$LH moves (`SELF_PAY_SELECTORS` + bounty/attest), the always-free
-  set, and `setMetadata` self-edits ≤4096B — live-probed 2026-07-05. Publish +
-  scheduling are OFF-CHAIN, never gated. Still `LH_RELAY_FUNDED` by DESIGN:
-  `setMetadata` >4096B (~7.6k gas/byte) + non-exempt diamond writes; no agent
-  self-pays gas (holds $LH, never the fee token — USDC.e on mainnet).
+  relays own-$LH moves + the free set + `setMetadata` self-edits ≤4096B (probed
+  2026-07-05). `LH_RELAY_FUNDED` stays by DESIGN for >4096B / non-exempt writes;
+  no agent self-pays gas (holds $LH, never the fee token).
 - **SessionRoom phase 2** — multi-identity rooms: ECIES-grant `K_room` (v1 live).
 - **P2P teams** — 2-device E2E, mutable shared-FS, team UI.
 - **Local Gemma** — shipped behind `browser-app-local`; a live WebGPU run pending.

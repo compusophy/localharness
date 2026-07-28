@@ -26,6 +26,19 @@ in `web/cartridge-worker.js` and PARITY-TESTED (`test-compose-wiring.mjs`, verif
 — a missing JS binding fails instantiation ("module is not an object or function").
 Prefer a CODEGEN DESUGAR over a new import when the data is compile-time-known.
 
+## A cartridge is also a LIBRARY (host::compose::call, telemetry #70)
+Every rustlite `fn` is emitted as a wasm export (`codegen::emit_module` exports
+ALL functions, not just the entry), so a published cartridge is already a callable
+library. `compose::spawn_lib(name)` mounts one HEADLESS and
+`compose::call(h,"fn",a0..a3)` invokes it; `compose::call_ok()` carries the
+outcome because `call` returns the export's own i32. Consequences when you touch
+this: the ABI passes at most `compose::MAX_CALL_ARGS`=4 ints (a wider export is
+REFUSED, not called with garbage — arity is `fn.length` on the JS side); status
+codes + caps are SSOT in `src/compose.rs`; and a library still needs a
+`frame`/`render` (publish gates on it — `publish::cartridge_has_entry`), which is
+its landing card and never runs while mounted headless.
+`examples/cartridges/lib_physics.rl` + `uses_lib.rl` are the pair.
+
 ## `draw_string` is a desugar, not a host import (the pattern to copy)
 `host::display::draw_string(x,y,"LIT",color,scale)` lowers at the PARSER stage to
 one `draw_char` per glyph (6px stride, matching `raster::draw_number`) — NO new host

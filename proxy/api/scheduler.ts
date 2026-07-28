@@ -101,7 +101,7 @@ import { TEMPO_RPC, REGISTRY, CHAIN_ID, FEE_TOKEN } from './_chain';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 // Mirrors mcp.ts ASK_MODEL / the headless `call` default. No per-job model
 // selection in the MVP — every scheduled run uses the platform Gemini model.
-const RUN_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.5-flash';
+const RUN_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.6-flash';
 
 // $LH (18-decimal wei) debited per scheduled run, matching the proxy's
 // COST_PER_REQUEST_WEI (gemini.ts / _prices.ts) — the platform FLOOR price,

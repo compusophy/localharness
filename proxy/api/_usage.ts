@@ -56,7 +56,8 @@ interface Rate {
 // Dollars per 1M tokens [input, output, cached]. Keyed by the same model ids the
 // proxy fronts (see _prices.ts / src/backends wire ids).
 const RATE_USD: Record<string, [number, number, number]> = {
-  // Gemini (live-verified)
+  // Gemini (live-verified against ai.google.dev/gemini-api/docs/pricing)
+  'gemini-3.6-flash': [1.5, 7.5, 0.15],
   'gemini-3.5-flash': [1.5, 9.0, 0.15],
   'gemini-2.5-flash': [0.3, 2.5, 0.03],
   // Anthropic (live-verified); cache-read ~0.1x input

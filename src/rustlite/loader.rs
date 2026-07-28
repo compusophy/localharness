@@ -245,10 +245,22 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     let _ = Reflect::set(&host_compose, &JsValue::from_str("focused"), compose_none.as_ref());
     let _ = Reflect::set(&host_compose, &JsValue::from_str("close_module"), compose_one.as_ref());
     let _ = Reflect::set(&host_compose, &JsValue::from_str("module_count"), compose_none.as_ref());
+    // The callable-library half (telemetry #70): spawn_lib mounts nothing here,
+    // call returns 0, and call_ok reports BAD_HANDLE — so a compile-check run of
+    // a library-consuming cartridge links and reads as "no compositor", never as
+    // a successful call returning a real 0.
+    let compose_call = Closure::<dyn Fn(i32, i32, i32, i32, i32, i32) -> i32>::new(|_a, _b, _c, _d, _e, _f| 0);
+    let compose_call_ok =
+        Closure::<dyn Fn() -> i32>::new(|| crate::compose::call_status::BAD_HANDLE);
+    let _ = Reflect::set(&host_compose, &JsValue::from_str("spawn_lib"), compose_one.as_ref());
+    let _ = Reflect::set(&host_compose, &JsValue::from_str("call"), compose_call.as_ref());
+    let _ = Reflect::set(&host_compose, &JsValue::from_str("call_ok"), compose_call_ok.as_ref());
     compose_spawn.forget();
     compose_one.forget();
     compose_move.forget();
     compose_none.forget();
+    compose_call.forget();
+    compose_call_ok.forget();
     let _ = Reflect::set(&imports, &JsValue::from_str("host_compose"), &host_compose);
 
     // host_display module — ambient stub. The REAL framebuffer host lives in

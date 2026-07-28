@@ -384,7 +384,108 @@ const childWasm = compileSource(childSrc, 'child');
   check('7i reset clears the FB total', worker.composeTotalFbBytes() === 0);
 }
 
+// ---- 8. THE CALLABLE-LIBRARY LAYER (telemetry #70) --------------------------
+// Composition as FUNCTIONS, not pixels: mount a cartridge HEADLESS (spawn_lib)
+// and invoke its named i32 exports (call), with the failure surfaced by a status
+// latch (call_ok) because the call's return value is the export's own i32.
+{
+  const ab = (w) => w.buffer.slice(w.byteOffset, w.byteOffset + w.byteLength);
+  const MOD_READY = 1, MOD_FAILED = 2;
+  const S = worker.CALL_STATUS;
+
+  // A library: real exports, plus a landing-card frame() that must NEVER run
+  // while it is mounted headless (it would paint the whole surface white).
+  const libWasm = compileSource(`
+fn dims() -> i32 { (64 << 16) | 64 }
+fn add(a: i32, b: i32) -> i32 { a + b }
+fn answer() -> i32 { 42 }
+fn quad(a: i32, b: i32, c: i32, d: i32) -> i32 { a + b + c + d }
+fn wide(a: i32, b: i32, c: i32, d: i32, e: i32) -> i32 { a + b + c + d + e }
+fn boom(a: i32) -> i32 { a / (a - a) }
+fn frame(t: i32) { host::display::clear(0xffffff); host::display::present(); }
+`, 'lib');
+
+  worker.composeReset();
+  let strPtr = worker.composeInstallRootMemory(); // real length-prefixed names
+  const h = worker.composeMountLibForTest('lib');
+  check('8a library mounts headless', h >= 0, `handle=${h}`);
+  worker.composeInstantiateForTest(h, ab(libWasm));
+  const lib = worker.composeChildren()[h];
+  check('8b library is READY with NO framebuffer', lib && lib.state === MOD_READY && lib.fb === null && lib.fbBytes === 0,
+    lib ? `state=${lib.state} fb=${lib.fb} fbBytes=${lib.fbBytes}` : 'none');
+  check('8c library retains its exports object', !!(lib && lib.exports && typeof lib.exports.add === 'function'));
+  check('8d library costs ZERO framebuffer budget', worker.composeTotalFbBytes() === 0, `total=${worker.composeTotalFbBytes()}`);
+
+  // A call returns the export's result; call_ok() says it ran.
+  check('8e call forwards args and returns the result', worker.host_compose.call(h, strPtr('add'), 7, 5, 0, 0) === 12);
+  check('8f call_ok is OK after a good call', worker.host_compose.call_ok() === S.OK);
+  check('8g 0-arg export is callable', worker.host_compose.call(h, strPtr('answer'), 0, 0, 0, 0) === 42);
+  check('8h 4-arg export gets all four', worker.host_compose.call(h, strPtr('quad'), 1, 2, 3, 4) === 10);
+
+  // The headless library is NOT composited: its frame() would clear the surface
+  // white, so a clean parent FB proves it was never ticked or blitted.
+  const PW = 64, PH = 64;
+  const parentFb = new Uint32Array(PW * PH);
+  worker.composeRunPass(parentFb, PW, PH, 0, { x: 0, y: 0, down: 0 });
+  check('8i headless library is never ticked or blitted', parentFb.every((p) => p === 0));
+  check('8j a library is not focusable', worker.host_compose.focus_module(h) === 0);
+  // The composite pass re-points rootNode.memory at the LIVE root cartridge's
+  // memory (null in this harness — there is no root cartridge), so re-install
+  // the scratch memory the name pointers live in before calling again.
+  strPtr = worker.composeInstallRootMemory();
+
+  // Every failure has a DISTINCT code — a silent 0 is the bug class this avoids.
+  check('8k bad handle', worker.host_compose.call(99, strPtr('add'), 1, 1, 0, 0) === 0 && worker.host_compose.call_ok() === S.BAD_HANDLE);
+  check('8l unknown export', worker.host_compose.call(h, strPtr('nope'), 0, 0, 0, 0) === 0 && worker.host_compose.call_ok() === S.NO_EXPORT);
+  check('8m arity wider than the ABI is refused, not called', worker.host_compose.call(h, strPtr('wide'), 1, 2, 3, 4) === 0 && worker.host_compose.call_ok() === S.ARITY);
+
+  // A still-LOADING library can't be called (the mount is async).
+  const hPending = worker.composeMountLibForTest('pending');
+  check('8n not-ready library refuses the call', worker.host_compose.call(hPending, strPtr('add'), 1, 1, 0, 0) === 0 && worker.host_compose.call_ok() === S.NOT_READY);
+
+  // THE containment property: a trapping export must tombstone the CALLEE and
+  // leave the caller running. (Inverted from the composite walk, where the
+  // try/catch already lived — a trap through a host import would otherwise
+  // unwind into the caller's frame and kill the whole cartridge.)
+  check('8o trapping export is contained', worker.host_compose.call(h, strPtr('boom'), 3, 0, 0, 0) === 0 && worker.host_compose.call_ok() === S.TRAPPED);
+  check('8p trapping callee is tombstoned', worker.composeChildren()[h].state === MOD_FAILED);
+  check('8q caller survives a callee trap', worker.host_compose.module_count() >= 0 && worker.host_compose.call_ok() === S.TRAPPED);
+
+  // Per-frame call budget: `fuel` is advisory, so an unbounded call loop would
+  // stall the worker until the main-thread watchdog kills it.
+  worker.composeReset();
+  const strPtr2 = worker.composeInstallRootMemory();
+  const h2 = worker.composeMountLibForTest('lib');
+  worker.composeInstantiateForTest(h2, ab(libWasm));
+  const nameAdd = strPtr2('add');
+  for (let i = 0; i < worker.COMPOSE_MAX_CALLS_PER_FRAME; i++) worker.host_compose.call(h2, nameAdd, 1, 1, 0, 0);
+  check('8r budget exhausts after MAX_CALLS_PER_FRAME', worker.host_compose.call(h2, nameAdd, 1, 1, 0, 0) === 0 && worker.host_compose.call_ok() === S.BUDGET,
+    `calls=${worker.composeCallsThisFrame()}`);
+  worker.composeResetCallBudget();
+  check('8s budget refills (a frame boundary)', worker.host_compose.call(h2, nameAdd, 2, 3, 0, 0) === 5 && worker.host_compose.call_ok() === S.OK);
+
+  // PARITY: the worker's CALL_* codes and caps mirror src/compose.rs. Drift here
+  // means a cartridge reads a status the host never sends.
+  const composeRs = readFileSync(join(ROOT, 'src', 'compose.rs'), 'utf8');
+  const rustConst = (name) => {
+    const m = composeRs.match(new RegExp(`pub const ${name}: i32 = (-?\\d+);`));
+    return m ? Number(m[1]) : NaN;
+  };
+  const rustUsize = (name) => {
+    const m = composeRs.match(new RegExp(`pub const ${name}: (?:u32|usize) = (\\d+);`));
+    return m ? Number(m[1]) : NaN;
+  };
+  for (const k of Object.keys(S)) {
+    check(`8t call_status::${k} matches Rust`, S[k] === rustConst(k), `js=${S[k]} rs=${rustConst(k)}`);
+  }
+  check('8u MAX_CALLS_PER_FRAME matches Rust', worker.COMPOSE_MAX_CALLS_PER_FRAME === rustUsize('MAX_CALLS_PER_FRAME'),
+    `js=${worker.COMPOSE_MAX_CALLS_PER_FRAME} rs=${rustUsize('MAX_CALLS_PER_FRAME')}`);
+  check('8v MAX_CALL_ARGS matches Rust', worker.COMPOSE_MAX_CALL_ARGS === rustUsize('MAX_CALL_ARGS'),
+    `js=${worker.COMPOSE_MAX_CALL_ARGS} rs=${rustUsize('MAX_CALL_ARGS')}`);
+  worker.composeReset();
+}
+
 console.log('');
-if (fail === 0) console.log('PASS: cartridge-in-cartridge composition wired (composite + pointer + parity + budget + fb-budget + recursion + depth cap)');
+if (fail === 0) console.log('PASS: cartridge-in-cartridge composition wired (composite + pointer + parity + budget + fb-budget + recursion + depth cap + callable libraries)');
 else console.error(`FAIL: ${fail} compose-wiring check(s) failed`);
 process.exit(fail === 0 ? 0 : 1);

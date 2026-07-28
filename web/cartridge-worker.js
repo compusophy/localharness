@@ -443,6 +443,29 @@ const MOD_LOADING = 0;
 const MOD_READY = 1;
 const MOD_FAILED = 2;
 
+// ---- the CALLABLE-LIBRARY layer (telemetry #70) ----------------------------
+// Composition used to be pixels-only: spawn a child, it draws into a rect. A
+// library agent ("physics", "entity db") had nothing to expose. `spawn_lib` +
+// `call` add the other half: mount a child HEADLESS (no framebuffer, never
+// ticked or blitted) and invoke its named i32 exports synchronously. The
+// mechanism already ran every frame — compositeChildren calls `c.frame(t)`
+// in-thread — the exports object was simply thrown away at instantiate.
+// Mirrors src/compose.rs (MAX_CALLS_PER_FRAME / MAX_CALL_ARGS / call_status).
+const COMPOSE_MAX_CALLS_PER_FRAME = 4096;
+const COMPOSE_MAX_CALL_ARGS = 4;
+const CALL_OK = 0;
+const CALL_BAD_HANDLE = -1;
+const CALL_NOT_READY = -2;
+const CALL_NO_EXPORT = -3;
+const CALL_TRAPPED = -4;
+const CALL_REENTRANT = -5;
+const CALL_BUDGET = -6;
+const CALL_ARITY = -7;
+// Status of the LAST call (read by call_ok). The return value is the export's
+// own i32, so 0 is ambiguous — failures are reported here, never in the result.
+let composeCallStatus = CALL_OK;
+let composeCallsThisFrame = 0;
+
 // The compose tree. Every node — the root parent AND every composited child —
 // owns a `children` array + a `focus` handle, so composition is recursive: a
 // child's children blit into the child's buffer, which blits into its parent's,
@@ -484,12 +507,14 @@ function reclaimableSlot(children) {
 
 // A fresh child slot in state LOADING (bytes arrive via the compose_bytes
 // round-trip). `depth` is the parent's depth + 1; `uid` keys the async reply.
-function makeChildSlot(name, x, y, w, h, depth, uid) {
+// `lib` marks a HEADLESS library node: no framebuffer, no frame export
+// required, never ticked/blitted/focusable — reachable only through call().
+function makeChildSlot(name, x, y, w, h, depth, uid, lib) {
   return {
-    name, uid, depth, state: MOD_LOADING,
+    name, uid, depth, state: MOD_LOADING, lib: !!lib,
     vp: { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) },
     w: FB_W_DEFAULT, h: FB_H_DEFAULT, fb: null,
-    memory: null, frame: null, bytes: 0, fbBytes: 0,
+    memory: null, frame: null, exports: null, inCall: false, bytes: 0, fbBytes: 0,
     state_regs: new Int32Array(64),
     ptr: { x: -1, y: -1, down: 0 },
     children: [], focus: -1,
@@ -610,7 +635,9 @@ function buildChildImports(child) {
   // A child gets a REAL compose api bound to its OWN table, so it can spawn
   // grandchildren (the fractal) — UNLESS it sits at the depth cap, where
   // makeComposeApi hands back the inert stub and spawn_module returns -1.
-  const child_compose = makeComposeApi(child);
+  // A LIBRARY node is a LEAF: it is never ticked, so anything it spawned would
+  // consume tree budget while never drawing or being reachable. Inert compose.
+  const child_compose = child.lib ? INERT_COMPOSE : makeComposeApi(child);
   // A child gets its own (no-op) net/http/audio/agent so its imports link, but
   // it can't reach the network/platform from inside a panel (the parent is the
   // surface). http: get refuses, pollers report bad-handle, parse_text no-ops.
@@ -671,6 +698,25 @@ function instantiateChild(child, wasmBuf) {
     return;
   }
   const exp = instance.exports;
+  // RETAIN the exports object — this is what makes compose::call possible. It
+  // used to be a function-local that died here, so a mounted child's functions
+  // were unreachable even though its frame() was invoked every tick.
+  child.exports = exp;
+  child.memory = exp.memory || null;
+  // A LIBRARY mounts headless: no dims(), no framebuffer, no frame export. It
+  // costs wasm bytes and a node slot, but ZERO framebuffer budget, and the
+  // composite walk skips it entirely.
+  if (child.lib) {
+    child.w = 0;
+    child.h = 0;
+    child.fb = null;
+    child.fbBytes = 0;
+    child.frame = null;
+    composeTotalBytes += bytes.length;
+    child.bytes = bytes.length;
+    child.state = MOD_READY;
+    return;
+  }
   const [dw, dh] = childDims(exp);
   // FRAMEBUFFER BUDGET (issue #78): the wasm-byte caps above don't bound the
   // surface a child allocates — childDims clamps to [FB_MIN, FB_MAX], so a tiny
@@ -686,7 +732,6 @@ function instantiateChild(child, wasmBuf) {
   child.w = dw;
   child.h = dh;
   child.fb = new Uint32Array(dw * dh);
-  child.memory = exp.memory || null;
   child.frame = (typeof exp.frame === 'function') ? exp.frame
     : (typeof exp.render === 'function') ? exp.render : null;
   if (!child.frame) { failLoadingChild(child); return; }
@@ -710,6 +755,9 @@ const INERT_COMPOSE = {
   spawn_module: () => -1, status: () => -1, move_module: () => 0,
   focus_module: () => -1, focused: () => -1, close_module: () => -1,
   module_count: () => 0,
+  // The callable-library half must be present here too, or a depth-capped node
+  // importing it dies at instantiate with "not a function".
+  spawn_lib: () => -1, call: () => 0, call_ok: () => CALL_BAD_HANDLE,
 };
 
 // Build the window-manager ABI bound to ONE node's child table. The root parent
@@ -720,34 +768,90 @@ const INERT_COMPOSE = {
 // the rest mutate the node's table synchronously.
 function makeComposeApi(node) {
   if (node.depth >= COMPOSE_MAX_DEPTH) return INERT_COMPOSE;
+  // Shared spawn path for both the visual (spawn_module) and headless
+  // (spawn_lib) mounts — identical caps, slot allocation and fetch round-trip;
+  // they differ only in the `lib` flag on the slot.
+  function spawnInto(name, x, y, w, h, lib) {
+    if (name === null || name === '') return -1;
+    if (liveChildCount(node.children) >= COMPOSE_MAX_CHILDREN) return -1; // per-node cap
+    if (composeTotalNodes >= COMPOSE_MAX_NODES) return -1;                // global fork-bomb cap
+    const uid = composeNextUid++;
+    // Allocate a slot (reuse a null hole OR a FAILED tombstone, else push) so a
+    // spawn-and-fail loop can't grow the table unbounded (issue #92). Slots
+    // never alias; a reused tombstone's budget was already reclaimed when it died.
+    let handle = reclaimableSlot(node.children);
+    const child = makeChildSlot(name, x, y, w, h, node.depth + 1, uid, lib);
+    if (handle < 0) { handle = node.children.length; node.children.push(child); }
+    else node.children[handle] = child;
+    composeTotalNodes += 1;
+    composeNodeIndex.set(uid, child);
+    if (typeof self !== 'undefined' && self.postMessage) {
+      self.postMessage({ type: 'compose_spawn', uid, name });
+    }
+    return handle;
+  }
   return {
     spawn_module(namePtr, x, y, w, h) {
-      const name = readStringFrom(node.memory, namePtr);
-      if (name === null || name === '') return -1;
-      if (liveChildCount(node.children) >= COMPOSE_MAX_CHILDREN) return -1; // per-node cap
-      if (composeTotalNodes >= COMPOSE_MAX_NODES) return -1;                // global fork-bomb cap
-      const uid = composeNextUid++;
-      // Allocate a slot (reuse a null hole OR a FAILED tombstone, else push) so a
-      // spawn-and-fail loop can't grow the table unbounded (issue #92). Slots
-      // never alias; a reused tombstone's budget was already reclaimed when it died.
-      let handle = reclaimableSlot(node.children);
-      const child = makeChildSlot(name, x, y, w, h, node.depth + 1, uid);
-      if (handle < 0) { handle = node.children.length; node.children.push(child); }
-      else node.children[handle] = child;
-      composeTotalNodes += 1;
-      composeNodeIndex.set(uid, child);
-      if (typeof self !== 'undefined' && self.postMessage) {
-        self.postMessage({ type: 'compose_spawn', uid, name });
-      }
-      return handle;
+      return spawnInto(readStringFrom(node.memory, namePtr), x, y, w, h, false);
     },
+    // Mount a published cartridge as a headless LIBRARY: no rect, no frame, no
+    // pixels — only its exports, reached with call(). Same async mount as
+    // spawn_module, so poll status(h) == 1 before calling.
+    spawn_lib(namePtr) {
+      return spawnInto(readStringFrom(node.memory, namePtr), 0, 0, 1, 1, true);
+    },
+    // Invoke a named i32 export of a mounted child. Returns the export's own
+    // result (0 for a void export) — check call_ok() for whether it ran at all.
+    // The first min(arity, 4) of a0..a3 are forwarded, so one host function
+    // covers 0..4-arg exports.
+    call(handle, namePtr, a0, a1, a2, a3) {
+      const c = node.children[handle];
+      if (!c) { composeCallStatus = CALL_BAD_HANDLE; return 0; }
+      if (c.state !== MOD_READY) { composeCallStatus = CALL_NOT_READY; return 0; }
+      // A called export runs the callee's code at a NEW point in the caller's
+      // frame; refuse to re-enter a node already inside a call so a cartridge
+      // can't recurse into itself through the host.
+      if (c.inCall) { composeCallStatus = CALL_REENTRANT; return 0; }
+      if (composeCallsThisFrame >= COMPOSE_MAX_CALLS_PER_FRAME) {
+        composeCallStatus = CALL_BUDGET; return 0;
+      }
+      const name = readStringFrom(node.memory, namePtr);
+      if (name === null || name === '') { composeCallStatus = CALL_NO_EXPORT; return 0; }
+      const fn = c.exports ? c.exports[name] : null;
+      if (typeof fn !== 'function') { composeCallStatus = CALL_NO_EXPORT; return 0; }
+      // Exported wasm functions report their exact parameter count as .length.
+      const arity = fn.length | 0;
+      if (arity > COMPOSE_MAX_CALL_ARGS) { composeCallStatus = CALL_ARITY; return 0; }
+      composeCallsThisFrame += 1;
+      c.inCall = true;
+      try {
+        const r = fn(...[a0 | 0, a1 | 0, a2 | 0, a3 | 0].slice(0, arity));
+        composeCallStatus = CALL_OK;
+        if (typeof r === 'number') return r | 0;
+        if (typeof r === 'bigint') return Number(BigInt.asIntN(32, r)); // i64 export
+        return 0; // void export
+      } catch (_e) {
+        // TRAP CONTAINMENT INVERTS HERE. A trapping child caught in the
+        // composite walk is tombstoned harmlessly; a trap raised inside a
+        // caller's host import would unwind THROUGH the caller's wasm frame and
+        // kill the whole run (LH1002) — one bad library bricking every consumer.
+        // Swallow it, tombstone the callee, keep the caller alive.
+        reclaimSubtree(c);
+        c.state = MOD_FAILED;
+        composeCallStatus = CALL_TRAPPED;
+        return 0;
+      } finally {
+        c.inCall = false;
+      }
+    },
+    call_ok: () => composeCallStatus,
     status(handle) {
       const c = node.children[handle];
       return c ? c.state : -1;
     },
     move_module(handle, x, y, w, h) {
       const c = node.children[handle];
-      if (!c) return 0;
+      if (!c || c.lib) return 0; // a library has no rect to move
       c.vp = { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) };
       return 1;
     },
@@ -755,8 +859,9 @@ function makeComposeApi(node) {
       if (handle === -1) { node.focus = -1; return 1; } // focus this node itself
       // Reject focusing an empty slot OR a FAILED tombstone (truthy) — focusing a
       // dead slot would silently sink the parent's pointer input (issue #92).
+      // A library is never composited, so focusing one would sink it too.
       const c = node.children[handle];
-      if (!c || c.state === MOD_FAILED) return 0;
+      if (!c || c.state === MOD_FAILED || c.lib) return 0;
       node.focus = handle;
       return 1;
     },
@@ -791,6 +896,8 @@ function composeReset() {
   composeTotalNodes = 0;
   composeNextUid = 1;
   composeNodeIndex.clear();
+  composeCallStatus = CALL_OK;
+  composeCallsThisFrame = 0;
 }
 
 // Recursively composite a node's children INTO a destination buffer. For each
@@ -807,6 +914,7 @@ function compositeChildren(node, dstFb, dstW, dstH, parentPtr, t) {
   for (let i = 0; i < children.length; i++) {
     const c = children[i];
     if (!c || c.state !== MOD_READY) continue;
+    if (c.lib) continue; // headless library: no pointer, no frame, no blit
     if (i === focus) {
       const mapped = mapPointerIntoChild(parentPtr.x, parentPtr.y, c.vp.x, c.vp.y, c.vp.w, c.vp.h, c.w, c.h);
       if (mapped) { c.ptr.x = mapped[0]; c.ptr.y = mapped[1]; c.ptr.down = parentPtr.down; }
@@ -1572,6 +1680,7 @@ function present() {
 function tick() {
   if (!running) return;
   fuel = FUEL_PER_FRAME;
+  composeCallsThisFrame = 0; // the per-frame compose::call budget refills here
   const t = (Date.now() - startMs) | 0;
   try {
     frameFn(t);
@@ -1799,14 +1908,14 @@ if (typeof module !== 'undefined' && module.exports) {
     // grandchild (recursion). The caller then feeds bytes via
     // composeInstantiateForTest and ticks via composeRunPass. Returns the handle
     // (index into the parent's children), or -1 when a cap is hit.
-    composeMountInto(parent, name, x, y, w, h) {
+    composeMountInto(parent, name, x, y, w, h, lib) {
       const node = parent || rootNode;
       if (node.depth >= COMPOSE_MAX_DEPTH) return -1;          // depth cap
       if (liveChildCount(node.children) >= COMPOSE_MAX_CHILDREN) return -1; // per-node cap
       if (composeTotalNodes >= COMPOSE_MAX_NODES) return -1;   // global cap
       const uid = composeNextUid++;
       let handle = reclaimableSlot(node.children); // reuse null hole OR FAILED tombstone (#92)
-      const child = makeChildSlot(name, x, y, w, h, node.depth + 1, uid);
+      const child = makeChildSlot(name, x, y, w, h, node.depth + 1, uid, lib);
       if (handle < 0) { handle = node.children.length; node.children.push(child); }
       else node.children[handle] = child;
       composeTotalNodes += 1;
@@ -1815,6 +1924,43 @@ if (typeof module !== 'undefined' && module.exports) {
     },
     composeMountForTest(name, x, y, w, h) {
       return module.exports.composeMountInto(null, name, x, y, w, h);
+    },
+    // Mount a HEADLESS library slot (the spawn_lib shape) — same async mount,
+    // no rect. Feed bytes with composeInstantiateForTest, then call().
+    composeMountLibForTest(name, parent) {
+      return module.exports.composeMountInto(parent || null, name, 0, 0, 1, 1, true);
+    },
+    // The callable-library ABI under test + the caps/status codes it mirrors
+    // from src/compose.rs (parity-asserted by test-compose-wiring.mjs).
+    COMPOSE_MAX_CALLS_PER_FRAME,
+    COMPOSE_MAX_CALL_ARGS,
+    CALL_STATUS: {
+      OK: CALL_OK, BAD_HANDLE: CALL_BAD_HANDLE, NOT_READY: CALL_NOT_READY,
+      NO_EXPORT: CALL_NO_EXPORT, TRAPPED: CALL_TRAPPED, REENTRANT: CALL_REENTRANT,
+      BUDGET: CALL_BUDGET, ARITY: CALL_ARITY,
+    },
+    composeCallsThisFrame: () => composeCallsThisFrame,
+    composeResetCallBudget: () => { composeCallsThisFrame = 0; },
+    // Install a scratch linear memory as the ROOT node's memory and return a
+    // writer that lays out a length-prefixed UTF-8 string (the real host string
+    // encoding) and yields its pointer — so a test drives the REAL
+    // readStringFrom path rather than a bypass.
+    composeInstallRootMemory() {
+      const mem = new WebAssembly.Memory({ initial: 1 });
+      rootNode.memory = mem;
+      let next = 64;
+      return (s) => {
+        const b = new TextEncoder().encode(s);
+        const p = next;
+        const a = new Uint8Array(mem.buffer);
+        a[p] = b.length & 0xff;
+        a[p + 1] = (b.length >> 8) & 0xff;
+        a[p + 2] = (b.length >> 16) & 0xff;
+        a[p + 3] = (b.length >> 24) & 0xff;
+        a.set(b, p + 4);
+        next = p + 4 + b.length + 8;
+        return p;
+      };
     },
     // Instantiate fetched bytes into the child at `handle` of `parent`'s table
     // (root if parent is null) — the test's stand-in for the compose_bytes reply.

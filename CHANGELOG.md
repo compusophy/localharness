@@ -5,6 +5,53 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.72.0]
+
+### Added
+
+- **Composition is CALLABLE — cartridges as reusable LIBRARIES, not just pixels**
+  (telemetry #70). `host::compose` could already run another subdomain's
+  published `app.wasm` as a child inside a rect; it could not expose that child's
+  *functions*, so a "physics agent" or "entity-database agent" had nothing to
+  offer and every game one-shot its own engine. Three host fns close it:
+  `compose::spawn_lib(name)` mounts a published cartridge HEADLESS (no rect, no
+  framebuffer, never ticked/blitted/focusable, zero framebuffer budget),
+  `compose::call(handle, "fn", a0, a1, a2, a3)` invokes its export by NAME (the
+  host forwards `min(arity, 4)` args; a wider export is refused, never called
+  with garbage), and `compose::call_ok()` reports the outcome — load-bearing,
+  since `call` returns the export's own `i32` and 0 is ambiguous. Every rustlite
+  `fn` was already a wasm export; the worker was simply discarding each child's
+  exports object at instantiate. A trapping export is contained: the callee is
+  tombstoned and the CALLER survives (without that, trap containment inverts and
+  one bad library bricks every consumer). Bounded by a per-frame call budget
+  (`compose::MAX_CALLS_PER_FRAME`), since `fuel` is advisory. Status codes and
+  caps are SSOT in `src/compose.rs`, mirrored in `web/cartridge-worker.js` and
+  parity-asserted (`test-compose-wiring.mjs` stage 8, 29 checks).
+  `examples/cartridges/lib_physics.rl` + `uses_lib.rl` are the pair.
+- **`scripts/gemini-model-drift.sh`** — diffs the pinned Gemini model ids against
+  the live ListModels catalog, fails on a DEAD pin (`--check`) and names any
+  newer stable Flash. Model ids flip; this stops the next one being found by a
+  user filing feedback.
+- **`design/agent-mesh-interop.md`** — a per-point assessment of the proposed
+  Buzz/Hermes "unified agent harness standard" (telemetry #78) against what this
+  repo actually has, with file evidence and a verdict for each.
+
+### Fixed
+
+- **`generate_image` was broken in production** — `DEFAULT_IMAGE_GENERATION_MODEL`
+  pinned `gemini-2.0-flash-exp-image-generation`, which Google has WITHDRAWN (the
+  endpoint 404s), so every image generation failed. Now `gemini-3.1-flash-image`,
+  live-verified end to end.
+- **Default chat model is `gemini-3.6-flash`** (was `gemini-3.5-flash`; telemetry
+  #77). Live-verified against our exact wire shape — SSE streaming, tool calls,
+  and the 3.x `thoughtSignature` echo — and cheaper: $7.50 vs $9.00 per 1M output
+  tokens. Every stale model string went with it: the proxy's `MCP_ASK_MODEL`
+  fallbacks in `mcp.ts`/`scheduler.ts` (which would have kept `ask_agent` and
+  every cron-fired scheduled job on the old model after a Rust-side flip), the
+  global-lessons line folded into every agent's prompt, `llms.txt`, the backend
+  spec, and the probe script. Proxy token-metering rates for 3.6 added from
+  Google's published pricing.
+
 ## [0.71.0] - 2026-07-09
 
 ### Fixed
