@@ -5,6 +5,56 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.73.0]
+
+### Added
+
+- **`lessons` / `skills` / `state` — a CLI agent can finally LEARN** (telemetry
+  #78). The learned-state blobs were always READ by the CLI (`call` folds them
+  into the headless system prompt) but only the browser could ever WRITE them,
+  so a terminal-only agent could never record what it learned.
+  `localharness lessons <name> [--add <lesson>]` shows or merges a lesson;
+  `skills <name> [--set <skill> <instructions...> | --rm <skill>]` manages named
+  skills; `state <name> [--out <file>] [--in <file>]` exports/imports the
+  portable agent-state bundle (persona + lessons + skills as versioned JSON,
+  never key material). Writes reuse the SAME pure cores the browser tools use
+  (`lessons::merge_lesson`, `skills::upsert`), so a terminal-written lesson is
+  byte-identical to a tab-written one, and both sides are sanitized through
+  those cores before comparing — an unchanged blob costs no gas. Reads need no
+  key, so any agent's published state is inspectable. ⛔ ONE TX PER SLOT, never
+  batched: `setMetadata` is ~8.5k gas/BYTE, so a full bundle batch asks ~89M gas
+  against the relay's 50M cap; each slot fits alone.
+
+### Fixed
+
+- **Repeat tool pills FOLD instead of flooding the transcript** (telemetry #79).
+  A live mainnet mobile agent watched eight consecutive `compile_rustlite`
+  checks fill a 411px screen. Consecutive calls of a cheap check
+  (`turn_flow::FOLDABLE_TOOLS`) now collapse into ONE pill with a `×N` count
+  instead of an Nth 38px row — and nothing is hidden: every attempt keeps its
+  args and result inside the collapsed body. The fold anchor spans TURNS on
+  purpose (auto-continue paints a bubble per continuation, so the checks land
+  one per bubble), and a continuation whose only output folded upward has its
+  now-empty bubble dropped. History replay folds identically via
+  `turn_flow::fold_runs`, or a reload would re-expand what the session folded.
+  `FOLDABLE_TOOLS` is an ALLOWLIST — no value move, burn, or card-bearing tool
+  can ever fold away.
+- **A superseded cartridge card no longer lingers as a dead duplicate** (#79).
+  Only one cartridge runs at a time, so publishing an app that was already
+  running inline left the first card as a black canvas showing the same app —
+  what the report called "duplicate UI cards". `set_active_canvas` now retires
+  the card it supersedes (DOM-only; the new run owns the worker), sharing the
+  placeholder swap with `close_embed`. Fullscreen round-trips stay exempt both
+  ways. The prompt also no longer offers `run_cartridge` AFTER
+  `create_and_publish_app` on the same source — publishing already plays it.
+- **The embed stash is a QUEUE, not one global slot.** Found while verifying the
+  above: the engine dispatches a turn's tool calls back-to-back into a buffer
+  while the UI paints behind it, so two embedding tools in one turn raced — card
+  A launched B's cartridge and card B stayed permanently BLACK. Stash order ==
+  call order == result order (the correlation `pending_tools` already relies
+  on), so a FIFO pairs them exactly; `run_send` clears it per request so a
+  cancelled turn can't shift every later pair.
+
 ## [0.72.0] - 2026-07-27
 
 ### Added
