@@ -585,6 +585,68 @@ pub(crate) fn parse_compile_args(rest: &[String]) -> Result<(String, Option<Stri
     Ok((source.ok_or(USAGE)?, out, host_calls))
 }
 
+/// `localharness receipt <src.rl> [--check <0xhash>]` — emit (or verify) the
+/// BUILD receipt for a cartridge: the hash-committed binding of source bytes →
+/// emitted wasm bytes under this compiler version (`localharness::receipt`).
+/// The natively-checkable half of execution receipts: the compiler is
+/// deterministic, so anyone on the same crate version reproduces the same
+/// receipt from the same source — a regression pin for published cartridges.
+/// (Execution/call receipts ride the same layout but are emitted where
+/// execution happens — the browser; no native wasm host exists by design.)
+pub(crate) fn receipt_cmd(rest: &[String]) -> i32 {
+    const USAGE: &str = "usage: localharness receipt <src.rl> [--check <0xhash>]";
+    let (check, rest) = match crate::take_value_flag(rest, "--check", USAGE) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let [source_path] = rest.as_slice() else {
+        eprintln!("{USAGE}");
+        return 2;
+    };
+    let src = match read_file_clean(source_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let wasm = match compile_big_stack(&src) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("✗ {source_path} does not compile: {e}");
+            return 1;
+        }
+    };
+    let receipt = localharness::receipt::Receipt::build(&src, &wasm);
+    match check {
+        None => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&receipt.to_json()).unwrap_or_default()
+            );
+            0
+        }
+        Some(want) => {
+            let got = format!("0x{}", bytes_to_hex_str(&receipt.hash()));
+            // bytes_to_hex_str may itself 0x-prefix; normalize both sides.
+            let norm = |s: &str| s.trim().trim_start_matches("0x").to_lowercase();
+            if norm(&got) == norm(&want) {
+                println!("✓ receipt matches — {source_path} still builds to the pinned bytes");
+                0
+            } else {
+                eprintln!("✗ receipt mismatch for {source_path}");
+                eprintln!("  pinned:  0x{}", norm(&want));
+                eprintln!("  current: 0x{}", norm(&got));
+                eprintln!("  (source, compiler version, or codegen changed)");
+                1
+            }
+        }
+    }
+}
+
 /// Compile-check a rustlite cartridge locally and report its size — NO on-chain
 /// write. Lets an author iterate before spending a sponsored publish. With
 /// `out_path`, also writes the compiled `.wasm`. With `host_calls`, dumps the

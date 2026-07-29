@@ -357,6 +357,13 @@ pub mod registry;
 #[cfg(feature = "wallet")]
 pub mod tempo_tx;
 
+/// Execution receipts — content-addressed, hash-committed records that a
+/// specific deterministic computation happened (build receipts today;
+/// browser-side call receipts ride the same canonical layout). See
+/// `src/receipt.rs` for the versioned preimage contract.
+#[cfg(feature = "wallet")]
+pub mod receipt;
+
 /// READ-ONLY multi-chain EVM tools (balances / `eth_call` / ENS) over
 /// `registry::multichain` — registered by the browser chat session AND the
 /// headless CLI `call`, so identifier resolution is real on both surfaces.

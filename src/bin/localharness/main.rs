@@ -320,6 +320,12 @@ CARTRIDGES & PUBLISHING
   localharness compile <src.rl> [--host-calls]
                                          compile-check a cartridge locally (no write);
                                          --host-calls dumps its host:: platform surface
+  localharness receipt <src.rl> [--check <0xhash>]
+                                         BUILD RECEIPT: the hash-committed binding of
+                                         source → compiled wasm (deterministic, so
+                                         anyone on the same version reproduces it).
+                                         --check verifies source still builds to the
+                                         pinned bytes — a regression pin for cartridges
   localharness sh <script.bl> [--as <name>] [--confirm]
   localharness sh -c '<inline script>' [--as <name>] [--confirm]
                                          run a bashlite script (file or -c inline):
@@ -830,6 +836,7 @@ async fn run(args: &[String]) -> i32 {
         Some("state") => state_cmd(&args[1..]).await,
         Some("call") => call(&args[1..]).await,
         Some("acp") => acp(&args[1..]).await,
+        Some("receipt") => receipt_cmd(&args[1..]),
         Some("abtest") => abtest(&args[1..]).await,
         Some("mcp-call") => mcp_call(&args[1..]).await,
         Some("mcp") => mcp_serve(&args[1..]).await,
@@ -1286,7 +1293,7 @@ mod tests {
             "feedback", "probe", "threads", "forget", "whoami", "status", "fee",
             "invite", "bounty", "colony", "reputation", "guild", "company", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "remind", "jobs", "unschedule", "notify", "models", "sh",
-            "onboard", "onramp", "link", "lessons", "skills", "state", "acp",
+            "onboard", "onramp", "link", "lessons", "skills", "state", "acp", "receipt",
         ] {
             assert!(
                 USAGE.contains(cmd),
