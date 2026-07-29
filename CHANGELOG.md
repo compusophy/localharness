@@ -5,6 +5,40 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.75.0]
+
+### Added
+
+- **Execution receipts are COMPLETE — browser-side call receipts.** Every
+  `compose::call` that resolves a READY child library now leaves a
+  hash-committed record of what actually ran. The worker batches
+  `{uid, fn, args (exactly what was forwarded), result, status}` per frame
+  (cap 256, drops counted — never per-call postMessage); the main thread
+  stays the only place hashes exist (keccak in JS would be a hand-ported
+  parity liability), computing `keccak(bytes)` once per `compose_bytes`
+  resolution and joining on `uid`; each record becomes a
+  `receipt::Receipt::call_on_module` — source explicitly UNBOUND (zeros),
+  joining build receipts on the module hash — appended to the
+  `.lh_receipts.jsonl` OPFS ring (256 lines, `receipt::ring_append`).
+  Which wire statuses receipt is the native-tested
+  `CallStatus::from_compose_status` partition, not ad-hoc worker logic.
+  Proven three ways: compose-wiring stages 8y1–8y5 (record shape through
+  the real worker host), tab-E2E stage D (the uses_lib consumer calling the
+  REAL published lib-physics materializes OK receipts for all four physics
+  exports, zero spend), and live on the deployed bundle.
+- **`skills --export`** — an agent's on-chain skills render as
+  agentskills.io `SKILL.md` folders (spec frontmatter, YAML-escaped),
+  loadable unmodified in any skills-compatible harness (Claude Code, Codex,
+  Cursor, Copilot, goose, …). Pure read; works on any agent's published
+  skills. Import deliberately not shipped: real-world SKILL.md instructions
+  routinely exceed the 600-char on-chain cap, and silently truncating a
+  foreign skill is a lossy surprise.
+- **ACP interop proven against the official SDK**: a client built on the
+  `agent-client-protocol` crate (the registry's own Rust SDK) drives
+  `localharness acp` through initialize → session/new → session/prompt and
+  receives typed `AgentMessageChunk`s + a clean `EndTurn` on a real metered
+  turn. Registry listing PR: agentclientprotocol/agent-client-protocol#1818.
+
 ## [0.74.0] - 2026-07-29
 
 ### Added
