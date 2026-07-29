@@ -52,6 +52,13 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   issue, close it to re-arm) + best-effort `LH_ALERT_OWNER` web-push via the
   push store (unset ⇒ the issue IS the alert). Results land in the tick summary
   (`health`).
+- `_notifycore.ts` — the ONE simple server-side owner-push composition (VAPID env
+  → storePushSubs → sendWebPushAll, never throws). scheduler.ts DELEGATES to it
+  (its private copy is gone, #78); the inbound-email wake would consume it too —
+  still deliberately unwired (needs a read path + a non-spoofable mailbox).
+  notify.ts keeps its RICHER endpoint flow on purpose (sender metering, DETAILED
+  send results for pruning, the pre-prune dead count in its 502) — don't collapse
+  the two.
 - `notify.ts` + `_webpush.ts` — web-push (self or cross-agent `to`), dedup by the
   per-device `dev` field (NOT endpoint — one device's cross-origin endpoints collapse).
   Push-service 404/410 = DEAD sub → pruned from the store + honest "no live push

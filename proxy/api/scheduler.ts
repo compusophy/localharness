@@ -71,8 +71,7 @@
 
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex } from '@noble/hashes/utils';
-import { sendWebPushAll } from './_webpush';
-import { storePushSubs } from './_pushstore';
+import { deliverOwnerPush } from './_notifycore';
 import {
   createPublicClient,
   createWalletClient,
@@ -568,18 +567,9 @@ async function sendOwnerPush(
   title: string,
   body: string,
 ): Promise<boolean> {
-  const publicKey = process.env.VAPID_PUBLIC_KEY;
-  const privateKey = process.env.VAPID_PRIVATE_KEY;
-  const subject = process.env.VAPID_SUBJECT;
-  if (!publicKey || !privateKey || !subject) return false; // push not configured
-  const subs = await storePushSubs(owner); // never throws ([] on failure)
-  if (subs.length === 0) return false; // owner never enabled notifications
-  const sent = await sendWebPushAll(subs, JSON.stringify({ title, body }), {
-    publicKey,
-    privateKey,
-    subject,
-  });
-  return sent > 0;
+  // Thin delegate — the delivery core moved to _notifycore.ts (shared with
+  // any future server-side owner push; telemetry #78).
+  return deliverOwnerPush(owner, title, body);
 }
 
 /**

@@ -51,7 +51,8 @@ the FeedbackFacet client paths — don't reintroduce an on-chain feedback read.
   owner-landing pin, 7 checks — local app.rl → playable #studio-app-slot card,
   no fullscreen hijack). The cartridge loop's coverage map is COMPLETE: every
   slice tested or its residual named (publish variant = chain writes =
-  live-dogfood-only). Needs a built `web/pkg` + a local browser, so NOT a verify.sh
+  live-dogfood-only). `run-all.mjs` sweeps every *-e2e.mjs sequentially
+  (gemma/webkit probes excluded) — ONE command for the whole lattice. Needs a built `web/pkg` + a local browser, so NOT a verify.sh
   stage; run after touching the chat turn loop / router / Stop / bell / display
   / the cartridge loop (`cartridge-e2e.mjs`: embed card + history resume +
   app.rl face + overlay worker stop — no chain write). See `tab-e2e/README.md`.
