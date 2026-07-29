@@ -728,7 +728,13 @@ export default async function handler(req: Request): Promise<Response> {
     // here; SETTLED on-chain only after a 2xx upstream (below) so a failed LLM
     // call costs nothing — the same "don't charge for failures" rule as the
     // meter. Off unless LH_METER_PAYEE is set.
-    const x402Header = req.headers.get('x-payment') ?? req.headers.get('x-x402-authorization');
+    // Accept the x402 v2 standard name (`PAYMENT-SIGNATURE`, 2025-12-11 spec)
+    // alongside our legacy names, so a v2-conformant external client can pay
+    // without knowing our history. We keep SENDING X-PAYMENT from the CLI —
+    // renaming the emit side would break deployed callers for zero gain.
+    const x402Header = req.headers.get('x-payment')
+      ?? req.headers.get('x-x402-authorization')
+      ?? req.headers.get('payment-signature');
     let x402Auth: X402Auth | null = null;
     if (x402Header && METER_PAYEE) {
       const verdict = await verifyX402Payment(x402Header, {

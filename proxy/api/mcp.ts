@@ -1589,7 +1589,10 @@ export default async function handler(req: Request): Promise<Response> {
           const err = rpcError(id, -32602, `unknown tool: "${toolName}"`);
           return respond(err.body, err.httpStatus);
         }
-        const headerAuth = req.headers.get('x-x402-authorization');
+        // Legacy name first; `payment-signature` is the x402 v2 standard
+        // header, accepted so v2-conformant agents can pay this endpoint.
+        const headerAuth = req.headers.get('x-x402-authorization')
+          ?? req.headers.get('payment-signature');
         const out = await handleAskAgent(id, args, headerAuth, params);
         return respond(out.body, out.httpStatus);
       }
