@@ -186,6 +186,41 @@ pub fn fold_runs(names: &[&str]) -> Vec<(usize, usize)> {
     runs
 }
 
+/// The one-shot recovery nudge for a NARRATED STALL (telemetry #80): a
+/// text-only reply that DECLARES pending action ("I will now write…") ends
+/// the run under [`classify_turn`] — correct for conversation, fatal for the
+/// agent that keeps announcing work instead of doing it. Measured on the
+/// live default model with the stall state seeded deterministically
+/// (`examples/prompt_eval_live.rs`, LH_EVAL_STALLED): the nudge recovered
+/// 9/9 genuinely-served samples (earlier "failures" were all starved-meter
+/// 402s misread as stalls — three times). Sent ONCE per user request, only
+/// when [`text_declares_pending_action`] matches, so ordinary conversation
+/// never pays the extra round.
+pub const STALL_NUDGE: &str = "(automatic reminder: your last reply called no \
+tool, which ends the run. If work remains, act NOW — post the remaining steps \
+through update_plan and take the first one.)";
+
+/// Does a final, text-only reply DECLARE work it never did? The trigger for
+/// [`STALL_NUDGE`] — deliberately a TIGHT phrase allowlist matching the shape
+/// observed in the wild (kra­fto's agent repeated "I will now write the
+/// complete…" three times and died at step zero each time), not a general
+/// intent classifier — plus a LENGTH gate (>600 chars = a delivery, not an
+/// announcement). False negative = today's behavior (the run ends); false
+/// positive = one extra round that most likely does the declared work.
+pub fn text_declares_pending_action(text: &str) -> bool {
+    let t = text.trim();
+    // A genuine delivery is LONG (the content is in it); the stall is a short
+    // announcement — the wild samples were ~150-250 chars of pure future
+    // tense. The length gate is what keeps "declared, then delivered" quiet.
+    if t.is_empty() || t.len() > 600 {
+        return false;
+    }
+    let lower = t.to_lowercase();
+    ["i will now ", "i'll now ", "i will write ", "i am now going to ", "let me now "]
+        .iter()
+        .any(|p| lower.contains(p))
+}
+
 /// Repeat-count label for a folded pill — `×3`. Empty below 2 so the first
 /// call renders as a plain pill (the span stays `:empty`, hence hidden).
 pub fn fold_count_label(count: u32) -> String {
@@ -310,6 +345,39 @@ mod tests {
             );
             assert!(!FOLDABLE_TOOLS.contains(&name), "{name} is in FOLDABLE_TOOLS");
         }
+    }
+
+    /// The stall predicate matches the WILD shape (the exact krafto
+    /// narration), tolerates trailing detail in the same sentence, and
+    /// stays quiet on ordinary answers — including ones that declared work
+    /// and then visibly DID it.
+    #[test]
+    fn stall_predicate_matches_the_wild_shape_only() {
+        use super::text_declares_pending_action as stalls;
+        // The verbatim wild stall (telemetry #80).
+        assert!(stalls(
+            "I will now write the complete, mathematically rigorous Pack \
+             Semicircles Optimizer into index.html. This file contains the \
+             full HTML, CSS, main thread JS, and the parallel Web Worker \
+             MCMC code."
+        ));
+        assert!(stalls("Let me now assemble the full cartridge and publish it"));
+        assert!(stalls("I'll now implement the win screen."));
+        // Ordinary answers never trigger.
+        assert!(!stalls("The file contains the full HTML and CSS."));
+        assert!(!stalls("You own three subdomains: a, b and c."));
+        assert!(!stalls("Done — published to https://x.localharness.xyz/."));
+        // Declared work FOLLOWED by real delivered content is LONG — the
+        // length gate keeps it quiet. (A SHORT "I will now…" that also claims
+        // completion is a tolerated false positive: one extra round, and the
+        // model simply confirms or finishes.)
+        let delivered = format!(
+            "I will now summarize. {}",
+            "The maze uses slots 0-9 for walls and slot 10 for position. ".repeat(12)
+        );
+        assert!(!stalls(&delivered));
+        // Empty / whitespace never triggers.
+        assert!(!stalls("   "));
     }
 
     /// Replay grouping covers every call exactly once, in order: repeats of a

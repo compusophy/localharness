@@ -64,6 +64,7 @@ pub(crate) struct LoopConfig {
 }
 
 impl LoopConfig {
+    #[allow(clippy::too_many_arguments)] // mirrors the config fields 1:1
     pub fn from_system(
         model: String,
         system: Option<&SystemInstructions>,

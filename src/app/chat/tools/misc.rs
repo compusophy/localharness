@@ -1530,7 +1530,7 @@ pub(crate) fn verify_receipt_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         |args: serde_json::Value, _ctx| async move {
             let line = args.get("receipt").and_then(|v| v.as_str()).unwrap_or("");
             let parsed: serde_json::Value = serde_json::from_str(line.trim()).map_err(|e| {
-                crate::error::Error::bad_args("verify_receipt", &format!("receipt is not valid JSON: {e}"))
+                crate::error::Error::bad_args("verify_receipt", format!("receipt is not valid JSON: {e}"))
             })?;
             let module = parsed.get("module").and_then(|v| v.as_str()).unwrap_or("");
             let call = parsed.get("call").cloned().unwrap_or(serde_json::Value::Null);
@@ -1561,7 +1561,7 @@ pub(crate) fn verify_receipt_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 other => {
                     return Err(crate::error::Error::bad_args(
                         "verify_receipt",
-                        &format!("unknown recorded status {other:?}"),
+                        format!("unknown recorded status {other:?}"),
                     ))
                 }
             };

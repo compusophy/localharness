@@ -219,6 +219,11 @@ async fn run_sample(
     let mut cfg = GeminiAgentConfig::new(token.to_string())
         .with_base_url(base_url.clone())
         .with_system_instructions(system.to_string())
+        // First-action scoring needs almost no output; WITHOUT this cap a
+        // stalling model can narrate an entire game as text for minutes and
+        // `shutdown` awaits the still-running turn — one uncapped sample hung
+        // an n=6 run past 18 minutes.
+        .with_max_output_tokens(768)
         .with_capabilities(localharness::types::CapabilitiesConfig {
             enabled_tools: Some(Vec::new()),
             enable_subagents: false,
@@ -234,13 +239,14 @@ async fn run_sample(
     }
     let cfg = cfg.with_policies(policies);
     let agent = Agent::start_gemini(cfg).await.map_err(|e| e.to_string())?;
-
+    eprintln!("      [sample] agent started; sending turn");
     let response = agent.chat(message).await.map_err(|e| e.to_string())?;
+    eprintln!("      [sample] turn opened; draining");
     let mut cursor = response.chunks();
     // Drain until the first tool call lands in the sink (the stub records at
     // DISPATCH time, ahead of the chunk), then cut the turn.
     use futures_util::StreamExt;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(75);
     loop {
         if !sink.lock().unwrap().is_empty() {
             break;
@@ -249,13 +255,48 @@ async fn run_sample(
             break;
         }
         match tokio::time::timeout(std::time::Duration::from_secs(30), cursor.next()).await {
-            Ok(Some(_chunk)) => continue,
+            // A stream ERROR is a failed SAMPLE, never a "text-only stall" —
+            // this exact conflation has now produced bogus numbers three
+            // times (starved meter → 402s scored as model behavior).
+            Ok(Some(Err(e))) => return Err(format!("stream error: {e}")),
+            Ok(Some(Ok(_chunk))) => continue,
             Ok(None) => break,
             Err(_) => break,
         }
     }
+    eprintln!("      [sample] drain done; capturing text if stalled");
     let first = sink.lock().unwrap().first().cloned();
-    let _ = agent.shutdown().await;
+    if first.is_none() {
+        // Text-only outcome: show WHAT the model said — "still narrating" and
+        // "degraded/odd reply" are different failures and the tick that
+        // conflated turn errors with stalls already taught this lesson once.
+        let mut cur = response.chunks();
+        let mut text = String::new();
+        // HARD wall-clock bound: Gemini 3.x can stream THOUGHT chunks for
+        // minutes (maxOutputTokens does not cap thinking), so an unbounded
+        // "read until Text" loop hangs — this exact loop froze an n=6 run.
+        let cap_deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while std::time::Instant::now() < cap_deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), cur.next()).await {
+                Ok(Some(Ok(localharness::StreamChunk::Text { text: t, .. }))) => {
+                    text.push_str(&t);
+                    if text.len() > 200 {
+                        break;
+                    }
+                }
+                Ok(Some(_)) => continue, // thoughts / other chunks
+                Ok(None) | Err(_) => break,
+            }
+        }
+        if !text.is_empty() {
+            println!("      text-only reply: {:?}", text.chars().take(160).collect::<String>());
+        }
+    }
+    eprintln!("      [sample] shutting down agent");
+    // A turn still streaming thoughts keeps shutdown from resolving — bound
+    // it; a dropped half-shutdown is fine in a one-shot eval process.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), agent.shutdown()).await;
+    eprintln!("      [sample] shutdown complete");
     Ok(first)
 }
 
@@ -404,6 +445,63 @@ async fn main() {
         return;
     }
 
+    // CONDITIONED-STALL nudge measurement (#80, the clean instrument):
+    // LH_EVAL_STALLED=<n>. Instead of SAMPLING the stall (high variance,
+    // ~2 rounds each), CONSTRUCT it — the seeded history ends with the model
+    // ALREADY narrating "I will now write…" with no tool call (the exact wild
+    // shape). Every sample then measures exactly one thing at one round each:
+    // does the recovery-nudge text produce a tool action from a
+    // narration-stuck model? (No control arm needed: today's behavior on this
+    // state is a guaranteed dead run — that IS the bug.)
+    if let Ok(n) = std::env::var("LH_EVAL_STALLED").map(|v| v.parse::<u32>().unwrap_or(10)) {
+        let base_prompt = &variants[0].1;
+        let nudge = "(automatic reminder: your last reply called no tool, which ends             the run. If work remains, act NOW — post the remaining steps through             update_plan and take the first one.)";
+        let mut acted = 0u32;
+        let mut planned = 0u32;
+        let mut stalled = 0u32;
+        for i in 0..n {
+            eprintln!("[stalled {i}] starting sample");
+            let action = match run_sample(
+                &token,
+                &base,
+                base_prompt,
+                nudge,
+                Some(stalled_history()),
+            )
+            .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    println!("stalled sample {i}: ERROR {e}");
+                    continue;
+                }
+            };
+            match &action {
+                Some(a) => {
+                    acted += 1;
+                    if a.tool == "update_plan" {
+                        planned += 1;
+                    }
+                    println!("stalled sample {i}: RECOVERED via {}", a.tool);
+                }
+                None => {
+                    stalled += 1;
+                    println!("stalled sample {i}: still TEXT-ONLY");
+                }
+            }
+            // Pace samples so a time-local regime (rate limit, cache state)
+            // can't masquerade as a result — run 1 split perfectly 0-4 pass /
+            // 5-9 fail, which independent draws essentially never do.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+        println!("
+=== conditioned-stall nudge measurement (#80) ===");
+        println!(
+            "nudge recovered {acted}/{n} ({planned} opened a plan); {stalled} stayed text-only"
+        );
+        return;
+    }
+
     // Optional filters for cheap replications: LH_EVAL_VARIANT=lean and/or
     // LH_EVAL_TASK=<substring of the task name>.
     let want_variant = std::env::var("LH_EVAL_VARIANT").ok();
@@ -470,6 +568,7 @@ async fn run_sample_with_nudge(
     let mut cfg = GeminiAgentConfig::new(token.to_string())
         .with_base_url(base_url.clone())
         .with_system_instructions(system.to_string())
+        .with_max_output_tokens(768)
         .with_capabilities(localharness::types::CapabilitiesConfig {
             enabled_tools: Some(Vec::new()),
             enable_subagents: false,
@@ -512,4 +611,24 @@ async fn run_sample_with_nudge(
     };
     let _ = agent.shutdown().await;
     Ok(out)
+}
+
+/// History that ends IN the #80 stall state: the model's last turn is the
+/// exact wild narration shape — an intent statement with no tool call. The
+/// nudge measurement sends its reminder as the next user turn.
+fn stalled_history() -> Vec<u8> {
+    let tag = "[compacted prior context]";
+    let summary = "The user is building a maze-runner cartridge game on this         subdomain. Earlier turns: designed the maze and state model, compiled         several iterations, added movement, collision, scoring and patrol         enemies, all running inline. Open user request: finish the polish (win         screen, high-score display) and ship the game.";
+    let turn = |role: &str, text: &str| {
+        serde_json::json!({"role": role, "parts": [{"text": text}]})
+    };
+    let history = serde_json::json!([
+        turn("user", &format!("{tag}
+{summary}")),
+        turn("user", "ok what's left before we ship it?"),
+        turn("model", "Remaining polish: a win screen when the exit is reached, a high-score display using slot 11, and then publishing the game to its own subdomain."),
+        turn("user", "ok lets see it"),
+        turn("model", "I will now write the complete, polished maze-runner cartridge including the win screen, the high-score display, and then publish it to its own subdomain."),
+    ]);
+    serde_json::to_vec(&history).expect("history serializes")
 }

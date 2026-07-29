@@ -75,6 +75,12 @@ thread_local! {
     /// wiped or a new user message starts a fresh exchange.
     static FOLD_ANCHOR: std::cell::RefCell<Option<(u32, String, u32)>> =
         const { std::cell::RefCell::new(None) };
+    /// The final concatenated text of the LAST completed turn — what the #80
+    /// stall check reads when that turn classified as `FinalAnswer` (the
+    /// outcome enum stays text-free; this side channel mirrors the
+    /// `confirm_guard::take_awaiting_confirmation` pattern).
+    static LAST_FINAL_TEXT: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
 }
 
 /// Drop the repeat-fold anchor so the next tool call starts a fresh pill.
@@ -385,6 +391,8 @@ pub(crate) async fn run_send() {
     confirm_guard::note_user_message(&prompt);
     let mut next_input = TurnInput::User(prompt);
     let mut auto_continuations: u32 = 0;
+    // One-shot #80 stall-recovery latch — see the FinalAnswer arm below.
+    let mut stall_nudged = false;
     // The pre-painted shell above feeds the FIRST turn; auto-continuations
     // paint their own (one stage swap target per turn).
     let mut preallocated = Some((assistant_turn_id, first_seg_id));
@@ -437,10 +445,30 @@ pub(crate) async fn run_send() {
         match outcome {
             // Hard stop conditions — never auto-continue.
             TurnOutcome::Finished
-            | TurnOutcome::FinalAnswer
             | TurnOutcome::Empty
             | TurnOutcome::Error
             | TurnOutcome::Cancelled => break,
+            // A final text answer normally stops the run. ONE exception
+            // (telemetry #80, measured 9/9 on the live model): a SHORT
+            // text-only reply that only DECLARES pending work ("I will now
+            // write…") is a narrated stall — the agent announcing the work
+            // and dying at step zero. Send the one-shot recovery nudge; if
+            // the model stalls again, that second FinalAnswer stops the run
+            // for real (`stall_nudged` never resets within a request).
+            TurnOutcome::FinalAnswer => {
+                let final_text = LAST_FINAL_TEXT.with(|c| c.borrow().clone());
+                if !stall_nudged
+                    && auto_continuations < MAX_AUTO_CONTINUATIONS
+                    && !plan_state::is_active()
+                    && crate::turn_flow::text_declares_pending_action(&final_text)
+                {
+                    stall_nudged = true;
+                    auto_continuations += 1;
+                    next_input = TurnInput::StallRecovery;
+                    continue;
+                }
+                break;
+            }
             // Either the turn ended right after tool activity without an
             // explicit completion signal (Incomplete — keep going toward the
             // goal), or it was TRUNCATED mid-answer (EmptyTruncated — the model
@@ -546,7 +574,9 @@ take the next step now without waiting.";
 /// skip them too — register any future nudge constant HERE so replay can't
 /// leak it as a ghost user turn.
 pub(crate) fn is_internal_nudge(text: &str) -> bool {
-    text == AUTO_CONTINUE_NUDGE || text == TRUNCATED_RETRY_NUDGE
+    text == AUTO_CONTINUE_NUDGE
+        || text == TRUNCATED_RETRY_NUDGE
+        || text == crate::turn_flow::STALL_NUDGE
 }
 
 /// DIFFICULTY ROUTER (per-turn): classify `input` and set the agent's per-turn
@@ -588,7 +618,9 @@ fn apply_difficulty_route(agent: &Agent, input: &TurnInput) {
         TurnInput::User(p) => (p.as_str(), false),
         // A nudge always follows tool activity (Incomplete) or a truncated
         // answer — treat it as mid-task so it keeps the high budget.
-        TurnInput::AutoContinue | TurnInput::ResumeTruncated => ("", true),
+        TurnInput::AutoContinue | TurnInput::ResumeTruncated | TurnInput::StallRecovery => {
+            ("", true)
+        }
     };
     // ONE classification drives both the thinking budget and the model.
     let tier = crate::difficulty::classify_turn(prompt, last_turn_used_tools);
@@ -613,6 +645,11 @@ enum TurnInput {
     /// An internal nudge after a TRUNCATED (max-tokens) empty turn — asks the
     /// model to finish its answer concisely. No user bubble.
     ResumeTruncated,
+    /// The ONE-SHOT #80 recovery: the last reply was a short text-only
+    /// DECLARATION of pending work ("I will now write…"), which would end the
+    /// run at step zero. Measured 9/9 recoveries on the live model. No user
+    /// bubble.
+    StallRecovery,
 }
 
 /// Stream ONE agent turn into the transcript and report how it ended.
@@ -625,6 +662,9 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
         TurnInput::User(p) => (p, true),
         TurnInput::AutoContinue => (AUTO_CONTINUE_NUDGE.to_string(), false),
         TurnInput::ResumeTruncated => (TRUNCATED_RETRY_NUDGE.to_string(), false),
+        TurnInput::StallRecovery => {
+            (crate::turn_flow::STALL_NUDGE.to_string(), false)
+        }
     };
 
     // Reuse the pre-painted shell, or allocate + paint a fresh one (element
@@ -894,6 +934,16 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
         let html_str = templates::rendered_markdown(raw).into_string();
         dom::swap_inner(&format!("seg-{id}"), &html_str);
     }
+
+    // Record the turn's final text for the #80 stall check (read by run_send
+    // only when this turn classifies FinalAnswer).
+    LAST_FINAL_TEXT.with(|c| {
+        let mut s = c.borrow_mut();
+        s.clear();
+        for (_, raw) in &text_segments {
+            s.push_str(raw);
+        }
+    });
 
     mark_turn_done(assistant_turn_id);
 

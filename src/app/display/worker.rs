@@ -590,7 +590,9 @@ pub(crate) async fn one_shot_lib_call(
     args: &[i32],
 ) -> Result<(i32, Option<i32>), String> {
     let worker = Worker::new(&worker_url()).map_err(|e| format!("worker spawn: {e:?}"))?;
-    let outcome: Rc<RefCell<Option<(i32, Option<i32>)>>> = Rc::new(RefCell::new(None));
+    /// (status, result) — the worker's lib_call answer.
+    type CallOutcome = Option<(i32, Option<i32>)>;
+    let outcome: Rc<RefCell<CallOutcome>> = Rc::new(RefCell::new(None));
     let outcome_w = outcome.clone();
     let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
         let data = e.data();
@@ -636,7 +638,7 @@ pub(crate) async fn one_shot_lib_call(
     let step_ms = 50u32;
     let mut waited = 0u32;
     let result = loop {
-        if let Some(out) = outcome.borrow().clone() {
+        if let Some(out) = *outcome.borrow() {
             break Ok(out);
         }
         if waited >= deadline_ms {
