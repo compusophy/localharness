@@ -106,6 +106,10 @@ src/                  library crate
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
 │                     call_agent (feature "wallet")
 ├── tempo_tx.rs       Tempo Transaction (tx 0x76) encoder; see Tempo section
+├── receipt.rs        execution receipts (wallet): VERSIONED canonical preimage +
+│                     keccak hash binding source→wasm→(call). CLI `receipt` =
+│                     build receipts; call emission = browser, deferred. Golden
+│                     test pins the layout — bump RECEIPT_V, never the constant
 ├── raster.rs html_fb.rs(pure HTML→framebuffer rasterizer, hoisted from
 │                     app::display) compose.rs sharedfs_reconcile.rs
 │                     signaling_seal.rs kv_reduce.rs kv_room.rs lessons.rs

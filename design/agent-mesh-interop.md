@@ -1,5 +1,12 @@
 # Agent-mesh interop — what we'd adopt from Buzz / Hermes (telemetry #78)
 
+> **2026-07-29 update:** the biggest interop gap this doc never named is now
+> CLOSED — `localharness acp` (v0.74.0) serves any identity's agent over the
+> Agent Client Protocol on stdio, which is the exact seam Buzz's `buzz-acp`
+> bridge consumes (its "compatible harness" catalog is the ACP registry).
+> Registry listing PR: agentclientprotocol/agent-client-protocol#1818.
+> Full landscape context: `design/harness-landscape-2026.md`.
+
 Status: **assessment, not a plan of record.** Filed in response to telemetry #78,
 which proposed a "Unified Agent Harness Standard" combining localharness with
 Buzz (Block's Nostr-based team workspace) and Hermes (a self-improving agent
