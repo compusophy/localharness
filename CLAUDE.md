@@ -106,10 +106,9 @@ src/                  library crate
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
 │                     call_agent (feature "wallet")
 ├── tempo_tx.rs       Tempo Transaction (tx 0x76) encoder; see Tempo section
-├── receipt.rs        execution receipts (wallet): VERSIONED canonical preimage +
-│                     keccak hash binding source→wasm→(call). CLI `receipt` =
-│                     build receipts; call emission = browser, deferred. Golden
-│                     test pins the layout — bump RECEIPT_V, never the constant
+├── receipt.rs        execution receipts (wallet): versioned preimage + keccak
+│                     hash binding source→wasm→(call). CLI `receipt` = build
+│                     receipts; golden test pins the layout — bump RECEIPT_V
 ├── raster.rs html_fb.rs(pure HTML→framebuffer rasterizer, hoisted from
 │                     app::display) compose.rs sharedfs_reconcile.rs
 │                     signaling_seal.rs kv_reduce.rs kv_room.rs lessons.rs
@@ -590,12 +589,11 @@ must come from the root key, which is why a sponsor key must be embedded in wasm
 
 Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, Anthropic +
 OpenAI backends, scheduling + recursion, Mock backend, economy rungs 1–4 +
-Reputation + colony, x402, host::compose, SessionRoom KV (#22), at-rest OPFS enc,
-Stripe fiat on-ramp (MintGateFacet), in-browser Gemma (`browser-app-local`), CLI
-runtime chain selection (`LH_CHAIN`), the **rate-capped sponsor RELAY** (mainnet
-keyless fee_payer signed server-side — NO build embeds a mainnet money key;
-`registry::sponsor_relay` + `proxy/api/sponsor.ts`, LIVE), and **bashlite /
-localharnesslite** (CLI `sh` + browser `execute_script`; design/bashlite.md). Open:
+Reputation + colony, x402, host::compose, SessionRoom KV, at-rest OPFS enc,
+Stripe on-ramp, in-browser Gemma, `LH_CHAIN`, the mainnet keyless sponsor RELAY
+(`registry::sponsor_relay` + `proxy/api/sponsor.ts` — NO build embeds a mainnet
+money key), bashlite (CLI `sh` + browser `execute_script`), ACP server (CLI
+`acp` — registry PR agentclientprotocol#1818), receipts v1. Open:
 
 - **Browser relay E2E + web redeploy** — the keyless bundle routes onboarding
   through the relay (committed); needs an in-browser onboarding test, then a
