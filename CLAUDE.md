@@ -68,10 +68,12 @@ src/                  library crate
 ├── turn_flow.rs      pure turn-classification + MAX_AUTO_CONTINUATIONS (hoisted
 │                     from app::chat so its loop-guard tests run natively); a
 │                     text-only turn continues ONLY while a plan has open steps
-├── plan.rs           pure update_plan checklist core; an OPEN plan is what tells
-│                     turn_flow a text-only turn is mid-plan, not a goodbye (else
-│                     the agent posts a plan and the loop silently dies —
-│                     #75/#69/#67). Live copy: app/chat/plan_state.rs
+├── plan.rs           pure update_plan checklist core; an OPEN plan = turn_flow
+│                     treats text-only turns as mid-plan, not goodbye (#75/#69/
+│                     #67). Live copy: app/chat/plan_state.rs
+├── session_prompt.rs the in-tab base prompt as a PURE fn (app-or-test gated);
+│                     fact-pins guard telemetry-earned lines + a SIZE BUDGET
+│                     makes growth deliberate. app/chat/prompt.rs = thin wrapper
 ├── agent_tools.rs    THE canonical tool list (AGENT_TOOLS) — ungated so the docs
 │                     gen AND the browser allowlist grid share it (docs_manifest
 │                     is wallet+native-only). Never fork a 2nd list

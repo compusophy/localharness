@@ -364,6 +364,13 @@ pub mod tempo_tx;
 #[cfg(feature = "wallet")]
 pub mod receipt;
 
+// The in-tab agent's base system prompt as a PURE fn — hoisted from
+// `app::chat::prompt` so its fact-pins + size budget run under `cargo test`
+// (the `turn_flow` pattern). Gated app-or-test (the `mod landing` pattern):
+// a ~50KB literal must not ride every plain `cargo add localharness`.
+#[cfg(any(all(feature = "browser-app", target_arch = "wasm32"), test))]
+pub mod session_prompt;
+
 /// READ-ONLY multi-chain EVM tools (balances / `eth_call` / ENS) over
 /// `registry::multichain` — registered by the browser chat session AND the
 /// headless CLI `call`, so identifier resolution is real on both surfaces.
