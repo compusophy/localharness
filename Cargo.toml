@@ -326,6 +326,12 @@ async-trait = "0.1"
 name = "tempo_tx_live"
 required-features = ["wallet"]
 
+# LIVE prompt-ablation eval: base vs lean session prompt, first-action scored
+# against the fact-pin contract on the real model via the proxy (~1 $LH/sample).
+[[example]]
+name = "prompt_eval_live"
+required-features = ["wallet"]
+
 # E2E: create a real agent subdomain on live Moderato via the sponsored
 # registry path (the browser's create_subdomain). Writes to testnet.
 [[example]]

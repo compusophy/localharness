@@ -699,8 +699,18 @@ pub fn base_system_prompt(
 /// same facts, ~55% fewer bytes — per-tool prose compressed to one line each
 /// (the tool input_schema descriptions the model already receives carry the
 /// parameter detail). Selected per session via sessionStorage `lh_prompt` =
-/// "lean" (see `app/chat/prompt.rs`); DEFAULT REMAINS `base_system_prompt`
-/// until fleet measurement at a fixed $LH budget says otherwise.
+/// "lean" (see `app/chat/prompt.rs`).
+///
+/// ⛔ MEASURED AND IT LOST (2026-07-29, `examples/prompt_eval_live.rs`, live
+/// gemini-3.6-flash via the proxy, first-action scoring): base 5/5, lean 1/5
+/// — the four lean failures were all TEXT-ONLY replies (the model narrated
+/// instead of calling any tool), and the cheapest one replicated 2/2 in
+/// isolation. The ALE-Claw "cut ~65% at equal accuracy" result was measured
+/// on FRONTIER models; on our Flash-class default the per-tool prose is
+/// load-bearing for tool-use discipline itself. DEFAULT STAYS
+/// `base_system_prompt`. Kept (not deleted) because: the pins keep it honest,
+/// it costs nothing at rest, and a stronger default model may flip the
+/// verdict — re-run the eval at every model pin before reconsidering.
 /// The fact-pin tests below run against BOTH variants — the pins are the
 /// contract, not the wording.
 pub fn lean_system_prompt(

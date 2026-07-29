@@ -366,9 +366,15 @@ pub mod receipt;
 
 // The in-tab agent's base system prompt as a PURE fn — hoisted from
 // `app::chat::prompt` so its fact-pins + size budget run under `cargo test`
-// (the `turn_flow` pattern). Gated app-or-test (the `mod landing` pattern):
-// a ~50KB literal must not ride every plain `cargo add localharness`.
-#[cfg(any(all(feature = "browser-app", target_arch = "wasm32"), test))]
+// (the `turn_flow` pattern). Gated app-or-wallet-or-test: the ~50KB literal
+// must not ride a plain `cargo add localharness`, but wallet builds carry it
+// so the live prompt-ablation eval (`examples/prompt_eval_live.rs`) can
+// drive the REAL variants headlessly.
+#[cfg(any(
+    all(feature = "browser-app", target_arch = "wasm32"),
+    feature = "wallet",
+    test
+))]
 pub mod session_prompt;
 
 /// READ-ONLY multi-chain EVM tools (balances / `eth_call` / ENS) over
