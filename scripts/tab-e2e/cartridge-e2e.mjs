@@ -99,6 +99,13 @@ try {
       req.continue().catch(() => {});
       return;
     }
+    // Stage (D) call receipts: the published library's bytes come from the
+    // FREE off-chain app store — the ONE external URL allowed through (a
+    // plain unauthenticated GET; no $LH, no chain write).
+    if (u.includes("/api/app?name=")) {
+      req.continue().catch(() => {});
+      return;
+    }
     req.abort().catch(() => {}); // RPC / proxy / fonts: nothing real leaves the box
   });
 
@@ -199,6 +206,45 @@ try {
   check("overlay: ESC TERMINATES the cartridge worker (worker count → 0)", !!gone, `workers=${workers()}`);
   check("watchdog/crash telemetry never fired (0 /api/telemetry posts)", telemetryPosts.length === 0, String(telemetryPosts.length));
   check("no metered model call across the whole run", modelCalls.length === 0, String(modelCalls.length));
+
+  // ── (D) CALL RECEIPTS end-to-end: worker records → frame post →
+  //        main-thread hash binding → .lh_receipts.jsonl OPFS ring ──
+  // The one link the wiring test can't reach is the postMessage boundary
+  // (worker.rs "frame" arm → bridge/receipts.rs → OPFS). Prove it with the
+  // REAL published library: app.rl = the uses_lib consumer, which spawn_libs
+  // `lib-physics` (fetched from the FREE off-chain app store — the single
+  // external URL this harness allows) and calls its exports every frame.
+  await opfsWrite("app.rl", readFileSync(join(REPO_ROOT, "examples", "cartridges", "uses_lib.rl"), "utf8"));
+  await page.goto(URL, { waitUntil: "domcontentloaded" });
+  const faceD = await waitFor(() => page.evaluate(() => !!document.getElementById("display-canvas") || null), 30000);
+  check("receipts: uses_lib face boots", !!faceD);
+  // "LIB PHYSICS OK" only paints when spawn_lib mounted AND call_ok()==0 —
+  // i.e. real cross-cartridge calls are happening. Animation ⇒ frames flow.
+  check("receipts: composition animates (library calls live)", await animates("#display-canvas", 400));
+  const ring = await waitFor(() => page.evaluate(async () => {
+    try {
+      const root = await navigator.storage.getDirectory();
+      const fh = await root.getFileHandle(".lh_receipts.jsonl");
+      const text = await (await fh.getFile()).text();
+      return text.trim() ? text : null;
+    } catch (_e) { return null; }
+  }), 15000);
+  check("receipts: .lh_receipts.jsonl exists with content", !!ring, ring ? `${ring.trim().split("\n").length} line(s)` : "missing");
+  if (ring) {
+    const lines = ring.trim().split("\n").map((l) => JSON.parse(l));
+    const ok = lines.find((r) => r.call && r.call.status === "ok" && r.module === "lib-physics");
+    check("receipts: an OK call receipt binds module lib-physics", !!ok, ok ? ok.receipt : "none");
+    check("receipts: receipt hash + module keccak are hex-committed",
+      !!ok && /^0x[0-9a-f]{64}$/.test(ok.receipt) && /^0x[0-9a-f]{64}$/.test(ok.module_keccak),
+      ok ? ok.module_keccak : "");
+    check("receipts: source is explicitly UNBOUND on a call receipt (zeros)",
+      !!ok && /^0x0{64}$/.test(ok.source_keccak));
+    const exports = new Set(lines.filter((r) => r.call).map((r) => r.call.export));
+    check("receipts: the physics exports the consumer calls all left records",
+      ["gravity", "integrate", "bounce", "clamp"].every((e) => exports.has(e)),
+      [...exports].join(","));
+    check("receipts: ring respects its cap", lines.length <= 256, String(lines.length));
+  }
 
   console.log("\npage errors:", pageErrors.length ? pageErrors : "(none)");
   check("no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));
