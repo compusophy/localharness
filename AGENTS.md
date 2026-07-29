@@ -159,7 +159,8 @@ src/app/ (browser IDE):
     tab/panel; DEFAULT dims = rustlite::loader::DEFAULT_FB_* (512x512, #73);
     worker.rs lifecycle+router, surface.rs mount/pointer(should_track_move
     gates on WHERE an event landed, #65)/embed(close_embed, #66)/composer UI,
-    bridge/{feed,compose,http,mp,chat,audio}.rs per capability)
+    bridge/{feed,compose,http,mp,chat,audio,receipts}.rs per capability —
+    receipts.rs binds worker call records to module hashes → .lh_receipts.jsonl)
   gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
   notifications.rs(notify tool: local + `to:` cross-agent; push sub = proxy
     /api/push-sub store ONLY — on-chain slots REMOVED 2026-07-06; bell inbox

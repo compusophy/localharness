@@ -40,6 +40,11 @@ pub(crate) async fn do_compose_spawn(worker: web_sys::Worker, uid: i32, name: St
             fetched
         }
     };
+    // Call receipts: remember this child's module content hash so the records
+    // its calls emit (riding later frame posts) can be bound to it.
+    if let Some(ref b) = bytes {
+        super::receipts::note_module(uid, &name, b);
+    }
     post_compose_bytes(&worker, uid, bytes.as_deref());
 }
 

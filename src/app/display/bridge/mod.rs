@@ -11,3 +11,4 @@ pub(super) mod compose;
 pub(super) mod feed;
 pub(super) mod http;
 pub(super) mod mp;
+pub(super) mod receipts;

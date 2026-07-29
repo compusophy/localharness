@@ -27,6 +27,17 @@ cartridges run in a Web Worker; a main-thread WATCHDOG kills hung workers). For
 fails ("module is not an object or function"). A new compose fn ALSO needs a key in
 `INERT_COMPOSE`, or a node at the depth cap dies with "not a function".
 
+**Call receipts ride the frame post.** Every `compose::call` that resolved a
+READY child records `{uid, fn, args (exactly what was forwarded), result,
+status}` into a per-frame batch (`RECEIPT_MAX_PER_FRAME`=256, drops counted)
+flushed as `calls` on the frame message — NEVER per-call postMessage. The worker
+stays HASH-FREE (keccak in JS would be a parity liability): the main thread
+computed `keccak(bytes)` at `compose_bytes` time and joins on `uid`
+(`src/app/display/bridge/receipts.rs` → `.lh_receipts.jsonl`, 256-line ring).
+Which statuses receipt is the Rust SSOT (`receipt::CallStatus::
+from_compose_status`) — the worker only skips the no-child cases (bad handle /
+not ready / reentrant / budget). Shape parity: wiring test 8y1–8y5.
+
 **Callable libraries (`spawn_lib`/`call`/`call_ok`, telemetry #70).**
 `instantiateChild` RETAINS `child.exports` — that retention is the whole feature;
 it used to drop the exports object on the floor. A `lib` child mounts headless (no

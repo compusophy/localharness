@@ -24,7 +24,7 @@ use web_sys::{CanvasRenderingContext2d, ImageData, MessageEvent, Worker};
 
 use crate::app::dom;
 
-use super::bridge::{audio, chat, compose, feed, http, mp};
+use super::bridge::{audio, chat, compose, feed, http, mp, receipts};
 use super::{FB_H, FB_W};
 
 /// No-frame timeout: if the worker doesn't post a frame within this many
@@ -289,6 +289,9 @@ fn spawn_worker(
                     last_frame.set(js_sys::Date::now());
                     record_outcome(run_gen, RunOutcome::Live);
                     blit_frame(&data, &ctx);
+                    // Call receipts ride the frame message (batched worker-side);
+                    // bind + persist them off the frame path (spawned, best-effort).
+                    receipts::handle_frame_calls(&data);
                 }
                 "audio" => handle_audio(&data),
                 "error" => {

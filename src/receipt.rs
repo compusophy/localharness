@@ -69,6 +69,24 @@ pub struct Receipt {
     pub call: Option<CallRecord>,
 }
 
+impl CallStatus {
+    /// Map a `compose::call_status` wire code (the worker's CALL_* value) to a
+    /// receipt status. `None` for codes where NO execution against the module
+    /// happened (bad handle / not ready / reentrant / budget) — those are host
+    /// refusals with nothing to receipt. NO_EXPORT and ARITY map to `Refused`:
+    /// the module was resolved and interrogated, so the refusal is a fact
+    /// *about this module* worth recording.
+    pub fn from_compose_status(code: i32) -> Option<CallStatus> {
+        use crate::compose::call_status as s;
+        match code {
+            s::OK => Some(CallStatus::Ok),
+            s::TRAPPED => Some(CallStatus::Trapped),
+            s::NO_EXPORT | s::ARITY => Some(CallStatus::Refused),
+            _ => None,
+        }
+    }
+}
+
 impl Receipt {
     /// A build receipt for `source` and the wasm it compiled to.
     pub fn build(source: &str, wasm: &[u8]) -> Self {
@@ -77,6 +95,21 @@ impl Receipt {
             module_keccak: keccak32(wasm),
             compiler: compiler_tag(),
             call: None,
+        }
+    }
+
+    /// A CALL receipt over a published module known only by its bytes — the
+    /// browser `compose::call` path, where the caller holds the fetched
+    /// `app.wasm` but not its source. `source_keccak` is all-zeros, meaning
+    /// UNBOUND: the module content hash is the execution truth; binding a
+    /// source to those bytes is the build receipt's job, and the two join on
+    /// `module_keccak`.
+    pub fn call_on_module(module_keccak: [u8; 32], call: CallRecord) -> Self {
+        Receipt {
+            source_keccak: [0; 32],
+            module_keccak,
+            compiler: compiler_tag(),
+            call: Some(call),
         }
     }
 
@@ -153,6 +186,19 @@ impl Receipt {
 /// The deterministic-producer tag stamped into every receipt.
 pub fn compiler_tag() -> String {
     format!("rustlite {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Append one JSONL line to a bounded ring: keep at most `cap_lines` lines,
+/// oldest dropped first. Pure over strings so the OPFS receipts file
+/// (`.lh_receipts.jsonl`) can be capped without a browser in the tests.
+/// Tolerant of a missing/ragged existing blob (no trailing-newline demands).
+pub fn ring_append(existing: &str, line: &str, cap_lines: usize) -> String {
+    let mut lines: Vec<&str> = existing.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines.push(line);
+    let start = lines.len().saturating_sub(cap_lines.max(1));
+    let mut out = lines[start..].join("\n");
+    out.push('\n');
+    out
 }
 
 #[cfg(test)]
@@ -240,6 +286,58 @@ mod tests {
         assert_eq!(pre[105], 0); // status ok
         assert_eq!(&pre[106..114], &0u64.to_be_bytes());
         assert_eq!(pre.len(), 114);
+    }
+
+    /// Compose wire codes map onto receipt statuses exactly as documented:
+    /// executions and module-facts receipt; pure host refusals do not.
+    #[test]
+    fn compose_status_mapping_is_the_documented_partition() {
+        use crate::compose::call_status as s;
+        assert_eq!(CallStatus::from_compose_status(s::OK), Some(CallStatus::Ok));
+        assert_eq!(
+            CallStatus::from_compose_status(s::TRAPPED),
+            Some(CallStatus::Trapped)
+        );
+        assert_eq!(
+            CallStatus::from_compose_status(s::NO_EXPORT),
+            Some(CallStatus::Refused)
+        );
+        assert_eq!(
+            CallStatus::from_compose_status(s::ARITY),
+            Some(CallStatus::Refused)
+        );
+        for code in [s::BAD_HANDLE, s::NOT_READY, s::REENTRANT, s::BUDGET] {
+            assert_eq!(
+                CallStatus::from_compose_status(code),
+                None,
+                "code {code} is a host refusal with no module execution — no receipt"
+            );
+        }
+    }
+
+    /// A call receipt on published bytes binds the MODULE hash; source is
+    /// explicitly unbound (zeros) and the two receipt kinds join on it.
+    #[test]
+    fn call_receipt_binds_module_not_source() {
+        let r = Receipt::call_on_module([7; 32], sample_call());
+        assert_eq!(r.source_keccak, [0; 32]);
+        assert_eq!(r.module_keccak, [7; 32]);
+        let b = Receipt::build("fn render() {}", b"wasm");
+        assert_ne!(b.source_keccak, [0; 32]);
+    }
+
+    /// The JSONL ring keeps the newest `cap` lines, oldest dropped first, and
+    /// tolerates ragged input.
+    #[test]
+    fn ring_append_caps_oldest_first() {
+        let mut blob = String::new();
+        for i in 0..5 {
+            blob = super::ring_append(&blob, &format!("r{i}"), 3);
+        }
+        assert_eq!(blob, "r2\nr3\nr4\n");
+        // Ragged existing content (blank lines, no trailing newline) is tolerated.
+        assert_eq!(super::ring_append("a\n\nb", "c", 10), "a\nb\nc\n");
+        assert_eq!(super::ring_append("", "only", 1), "only\n");
     }
 
     /// JSON is a view: it carries the receipt hash but the hash never depends

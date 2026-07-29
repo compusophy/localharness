@@ -464,6 +464,36 @@ fn frame(t: i32) { host::display::clear(0xffffff); host::display::present(); }
   worker.composeResetCallBudget();
   check('8s budget refills (a frame boundary)', worker.host_compose.call(h2, nameAdd, 2, 3, 0, 0) === 5 && worker.host_compose.call_ok() === S.OK);
 
+  // CALL RECEIPTS: every call that resolved a READY child leaves a record the
+  // frame post carries — {uid, fn, args (exactly what was forwarded), result,
+  // status} — and pure host refusals leave none. The main thread binds these to
+  // module hashes (src/app/display/bridge/receipts.rs); the shape asserted here
+  // is that wire contract.
+  {
+    const drained = worker.composeDrainCallRecordsForTest(); // clear stage-8 noise
+    check('8y1 records accumulated across the budget run', drained.calls.length > 0,
+      `had=${drained.calls.length} dropped=${drained.dropped}`);
+    const uid = worker.composeChildren()[h2].uid;
+    worker.host_compose.call(h2, strPtr2('add'), 7, 5, 0, 0);          // OK, 2 args
+    worker.host_compose.call(h2, strPtr2('nope'), 0, 0, 0, 0);        // NO_EXPORT
+    worker.host_compose.call(99, strPtr2('add'), 1, 1, 0, 0);         // BAD_HANDLE — no record
+    const { calls } = worker.composeDrainCallRecordsForTest();
+    check('8y2 ok + module-fact calls record; pure host refusals do not', calls.length === 2,
+      `records=${calls.length}`);
+    const ok = calls[0];
+    check('8y3 OK record binds uid/fn/forwarded-args/result/status',
+      ok.uid === uid && ok.fn === 'add' && ok.args.length === 2 && ok.args[0] === 7
+        && ok.args[1] === 5 && ok.result === 12 && ok.status === S.OK,
+      JSON.stringify(ok));
+    const refused = calls[1];
+    check('8y4 NO_EXPORT record carries the asked-for name + empty args',
+      refused.uid === uid && refused.fn === 'nope' && refused.args.length === 0
+        && refused.result === null && refused.status === S.NO_EXPORT,
+      JSON.stringify(refused));
+    check('8y5 drain clears the batch (present() semantics)',
+      worker.composeCallRecordsForTest().length === 0);
+  }
+
   // PARITY: the worker's CALL_* codes and caps mirror src/compose.rs. Drift here
   // means a cartridge reads a status the host never sends.
   const composeRs = readFileSync(join(ROOT, 'src', 'compose.rs'), 'utf8');

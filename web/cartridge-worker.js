@@ -466,6 +466,26 @@ const CALL_ARITY = -7;
 let composeCallStatus = CALL_OK;
 let composeCallsThisFrame = 0;
 
+// CALL RECEIPTS (execution receipts, the browser half): every compose::call
+// that actually resolved a READY child records {uid, fn, args, result, status}
+// here; the batch rides the NEXT frame post (`calls` on the frame message) and
+// the main thread binds each record to the child's module content hash
+// (`localharness::receipt`). Host refusals with no module involved
+// (bad handle / not ready / reentrant / budget) are NOT recorded — the Rust
+// status mapping (`CallStatus::from_compose_status`) is the SSOT for that
+// partition and would drop them anyway. Capped so a call-flood can't bloat the
+// frame message; drops are counted, never silent.
+const RECEIPT_MAX_PER_FRAME = 256;
+let composeCallRecords = [];
+let composeCallRecordsDropped = 0;
+function recordComposeCall(uid, fn, args, result, status) {
+  if (composeCallRecords.length >= RECEIPT_MAX_PER_FRAME) {
+    composeCallRecordsDropped += 1;
+    return;
+  }
+  composeCallRecords.push({ uid, fn, args, result, status });
+}
+
 // The compose tree. Every node — the root parent AND every composited child —
 // owns a `children` array + a `focus` handle, so composition is recursive: a
 // child's children blit into the child's buffer, which blits into its parent's,
@@ -818,18 +838,31 @@ function makeComposeApi(node) {
       const name = readStringFrom(node.memory, namePtr);
       if (name === null || name === '') { composeCallStatus = CALL_NO_EXPORT; return 0; }
       const fn = c.exports ? c.exports[name] : null;
-      if (typeof fn !== 'function') { composeCallStatus = CALL_NO_EXPORT; return 0; }
+      if (typeof fn !== 'function') {
+        composeCallStatus = CALL_NO_EXPORT;
+        // The child WAS resolved and interrogated — a fact about this module.
+        recordComposeCall(c.uid, name, [], null, CALL_NO_EXPORT);
+        return 0;
+      }
       // Exported wasm functions report their exact parameter count as .length.
       const arity = fn.length | 0;
-      if (arity > COMPOSE_MAX_CALL_ARGS) { composeCallStatus = CALL_ARITY; return 0; }
+      if (arity > COMPOSE_MAX_CALL_ARGS) {
+        composeCallStatus = CALL_ARITY;
+        recordComposeCall(c.uid, name, [], null, CALL_ARITY);
+        return 0;
+      }
       composeCallsThisFrame += 1;
       c.inCall = true;
+      // Exactly what gets forwarded — and exactly what a receipt must bind.
+      const fwd = [a0 | 0, a1 | 0, a2 | 0, a3 | 0].slice(0, arity);
       try {
-        const r = fn(...[a0 | 0, a1 | 0, a2 | 0, a3 | 0].slice(0, arity));
+        const r = fn(...fwd);
         composeCallStatus = CALL_OK;
-        if (typeof r === 'number') return r | 0;
-        if (typeof r === 'bigint') return Number(BigInt.asIntN(32, r)); // i64 export
-        return 0; // void export
+        let out = 0; // void export
+        if (typeof r === 'number') out = r | 0;
+        else if (typeof r === 'bigint') out = Number(BigInt.asIntN(32, r)); // i64 export
+        recordComposeCall(c.uid, name, fwd, typeof r === 'undefined' ? null : out, CALL_OK);
+        return out;
       } catch (_e) {
         // TRAP CONTAINMENT INVERTS HERE. A trapping child caught in the
         // composite walk is tombstoned harmlessly; a trap raised inside a
@@ -839,6 +872,7 @@ function makeComposeApi(node) {
         reclaimSubtree(c);
         c.state = MOD_FAILED;
         composeCallStatus = CALL_TRAPPED;
+        recordComposeCall(c.uid, name, fwd, null, CALL_TRAPPED);
         return 0;
       } finally {
         c.inCall = false;
@@ -898,6 +932,8 @@ function composeReset() {
   composeNodeIndex.clear();
   composeCallStatus = CALL_OK;
   composeCallsThisFrame = 0;
+  composeCallRecords = [];
+  composeCallRecordsDropped = 0;
 }
 
 // Recursively composite a node's children INTO a destination buffer. For each
@@ -1672,7 +1708,17 @@ function present() {
   // Transfer the framebuffer's ArrayBuffer to the main thread (zero-copy), then
   // re-create our backing store (the transferred buffer is now detached).
   const buf = fbBytes.buffer;
-  self.postMessage({ type: 'frame', fb: buf, w: FB_W, h: FB_H }, [buf]);
+  const msg = { type: 'frame', fb: buf, w: FB_W, h: FB_H };
+  // Call receipts ride the frame post (batched per frame, never per call —
+  // 4096 calls/frame at 60fps must not mean 245k postMessages/sec). The main
+  // thread binds each record to its module hash and appends to the OPFS ring.
+  if (composeCallRecords.length > 0) {
+    msg.calls = composeCallRecords;
+    if (composeCallRecordsDropped > 0) msg.callsDropped = composeCallRecordsDropped;
+    composeCallRecords = [];
+    composeCallRecordsDropped = 0;
+  }
+  self.postMessage(msg, [buf]);
   fbBytes = new Uint8ClampedArray(FB_W * FB_H * 4);
   fb32 = new Uint32Array(fbBytes.buffer);
 }
@@ -1941,6 +1987,15 @@ if (typeof module !== 'undefined' && module.exports) {
     },
     composeCallsThisFrame: () => composeCallsThisFrame,
     composeResetCallBudget: () => { composeCallsThisFrame = 0; },
+    // Call-receipt batch under test: the pending records exactly as the next
+    // frame post would carry them, and a drain matching present()'s flush.
+    composeCallRecordsForTest: () => composeCallRecords,
+    composeDrainCallRecordsForTest() {
+      const out = { calls: composeCallRecords, dropped: composeCallRecordsDropped };
+      composeCallRecords = [];
+      composeCallRecordsDropped = 0;
+      return out;
+    },
     // Install a scratch linear memory as the ROOT node's memory and return a
     // writer that lays out a length-prefixed UTF-8 string (the real host string
     // encoding) and yields its pointer — so a test drives the REAL
