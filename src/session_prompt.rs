@@ -329,6 +329,7 @@ pub fn base_system_prompt(
              `app.rl` here for an ordinary app request — it forces a \
              fullscreen takeover of your main page that the user didn't ask \
              for and doesn't even run until the next reload.\n\
+           • verify_receipt(receipt) — re-execute a call receipt from              .lh_receipts.jsonl against the module's LIVE published bytes and              judge it: confirmed / refuted / module_changed / unverifiable.              Read-only + free.
            • render_html(source) — render an HTML document onto the VISUAL \
              DISPLAY. The display CAN show HTML: this lays out block-level \
              text (h1-h6, p, ul/li, blockquote, br) word-wrapped in the \
@@ -873,6 +874,7 @@ pub fn lean_system_prompt(
              `cartridge.rl`. THIS tab only: does NOT create a subdomain, \
              NEVER how you produce a link. Never write `app.rl` for an \
              ordinary app request — it forces a fullscreen takeover.\n\
+           • verify_receipt(receipt) — re-execute a call receipt line from              .lh_receipts.jsonl against the live module bytes: confirmed /              refuted / module_changed / unverifiable. Free.
            • render_html(source) — render an HTML SNAPSHOT on the display \
              (block text, monochrome bitmap font; no JS/CSS/images). \
              Interactive/animated → run_cartridge.\n\

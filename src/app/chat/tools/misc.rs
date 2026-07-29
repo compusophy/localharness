@@ -1499,3 +1499,134 @@ pub(crate) fn dwell_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         },
     )
 }
+
+/// `verify_receipt(receipt)` — re-execute a call receipt from
+/// `.lh_receipts.jsonl` against the module's LIVE published bytes and judge
+/// it: Confirmed / Refuted / ModuleChanged / Unverifiable. The receipt
+/// primitive's whole claim is "checkable without trust" — this is the check.
+/// Contained: re-execution runs in a dedicated short-lived worker
+/// (`display::one_shot_lib_call`), never the shared cartridge slot.
+pub(crate) fn verify_receipt_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    ClosureTool::new(
+        "verify_receipt",
+        "Verify an execution receipt: re-run the recorded library call against \
+         the module's LIVE published bytes and compare. Pass one JSON line from \
+         .lh_receipts.jsonl (read it with view_file). Returns { verdict, \
+         detail }: 'confirmed' (re-execution reproduced the recorded outcome), \
+         'refuted' (the module does something else), 'module_changed' (the \
+         published bytes no longer match the receipt's content hash), or \
+         'unverifiable' (module missing or re-execution impossible). Read-only \
+         and free — no $LH, no chain write.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "receipt": {
+                    "type": "string",
+                    "description": "one receipt line (JSON) from .lh_receipts.jsonl"
+                }
+            },
+            "required": ["receipt"]
+        }),
+        |args: serde_json::Value, _ctx| async move {
+            let line = args.get("receipt").and_then(|v| v.as_str()).unwrap_or("");
+            let parsed: serde_json::Value = serde_json::from_str(line.trim()).map_err(|e| {
+                crate::error::Error::bad_args("verify_receipt", &format!("receipt is not valid JSON: {e}"))
+            })?;
+            let module = parsed.get("module").and_then(|v| v.as_str()).unwrap_or("");
+            let call = parsed.get("call").cloned().unwrap_or(serde_json::Value::Null);
+            let export = call.get("export").and_then(|v| v.as_str()).unwrap_or("");
+            if module.is_empty() || export.is_empty() {
+                return Err(crate::error::Error::bad_args(
+                    "verify_receipt",
+                    "receipt line has no module/call — only CALL receipts (from \
+                     .lh_receipts.jsonl) are verifiable; build receipts verify via \
+                     the CLI `receipt --check`",
+                ));
+            }
+            let want_hash = parsed
+                .get("module_keccak")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim_start_matches("0x")
+                .to_lowercase();
+            let args_vec: Vec<i32> = call
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_i64().map(|n| n as i32)).collect())
+                .unwrap_or_default();
+            let recorded_status = match call.get("status").and_then(|v| v.as_str()) {
+                Some("ok") => crate::receipt::CallStatus::Ok,
+                Some("trapped") => crate::receipt::CallStatus::Trapped,
+                Some("refused") => crate::receipt::CallStatus::Refused,
+                other => {
+                    return Err(crate::error::Error::bad_args(
+                        "verify_receipt",
+                        &format!("unknown recorded status {other:?}"),
+                    ))
+                }
+            };
+            let recorded = crate::receipt::CallRecord {
+                export: export.to_string(),
+                args: args_vec.clone(),
+                result: call.get("result").and_then(|v| v.as_i64()).map(|n| n as i32),
+                status: recorded_status,
+                fuel: 0,
+            };
+
+            // Fetch the module's LIVE published bytes by name (store-first,
+            // legacy on-chain fallback — the same resolution compose uses).
+            let Some(bytes) = crate::app::compose_module_wasm(module).await else {
+                return Ok(serde_json::json!({
+                    "verdict": "unverifiable",
+                    "detail": format!("{module} has no published cartridge to verify against"),
+                }));
+            };
+            let live_hash = crate::encoding::bytes_to_hex(&crate::registry::keccak32(&bytes));
+            let module_matches = !want_hash.is_empty() && live_hash == want_hash;
+            if !module_matches {
+                // Hash mismatch dominates — don't even execute (the pure core
+                // would say ModuleChanged; skipping the run saves a worker).
+                return Ok(serde_json::json!({
+                    "verdict": "module_changed",
+                    "detail": format!(
+                        "{module} was republished: receipt binds 0x{want_hash}, live bytes are 0x{live_hash}"
+                    ),
+                }));
+            }
+            let (code, result) =
+                match crate::app::display::one_shot_lib_call(&bytes, export, &args_vec).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Ok(serde_json::json!({
+                            "verdict": "unverifiable",
+                            "detail": format!("re-execution failed: {e}"),
+                        }))
+                    }
+                };
+            let verdict = crate::receipt::verdict(&recorded, true, code, result);
+            Ok(match verdict {
+                crate::receipt::Verdict::Confirmed => serde_json::json!({
+                    "verdict": "confirmed",
+                    "detail": format!(
+                        "re-executed {export}({args_vec:?}) on the live {module} bytes — outcome matches the receipt"
+                    ),
+                }),
+                crate::receipt::Verdict::Refuted { observed_status, observed_result } => {
+                    serde_json::json!({
+                        "verdict": "refuted",
+                        "detail": format!(
+                            "re-execution observed status {observed_status:?} result {observed_result:?} — the receipt records something else"
+                        ),
+                    })
+                }
+                crate::receipt::Verdict::ModuleChanged => serde_json::json!({
+                    "verdict": "module_changed", "detail": "module bytes changed",
+                }),
+                crate::receipt::Verdict::Unverifiable => serde_json::json!({
+                    "verdict": "unverifiable",
+                    "detail": "re-execution could not interrogate the module",
+                }),
+            })
+        },
+    )
+}

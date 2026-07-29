@@ -494,6 +494,24 @@ fn frame(t: i32) { host::display::clear(0xffffff); host::display::present(); }
       worker.composeCallRecordsForTest().length === 0);
   }
 
+  // ONE-SHOT lib call (verify_receipt): same CALL_* semantics as
+  // compose::call, but instantiate-and-invoke in one step — the contained
+  // re-execution primitive receipts are verified with.
+  {
+    const bytes = ab(libWasm);
+    const ok = worker.oneShotLibCall(bytes, 'add', [7, 5]);
+    check('8z1 one-shot OK call returns the export result', ok.status === S.OK && ok.result === 12,
+      JSON.stringify(ok));
+    const noexp = worker.oneShotLibCall(bytes, 'nope', []);
+    check('8z2 one-shot unknown export refuses', noexp.status === S.NO_EXPORT && noexp.result === null);
+    const wide = worker.oneShotLibCall(bytes, 'wide', [1, 2, 3, 4]);
+    check('8z3 one-shot refuses arity wider than the ABI', wide.status === S.ARITY);
+    const boom = worker.oneShotLibCall(bytes, 'boom', [3]);
+    check('8z4 one-shot trap is contained', boom.status === S.TRAPPED && boom.result === null);
+    const garbage = worker.oneShotLibCall(new ArrayBuffer(8), 'add', [1, 1]);
+    check('8z5 one-shot on invalid bytes reports NOT_READY', garbage.status === S.NOT_READY);
+  }
+
   // PARITY: the worker's CALL_* codes and caps mirror src/compose.rs. Drift here
   // means a cartridge reads a status the host never sends.
   const composeRs = readFileSync(join(ROOT, 'src', 'compose.rs'), 'utf8');

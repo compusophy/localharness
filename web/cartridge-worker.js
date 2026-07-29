@@ -1853,11 +1853,45 @@ async function load(wasmBuf) {
 // reference. This keeps a single source of truth for the host re-implementation.
 const IS_WORKER =
   typeof self !== 'undefined' && typeof self.postMessage === 'function';
+// ONE-SHOT contained library call (the verify_receipt tool): instantiate the
+// given bytes as a headless lib child of the (empty) root and invoke one
+// export with the SAME semantics as compose::call — arity cap, trap
+// containment, CALL_* status codes. Runs in a DEDICATED short-lived worker
+// the main thread spawns and terminates (never the shared cartridge slot —
+// verifying a receipt must not kill a running cartridge; a hung export dies
+// with its own worker). Returns {status, result} (result null unless OK with
+// a numeric return).
+function oneShotLibCall(wasmBuf, fnName, args) {
+  const uid = composeNextUid++;
+  const child = makeChildSlot('verify', 0, 0, 1, 1, 1, uid, true);
+  instantiateChild(child, wasmBuf);
+  if (child.state !== MOD_READY) return { status: CALL_NOT_READY, result: null };
+  const fn = child.exports ? child.exports[fnName] : null;
+  if (typeof fn !== 'function') return { status: CALL_NO_EXPORT, result: null };
+  const arity = fn.length | 0;
+  if (arity > COMPOSE_MAX_CALL_ARGS) return { status: CALL_ARITY, result: null };
+  const fwd = [];
+  for (let i = 0; i < arity; i++) fwd.push((args && args[i]) | 0);
+  try {
+    const r = fn(...fwd);
+    if (typeof r === 'number') return { status: CALL_OK, result: r | 0 };
+    if (typeof r === 'bigint') return { status: CALL_OK, result: Number(BigInt.asIntN(32, r)) };
+    return { status: CALL_OK, result: null }; // void export
+  } catch (_e) {
+    return { status: CALL_TRAPPED, result: null };
+  }
+}
+
 if (IS_WORKER) {
   self.onmessage = (e) => {
     const msg = e.data;
     if (!msg || typeof msg.type !== 'string') return;
     switch (msg.type) {
+      case 'lib_call': {
+        const out = oneShotLibCall(msg.wasm, String(msg.fn || ''), msg.args || []);
+        self.postMessage({ type: 'lib_call_result', status: out.status, result: out.result });
+        break;
+      }
       case 'load':
         applyAgentContext(msg);
         load(msg.wasm);
@@ -1987,6 +2021,9 @@ if (typeof module !== 'undefined' && module.exports) {
     },
     composeCallsThisFrame: () => composeCallsThisFrame,
     composeResetCallBudget: () => { composeCallsThisFrame = 0; },
+    // The verify_receipt one-shot under test (same CALL_* semantics as
+    // compose::call, dedicated-worker containment in the real app).
+    oneShotLibCall,
     // Call-receipt batch under test: the pending records exactly as the next
     // frame post would carry them, and a drain matching present()'s flush.
     composeCallRecordsForTest: () => composeCallRecords,

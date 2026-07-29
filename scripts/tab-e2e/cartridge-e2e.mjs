@@ -255,6 +255,39 @@ try {
       ["gravity", "integrate", "bounce", "clamp"].every((e) => exports.has(e)),
       [...exports].join(","));
     check("receipts: ring respects its cap", lines.length <= 256, String(lines.length));
+
+    // verify_receipt's containment primitive, in the SHIPPED bundle: post a
+    // one-shot `lib_call` to a fresh dedicated worker with the real published
+    // lib-physics bytes and one recorded call — the re-execution must
+    // reproduce the receipt's outcome. (The Rust driver wraps exactly this
+    // message; its chat-tool path needs a real model turn, covered by
+    // dogfood, not this zero-spend harness.)
+    const okLine = ring.trim().split("\n").map((l) => JSON.parse(l))
+      .find((r) => r.call && r.call.status === "ok" && r.call.result !== null);
+    if (okLine) {
+      const reexec = await page.evaluate(async (rec) => {
+        const resp = await fetch(`https://proxy-tau-ten-15.vercel.app/api/app?name=${rec.module}`);
+        const bytes = await resp.arrayBuffer();
+        const w = new Worker("/cartridge-worker.js");
+        const out = await new Promise((resolve) => {
+          const timer = setTimeout(() => resolve(null), 8000);
+          w.onmessage = (e) => {
+            if (e.data && e.data.type === "lib_call_result") {
+              clearTimeout(timer);
+              resolve({ status: e.data.status, result: e.data.result });
+            }
+          };
+          w.postMessage({ type: "lib_call", wasm: bytes, fn: rec.call.export, args: rec.call.args }, [bytes]);
+        });
+        w.terminate();
+        return out;
+      }, okLine);
+      check("receipts: one-shot lib_call re-execution CONFIRMS a recorded receipt",
+        !!reexec && reexec.status === 0 && reexec.result === okLine.call.result,
+        `recorded=${okLine.call.result} observed=${reexec && reexec.result}`);
+    } else {
+      check("receipts: found an OK receipt to re-execute", false, "none in ring");
+    }
   }
 
   console.log("\npage errors:", pageErrors.length ? pageErrors : "(none)");

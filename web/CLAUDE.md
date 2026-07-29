@@ -37,6 +37,10 @@ computed `keccak(bytes)` at `compose_bytes` time and joins on `uid`
 Which statuses receipt is the Rust SSOT (`receipt::CallStatus::
 from_compose_status`) — the worker only skips the no-child cases (bad handle /
 not ready / reentrant / budget). Shape parity: wiring test 8y1–8y5.
+`oneShotLibCall` (message `lib_call` → `lib_call_result`) is the verify_receipt
+re-execution primitive: same CALL_* semantics, run in a DEDICATED short-lived
+worker the main thread spawns + terminates (never the shared slot — a hung
+export dies with its own worker). Wiring 8z1–8z5 + tab-E2E re-confirmation.
 
 **Callable libraries (`spawn_lib`/`call`/`call_ok`, telemetry #70).**
 `instantiateChild` RETAINS `child.exports` — that retention is the whole feature;

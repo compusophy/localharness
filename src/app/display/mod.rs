@@ -70,6 +70,7 @@ mod surface;
 mod worker;
 
 pub(crate) use bridge::feed::prime_feed_permission_on_gesture;
+pub(crate) use worker::one_shot_lib_call;
 pub(crate) use surface::{
     broadcast_composer_open, broadcast_send, close_broadcast_composer, close_embed,
     is_cartridge_canvas_id, launch_pending_embed, next_embed_canvas_id, should_track_move,

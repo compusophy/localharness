@@ -188,6 +188,55 @@ pub fn compiler_tag() -> String {
     format!("rustlite {}", env!("CARGO_PKG_VERSION"))
 }
 
+/// Outcome of re-executing a call receipt against the live module bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// Re-execution reproduced the recorded status (and result, when Ok)
+    /// exactly — the receipt is TRUE of these bytes.
+    Confirmed,
+    /// The live bytes no longer hash to the receipt's `module_keccak` — the
+    /// module was republished. The receipt still binds the OLD bytes; nothing
+    /// can be said about it from the new ones.
+    ModuleChanged,
+    /// Re-execution ran and produced a DIFFERENT outcome — the receipt does
+    /// not describe what this module does.
+    Refuted {
+        /// What re-execution observed (a receiptable status).
+        observed_status: CallStatus,
+        /// The observed result (when the observed status is Ok).
+        observed_result: Option<i32>,
+    },
+    /// Re-execution could not interrogate the module (instantiate failure /
+    /// host refusal) — no statement about the receipt is possible.
+    Unverifiable,
+}
+
+/// Judge a re-execution against the recorded call. Pure: `module_matches` is
+/// the caller's `keccak(live bytes) == receipt.module_keccak` check;
+/// `observed_code` is the compose CALL_* wire code the re-execution returned;
+/// `observed_result` its return value. The hash check DOMINATES — comparing
+/// outcomes across different bytes proves nothing either way.
+pub fn verdict(
+    recorded: &CallRecord,
+    module_matches: bool,
+    observed_code: i32,
+    observed_result: Option<i32>,
+) -> Verdict {
+    if !module_matches {
+        return Verdict::ModuleChanged;
+    }
+    let Some(observed_status) = CallStatus::from_compose_status(observed_code) else {
+        return Verdict::Unverifiable;
+    };
+    // A result only distinguishes outcomes when the call actually RAN.
+    let same_result = observed_status != CallStatus::Ok || observed_result == recorded.result;
+    if observed_status == recorded.status && same_result {
+        Verdict::Confirmed
+    } else {
+        Verdict::Refuted { observed_status, observed_result }
+    }
+}
+
 /// Append one JSONL line to a bounded ring: keep at most `cap_lines` lines,
 /// oldest dropped first. Pure over strings so the OPFS receipts file
 /// (`.lh_receipts.jsonl`) can be capped without a browser in the tests.
@@ -324,6 +373,48 @@ mod tests {
         assert_eq!(r.module_keccak, [7; 32]);
         let b = Receipt::build("fn render() {}", b"wasm");
         assert_ne!(b.source_keccak, [0; 32]);
+    }
+
+    /// The verdict partition: hash mismatch dominates; host refusals verify
+    /// nothing; same outcome confirms; different outcome refutes — including
+    /// a recorded REFUSAL that now runs (a republished-then-reverted module).
+    #[test]
+    fn verdict_partition_is_exact() {
+        use super::{verdict, Verdict};
+        use crate::compose::call_status as s;
+        let rec = sample_call(); // Ok, result 42
+
+        // Hash mismatch dominates everything, even an identical outcome.
+        assert_eq!(verdict(&rec, false, s::OK, Some(42)), Verdict::ModuleChanged);
+        // Host refusals (not-ready etc.) verify nothing.
+        assert_eq!(verdict(&rec, true, s::NOT_READY, None), Verdict::Unverifiable);
+        // Same status + result → confirmed.
+        assert_eq!(verdict(&rec, true, s::OK, Some(42)), Verdict::Confirmed);
+        // Same status, different result → refuted.
+        assert_eq!(
+            verdict(&rec, true, s::OK, Some(43)),
+            Verdict::Refuted { observed_status: CallStatus::Ok, observed_result: Some(43) }
+        );
+        // Recorded Ok but the export now traps → refuted.
+        assert_eq!(
+            verdict(&rec, true, s::TRAPPED, None),
+            Verdict::Refuted { observed_status: CallStatus::Trapped, observed_result: None }
+        );
+        // A recorded REFUSAL re-verifies: same refusal confirms (result is
+        // irrelevant when the call never ran)…
+        let refused = super::CallRecord {
+            export: "nope".into(),
+            args: vec![],
+            result: None,
+            status: CallStatus::Refused,
+            fuel: 0,
+        };
+        assert_eq!(verdict(&refused, true, s::NO_EXPORT, None), Verdict::Confirmed);
+        // …and an export that now EXISTS refutes the recorded refusal.
+        assert_eq!(
+            verdict(&refused, true, s::OK, Some(1)),
+            Verdict::Refuted { observed_status: CallStatus::Ok, observed_result: Some(1) }
+        );
     }
 
     /// The JSONL ring keeps the newest `cap` lines, oldest dropped first, and

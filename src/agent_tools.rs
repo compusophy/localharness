@@ -94,6 +94,7 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
         &[
             "compile_rustlite",
             "run_cartridge",
+            "verify_receipt",
             "render_html",
             "run_wasm_cli",
             "execute_script",

@@ -576,6 +576,80 @@ fn worker_url() -> String {
     "/cartridge-worker.js".to_string()
 }
 
+/// ONE-SHOT contained library call (the `verify_receipt` tool): spawn a
+/// DEDICATED worker, instantiate `wasm` headless, invoke `fn_name` with the
+/// compose::call semantics, and return the `(CALL_* status, result)` pair.
+/// Deliberately NOT the shared cartridge slot — verifying a receipt must
+/// never kill a running cartridge, and a hung/malicious export dies with its
+/// own worker at the timeout (wasm is un-preemptable; termination is the only
+/// containment). `Err` = the worker never answered (hang/timeout/spawn
+/// failure) — an UNVERIFIABLE outcome, distinct from any CALL_* code.
+pub(crate) async fn one_shot_lib_call(
+    wasm: &[u8],
+    fn_name: &str,
+    args: &[i32],
+) -> Result<(i32, Option<i32>), String> {
+    let worker = Worker::new(&worker_url()).map_err(|e| format!("worker spawn: {e:?}"))?;
+    let outcome: Rc<RefCell<Option<(i32, Option<i32>)>>> = Rc::new(RefCell::new(None));
+    let outcome_w = outcome.clone();
+    let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+        let data = e.data();
+        let ty = Reflect::get(&data, &JsValue::from_str("type"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        if ty == "lib_call_result" {
+            let status = Reflect::get(&data, &JsValue::from_str("status"))
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(-2.0) as i32;
+            let result = Reflect::get(&data, &JsValue::from_str("result"))
+                .ok()
+                .and_then(|v| v.as_f64())
+                .map(|f| f as i32);
+            *outcome_w.borrow_mut() = Some((status, result));
+        }
+    });
+    worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+
+    let msg = Object::new();
+    let _ = Reflect::set(&msg, &JsValue::from_str("type"), &JsValue::from_str("lib_call"));
+    let _ = Reflect::set(&msg, &JsValue::from_str("fn"), &JsValue::from_str(fn_name));
+    let arr = js_sys::Array::new();
+    for a in args {
+        arr.push(&JsValue::from_f64(*a as f64));
+    }
+    let _ = Reflect::set(&msg, &JsValue::from_str("args"), &arr);
+    let bytes = Uint8Array::from(wasm);
+    let buf = bytes.buffer();
+    let _ = Reflect::set(&msg, &JsValue::from_str("wasm"), &buf);
+    let transfer = js_sys::Array::new();
+    transfer.push(&buf);
+    if let Err(e) = worker.post_message_with_transfer(&msg, &transfer) {
+        worker.terminate();
+        return Err(format!("post: {e:?}"));
+    }
+
+    // Poll for the answer (the await_first_outcome pattern); ~4s covers a
+    // slow instantiate while still killing a looping export promptly.
+    let deadline_ms = 4_000u32;
+    let step_ms = 50u32;
+    let mut waited = 0u32;
+    let result = loop {
+        if let Some(out) = outcome.borrow().clone() {
+            break Ok(out);
+        }
+        if waited >= deadline_ms {
+            break Err("no answer within 4s (hung or invalid module)".to_string());
+        }
+        crate::runtime::sleep_ms(step_ms).await;
+        waited += step_ms;
+    };
+    worker.terminate();
+    drop(onmessage);
+    result
+}
+
 /// Blit a `{ type:'frame', fb:ArrayBuffer, w, h }` message to the canvas.
 /// The framebuffer is RGBA8888 already in the worker's packing
 /// (0xAABBGGRR little-endian == ImageData byte order R,G,B,A).
