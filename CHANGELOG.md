@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`verify_receipt` — the receipt loop closes.** A chat tool that re-executes
+  a call receipt from `.lh_receipts.jsonl` against the module's LIVE published
+  bytes and judges it: `confirmed` / `refuted` / `module_changed` /
+  `unverifiable`. Re-execution runs in a DEDICATED short-lived worker with the
+  exact `compose::call` semantics (never the shared cartridge slot — a hung or
+  malicious export dies with its own worker at the 4s deadline). The judgment
+  partition is the native-tested `receipt::verdict`: hash mismatch dominates,
+  host refusals verify nothing, a recorded refusal that now runs refutes.
+  Proven E2E three ways, ending in a live user tab: a receipt recorded by a
+  real composition re-executed against the published lib-physics bytes and
+  returned **confirmed** on a metered production turn.
+- **The session prompt is a measured artifact now.** Hoisted to the pure,
+  natively-tested `session_prompt` module: fact-pins guard every
+  telemetry-earned line, a size budget makes growth deliberate, and a LEAN
+  variant (~55% smaller) ships behind the opt-in `lh_prompt=lean` switch.
+  Then it was MEASURED (`examples/prompt_eval_live.rs`, first-action scoring
+  on the live default model): **base 5/5, lean 1/5 — the lean variant lost.**
+  Four of five lean samples produced text-only replies instead of any tool
+  call: frontier-model prompt-cut results (ALE-Claw, the Opus-5 deletion) do
+  NOT transfer to Flash-class models, where the per-tool prose is load-bearing
+  for tool-use discipline itself. The default stays base; the verdict is
+  recorded in the module doc and the eval re-runs in one command at every
+  model pin.
 - **Execution receipts are COMPLETE — browser-side call receipts.** Every
   `compose::call` that resolves a READY child library now leaves a
   hash-committed record of what actually ran. The worker batches
