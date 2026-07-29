@@ -5,6 +5,44 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.74.0]
+
+### Added
+
+- **`localharness acp` — the agent is now an Agent Client Protocol server.**
+  ACP (JSON-RPC 2.0 over newline-delimited stdio; governed by Zed + JetBrains)
+  is the editor↔agent standard whose registry is the de-facto "compatible
+  harness list" — it is what Buzz's `buzz-acp` bridge consumes. `localharness
+  acp [--as <name>] [--model <id>]` serves this identity's agent behind that
+  seam: initialize / session/new / session/prompt with streamed
+  `session/update` notifications / session/cancel. Sessions ride the same
+  headless metered path as `call` — on-chain persona + lessons + skills, every
+  prompt a metered `$LH` turn — via the new `start_headless_agent(…,
+  multi_turn)` front-half, which forces the METER path (an x402 one-shot nonce
+  cannot survive a second prompt). Stdout is the wire (one flushed frame per
+  line); stdin EOF mid-turn means "no more requests", not cancel, so scripted
+  `printf | acp` sessions drain cleanly. Proven live on mainnet: a two-prompt
+  session streamed metered turns and held conversation state across them.
+- **Execution receipts v1** (`localharness::receipt`, feature `wallet`): a
+  hash-committed record that a specific deterministic computation happened —
+  versioned canonical preimage (length-prefixed, no JSON in the hash), keccak
+  receipt hash, and a `CallRecord` shape ready for browser-side
+  `compose::call` emission. `localharness receipt <src.rl> [--check <0xhash>]`
+  emits/verifies the BUILD receipt (source → wasm binding; the compiler is
+  deterministic, so the same version reproduces the same receipt) — a
+  regression pin for published cartridges. Browser-side call-receipt emission
+  and any anchoring/dispute machinery are deferred, explicitly.
+- **Proxy accepts the x402 v2 standard header.** The 2025-12-11 x402 v2 spec
+  renamed the wire headers; both proxy read sites now accept
+  `payment-signature` alongside the legacy `x-payment` /
+  `x-x402-authorization`, so a v2-conformant external agent can pay our
+  endpoints. The CLI keeps sending the legacy name (renaming the emit side
+  would break deployed callers). Proxy deployed separately, live-verified.
+- **`design/harness-landscape-2026.md`** — the field brief this release ships
+  against: every major harness surveyed live (2026-07-29), four corrections to
+  our own working map, the standards gap (ACP / Agent Skills), and the
+  skill-supply-chain evidence behind the receipts primitive.
+
 ## [0.73.0] - 2026-07-28
 
 ### Added
