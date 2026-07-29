@@ -170,12 +170,49 @@ fn toolset(sink: &Arc<Mutex<Vec<FirstAction>>>) -> Vec<Arc<ClosureTool>> {
     ]
 }
 
+/// Synthetic POST-COMPACTION history (telemetry #80's failure window): a
+/// rolling-summary head — exactly the shape the fold engine installs, with or
+/// without the configured epilogue — plus a plausible keep-window of
+/// mid-project turns. Serialized in the Gemini wire shape `with_history_bytes`
+/// expects. The summary + filler mirror the REAL #80 transcript (a long
+/// cartridge build with the model already deep in narration mode).
+fn compacted_history(with_epilogue: bool) -> Vec<u8> {
+    let tag = "[compacted prior context]";
+    let summary = "The user is building a maze-runner cartridge game on this \
+        subdomain. Earlier turns: designed the maze layout and state model \
+        (slots 0-9 walls, 10 player pos, 11 score), compiled several iterations \
+        fixing rustlite subset errors (no arrays writes, no globals), added \
+        pointer-based movement and wall collision, and ran it inline. The user \
+        then asked for enemies with simple patrol AI, which was implemented and \
+        compiled clean. Open user request: finish the game polish and ship it.";
+    let head_text = if with_epilogue {
+        format!(
+            "{tag}\n{summary}\n\n{}",
+            localharness::session_prompt::COMPACTION_EPILOGUE
+        )
+    } else {
+        format!("{tag}\n{summary}")
+    };
+    let turn = |role: &str, text: &str| {
+        serde_json::json!({"role": role, "parts": [{"text": text}]})
+    };
+    let history = serde_json::json!([
+        turn("user", &head_text),
+        turn("user", "the enemies look great now"),
+        turn("model", "Glad the patrol AI feels right. The maze, movement, collision, scoring and enemies are all compiling clean and running inline."),
+        turn("user", "ok what's left before we ship it?"),
+        turn("model", "Remaining polish: a win screen when the exit is reached, a high-score display using slot 11, and then publishing the game to its own subdomain."),
+    ]);
+    serde_json::to_vec(&history).expect("history serializes")
+}
+
 /// Run one sample: one agent, one turn, cut after the first recorded call.
 async fn run_sample(
     token: &str,
     base_url: &url::Url,
     system: &str,
     message: &str,
+    history: Option<Vec<u8>>,
 ) -> Result<Option<FirstAction>, String> {
     let sink: Arc<Mutex<Vec<FirstAction>>> = Arc::new(Mutex::new(Vec::new()));
     let tools = toolset(&sink);
@@ -187,6 +224,9 @@ async fn run_sample(
             enable_subagents: false,
             ..Default::default()
         });
+    if let Some(bytes) = history {
+        cfg = cfg.with_history_bytes(bytes);
+    }
     let mut policies = vec![localharness::deny_all()];
     for t in &tools {
         policies.push(Policy::allow(t.name()));
@@ -278,6 +318,92 @@ async fn main() {
         ),
     ];
 
+    // POST-COMPACTION A/B (telemetry #80): LH_EVAL_COMPACTED=<n> runs n
+    // samples per arm of ONE scenario — a deep session resuming after
+    // compaction, asked to finish multi-step work — with the ONLY difference
+    // being the epilogue on the synthetic rolling-summary head. Scored on the
+    // #80 failure exactly: did the model take ANY tool action (ideally
+    // update_plan), or narrate a text-only reply that would end the run?
+    if let Ok(n) = std::env::var("LH_EVAL_COMPACTED").map(|v| v.parse::<u32>().unwrap_or(3)) {
+        let base_prompt = &variants[0].1;
+        let task = "ok finish it all up and ship it";
+        let mut results: Vec<String> = Vec::new();
+        for (arm, with_epi) in [("no-epilogue", false), ("epilogue", true)] {
+            let mut tool_first = 0u32;
+            let mut plan_first = 0u32;
+            let mut text_only = 0u32;
+            for i in 0..n {
+                let action = match run_sample(
+                    &token,
+                    &base,
+                    base_prompt,
+                    task,
+                    Some(compacted_history(with_epi)),
+                )
+                .await
+                {
+                    Ok(a) => a,
+                    Err(e) => {
+                        println!("{arm} sample {i}: ERROR {e}");
+                        continue;
+                    }
+                };
+                match &action {
+                    Some(a) => {
+                        tool_first += 1;
+                        if a.tool == "update_plan" {
+                            plan_first += 1;
+                        }
+                        println!("{arm} sample {i}: first={}", a.tool);
+                    }
+                    None => {
+                        text_only += 1;
+                        println!("{arm} sample {i}: TEXT-ONLY (the #80 stall)");
+                    }
+                }
+            }
+            results.push(format!(
+                "{arm}: {tool_first}/{n} took a tool action ({plan_first} opened a plan); {text_only} text-only stalls"
+            ));
+        }
+        // ARM 3: the RECOVERY NUDGE — same scenario, no epilogue; when the
+        // first reply is text-only (the stall), send ONE fixed nudge and
+        // score whether the SECOND turn acts. This is the shippable shape:
+        // it costs one extra round only in exactly the case where the whole
+        // request would otherwise have died at step zero.
+        {
+            let mut recovered = 0u32;
+            let mut stalled_then_stalled = 0u32;
+            let mut no_stall = 0u32;
+            for i in 0..n {
+                match run_sample_with_nudge(&token, &base, base_prompt, "ok finish it all up and ship it", compacted_history(false)).await {
+                    Ok(NudgeOutcome::FirstActed(tool)) => {
+                        no_stall += 1;
+                        println!("nudge sample {i}: first turn acted ({tool}) — no stall");
+                    }
+                    Ok(NudgeOutcome::Recovered(tool)) => {
+                        recovered += 1;
+                        println!("nudge sample {i}: stalled, then NUDGE RECOVERED ({tool})");
+                    }
+                    Ok(NudgeOutcome::StillStalled) => {
+                        stalled_then_stalled += 1;
+                        println!("nudge sample {i}: stalled, nudge did NOT recover");
+                    }
+                    Err(e) => println!("nudge sample {i}: ERROR {e}"),
+                }
+            }
+            results.push(format!(
+                "nudge: {no_stall} acted first-try; of the stalls, {recovered} recovered vs {stalled_then_stalled} still stalled"
+            ));
+        }
+        println!("
+=== post-compaction A/B (#80) ===");
+        for r in &results {
+            println!("{r}");
+        }
+        return;
+    }
+
     // Optional filters for cheap replications: LH_EVAL_VARIANT=lean and/or
     // LH_EVAL_TASK=<substring of the task name>.
     let want_variant = std::env::var("LH_EVAL_VARIANT").ok();
@@ -292,7 +418,7 @@ async fn main() {
             if want_task.as_deref().is_some_and(|w| !task.name.contains(w)) {
                 continue;
             }
-            let action = match run_sample(&token, &base, system, task.message).await {
+            let action = match run_sample(&token, &base, system, task.message, None).await {
                 Ok(a) => a,
                 Err(e) => {
                     rows.push(format!("{vname:<5} {:<40} ERROR {e}", task.name));
@@ -317,4 +443,73 @@ async fn main() {
         println!("{vname}: {p}/{} passed", p + f);
     }
     println!("(first-action only; full-task completion needs the in-tab loop)");
+}
+
+/// Outcome of a nudge-arm sample.
+enum NudgeOutcome {
+    /// The first turn took a tool action — no stall to recover from.
+    FirstActed(String),
+    /// First turn was text-only; the one-shot nudge produced a tool action.
+    Recovered(String),
+    /// Text-only twice — the nudge failed.
+    StillStalled,
+}
+
+/// Same agent, TWO chat turns max: the task, and — only when the first reply
+/// is text-only — one fixed recovery nudge. Mirrors what a run_send-level
+/// nudge would do, so the measurement transfers.
+async fn run_sample_with_nudge(
+    token: &str,
+    base_url: &url::Url,
+    system: &str,
+    message: &str,
+    history: Vec<u8>,
+) -> Result<NudgeOutcome, String> {
+    let sink: Arc<Mutex<Vec<FirstAction>>> = Arc::new(Mutex::new(Vec::new()));
+    let tools = toolset(&sink);
+    let mut cfg = GeminiAgentConfig::new(token.to_string())
+        .with_base_url(base_url.clone())
+        .with_system_instructions(system.to_string())
+        .with_capabilities(localharness::types::CapabilitiesConfig {
+            enabled_tools: Some(Vec::new()),
+            enable_subagents: false,
+            ..Default::default()
+        })
+        .with_history_bytes(history);
+    let mut policies = vec![localharness::deny_all()];
+    for t in &tools {
+        policies.push(Policy::allow(t.name()));
+        cfg = cfg.with_tool(t.clone());
+    }
+    let cfg = cfg.with_policies(policies);
+    let agent = Agent::start_gemini(cfg).await.map_err(|e| e.to_string())?;
+
+    let run_turn = |msg: String| {
+        let agent = &agent;
+        let sink = sink.clone();
+        async move {
+            let before = sink.lock().unwrap().len();
+            let response = agent.chat(msg).await.map_err(|e| e.to_string())?;
+            // A turn that ERRORS mid-stream must not read as "the model
+            // narrated" — that conflation made a starved meter look like
+            // three failed recoveries.
+            response.text().await.map_err(|e| format!("turn error: {e}"))?;
+            let after: Vec<FirstAction> = sink.lock().unwrap()[before..].to_vec();
+            Ok::<Option<String>, String>(after.first().map(|a| a.tool.clone()))
+        }
+    };
+
+    let first = run_turn(message.to_string()).await?;
+    let out = match first {
+        Some(tool) => NudgeOutcome::FirstActed(tool),
+        None => {
+            let nudge = "(automatic reminder: that reply called no tool, which ends                 the run. If work remains, act NOW — post the remaining steps through                 update_plan and take the first one.)";
+            match run_turn(nudge.to_string()).await? {
+                Some(tool) => NudgeOutcome::Recovered(tool),
+                None => NudgeOutcome::StillStalled,
+            }
+        }
+    };
+    let _ = agent.shutdown().await;
+    Ok(out)
 }

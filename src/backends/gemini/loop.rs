@@ -59,6 +59,8 @@ pub(crate) struct LoopConfig {
     /// count exceeds this, the loop summarizes the old prefix of
     /// history (see `compaction.rs`). `None` disables.
     pub compaction_threshold: Option<u32>,
+    /// Behavioral note appended to every compaction summary turn (#80).
+    pub compaction_epilogue: Option<String>,
 }
 
 impl LoopConfig {
@@ -69,6 +71,7 @@ impl LoopConfig {
         response_schema: Option<&str>,
         tool_declarations: Vec<wire::FunctionDeclaration>,
         compaction_threshold: Option<u32>,
+        compaction_epilogue: Option<String>,
     ) -> Result<Self> {
         let system_instruction = system
             .map(|s| wire::Content::system_text(crate::backends::render_system(s)));
@@ -90,6 +93,7 @@ impl LoopConfig {
             max_output_tokens: None,
             tool_declarations,
             compaction_threshold,
+            compaction_epilogue,
         })
     }
 }
@@ -318,6 +322,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
     // override to this clone) — Gemini's model rides the URL path, not the
     // request body, so the open closure needs it alongside the request.
     let model = config.model.clone();
+    let compact_epilogue = config.compaction_epilogue.clone();
     let engine_deps = EngineDeps::<GeminiProvider> {
         config,
         state: state.clone(),
@@ -337,7 +342,8 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
             async move { client.stream_generate(&model, &req).await }
         },
         move || async move {
-            compaction::try_compact(&state.history, &client, &model).await;
+            compaction::try_compact(&state.history, &client, &model, compact_epilogue.as_deref())
+                .await;
         },
     )
     .await
@@ -443,6 +449,7 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
+                None,
                 None,
             )
             .expect("config builds"),

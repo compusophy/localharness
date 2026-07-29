@@ -261,6 +261,7 @@ impl ConnectionStrategy for AnthropicConnectionStrategy {
             self.config.max_tokens,
             tool_decls,
             self.config.capabilities.compaction_threshold,
+            self.config.capabilities.compaction_epilogue.clone(),
         )?;
 
         let (steps_tx, _) = broadcast::channel::<Step>(STEP_BROADCAST_CAPACITY);
@@ -548,6 +549,7 @@ impl Connection for AnthropicConnection {
             &self.state.history,
             &self.deps_template.client,
             &self.deps_template.config.model,
+            self.deps_template.config.compaction_epilogue.as_deref(),
         )
         .await
     }
@@ -819,6 +821,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
             None,
         )
         .unwrap();

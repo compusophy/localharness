@@ -53,6 +53,8 @@ pub(crate) struct LoopConfig {
     /// exceeds this, summarize the old prefix of history (compaction).
     /// `None` disables.
     pub compaction_threshold: Option<u32>,
+    /// Behavioral note appended to every compaction summary turn (#80).
+    pub compaction_epilogue: Option<String>,
 }
 
 impl LoopConfig {
@@ -63,6 +65,7 @@ impl LoopConfig {
         max_tokens: Option<u32>,
         tool_declarations: Vec<ToolDef>,
         compaction_threshold: Option<u32>,
+        compaction_epilogue: Option<String>,
     ) -> Result<Self> {
         let system = system.map(render_system);
         Ok(Self {
@@ -72,6 +75,7 @@ impl LoopConfig {
             max_tokens,
             tool_declarations,
             compaction_threshold,
+            compaction_epilogue,
         })
     }
 }
@@ -324,6 +328,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
         session_ctx,
     } = deps;
     let model = config.model.clone();
+    let compact_epilogue = config.compaction_epilogue.clone();
     let engine_deps = EngineDeps::<OpenAiProvider> {
         config,
         state: state.clone(),
@@ -341,7 +346,12 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
             async move { client.stream_chat(&req).await }
         },
         move || async move {
-            crate::backends::openai::compaction::try_compact(&state.history, &client, &model)
+            crate::backends::openai::compaction::try_compact(
+                &state.history,
+                &client,
+                &model,
+                compact_epilogue.as_deref(),
+            )
                 .await;
         },
     )
@@ -463,6 +473,7 @@ mod tests {
                 json!({"type": "object"}),
             )],
             compaction_threshold: None,
+            compaction_epilogue: None,
         };
         let req = build_request(&config, &[Message::user_text("hi")]);
         assert_eq!(req.messages[0].role, Role::System);
@@ -483,6 +494,7 @@ mod tests {
             max_tokens: None,
             tool_declarations: Vec::new(),
             compaction_threshold: None,
+            compaction_epilogue: None,
         };
         let req = build_request(&config, &[Message::user_text("hi")]);
         assert!(req.tool_choice.is_none());

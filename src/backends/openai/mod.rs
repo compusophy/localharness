@@ -232,6 +232,7 @@ impl ConnectionStrategy for OpenAiConnectionStrategy {
             self.config.max_tokens,
             tool_decls,
             self.config.capabilities.compaction_threshold,
+            self.config.capabilities.compaction_epilogue.clone(),
         )?;
 
         let (steps_tx, _) = broadcast::channel::<Step>(STEP_BROADCAST_CAPACITY);
@@ -470,6 +471,7 @@ impl Connection for OpenAiConnection {
             &self.state.history,
             &self.deps_template.client,
             &self.deps_template.config.model,
+            self.deps_template.config.compaction_epilogue.as_deref(),
         )
         .await
     }
@@ -634,7 +636,7 @@ mod tests {
         let state = Arc::new(LoopState::new(steps_tx));
         let client: SharedClient = Arc::new(OpenAiClient::new("k").unwrap());
         let config =
-            LoopConfig::from_system(DEFAULT_MODEL.to_string(), None, None, None, Vec::new(), None)
+            LoopConfig::from_system(DEFAULT_MODEL.to_string(), None, None, None, Vec::new(), None, None)
                 .unwrap();
         Arc::new(OpenAiConnection {
             deps_template: TurnDeps {

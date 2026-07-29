@@ -59,6 +59,8 @@ pub(crate) struct LoopConfig {
     /// exceeds this, summarize the old prefix of history (compaction).
     /// `None` disables.
     pub compaction_threshold: Option<u32>,
+    /// Behavioral note appended to every compaction summary turn (#80).
+    pub compaction_epilogue: Option<String>,
 }
 
 impl LoopConfig {
@@ -70,6 +72,7 @@ impl LoopConfig {
         max_tokens: Option<u32>,
         tool_declarations: Vec<ToolDef>,
         compaction_threshold: Option<u32>,
+        compaction_epilogue: Option<String>,
     ) -> Result<Self> {
         let system = system.map(render_system);
         Ok(Self {
@@ -80,6 +83,7 @@ impl LoopConfig {
             max_tokens: max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
             tool_declarations,
             compaction_threshold,
+            compaction_epilogue,
         })
     }
 }
@@ -417,6 +421,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
         session_ctx,
     } = deps;
     let model = config.model.clone();
+    let compact_epilogue = config.compaction_epilogue.clone();
     let engine_deps = EngineDeps::<AnthropicProvider> {
         config,
         state: state.clone(),
@@ -438,6 +443,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
                 &state.history,
                 &client,
                 &model,
+                compact_epilogue.as_deref(),
             )
             .await;
         },
@@ -600,6 +606,7 @@ mod tests {
             max_tokens: 8192, // below budget+1024 (16384+1024) → must bump
             tool_declarations: Vec::new(),
             compaction_threshold: None,
+            compaction_epilogue: None,
         };
         let req = build_request(&config, &[Message::user_text("hi")]);
         let thinking = req.thinking.expect("thinking enabled");
@@ -623,6 +630,7 @@ mod tests {
             max_tokens: 4096,
             tool_declarations: Vec::new(),
             compaction_threshold: None,
+            compaction_epilogue: None,
         };
         let req = build_request(&config, &[Message::user_text("hi")]);
         assert!(req.thinking.is_none());

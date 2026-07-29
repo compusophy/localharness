@@ -236,6 +236,12 @@ pub struct CapabilitiesConfig {
     /// History-entry count that triggers auto-compaction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction_threshold: Option<u32>,
+    /// Short behavioral note appended to every compaction summary turn
+    /// (telemetry #80: deep post-compaction sessions are where models drop
+    /// instruction adherence — this lands a reminder exactly in that window).
+    /// Agent-specific text; `None` (the default) appends nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_epilogue: Option<String>,
     /// Model ID used for image generation.
     pub image_model: String,
     /// JSON schema for the `finish` tool's structured output.
@@ -251,6 +257,7 @@ impl Default for CapabilitiesConfig {
             enabled_tools: Some(BuiltinTool::READ_ONLY.to_vec()),
             disabled_tools: None,
             compaction_threshold: None,
+            compaction_epilogue: None,
             image_model: DEFAULT_IMAGE_GENERATION_MODEL.to_string(),
             finish_tool_schema_json: None,
         }
@@ -266,6 +273,7 @@ impl CapabilitiesConfig {
             enabled_tools: None,
             disabled_tools: None,
             compaction_threshold: None,
+            compaction_epilogue: None,
             image_model: DEFAULT_IMAGE_GENERATION_MODEL.to_string(),
             finish_tool_schema_json: None,
         }

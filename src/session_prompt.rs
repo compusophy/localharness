@@ -20,6 +20,16 @@
 //!   is a Flash-class model; do not assume the transfer. The size-budget
 //!   test caps growth; shrinking is free but prove quality first.
 
+/// The compaction epilogue the browser session configures
+/// (`CapabilitiesConfig::compaction_epilogue`) — a short reminder attached to
+/// every rolling-summary head turn, because telemetry #80 showed models
+/// dropping plan-first adherence exactly in deep post-compaction sessions:
+/// the agent narrated "I will now write..." as text-only turns (which
+/// correctly end the run) instead of opening a plan, three times in a row.
+/// RESTATES the base prompt only — this must never promise behavior the
+/// harness doesn't implement.
+pub const COMPACTION_EPILOGUE: &str = "Reminder (mid-session): for any multi-step work, post the step list through update_plan FIRST and keep checking steps off — never as plain text. A reply that calls no tool ENDS the run unless a plan has open steps; saying \"I will now do X\" without a tool call stops everything.";
+
 pub fn base_system_prompt(
     agent_name: &str,
     active_network: &str,
@@ -1213,6 +1223,22 @@ mod tests {
         assert!(l <= 20_000, "lean prompt is {l} bytes — it exists to be small");
         assert!(l >= 12_000, "lean prompt is only {l} bytes — truncated?");
         assert!(l * 2 < b, "lean ({l}) is no longer <50% of base ({b})");
+    }
+
+    /// The compaction epilogue (telemetry #80) restates the plan-first rule,
+    /// names the exact failure ("I will now do X" with no tool call), and
+    /// stays SHORT — it rides every compacted session's head turn forever.
+    #[test]
+    fn compaction_epilogue_is_short_and_restates_plan_first() {
+        let e = super::COMPACTION_EPILOGUE;
+        assert!(e.contains("update_plan"));
+        assert!(e.contains("ENDS the run"));
+        assert!(e.len() <= 400, "epilogue is {} bytes — keep it a reminder, not a lecture", e.len());
+        // It must only RESTATE the base prompt's rules (never new promises):
+        // every load-bearing claim it makes exists in the base too.
+        let base = full();
+        assert!(base.contains("update_plan"));
+        assert!(base.contains("ENDS the run"));
     }
 
     /// Per-section size stats — run `cargo test session_prompt -- --nocapture`

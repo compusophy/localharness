@@ -115,10 +115,13 @@ pub async fn try_compact(
     history: &Mutex<Vec<Content>>,
     client: &SharedClient,
     _session_model: &str,
+    epilogue: Option<&str>,
 ) -> bool {
-    engine::try_compact::<GeminiCompaction, _, _>(history, |prompt| {
-        summarize(client, SUMMARIZER_MODEL, prompt)
-    })
+    engine::try_compact::<GeminiCompaction, _, _>(
+        history,
+        |prompt| summarize(client, SUMMARIZER_MODEL, prompt),
+        epilogue,
+    )
     .await
 }
 

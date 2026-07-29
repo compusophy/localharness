@@ -279,6 +279,7 @@ impl GeminiConnectionStrategy {
             self.config.response_schema.as_deref(),
             tool_decls,
             self.config.capabilities.compaction_threshold,
+            self.config.capabilities.compaction_epilogue.clone(),
         )?;
         loop_config.max_output_tokens = self.config.max_output_tokens;
         loop_config.temperature = self.config.temperature;
@@ -589,6 +590,7 @@ impl Connection for GeminiConnection {
             &self.state.history,
             &self.deps_template.client,
             &self.deps_template.config.model,
+            self.deps_template.config.compaction_epilogue.as_deref(),
         )
         .await
     }

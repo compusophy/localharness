@@ -79,9 +79,18 @@ impl CompactionModel for OpenAiCompaction {
 
 /// Try to compact `history` in place. Returns `true` if anything changed.
 /// Safe to call from inside the agent loop — never errors, only logs.
-pub async fn try_compact(history: &Mutex<Vec<Message>>, client: &SharedClient, model: &str) -> bool {
-    engine::try_compact::<OpenAiCompaction, _, _>(history, |prompt| summarize(client, model, prompt))
-        .await
+pub async fn try_compact(
+    history: &Mutex<Vec<Message>>,
+    client: &SharedClient,
+    model: &str,
+    epilogue: Option<&str>,
+) -> bool {
+    engine::try_compact::<OpenAiCompaction, _, _>(
+        history,
+        |prompt| summarize(client, model, prompt),
+        epilogue,
+    )
+    .await
 }
 
 /// One-shot summarization request: feed the fold prompt as a single user

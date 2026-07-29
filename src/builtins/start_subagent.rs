@@ -125,6 +125,7 @@ impl StartSubagent {
             enabled_tools: Some(SUBAGENT_TOOLS.to_vec()),
             disabled_tools: None,
             compaction_threshold: None,
+            compaction_epilogue: None,
             image_model: String::new(),
             finish_tool_schema_json: None,
         };

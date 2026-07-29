@@ -384,6 +384,14 @@ pub(crate) async fn start_session(
     // overflow; tunable, and a recency-weighted summarization scheme can retain far
     // more at this same ceiling.
     capabilities.compaction_threshold = Some(super::COMPACTION_THRESHOLD);
+    // Compaction EPILOGUE (telemetry #80): plumbed through the SDK
+    // (`CapabilitiesConfig::compaction_epilogue`) but deliberately NOT set
+    // here — the live A/B (examples/prompt_eval_live.rs, LH_EVAL_COMPACTED)
+    // measured NO benefit (pooled: 2/6 acted with the reminder vs 4/6
+    // without; when it did act it did open plans, but it did not cure the
+    // text-only stall). Never ship prompt bytes a measurement refused.
+    // Re-run the A/B at the next model pin before reconsidering
+    // (`session_prompt::COMPACTION_EPILOGUE` is the candidate text).
 
     // `model` (the owner's per-subdomain `.lh_model` choice) was loaded above
     // so the prompt could be gated to the backend. A `claude-*` id routes to

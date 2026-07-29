@@ -65,6 +65,43 @@ use crate::error::Result;
 /// the tag without updating `extract_prior_summary`.
 pub const COMPACTION_TAG: &str = "[compacted prior context]";
 
+/// Compose the synthetic rolling-summary head turn: the tag, the summary
+/// body, and — when the agent configured one — the behavioral EPILOGUE
+/// (telemetry #80: deep post-compaction sessions are where models stop
+/// honoring instructions like plan-first; a short reminder attached to the
+/// summary lands exactly in that window). The epilogue is AGENT CONFIG
+/// (`CapabilitiesConfig::compaction_epilogue`), never engine-hardcoded — the
+/// engine is SDK-generic and must not assert tools a consumer may not have.
+pub(crate) fn compose_head(body: &str, epilogue: Option<&str>) -> String {
+    match epilogue {
+        Some(e) if !e.trim().is_empty() => {
+            format!("{COMPACTION_TAG}
+{body}
+
+{e}")
+        }
+        _ => format!("{COMPACTION_TAG}
+{body}"),
+    }
+}
+
+/// Strip a previously appended epilogue from an extracted prior-summary body
+/// (the DROP_NOTE idiom): without this, each re-fold would feed the reminder
+/// into the summarizer, which parrots it into the body, and the head would
+/// accumulate duplicates.
+pub(crate) fn strip_epilogue<'a>(body: &'a str, epilogue: Option<&str>) -> &'a str {
+    match epilogue {
+        Some(e) if !e.trim().is_empty() => {
+            let mut b = body.trim_end();
+            while let Some(stripped) = b.strip_suffix(e.trim()) {
+                b = stripped.trim_end();
+            }
+            b
+        }
+        _ => body,
+    }
+}
+
 /// How many recent user/model turn pairs we always keep verbatim. The
 /// model needs immediate context — a hard ceiling that's not too
 /// stingy (don't break a multi-step tool use) and not too generous
@@ -141,6 +178,7 @@ pub(crate) struct FoldPlan {
 pub(crate) async fn try_compact<A, F, Fut>(
     history: &Mutex<Vec<A::Message>>,
     summarize: F,
+    epilogue: Option<&str>,
 ) -> bool
 where
     A: CompactionModel,
@@ -162,6 +200,12 @@ where
         }
     };
 
+    // Strip a previously appended epilogue off the prior summary BEFORE it
+    // reaches the summarizer (see `strip_epilogue`).
+    let prior_body = plan
+        .prior_summary
+        .as_deref()
+        .map(|s| strip_epilogue(s, epilogue).to_string());
     let delta = &snapshot[plan.delta_start..plan.split];
     debug!(
         prior_summary = plan.prior_summary.is_some(),
@@ -170,18 +214,18 @@ where
         "compaction: attempting incremental fold"
     );
 
-    let prompt = fold_prompt::<A>(plan.prior_summary.as_deref(), delta);
+    let prompt = fold_prompt::<A>(prior_body.as_deref(), delta);
     let summary = match summarize(prompt).await {
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, "compaction: summarization failed; folding to drop-oldest");
-            return drop_oldest_fallback::<A>(history, plan.split, plan.prior_summary.as_deref(), total);
+            return drop_oldest_fallback::<A>(history, plan.split, prior_body.as_deref(), total, epilogue);
         }
     };
 
     if summary.trim().is_empty() {
         warn!("compaction: summarization returned empty text; folding to drop-oldest");
-        return drop_oldest_fallback::<A>(history, plan.split, plan.prior_summary.as_deref(), total);
+        return drop_oldest_fallback::<A>(history, plan.split, prior_body.as_deref(), total, epilogue);
     }
 
     // Install the new rolling summary as a single synthetic user turn at the
@@ -365,6 +409,7 @@ fn drop_oldest_fallback<A: CompactionModel>(
     split: usize,
     prior_summary: Option<&str>,
     expected_len: usize,
+    epilogue: Option<&str>,
 ) -> bool {
     let mut hist = history.lock();
     // Same race guard as the summarize-install path: `summarize()` was awaited
@@ -390,9 +435,9 @@ fn drop_oldest_fallback<A: CompactionModel>(
             while let Some(stripped) = base.strip_suffix(DROP_NOTE) {
                 base = stripped.trim_end();
             }
-            format!("{COMPACTION_TAG}\n{base}\n{DROP_NOTE}")
+            compose_head(&format!("{base}\n{DROP_NOTE}"), epilogue)
         }
-        _ => format!("{COMPACTION_TAG}\n[prior turns dropped]"),
+        _ => compose_head("[prior turns dropped]", epilogue),
     };
     hist.push(A::user_text(text));
     hist.extend(kept);
@@ -592,6 +637,38 @@ mod tests {
         assert_eq!(h[split].role, Role::User);
     }
 
+    /// compose_head + strip_epilogue round-trip: the epilogue lands after the
+    /// body, a re-fold strips it exactly once (however many accumulated), and
+    /// None composes the pre-#80 shape byte-identically.
+    #[test]
+    fn epilogue_composes_and_strips_round_trip() {
+        use super::{compose_head, strip_epilogue, COMPACTION_TAG};
+        let e = "reminder: plan first.";
+        let head = compose_head("the summary body", Some(e));
+        assert_eq!(head, format!("{COMPACTION_TAG}
+the summary body
+
+{e}"));
+        // What extract_prior_summary yields is the text AFTER the tag line.
+        let body = head.strip_prefix(&format!("{COMPACTION_TAG}
+")).unwrap();
+        assert_eq!(strip_epilogue(body, Some(e)), "the summary body");
+        // Accumulated duplicates (a summarizer that parroted one in) all strip.
+        let doubled = format!("the summary body
+
+{e}
+
+{e}");
+        assert_eq!(strip_epilogue(&doubled, Some(e)), "the summary body");
+        // No epilogue configured → byte-identical legacy shape, no stripping.
+        assert_eq!(compose_head("b", None), format!("{COMPACTION_TAG}
+b"));
+        assert_eq!(strip_epilogue("b", None), "b");
+        // Empty/whitespace epilogue behaves as None.
+        assert_eq!(compose_head("b", Some("  ")), format!("{COMPACTION_TAG}
+b"));
+    }
+
     #[test]
     fn drop_oldest_fallback_dedups_the_drop_note() {
         // Repeated summarization failures must NOT accumulate the fallback note:
@@ -602,7 +679,7 @@ mod tests {
         let hist = Mutex::new(vec![m(Role::User), m(Role::Assistant), m(Role::User)]);
         // A prior summary that ALREADY carries the note (what a prior fallback left).
         let prior = format!("rolling summary\n{DROP_NOTE}");
-        assert!(drop_oldest_fallback::<MockModel>(&hist, 1, Some(&prior), 3));
+        assert!(drop_oldest_fallback::<MockModel>(&hist, 1, Some(&prior), 3, None));
 
         let head = hist.lock()[0].clone();
         let text = MockModel::sole_text(&head).unwrap().to_string();
@@ -612,7 +689,7 @@ mod tests {
         // note count must STILL be exactly one.
         let body = extract_prior_summary::<MockModel>(Some(&head)).unwrap();
         let hist2 = Mutex::new(vec![m(Role::User), m(Role::Assistant), m(Role::User)]);
-        assert!(drop_oldest_fallback::<MockModel>(&hist2, 1, Some(&body), 3));
+        assert!(drop_oldest_fallback::<MockModel>(&hist2, 1, Some(&body), 3, None));
         let head2 = hist2.lock()[0].clone();
         let text2 = MockModel::sole_text(&head2).unwrap();
         assert_eq!(text2.matches(DROP_NOTE).count(), 1, "note duplicated on re-fold: {text2}");
@@ -624,7 +701,7 @@ mod tests {
         // current len), the fallback aborts rather than apply a stale split to a
         // Vec the plan never saw. History must be left untouched.
         let hist = Mutex::new(vec![m(Role::User), m(Role::Assistant), m(Role::User)]);
-        assert!(!drop_oldest_fallback::<MockModel>(&hist, 1, None, 2)); // planned len 2, actual 3
+        assert!(!drop_oldest_fallback::<MockModel>(&hist, 1, None, 2, None)); // planned len 2, actual 3
         assert_eq!(hist.lock().len(), 3, "history must be untouched on abort");
     }
 }
