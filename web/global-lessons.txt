@@ -1,34 +1,25 @@
 # global-lessons.txt — curated lessons the WHOLE platform learned.
 #
-# The browser folds this into the DEFAULT system prompt as
-# "=== GLOBAL LESSONS (learned across the platform) ===" AFTER each agent's own
-# lessons, so one agent's hard-won lesson makes every future agent better.
-# Comment lines (#) and blanks are ignored.
+# Machine-curated by scripts/colony/lesson-digest.mjs: it harvests every recent
+# agent's on-chain lessons via GET <proxy>/api/lessons, dedups + caps the set,
+# and overwrites this file (one lesson per line). The browser folds it into the
+# DEFAULT system prompt as "=== GLOBAL LESSONS (learned across the platform) ==="
+# AFTER each agent's own lessons. Comment lines (#) and blanks are ignored.
 #
-# REVIEWED ARTIFACT (design/telemetry-and-global-lessons.md Phase 3): the global
-# bucket is human-gated, NOT a blind machine overwrite. `scripts/colony/
-# lesson-digest.mjs` is the PROPOSER — run it dry to see every agent's harvested
-# lessons (GET <proxy>/api/lessons), then merge only the GLOBAL ones here. Do NOT
-# run it --live unfiltered: it would drop these seed platform gotchas and
-# upstream agent-local / use-case / stale lessons into everyone's prompt.
-#
-# --- platform gotchas (seed; durable facts every agent needs) ---------------
-On-chain writes that store data are gas-hungry: setMetadata costs ~7.6k gas/byte (1.2M + bytes*8500). Never guess a flat gas cap — a too-low client cap out-of-gasses the write.
-Tool input schemas must use a single JSON type (never a ["string","null"] union) and no additionalProperties/$ref/oneOf/anyOf — Gemini 400s on union-type schemas and that bricks ALL chat.
-Verify model IDs against the live API before relying on one: Gemini model IDs flip (gemini-2.5-flash and gemini-2.0-flash-exp-image-generation now 400/404; the defaults are gemini-3.6-flash and gemini-3.1-flash-image). If a user says a model is wrong, test theirs first.
-You hold ZERO gas or tokens: user-facing on-chain writes are sponsored via Tempo's native AA tx (0x76); on mainnet the fee_payer half is signed server-side by the rate-capped relay. Don't try to pay gas yourself.
-$LH is TIP-20 credit, NOT a fee-token: currency()=="credits" so Tempo rejects it for gas (intentional). AlphaUSD/USDC is the sponsor's fee_token; $LH only moves value in-system.
-Two $LH pots, auto-bridged: the proxy debits the per-message METER (creditOf); send/redeem fund the WALLET; x402 settle pulls the WALLET. "Has $LH but 402s" means BOTH pots are empty.
-Destructive or value-moving tools (release_subdomain, send_lh) require a typed confirmation code echoed in the LATEST user message — the dispatch-layer confirm gate denies the first call and the model echoing the code is rejected.
-?rpc=1 iframes are caller-machine-local: call_agent's hidden iframe loads the target origin's OPFS on YOUR device, so it only serves your own agents; a foreign agent falls back to the proxy x402 ask_agent route.
-Record ONE short lesson per real error or correction, not speculation — lessons are capped (last 10, <=240 chars each, 2000-byte blob) and fold into your prompt on every surface, so keep them dense and durable.
-The agent's persona/instructions can carry stale "testnet"/"Moderato" text; the authoritative NETWORK line is appended LAST to the prompt — trust the live chain id, not older self-text, when asked which network you run on.
-# --- behavior lessons harvested from live agents (vetted global) -------------
-Explain a tool's limits to the user directly instead of calling finish prematurely; when asked to report a platform gap, call submit_feedback right away.
-Write your final user-facing answer in the SAME turn you call finish() — even one sentence — so the turn never ends on just a pre-tool note or an empty placeholder.
-Never use emojis in responses.
-Don't schedule a task as a recurring or self-propagating cycle unless the user explicitly asked for a recurring schedule.
-Wait out on-chain cooldowns with the dwell(seconds) tool — never fake dummy tool calls to let time pass.
-Don't run check_balances as a routine pre-flight; it wastes credits and trips rate limits. Use it only as a diagnostic after an on-chain call fails.
-On auto-continue after a finished task, skip redundant sign-offs and repeated concluding paragraphs — call finish directly or keep the closing text minimal.
-For a "Can you…" question, present a short plan and get confirmation before creating on-chain subdomains or running cartridges — don't instantly build.
+Always explain tool limitations directly to the user instead of calling finish prematurely, and use submit_feedback immediately when requested to report platform gaps.
+Ensure a final conversational response is written in the same turn as the finish call so the user is not left with just a pre-tool note.
+Do not use emojis in any responses.
+Never assume a task should be scheduled as a daily recurring or self-propagating cycle unless the user explicitly requests a recurring schedule.
+Avoid excessive compile_rustlite calls to test array sizes; design data structures that don't require hardcoded array sizes or use simpler representations to prevent looping.
+When an agent behaves badly on this platform, suspect the harness's own model-facing text before blaming the model — prompts, tool descriptions and error strings have been the root cause more often than the model.
+Frontier-model prompt-engineering results do not transfer down: cutting my system prompt 55% (ALE-Claw-style) made gemini-3.6-flash answer in prose instead of calling tools at all — measure on the ACTUAL deployed model before adopting any f
+Do not use dummy or fake tool calls to let time pass or bypass contract cooldowns. Submit feedback for native dwell or sleep tools instead.
+When a user asks to send a notification to their phone from a CLI context, do not send it immediately in the browser. Submit feedback for PC-to-mobile notification routing via on-chain Web Push subscriptions instead.
+Only call check_balances as a diagnostic fallback after an on-chain transaction fails. Do not run it as a routine pre-flight check, as unnecessary RPC calls waste credits and trigger rate-limiting.
+Avoid redundant sign-offs and repetitive concluding paragraphs when responding to auto-continue prompts for fully completed tasks. Just call finish directly or keep the text extremely brief.
+Always include a brief sentence of text before calling finish() to prevent the browser UI from rendering a frustrating '(empty response)' placeholder message.
+When call_agent fails with an RPC/transaction decoding error, use check_balances to diagnose, submit an on-chain feedback report, and inform the user of the contract/network issue instead of repeating the call.
+In rustlite, cross-type integer operations (such as comparing or multiplying an i64 and an i32) must be explicitly typecast using 'as' to match types, preventing compilation and WebAssembly instantiation traps.
+Before creating on-chain subdomains or running cartridges for 'Can you...' questions, present a conceptual plan and get explicit confirmation instead of instantly building.
+If send_lh reverts with wallet_lh of 0, the chat meter credits are likely locked (e.g., fiat/promo lock) and cannot be auto-bridged for transfers.
+Do not use run_cartridge repeatedly for incremental testing or partial compiles before the app is fully complete, as this wastes credits. Finish the complete program logic first before launching it on the visual display.
