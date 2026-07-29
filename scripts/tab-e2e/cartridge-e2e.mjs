@@ -219,8 +219,19 @@ try {
   const faceD = await waitFor(() => page.evaluate(() => !!document.getElementById("display-canvas") || null), 30000);
   check("receipts: uses_lib face boots", !!faceD);
   // "LIB PHYSICS OK" only paints when spawn_lib mounted AND call_ok()==0 —
-  // i.e. real cross-cartridge calls are happening. Animation ⇒ frames flow.
-  check("receipts: composition animates (library calls live)", await animates("#display-canvas", 400));
+  // i.e. real cross-cartridge calls are happening. Don't race the physics
+  // (the ball SETTLES, and a settled scene repeats frames identically —
+  // this flaked): assert the canvas is painted non-uniformly instead; the
+  // receipts file below is the real liveness signal.
+  const painted = await waitFor(() => page.evaluate(() => {
+    const c = document.getElementById("display-canvas");
+    if (!c) return null;
+    const px = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    let colors = new Set();
+    for (let i = 0; i < px.length; i += 4096) colors.add((px[i] << 16) | (px[i + 1] << 8) | px[i + 2]);
+    return colors.size > 1 ? true : null; // more than one sampled color = drawn scene
+  }), 15000);
+  check("receipts: composition painted a non-uniform scene (library mounted + drawing)", !!painted);
   const ring = await waitFor(() => page.evaluate(async () => {
     try {
       const root = await navigator.storage.getDirectory();
