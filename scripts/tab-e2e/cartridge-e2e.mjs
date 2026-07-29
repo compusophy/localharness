@@ -26,11 +26,14 @@
 //       overlay and the Web Worker count drops to 0 (genuine termination,
 //       not just DOM removal).
 //
-// NOT covered here (honestly): the LIVE auto-embed at the tool-success path
-// (`chat::stream_turn` → `launch_pending_embed`) needs a real model turn
-// calling `create_and_publish_app`, i.e. a fake-Gemini functionCall stream +
-// tenant-sim; and the owner-studio `#studio-app-slot` pin is tenant-only
-// (`paint_tenant` → `mount_studio_app_card`), unreachable on Host::Other.
+// NOT covered here (honestly): the owner-studio `#studio-app-slot` pin is
+// tenant-only (`paint_tenant` → `mount_studio_app_card`), unreachable on
+// Host::Other. The LIVE auto-embed at the tool-success path IS now covered —
+// by `autoembed-e2e.mjs`, which drives a real model turn through the
+// scripted fake (`fake-gemini-scripted.mjs`) and asserts the cartridge ends
+// up PLAYING in the tool card (run_cartridge exercises the same shared
+// predicate + launch site; the create_and_publish_app variant additionally
+// needs chain writes and stays live-dogfood-only).
 // Zero network spend: every non-local request is aborted; no metered model
 // call ever fires (asserted).
 //

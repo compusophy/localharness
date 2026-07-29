@@ -45,8 +45,9 @@ the FeedbackFacet client paths — don't reintroduce an on-chain feedback read.
   aborts RPC/proxy). `fake-gemini-scripted.mjs` scripts WHOLE TURN SEQUENCES
   (text turns + functionCall turns, terminated SSE) and captures request bodies —
   use it to prove run_send/turn-flow wiring (stall-e2e.mjs: the #80 recovery,
-  10 checks incl. "request 2 carries STALL_NUDGE"); it can also drive the
-  live auto-embed path cartridge-e2e's header lists as uncovered. Needs a built `web/pkg` + a local browser, so NOT a verify.sh
+  10 checks incl. "request 2 carries STALL_NUDGE"; `autoembed-e2e.mjs`: the
+  LIVE tool-success auto-embed, 8 checks — cartridge PLAYING in the tool card
+  off a scripted run_cartridge turn). Needs a built `web/pkg` + a local browser, so NOT a verify.sh
   stage; run after touching the chat turn loop / router / Stop / bell / display
   / the cartridge loop (`cartridge-e2e.mjs`: embed card + history resume +
   app.rl face + overlay worker stop — no chain write). See `tab-e2e/README.md`.

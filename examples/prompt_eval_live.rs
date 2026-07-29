@@ -292,6 +292,9 @@ async fn run_sample(
             println!("      text-only reply: {:?}", text.chars().take(160).collect::<String>());
         }
     }
+    // Cut the ENGINE, not just our reads: without this the turn keeps buying
+    // model rounds behind the observer (~3 $LH/sample instead of ~1).
+    agent.cancel_turn();
     eprintln!("      [sample] shutting down agent");
     // A turn still streaming thoughts keeps shutdown from resolving — bound
     // it; a dropped half-shutdown is fine in a one-shot eval process.
