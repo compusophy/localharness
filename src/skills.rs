@@ -146,6 +146,41 @@ pub fn remove(existing: &str, name: &str) -> (String, bool) {
     (serialize(&skills), removed)
 }
 
+/// Render one skill as an agentskills.io `SKILL.md` document — the open
+/// Agent Skills format (~45 products: Claude Code, Codex, Cursor, Copilot,
+/// Gemini CLI, goose, …), so a localharness agent's learned skills are usable
+/// unmodified in any skills-compatible harness.
+///
+/// Mapping is honest about shape: the spec wants a `description` ("when to
+/// use") separate from the body ("how"); our skills carry only instructions,
+/// so the description is their first sentence (capped) and the body is the
+/// full text. Frontmatter values are quoted/escaped so a skill written via
+/// `create_skill` can never break the YAML. Directory name = the skill name
+/// with spaces dashed (the folder-name convention).
+pub fn to_skill_md(skill: &Skill) -> String {
+    // First sentence (to `. `/end), capped at 150 chars on a char boundary.
+    let first = skill
+        .instructions
+        .split_inclusive(". ")
+        .next()
+        .unwrap_or(&skill.instructions)
+        .trim();
+    let description: String = first.chars().take(150).collect();
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "---\nname: \"{}\"\ndescription: \"{}\"\n---\n\n{}\n",
+        esc(&skill.name),
+        esc(&description),
+        skill.instructions
+    )
+}
+
+/// The `SKILL.md` folder name for a skill: the normalized name with spaces
+/// dashed (skill names are already lowercase + whitespace-collapsed).
+pub fn skill_dir_name(name: &str) -> String {
+    name.replace(' ', "-")
+}
+
 /// The skill names in a blob, in stored order — for a compact `list_skills`
 /// summary.
 pub fn names(blob: &str) -> Vec<String> {
@@ -358,5 +393,30 @@ mod tests {
         let section = compose_section(&blob).unwrap();
         assert!(section.contains("alpha"));
         assert!(section.contains("do alpha things"));
+    }
+
+    /// SKILL.md export: valid frontmatter (name + description required by the
+    /// spec), description = first sentence, body = full instructions, and
+    /// quote characters can't break the YAML.
+    #[test]
+    fn skill_md_renders_spec_frontmatter() {
+        let s = super::Skill {
+            name: "release".into(),
+            instructions: "Run the release script. Never split a version bump across commits."
+                .into(),
+        };
+        let md = super::to_skill_md(&s);
+        assert!(md.starts_with("---\nname: \"release\"\n"));
+        assert!(md.contains("description: \"Run the release script.\""));
+        assert!(md.ends_with("Never split a version bump across commits.\n"));
+        // Quotes in instructions are escaped in frontmatter, intact in the body.
+        let tricky = super::Skill {
+            name: "q".into(),
+            instructions: "Say \"hello\" first.".into(),
+        };
+        let md = super::to_skill_md(&tricky);
+        assert!(md.contains("description: \"Say \\\"hello\\\" first.\""));
+        assert!(md.contains("\n\nSay \"hello\" first.\n"));
+        assert_eq!(super::skill_dir_name("fix ci"), "fix-ci");
     }
 }

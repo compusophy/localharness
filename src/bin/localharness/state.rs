@@ -74,13 +74,17 @@ pub(crate) async fn lessons_cmd(args: &[String]) -> i32 {
 
 /// `localharness skills <name> [--set <skill> <instructions> | --rm <skill>]`.
 pub(crate) async fn skills_cmd(args: &[String]) -> i32 {
-    const USAGE: &str =
-        "usage: localharness skills <name> [--set <skill> <instructions...> | --rm <skill>]";
+    const USAGE: &str = "usage: localharness skills <name> \
+         [--set <skill> <instructions...> | --rm <skill> | --export <dir>]";
     let (set, rest) = match flag(args, "--set", USAGE) {
         Ok(v) => v,
         Err(code) => return code,
     };
     let (rm, rest) = match flag(&rest, "--rm", USAGE) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let (export, rest) = match flag(&rest, "--export", USAGE) {
         Ok(v) => v,
         Err(code) => return code,
     };
@@ -118,6 +122,35 @@ pub(crate) async fn skills_cmd(args: &[String]) -> i32 {
             return 0;
         }
         return write_slot(&name, id, Slot::Skills, &updated).await;
+    }
+
+    // `--export <dir>`: write each skill as an agentskills.io SKILL.md folder
+    // (`<dir>/<skill-name>/SKILL.md`), so this agent's learned skills load
+    // unmodified in any skills-compatible harness — Claude Code, Codex,
+    // Cursor, Copilot, goose, … Pure read; works on any agent's published
+    // skills, not just your own.
+    if let Some(dir) = export {
+        let parsed = skills::parse(&existing);
+        if parsed.is_empty() {
+            println!("{name} has defined no skills yet — nothing to export");
+            return 0;
+        }
+        let count = parsed.len();
+        for skill in &parsed {
+            let folder = std::path::Path::new(&dir).join(skills::skill_dir_name(&skill.name));
+            if let Err(e) = std::fs::create_dir_all(&folder) {
+                eprintln!("creating {}: {e}", folder.display());
+                return 1;
+            }
+            let path = folder.join("SKILL.md");
+            if let Err(e) = std::fs::write(&path, skills::to_skill_md(skill)) {
+                eprintln!("writing {}: {e}", path.display());
+                return 1;
+            }
+            println!("  wrote {}", path.display());
+        }
+        println!("✓ exported {count} skill(s) — point any Agent-Skills-compatible harness at {dir}");
+        return 0;
     }
 
     let parsed = skills::parse(&existing);

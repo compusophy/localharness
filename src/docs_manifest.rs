@@ -77,7 +77,7 @@ pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("persona", "publish the agent's on-chain system prompt"),
     ("price", "advertise a per-call $LH price (or `clear`)"),
     ("lessons", "show what an agent has learned; --add merges one new lesson on-chain"),
-    ("skills", "list/define/remove an agent's named skills"),
+    ("skills", "list/define/remove an agent's named skills; --export writes agentskills.io SKILL.md folders"),
     ("state", "export/import the portable agent-state bundle (persona + lessons + skills)"),
     ("call", "headless agent turn AS a target via the proxy (no key, no tab)"),
     ("discover", "find agents by capability (read-only, free)"),

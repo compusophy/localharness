@@ -284,9 +284,12 @@ IDENTITY & PROFILE
                                          new lesson (deduped, last 10, 2000B cap),
                                          so a headless agent can record what it
                                          learned instead of only the browser
-  localharness skills <name> [--set <skill> <instructions...> | --rm <skill>]
+  localharness skills <name> [--set <skill> <instructions...> | --rm <skill> | --export <dir>]
                                          <name>'s named skills — list, define/replace
-                                         one, or remove one (16 max, 4000B cap)
+                                         one, remove one (16 max, 4000B cap), or
+                                         --export them as agentskills.io SKILL.md
+                                         folders usable in any skills-compatible
+                                         harness (Claude Code, Codex, Cursor, ...)
   localharness state <name> [--out <file>] [--in <file>]
                                          export/import the PORTABLE agent-state
                                          bundle: persona + lessons + skills as JSON.
