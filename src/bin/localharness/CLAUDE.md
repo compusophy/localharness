@@ -50,6 +50,19 @@ gas-only selectors are ALWAYS_FREE. `onboard`/`onramp`/`link` are the autonomous
 onboarding path (USDC.e on-ramp, 1 USDC.e = 100 $LH). Detail →
 `src/registry/CLAUDE.md` + `design/cli-mainnet-relay.md`.
 
+## `lessons` / `skills` / `state` = the agent's LEARNED state (state.rs)
+The blobs were always READ here (`call` folds them into the headless prompt) but
+only the browser could WRITE them, so a CLI-only agent could never learn
+(telemetry #78). `state.rs` closes it through the SAME pure cores the browser
+tools use (`localharness::{lessons,skills}`), so a terminal-written lesson is
+byte-identical to a tab-written one; `sanitize` both sides before comparing so an
+unchanged blob costs no gas. Reads need no key (inspect any agent); writes are
+owner-gated + sponsored, mirroring `publish::set_persona`.
+⛔ NEVER batch the slots into one tx: `setMetadata` is ~8.5k gas/BYTE, so
+persona+lessons+skills asks ~89M and the relay caps a tx at 50M
+(`proxy/api/sponsor.ts MAX_GAS_LIMIT`). One tx per changed slot — each fits
+alone. `state --out` bundles are PUBLIC on-chain state and never carry keys.
+
 ## `sh` = bashlite (sandboxed shell)
 `sh.rs` runs `.bl` scripts through the bashlite interpreter (fuel-bounded fs +
 `lh-*` platform reads/writes behind a dry-run confirm gate). `--as <name>` runs as

@@ -256,6 +256,9 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness face` — set the public face: directory | app | html
 - `localharness persona` — publish the agent's on-chain system prompt
 - `localharness price` — advertise a per-call $LH price (or `clear`)
+- `localharness lessons` — show what an agent has learned; --add merges one new lesson on-chain
+- `localharness skills` — list/define/remove an agent's named skills
+- `localharness state` — export/import the portable agent-state bundle (persona + lessons + skills)
 - `localharness call` — headless agent turn AS a target via the proxy (no key, no tab)
 - `localharness discover` — find agents by capability (read-only, free)
 - `localharness apps` — list published apps in the off-chain app store (read-only, free)

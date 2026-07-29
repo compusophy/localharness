@@ -67,11 +67,25 @@ not lessons or skills — so learning only happens in the browser.
 
 **Verdict: adopt the goal, keep the carrier.** A directory is a weaker container
 than what we already have: chain-addressed state is global, signed, and survives
-device loss, which a synced folder does not. The concrete work is (a) name the
-canonical bundle — persona + lessons + skills + allowlist, (b) give the CLI
-read/write parity for lessons and skills, (c) an `export-state`/`import-state`
-pair that round-trips the bundle. That is a small, real backlog item, not a
-standard we need to import.
+device loss, which a synced folder does not.
+
+**SHIPPED (`src/bin/localharness/state.rs`).** The CLI now has read/write parity
+and a bundle: `lessons <name> [--add …]`, `skills <name> [--set|--rm]`, and
+`state <name> [--out|--in]` — persona + lessons + skills as versioned JSON,
+never key material. Writes go through the SAME pure cores the browser tools use
+(`lessons::merge_lesson`, `skills::upsert`), so a terminal-written lesson is
+byte-identical to a tab-written one, and both sides are sanitized before
+comparing so an unchanged blob costs no gas. Proven E2E on mainnet: a lesson and
+a skill written from the terminal came back quoted by a headless `call` turn.
+
+⛔ The bundle is written ONE TX PER SLOT, never batched: `setMetadata` is ~8.5k
+gas/BYTE, so a full persona+lessons+skills batch asks ~89M gas and the mainnet
+relay caps a tx at 50M (`proxy/api/sponsor.ts MAX_GAS_LIMIT`). Each slot fits
+alone (36M / 18M / 35M); the batch never does.
+
+Still open here: the tool ALLOWLIST is not on-chain at all — it lives in OPFS
+`agent.json` (`src/app/agent_config.rs`), so it can only ever travel inside a
+bundle, and the bundle does not carry it yet.
 
 ## 4. WASM sandboxing — shipped, with limits worth stating
 

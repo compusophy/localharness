@@ -119,7 +119,9 @@
 //!   help                     this text
 
 use localharness::encoding::{bytes_to_hex_str, hex_to_bytes_padded, parse_address};
+use localharness::lessons;
 use localharness::registry;
+use localharness::skills;
 use localharness::tempo_tx;
 use localharness::wallet;
 
@@ -150,6 +152,7 @@ mod reputation;
 mod schedule;
 mod session;
 mod sh;
+mod state;
 mod status;
 mod tba;
 mod util;
@@ -178,6 +181,7 @@ pub(crate) use publish::*;
 pub(crate) use reputation::*;
 pub(crate) use schedule::*;
 pub(crate) use session::*;
+pub(crate) use state::*;
 pub(crate) use status::*;
 pub(crate) use validation::*;
 pub(crate) use tba::*;
@@ -271,6 +275,22 @@ IDENTITY & PROFILE
                                          enforces it as the payment floor;
                                          unset names cost callers the platform
                                          default (0.01 $LH)
+  localharness lessons <name> [--add <lesson>]
+                                         what <name> has LEARNED — its on-chain
+                                         lessons blob, folded into its system
+                                         prompt on every surface. --add merges one
+                                         new lesson (deduped, last 10, 2000B cap),
+                                         so a headless agent can record what it
+                                         learned instead of only the browser
+  localharness skills <name> [--set <skill> <instructions...> | --rm <skill>]
+                                         <name>'s named skills — list, define/replace
+                                         one, or remove one (16 max, 4000B cap)
+  localharness state <name> [--out <file>] [--in <file>]
+                                         export/import the PORTABLE agent-state
+                                         bundle: persona + lessons + skills as JSON.
+                                         No --in prints (or writes) the bundle;
+                                         --in publishes each slot that differs, one
+                                         sponsored tx per slot. Never carries keys
   localharness whoami [--json] <name>    profile of <name> (owner, wallet, …; alias: lookup)
   localharness fee [--as <me>] <target>  what a `call <target>` costs BEFORE paying:
                                          its advertised x402 fee + the ~1 $LH
@@ -795,6 +815,9 @@ async fn run(args: &[String]) -> i32 {
             eprintln!("usage: localharness persona <name> <text-or-file>");
             2
         }
+        Some("lessons") => lessons_cmd(&args[1..]).await,
+        Some("skills") => skills_cmd(&args[1..]).await,
+        Some("state") => state_cmd(&args[1..]).await,
         Some("call") => call(&args[1..]).await,
         Some("abtest") => abtest(&args[1..]).await,
         Some("mcp-call") => mcp_call(&args[1..]).await,
@@ -1252,7 +1275,7 @@ mod tests {
             "feedback", "probe", "threads", "forget", "whoami", "status", "fee",
             "invite", "bounty", "colony", "reputation", "guild", "company", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "remind", "jobs", "unschedule", "notify", "models", "sh",
-            "onboard", "onramp", "link",
+            "onboard", "onramp", "link", "lessons", "skills", "state",
         ] {
             assert!(
                 USAGE.contains(cmd),
