@@ -47,7 +47,11 @@ the FeedbackFacet client paths — don't reintroduce an on-chain feedback read.
   use it to prove run_send/turn-flow wiring (stall-e2e.mjs: the #80 recovery,
   10 checks incl. "request 2 carries STALL_NUDGE"; `autoembed-e2e.mjs`: the
   LIVE tool-success auto-embed, 8 checks — cartridge PLAYING in the tool card
-  off a scripted run_cartridge turn). Needs a built `web/pkg` + a local browser, so NOT a verify.sh
+  off a scripted run_cartridge turn; `studioslot-e2e.mjs`: the tenant-only
+  owner-landing pin, 7 checks — local app.rl → playable #studio-app-slot card,
+  no fullscreen hijack). The cartridge loop's coverage map is COMPLETE: every
+  slice tested or its residual named (publish variant = chain writes =
+  live-dogfood-only). Needs a built `web/pkg` + a local browser, so NOT a verify.sh
   stage; run after touching the chat turn loop / router / Stop / bell / display
   / the cartridge loop (`cartridge-e2e.mjs`: embed card + history resume +
   app.rl face + overlay worker stop — no chain write). See `tab-e2e/README.md`.

@@ -210,6 +210,7 @@ impl Error {
         match self {
             Error::Io(_) => ec::CORE_IO,
             Error::Json(_) => ec::CORE_JSON,
+            // Matching the DEPRECATED variant is required until it is removed.
             #[allow(deprecated)]
             Error::Http(s) => ec::classify(s).unwrap_or(ec::CORE_HTTP),
             // Transport failures classify off the message (a "429" body / bare
@@ -262,6 +263,7 @@ mod tests {
     use super::*;
 
     #[test]
+    // Enumerates ALL variants incl. the deprecated ones — that's the point.
     #[allow(deprecated)]
     fn every_variant_maps_to_a_registered_code() {
         let variants = [
@@ -294,6 +296,8 @@ mod tests {
     }
 
     #[test]
+    // Deliberately exercises the DEPRECATED string-wrapping constructors —
+    // the test exists to pin their classification until the variants go.
     #[allow(deprecated)]
     fn string_wrapping_variants_classify_to_backend_codes() {
         use crate::error_codes as ec;
@@ -406,6 +410,7 @@ mod tests {
     }
 
     #[test]
+    // Same: pins the deprecated http_status surface until removal.
     #[allow(deprecated)]
     fn http_status_display_and_accessor() {
         let e = Error::http_status(429, "gemini HTTP 429 Too Many Requests: quota");

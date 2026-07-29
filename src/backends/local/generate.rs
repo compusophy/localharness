@@ -173,6 +173,10 @@ pub async fn generate_streamed<B: Backend>(
         &format!("[lh-local] generate: prompt={} tokens, max_new={max_new}", total_len).into(),
     );
 
+    // `total_len` is a RoPE-bound sequence counter offset by `pending.len()`
+    // and advanced at a precise point mid-body — the clippy rewrite would be
+    // unverifiable here (parity tests are weights-gated, `GEMMA_DIR`).
+    #[allow(clippy::explicit_counter_loop)]
     for _ in 0..max_new {
         // Clean stop before the forward pass would index past the RoPE cache:
         // once the sequence (cached + pending) reaches `ROPE_CACHE_LEN`, the
@@ -443,6 +447,8 @@ mod tests {
         let prompt_len = tokens.len();
         let mut uncached: Vec<i64> = Vec::new();
         let t0 = std::time::Instant::now();
+            // Same counter shape as `generate` — see the annotation there.
+        #[allow(clippy::explicit_counter_loop)]
         for _ in 0..max_new {
             if at_context_limit(tokens.len()) {
                 break;
@@ -470,6 +476,8 @@ mod tests {
         let mut total_len = pending.len();
         let mut cached: Vec<i64> = Vec::new();
         let t1 = std::time::Instant::now();
+            // Same counter shape as `generate` — see the annotation there.
+        #[allow(clippy::explicit_counter_loop)]
         for _ in 0..max_new {
             if at_context_limit(total_len) {
                 break;
@@ -544,6 +552,8 @@ mod tests {
         device: &burn::backend::wgpu::WgpuDevice,
     ) -> Vec<i64> {
         let mut out = Vec::new();
+            // Same counter shape as `generate` — see the annotation there.
+        #[allow(clippy::explicit_counter_loop)]
         for _ in 0..max_new {
             if at_context_limit(tokens.len()) {
                 break;
@@ -577,6 +587,8 @@ mod tests {
         let mut pending = prompt_tokens;
         let mut total_len = pending.len();
         let mut out = Vec::new();
+            // Same counter shape as `generate` — see the annotation there.
+        #[allow(clippy::explicit_counter_loop)]
         for _ in 0..max_new {
             if at_context_limit(total_len) {
                 break;
