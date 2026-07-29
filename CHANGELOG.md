@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.76.0]
+
+### Added
+
+- **One-shot stall recovery — the measured #80 fix.** A short text-only reply
+  that only DECLARES pending work ("I will now write the complete…")
+  classifies as a final answer and correctly ends the run — so an agent could
+  announce the work and die at step zero, repeatedly (observed three-in-a-row
+  in a live session). The fix is a bounded one-shot recovery nudge in the
+  auto-continue loop: `turn_flow::text_declares_pending_action` (a tight
+  phrase allowlist plus a 600-char length gate — a delivery is long, the
+  stall is a short announcement) fires `STALL_NUDGE` once per user request,
+  only with no open plan, inside the auto-continue cap, hidden on replay.
+  Shipped on measurement, not intuition: with the stall state seeded
+  deterministically, the nudge recovered **9/9** genuinely-served samples on
+  the live default model (every earlier "failure" was a starved-meter 402
+  misread as model behavior — the eval now hard-fails samples on stream
+  errors and wall-clock-bounds thought-stream reads, which `maxOutputTokens`
+  does not cap on Gemini 3.x).
+- **`CapabilitiesConfig::compaction_epilogue`** — an agent-configurable
+  behavioral note appended to every compaction summary turn, threaded through
+  all three backends into the one fold engine (`compose_head` /
+  `strip_epilogue`: the note never re-folds into the summary body).
+  Deliberately UNUSED by the browser: the live A/B measured no benefit
+  (2/6 acted with the reminder vs 4/6 without), so the mechanism ships and
+  the policy waits for a model where the measurement passes. The eval grew
+  the post-compaction and conditioned-stall arms (`LH_EVAL_COMPACTED`,
+  `LH_EVAL_STALLED`) that produced all of the above.
+
 ## [0.75.0] - 2026-07-29
 
 ### Added
