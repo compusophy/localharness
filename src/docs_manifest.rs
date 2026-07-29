@@ -117,6 +117,7 @@ pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("facet", "SolidityLite: deploy/cut your own on-chain facets"),
     ("mcp", "serve a call_agent tool over stdio MCP"),
     ("mcp-call", "true x402 MCP-over-HTTP call to a target agent"),
+    ("acp", "serve this agent over the Agent Client Protocol (stdio) for Zed/JetBrains/Buzz"),
     ("release", "DESTRUCTIVE: burn an owned name (--confirm <name>)"),
 ];
 

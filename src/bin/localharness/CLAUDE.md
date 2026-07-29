@@ -63,6 +63,21 @@ persona+lessons+skills asks ~89M and the relay caps a tx at 50M
 (`proxy/api/sponsor.ts MAX_GAS_LIMIT`). One tx per changed slot — each fits
 alone. `state --out` bundles are PUBLIC on-chain state and never carry keys.
 
+## `acp` = the Agent Client Protocol server (acp.rs)
+`localharness acp [--as <name>] [--model <id>]` serves this identity's agent over
+ACP (JSON-RPC 2.0, newline-delimited stdio) — the editor↔agent standard (Zed +
+JetBrains; Buzz's `buzz-acp` bridge consumes it). Sessions ride
+`call::start_headless_agent(…, multi_turn: true)`: on-chain persona/lessons/
+skills, per-request meter billing. ⛔ multi_turn FORCES the meter path — the x402
+one-shot nonce cannot survive a second `session/prompt`. ⛔ STDOUT IS THE WIRE:
+one flushed JSON-RPC frame per line, nothing else (stdout is block-buffered when
+piped; an unflushed frame deadlocks the client) — all chatter to stderr. stdin
+EOF mid-turn = "no more requests", NOT cancel: drain the turn, then exit.
+Declared capabilities are the MINIMAL v1 surface (loadSession false, text-only
+prompts, no auth) — widen a capability only WITH its implementation. Proven live:
+multi-turn session continuity on mainnet (metered, streamed
+agent_message_chunks). Pure wire helpers are unit-tested in-module.
+
 ## `sh` = bashlite (sandboxed shell)
 `sh.rs` runs `.bl` scripts through the bashlite interpreter (fuel-bounded fs +
 `lh-*` platform reads/writes behind a dry-run confirm gate). `--as <name>` runs as

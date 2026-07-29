@@ -653,6 +653,27 @@ pub(crate) async fn run_agent_turn(
     prior_history: Option<Vec<u8>>,
     model: Option<&str>,
 ) -> Result<(String, Option<Vec<u8>>), String> {
+    let agent = start_headless_agent(key_hex, target, model, prior_history, false).await?;
+    run_turn_and_persist(agent, message).await
+}
+
+/// Build + START a headless agent embodying `target`'s on-chain persona,
+/// paid by the identity behind `key_hex` — the shared front-half of
+/// [`run_agent_turn`] (one turn, then shutdown) and the ACP server (which
+/// keeps the agent ALIVE across `session/prompt`s and streams its chunks).
+///
+/// `multi_turn` selects the payment shape: `false` allows the x402
+/// single-request path (one-shot nonce — the started agent must fire EXACTLY
+/// one upstream request); `true` forces the per-request METER path, because a
+/// session that prompts more than once would replay a spent x402 nonce and
+/// 402 mid-conversation with no fallback.
+pub(crate) async fn start_headless_agent(
+    key_hex: &str,
+    target: &str,
+    model: Option<&str>,
+    prior_history: Option<Vec<u8>>,
+    multi_turn: bool,
+) -> Result<localharness::Agent, String> {
     let caller =
         wallet::from_private_key_hex(key_hex).map_err(|e| format!("bad identity key: {e}"))?;
 
@@ -722,7 +743,12 @@ pub(crate) async fn run_agent_turn(
     // compaction / subagents / image / tools on an x402-bearing turn — a second
     // request would replay the spent nonce and 402 mid-turn with no meter fallback.
     // If ever needed, scope X-PAYMENT per request (fresh nonce each) instead.
-    let x402_header = try_build_x402_payment(&caller, model).await;
+    // A multi-turn (ACP) session NEVER takes the x402 path — see the doc above.
+    let x402_header = if multi_turn {
+        None
+    } else {
+        try_build_x402_payment(&caller, model).await
+    };
     if x402_header.is_none() {
         // Pay PER REQUEST via the meter: fund it so the proxy debits ~CALL_COST_WEI
         // per call. A one-shot agent call must NOT buy a 10-$LH hour-long session
@@ -792,12 +818,10 @@ pub(crate) async fn run_agent_turn(
                 }
                 cfg
             };
-            let agent =
-                start_with_history_fallback(target, prior_history, "anthropic session", |h| {
-                    localharness::Agent::start_anthropic(build(h))
-                })
-                .await?;
-            return run_turn_and_persist(agent, message).await;
+            return start_with_history_fallback(target, prior_history, "anthropic session", |h| {
+                localharness::Agent::start_anthropic(build(h))
+            })
+            .await;
         }
         #[cfg(not(feature = "anthropic"))]
         {
@@ -824,11 +848,10 @@ pub(crate) async fn run_agent_turn(
         }
         cfg
     };
-    let agent = start_with_history_fallback(target, prior_history, "agent session", |h| {
+    start_with_history_fallback(target, prior_history, "agent session", |h| {
         localharness::Agent::start_gemini(build(h))
     })
-    .await?;
-    run_turn_and_persist(agent, message).await
+    .await
 }
 
 /// Start an agent seeded with `prior_history`, falling back to a FRESH start

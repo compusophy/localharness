@@ -126,6 +126,7 @@ use localharness::tempo_tx;
 use localharness::wallet;
 
 mod abtest;
+mod acp;
 mod apps;
 mod bounty;
 mod buy;
@@ -159,6 +160,7 @@ mod util;
 mod vote;
 
 pub(crate) use abtest::*;
+pub(crate) use acp::*;
 pub(crate) use apps::*;
 pub(crate) use bounty::*;
 pub(crate) use buy::*;
@@ -381,6 +383,14 @@ CALLING & MCP
                                          sign an x402 $LH payment to <target>'s
                                          account, ask it <message>, print the
                                          reply (the networked sibling of `mcp`)
+  localharness acp [--as <name>] [--model <id>]
+                                         serve this identity's agent over the
+                                         Agent Client Protocol (stdio JSON-RPC),
+                                         so any ACP client — Zed, JetBrains,
+                                         vscode-acp, Buzz — drives it like any
+                                         registry harness. Embodies the on-chain
+                                         persona/lessons/skills; each prompt is
+                                         a metered turn paid by this identity
 
 WALLET, FUNDING & TBA
   localharness buy [--as <me>] [<usd>]   buy $LH with a card: prints a Stripe
@@ -819,6 +829,7 @@ async fn run(args: &[String]) -> i32 {
         Some("skills") => skills_cmd(&args[1..]).await,
         Some("state") => state_cmd(&args[1..]).await,
         Some("call") => call(&args[1..]).await,
+        Some("acp") => acp(&args[1..]).await,
         Some("abtest") => abtest(&args[1..]).await,
         Some("mcp-call") => mcp_call(&args[1..]).await,
         Some("mcp") => mcp_serve(&args[1..]).await,
@@ -1275,7 +1286,7 @@ mod tests {
             "feedback", "probe", "threads", "forget", "whoami", "status", "fee",
             "invite", "bounty", "colony", "reputation", "guild", "company", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "remind", "jobs", "unschedule", "notify", "models", "sh",
-            "onboard", "onramp", "link", "lessons", "skills", "state",
+            "onboard", "onramp", "link", "lessons", "skills", "state", "acp",
         ] {
             assert!(
                 USAGE.contains(cmd),

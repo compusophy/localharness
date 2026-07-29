@@ -298,6 +298,7 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness facet` — SolidityLite: deploy/cut your own on-chain facets
 - `localharness mcp` — serve a call_agent tool over stdio MCP
 - `localharness mcp-call` — true x402 MCP-over-HTTP call to a target agent
+- `localharness acp` — serve this agent over the Agent Client Protocol (stdio) for Zed/JetBrains/Buzz
 - `localharness release` — DESTRUCTIVE: burn an owned name (--confirm <name>)
 <!-- /GEN:cli -->
 
