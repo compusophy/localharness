@@ -138,6 +138,31 @@ Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
   — the event must land ON a cartridge canvas, or continue a drag that began on
   one. Never gate moves on "a canvas exists somewhere" (the old
   `cartridge_canvas_present`): that let transcript scrolls drive an unfocused embed.
+- ONE CARTRIDGE RUNS AT A TIME (single worker slot), so a second inline card
+  leaves the first a DEAD black canvas — read as "duplicate cards" (telemetry
+  #79). `surface::set_active_canvas` RETIRES the superseded card (DOM-only —
+  the new run owns the worker; `retire_embed_card` is shared with
+  `close_embed`). Embed↔fullscreen transitions are exempt BOTH ways: the card
+  must survive the [fullscreen] round trip. The prompt now also forbids
+  `run_cartridge` AFTER `create_and_publish_app` on the same source (publishing
+  already plays it).
+- THE EMBED STASH IS A QUEUE (`PENDING_EMBEDS`), not one slot: the engine
+  dispatches a turn's tools back-to-back into a buffer while the UI paints
+  behind it, so two embedding tools in one turn used to swap bytes (card A ran
+  B's cartridge; card B stayed permanently BLACK). Stash order == call order ==
+  result order, the same correlation `pending_tools` relies on. `run_send`
+  clears it per user request so a cancelled turn can't shift every later pair.
+- REPEAT PILLS FOLD (telemetry #79): consecutive calls of a cheap check
+  (`turn_flow::FOLDABLE_TOOLS` — compile_rustlite &c.) collapse into ONE pill
+  with a `×N` count instead of an Nth 38px row; eight compiles filled a 411px
+  phone. Nothing is hidden — every attempt keeps its args + result inside the
+  collapsed body (`templates::tool_call_run`/`tool_call_attempt`). The anchor
+  (`chat::FOLD_ANCHOR`) spans TURNS on purpose (auto-continue paints a bubble
+  per continuation) and a continuation whose only output folded upward has its
+  empty bubble dropped. `history::paint_entries` folds the same way via
+  `turn_flow::fold_runs`, or a reload would re-expand what the session folded.
+  ⛔ FOLDABLE_TOOLS is an ALLOWLIST: never add a value move, a burn, or a tool
+  that renders an inline card.
 - PLAN CARD: `update_plan` renders the "2/5" checklist (`templates::plan_card`).
   Read-only by design — the AGENT owns the plan and checks steps off through the
   tool, so no interactive control can desync from it. `chat::plan_state` holds the

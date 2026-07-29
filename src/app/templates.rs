@@ -807,21 +807,46 @@ pub(crate) fn text_segment(seg_id: u32, text: &str) -> Markup {
 /// display outputs), so the transcript shows what a tool produced inline,
 /// chronologically, without tab-hopping. Empty for every other tool.
 pub(crate) fn tool_call_block(seg_id: u32, call: &ToolCall) -> Markup {
+    tool_call_run(seg_id, &call.name, &[(seg_id, &call.args)])
+}
+
+/// A tool pill holding a RUN of one or more attempts — the general form of
+/// [`tool_call_block`]. The live stream starts every pill with a single attempt
+/// and appends folded repeats into `#tool-{id}-body` as they stream; history
+/// replay already knows the whole run, so it renders it in one pass. Both go
+/// through this markup, so a reloaded transcript folds exactly like the session
+/// that produced it.
+///
+/// `attempts` is `(attempt id, args)` in call order and the FIRST id must be
+/// `seg_id` — the pill's own `#tool-{seg_id}-{body,count,card}` ids derive from
+/// it, and the card slot belongs to the first attempt (foldable tools never
+/// render a card, so a run of length > 1 leaves it empty).
+pub(crate) fn tool_call_run(
+    seg_id: u32,
+    name: &str,
+    attempts: &[(u32, &serde_json::Value)],
+) -> Markup {
     let block_id = format!("tool-{seg_id}");
-    let result_id = format!("tool-{seg_id}-result");
+    let body_id = format!("tool-{seg_id}-body");
+    let count_id = format!("tool-{seg_id}-count");
     let card_id = format!("tool-{seg_id}-card");
-    let args_pretty = serde_json::to_string_pretty(&call.args).unwrap_or_else(|_| "{}".into());
     html! {
         details id=(block_id) .tool-call {
             summary {
-                span.tc-name { (call.name) }
+                span.tc-name { (name) }
+                // Repeat counter (telemetry #79) — EMPTY below two attempts
+                // (and hidden by `.tc-count:empty`), so a one-off call renders
+                // exactly as it always did.
+                span id=(count_id) .tc-count {
+                    (crate::turn_flow::fold_count_label(attempts.len() as u32))
+                }
                 // Right-aligned disclosure chevron (#61) — rotates down on open.
                 span.tc-chev { (crate::landing::chevron_glyph()) }
             }
-            div.tc-body {
-                div.tc-section-label { "args" }
-                pre { (args_pretty) }
-                div id=(result_id) {}
+            div id=(body_id) .tc-body {
+                @for (attempt_id, args) in attempts {
+                    (tool_call_attempt(*attempt_id, args))
+                }
             }
         }
         // Card slot — empty for most tools. `.tc-card-slot:empty { display:none }`
@@ -829,6 +854,31 @@ pub(crate) fn tool_call_block(seg_id: u32, call: &ToolCall) -> Markup {
         // phantom inter-block gap UNDER the folded tool pill (on-chain #60.1).
         div id=(card_id) .tc-card-slot {}
     }
+}
+
+/// ONE attempt inside a tool pill: its args plus the empty `#tool-{id}-result`
+/// slot the result swaps into. A pill's first call renders one of these; a
+/// folded repeat (telemetry #79 — eight `compile_rustlite` checks filled a
+/// phone screen) appends another into the SAME `#tool-{host}-body` instead of
+/// starting a new pill. Nothing is hidden: every attempt keeps its full args +
+/// result, the run just costs one collapsed row instead of N.
+pub(crate) fn tool_call_attempt(seg_id: u32, args: &serde_json::Value) -> Markup {
+    let result_id = format!("tool-{seg_id}-result");
+    let args_pretty = serde_json::to_string_pretty(args).unwrap_or_else(|_| "{}".into());
+    html! {
+        div.tc-attempt {
+            div.tc-section-label { "args" }
+            pre { (args_pretty) }
+            div id=(result_id) {}
+        }
+    }
+}
+
+/// The `×N` repeat count swapped into a folded pill's `#tool-{host}-count`.
+/// Pure formatting lives in [`crate::turn_flow::fold_count_label`] so the live
+/// stream and history replay can never disagree on when a count appears.
+pub(crate) fn tool_call_count(count: u32) -> Markup {
+    html! { (crate::turn_flow::fold_count_label(count)) }
 }
 
 /// Result HTML to swap into `#tool-{id}-result` once the tool returns.
@@ -892,6 +942,10 @@ fn opfs_arg(path: &str) -> &str {
 /// so both paths paint identically. `display_thumb` is a data-URL snapshot of
 /// the framebuffer, live-path-only — replay can't reproduce pixels and
 /// passes `None` (marker card only).
+/// ⛔ A tool that can card here must NEVER appear in
+/// [`crate::turn_flow::FOLDABLE_TOOLS`] — a card is a chronological anchor and
+/// folding would collapse it away (guard:
+/// `turn_flow::tests::destructive_and_card_tools_never_fold`).
 pub(crate) fn inline_result_card(
     name: &str,
     args: &serde_json::Value,

@@ -146,21 +146,14 @@ pub(crate) fn take_pending() -> Option<Vec<u8>> {
 /// when replacing. Shared by `load_into_pending` (session restore) and the
 /// compact repaint in `chat::run_send`.
 pub(crate) fn paint_entries(entries: &[crate::types::TranscriptEntry]) {
+    // Repeat-fold anchor (telemetry #79), mirroring the live path's
+    // `chat::FOLD_ANCHOR`: `(host block id, tool name, attempts so far)`. It
+    // spans entries because the auto-continue loop records one entry per
+    // continuation, so a compile→fix→compile run lands one check per entry —
+    // exactly the case that filled a phone screen. A real user message breaks
+    // it, same as `chat::run_send` does live.
+    let mut anchor: Option<(u32, String, u32)> = None;
     for entry in entries {
-        // Tool blocks for this turn, concatenated as the body's leading HTML —
-        // they happened during the turn, so they precede the text (live order).
-        let mut body_html = String::new();
-        for tc in &entry.tool_calls {
-            // `finish` is an internal completion control — its receipt card is a
-            // pure artifact the live path never paints (chat/mod.rs). Skip it on
-            // replay too, or a reloaded transcript sprouts a phantom "finish"
-            // card the live session never showed.
-            if tc.name == "finish" {
-                continue;
-            }
-            body_html.push_str(&render_tool_block(tc));
-        }
-
         // The text segment. Skip the internal nudges (auto-continue /
         // truncated-retry) — they never paint as bubbles live, so replay must
         // not either. The live assistant body wraps its final markdown in a
@@ -168,6 +161,51 @@ pub(crate) fn paint_entries(entries: &[crate::types::TranscriptEntry]) {
         // behave identically. User text is the raw value (escaped by maud).
         let is_nudge = matches!(entry.role, TranscriptRole::User)
             && super::chat::is_internal_nudge(&entry.text);
+        if matches!(entry.role, TranscriptRole::User) && !is_nudge {
+            anchor = None;
+        }
+
+        // Tool blocks for this turn, concatenated as the body's leading HTML —
+        // they happened during the turn, so they precede the text (live order).
+        // `finish` is an internal completion control — its receipt card is a
+        // pure artifact the live path never paints (chat/mod.rs). Skip it on
+        // replay too, or a reloaded transcript sprouts a phantom "finish" card
+        // the live session never showed.
+        let mut body_html = String::new();
+        let calls: Vec<&crate::types::TranscriptToolCall> = entry
+            .tool_calls
+            .iter()
+            .filter(|tc| tc.name != "finish")
+            .collect();
+        // Group consecutive repeats of a foldable check into ONE pill. Only the
+        // entry's FIRST run can continue a previous entry's pill (later runs are
+        // separated by a different tool, which breaks the fold by definition).
+        let names: Vec<&str> = calls.iter().map(|tc| tc.name.as_str()).collect();
+        for (start, len) in crate::turn_flow::fold_runs(&names) {
+            let run = &calls[start..start + len];
+            let continues = anchor
+                .as_ref()
+                .is_some_and(|(_, name, _)| {
+                    crate::turn_flow::tool_call_folds(Some(name), &run[0].name)
+                })
+                && body_html.is_empty();
+            match (continues, anchor.as_mut()) {
+                (true, Some((host, _, count))) => {
+                    // The host pill is already in the DOM (an earlier entry was
+                    // appended), so continue it with the same two ops the live
+                    // stream uses rather than re-rendering anything.
+                    for tc in run {
+                        *count += 1;
+                        paint_folded_attempt(tc, *host, *count);
+                    }
+                }
+                _ => {
+                    let seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
+                    body_html.push_str(&render_tool_run(seg_id, run));
+                    anchor = Some((seg_id, run[0].name.clone(), run.len() as u32));
+                }
+            }
+        }
         let has_text = !entry.text.is_empty() && !is_nudge;
         if has_text {
             match entry.role {
@@ -181,9 +219,10 @@ pub(crate) fn paint_entries(entries: &[crate::types::TranscriptEntry]) {
             }
         }
 
-        // A turn with neither tool blocks nor text (a pure tool-only entry whose
-        // only tool was `finish`, or an empty entry) has nothing to show — the
-        // live path removes such bubbles, so replay must not paint one either.
+        // A turn with neither tool blocks nor text has nothing to show — a pure
+        // tool-only entry whose only tool was `finish`, an empty entry, or (as
+        // of #79) a continuation whose only call folded into an earlier pill.
+        // The live path removes such bubbles, so replay must not paint one.
         if body_html.is_empty() {
             continue;
         }
@@ -198,6 +237,37 @@ pub(crate) fn paint_entries(entries: &[crate::types::TranscriptEntry]) {
         .into_string();
         dom::append_html("transcript", &html_str);
     }
+    // The replayed pills carry ids from THIS paint; the live anchor may still
+    // point at a pill from the DOM we just replaced. Start the next live call
+    // on a fresh pill rather than folding into a stale id.
+    super::chat::break_fold();
+}
+
+/// Append ONE folded attempt into a pill that is already painted, and bump its
+/// `×N` — the same two DOM ops `chat::stream_turn` performs live, so replay and
+/// the live stream converge on identical markup. Foldable tools never render an
+/// inline card, so there is no card slot to fill here.
+fn paint_folded_attempt(tc: &crate::types::TranscriptToolCall, host: u32, count: u32) {
+    let seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
+    let mut attempt = templates::tool_call_attempt(seg_id, &tc.args).into_string();
+    if tc.result.is_some() || tc.error.is_some() {
+        let result = crate::types::ToolResult {
+            name: tc.name.clone(),
+            id: None,
+            result: tc.result.clone(),
+            error: tc.error.clone(),
+        };
+        attempt = inject_result(
+            &attempt,
+            seg_id,
+            &templates::tool_call_result(&result).into_string(),
+        );
+    }
+    dom::append_html(&format!("tool-{host}-body"), &attempt);
+    dom::swap_inner(
+        &format!("tool-{host}-count"),
+        &templates::tool_call_count(count).into_string(),
+    );
 }
 
 /// How to RELAUNCH a replayed cartridge: which card slot, and how to re-derive
@@ -268,30 +338,44 @@ fn resume_last_cartridge() {
 /// block is built at once (the divs aren't in the DOM yet), so the recorded
 /// result/card HTML is spliced into the unique empty slots. Every fragment is
 /// maud-escaped, so this is a string splice of already-safe HTML — no XSS.
-fn render_tool_block(tc: &crate::types::TranscriptToolCall) -> String {
-    let seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
-    let call = crate::types::ToolCall {
-        name: tc.name.clone(),
-        id: None,
-        args: tc.args.clone(),
-        canonical_path: None,
-    };
-    let mut block = templates::tool_call_block(seg_id, &call).into_string();
-    if tc.result.is_some() || tc.error.is_some() {
+fn render_tool_run(seg_id: u32, run: &[&crate::types::TranscriptToolCall]) -> String {
+    let tc = run[0];
+    // Attempt ids: the first IS the pill (its body/count/card ids derive from
+    // `seg_id`); each folded repeat gets its own so its result slot stays unique.
+    let mut attempt_ids = vec![seg_id];
+    attempt_ids.extend(
+        run.iter()
+            .skip(1)
+            .map(|_| APP.with(|cell| cell.borrow_mut().alloc_id())),
+    );
+    let attempts: Vec<(u32, &serde_json::Value)> = attempt_ids
+        .iter()
+        .zip(run.iter())
+        .map(|(id, tc)| (*id, &tc.args))
+        .collect();
+    let mut block = templates::tool_call_run(seg_id, &tc.name, &attempts).into_string();
+    // Splice each attempt's own result into its (unique, empty) slot.
+    for (id, tc) in attempt_ids.iter().zip(run.iter()) {
+        if tc.result.is_none() && tc.error.is_none() {
+            continue;
+        }
         let result = crate::types::ToolResult {
             name: tc.name.clone(),
             id: None,
             result: tc.result.clone(),
             error: tc.error.clone(),
         };
-        let result_html = templates::tool_call_result(&result).into_string();
-        block = inject_result(&block, seg_id, &result_html);
+        block = inject_result(&block, *id, &templates::tool_call_result(&result).into_string());
         // Inline result card (file / directory / display outputs) — the SAME
         // renderer the live path uses, so a replayed transcript looks like the
         // live one. No framebuffer thumbnail on replay (the pixels are gone):
-        // the display card replays as the marker + [show].
-        if let Some(card) = templates::inline_result_card(&tc.name, &tc.args, &result, None) {
-            block = inject_card(&block, seg_id, &card.into_string());
+        // the display card replays as the marker + [show]. Only the pill's own
+        // (first) attempt owns the card slot; foldable tools never card, so a
+        // run of length > 1 never reaches this branch twice.
+        if *id == seg_id {
+            if let Some(card) = templates::inline_result_card(&tc.name, &tc.args, &result, None) {
+                block = inject_card(&block, seg_id, &card.into_string());
+            }
         }
     }
     // Record a successfully-run cartridge as the resume candidate (last wins).

@@ -2059,6 +2059,23 @@ button.ready:hover {
   display: grid;
   gap: 8px;
 }
+/* Repeat count on a FOLDED pill (telemetry #79): consecutive calls of the same
+   cheap check (compile_rustlite while converging on a build) collapse into one
+   pill that counts them, instead of one 38px row each — eight of them filled a
+   411px phone screen. Empty on a lone call, so nothing changes for it. */
+.tool-call .tc-count {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.tool-call .tc-count:empty { display: none; }
+/* Each folded attempt keeps its full args + result inside the (collapsed) body;
+   a rule separates them so an opened pill reads as N attempts, not one blob. */
+.tool-call .tc-attempt { display: grid; gap: 8px; }
+.tool-call .tc-attempt + .tc-attempt {
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
 .tool-call .tc-section-label {
   font-size: 10px;
   color: var(--muted);

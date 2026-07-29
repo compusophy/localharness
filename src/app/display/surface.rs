@@ -32,8 +32,39 @@ thread_local! {
 
 /// Record which canvas the current cartridge launch owns (pointer routing).
 /// Called by `run_with_ctx` / `mount_composition` on each launch.
+///
+/// Also RETIRES the inline card this launch supersedes (telemetry #79: running
+/// an app inline and then publishing it left "duplicate UI cards"). Only one
+/// cartridge runs at a time — the launch below terminates the previous worker —
+/// so the older card would linger as a dead black canvas showing the same app.
+/// DOM-only: the worker now belongs to the new run, so there is nothing to stop.
+/// The fullscreen overlay is deliberately exempt in BOTH directions: its
+/// [fullscreen] button moves a card's cartridge to `display-canvas` on purpose
+/// and the card has to survive the return trip.
 pub(super) fn set_active_canvas(canvas_id: &str) {
+    let previous = ACTIVE_CANVAS_ID.with(|c| c.borrow().clone());
+    if previous != canvas_id && is_embed_canvas_id(&previous) && is_embed_canvas_id(canvas_id) {
+        retire_embed_card(&previous);
+    }
     ACTIVE_CANVAS_ID.with(|c| *c.borrow_mut() = canvas_id.to_string());
+}
+
+/// An inline transcript embed card's canvas (as opposed to the fullscreen
+/// overlay's `display-canvas`).
+fn is_embed_canvas_id(id: &str) -> bool {
+    id.starts_with("embed-canvas")
+}
+
+/// Swap an embed card for an inert same-id placeholder. Shared by the user's
+/// [close] ([`close_embed`]) and the supersede path above, so a dismissed card
+/// and a retired one leave the transcript in exactly the same state — and a
+/// second close (or a replay swap) is a harmless no-op either way.
+fn retire_embed_card(canvas_id: &str) {
+    let card_id = crate::app::templates::embed_card_id(canvas_id);
+    crate::app::dom::swap_outer(
+        &card_id,
+        &format!("<div id=\"{card_id}\" class=\"embed-card-closed\"></div>"),
+    );
 }
 
 /// Clear the primary-button state (a fresh cartridge starts with no input).
@@ -52,11 +83,7 @@ pub(crate) fn close_embed(canvas_id: &str) {
     if owns_worker {
         super::stop();
     }
-    let card_id = crate::app::templates::embed_card_id(canvas_id);
-    crate::app::dom::swap_outer(
-        &card_id,
-        &format!("<div id=\"{card_id}\" class=\"embed-card-closed\"></div>"),
-    );
+    retire_embed_card(canvas_id);
 }
 
 /// Is a drag in progress? `POINTER_DOWN` is only ever set by a press that
@@ -162,23 +189,51 @@ pub(crate) async fn relaunch_last_in_fullscreen() {
     }
 }
 
+/// How many undrained stashes to keep. Every stash pairs with exactly one
+/// drain, so the queue normally holds 0–1 entries; the cap only bounds memory
+/// if a future tool ever stashes without producing an embedding result.
+const MAX_PENDING_EMBEDS: usize = 4;
+
 thread_local! {
-    /// Cartridge bytes the `embed_app` tool fetched, waiting for the chat
-    /// transcript to paint the `#embed-canvas` card so they can be launched
-    /// into it. The tool can't draw the card itself (the `#tool-{id}-card`
-    /// slot is filled by `chat::stream_turn` AFTER the tool returns), so it
-    /// stashes the wasm here and the ToolResult handler drains it via
-    /// [`launch_pending_embed`] once the canvas exists. NOT serialized into
-    /// history — replay paints a marker card only (no bytes, like the display
-    /// snapshot thumb).
-    static PENDING_EMBED: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    /// Cartridge bytes a tool fetched or built, waiting for the chat transcript
+    /// to paint the embed card they launch into. The tool can't draw the card
+    /// itself (the `#tool-{id}-card` slot is filled by `chat::stream_turn`
+    /// AFTER the tool returns), so it stashes the wasm here and the ToolResult
+    /// handler drains it via [`launch_pending_embed`] once the canvas exists.
+    /// NOT serialized into history — replay paints a marker card only (no
+    /// bytes, like the display snapshot thumb).
+    ///
+    /// A QUEUE, not one slot: the engine dispatches a turn's tool calls
+    /// back-to-back into a buffer while the UI paints behind it, so two
+    /// embedding tools in one turn used to race — the second stash overwrote
+    /// the first, the first card launched the SECOND cartridge, and the second
+    /// card found nothing and stayed permanently black. Stashes happen in call
+    /// order and drains in result order, which are the same order (the very
+    /// correlation `chat::stream_turn`'s `pending_tools` FIFO already relies
+    /// on), so front-to-back pairing is exact.
+    static PENDING_EMBEDS: RefCell<std::collections::VecDeque<Vec<u8>>> =
+        const { RefCell::new(std::collections::VecDeque::new()) };
 }
 
-/// Stash cartridge `wasm` for the next embed card to pick up. The
-/// `embed_app` tool calls this just before returning its `{embedded:true}`
-/// result; `launch_pending_embed` (run from the ToolResult handler) drains it.
+/// Stash cartridge `wasm` for the next embed card to pick up. Tools call this
+/// just before returning their embedding result (`{embedded:true}`, `{status}`,
+/// `{url}`); `launch_pending_embed` (run from the ToolResult handler) drains
+/// the matching entry.
 pub(crate) fn stash_pending_embed(wasm: Vec<u8>) {
-    PENDING_EMBED.with(|c| *c.borrow_mut() = Some(wasm));
+    PENDING_EMBEDS.with(|c| {
+        let mut queue = c.borrow_mut();
+        if queue.len() >= MAX_PENDING_EMBEDS {
+            queue.pop_front();
+        }
+        queue.push_back(wasm);
+    });
+}
+
+/// Drop any undrained stashes at the start of a user request. A turn cancelled
+/// between a tool's stash and its card's paint would otherwise leave an orphan
+/// at the front of the queue and shift every later pairing by one.
+pub(crate) fn reset_pending_embeds() {
+    PENDING_EMBEDS.with(|c| c.borrow_mut().clear());
 }
 
 thread_local! {
@@ -208,7 +263,7 @@ pub(crate) fn next_embed_canvas_id() -> String {
 /// older embed's canvas. No-op when nothing is pending. Drains the stash
 /// either way so a missing canvas can't leak bytes into a later embed.
 pub(crate) async fn launch_pending_embed(card_id: &str) {
-    let Some(wasm) = PENDING_EMBED.with(|c| c.borrow_mut().take()) else {
+    let Some(wasm) = PENDING_EMBEDS.with(|c| c.borrow_mut().pop_front()) else {
         embed_trace(&format!("no-stash for #{card_id}"));
         return;
     };

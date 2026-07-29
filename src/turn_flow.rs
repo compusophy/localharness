@@ -145,6 +145,57 @@ pub fn tool_result_embeds_cartridge(
     }
 }
 
+/// Tools whose repeat calls FOLD into the pill above them instead of each
+/// appending a new one (telemetry #79: a mobile user watched eight consecutive
+/// `compile_rustlite` checks fill a 411px screen).
+///
+/// This is a deliberate ALLOWLIST, not "every tool without a card". Folding is
+/// only ever correct for a cheap, read-only CHECK the agent repeats while
+/// converging — the individual calls carry no standalone meaning, so N of them
+/// read as one activity. It must never absorb a value move, a burn, or anything
+/// that renders an inline card (a card is a chronological anchor). Adding a name
+/// here is a UI decision about noise; make it deliberately.
+pub const FOLDABLE_TOOLS: &[&str] = &["compile_rustlite", "find_file", "search_directory"];
+
+/// Should this tool call fold into the pill directly above it? `prev` is the
+/// name on the current fold anchor — the app clears it whenever anything that
+/// isn't this same tool lands in the transcript, so a fold can only ever absorb
+/// a consecutive repeat.
+///
+/// Nothing is hidden: every folded attempt keeps its own args + result inside
+/// the pill's (collapsed) body, so the record is complete and the cost on
+/// screen is one row instead of N.
+pub fn tool_call_folds(prev: Option<&str>, name: &str) -> bool {
+    prev == Some(name) && FOLDABLE_TOOLS.contains(&name)
+}
+
+/// Group a sequence of tool-call names into consecutive foldable RUNS, as
+/// `(start, len)` index pairs covering every name in order. Used by history
+/// replay, which knows a whole transcript up front and can render each run as
+/// ONE pill — the live stream reaches the same shape incrementally via
+/// [`tool_call_folds`]. Non-foldable calls come back as runs of length 1, so
+/// the caller can treat every group uniformly.
+pub fn fold_runs(names: &[&str]) -> Vec<(usize, usize)> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        match runs.last_mut() {
+            Some((start, len)) if tool_call_folds(Some(names[*start]), name) => *len += 1,
+            _ => runs.push((i, 1)),
+        }
+    }
+    runs
+}
+
+/// Repeat-count label for a folded pill — `×3`. Empty below 2 so the first
+/// call renders as a plain pill (the span stays `:empty`, hence hidden).
+pub fn fold_count_label(count: u32) -> String {
+    if count > 1 {
+        format!("×{count}")
+    } else {
+        String::new()
+    }
+}
+
 /// Decide how a completed (non-cancelled) turn ended, for the
 /// continuous-execution loop. Pure over the signals tracked while
 /// streaming so it can be unit-tested without a browser:
@@ -212,9 +263,90 @@ pub fn classify_turn(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_empty, classify_turn, tool_result_embeds_cartridge, EmptyKind, TurnOutcome,
+        classify_empty, classify_turn, fold_count_label, fold_runs, tool_call_folds,
+        tool_result_embeds_cartridge, EmptyKind, TurnOutcome, FOLDABLE_TOOLS,
         MAX_AUTO_CONTINUATIONS,
     };
+
+    // --- Repeat-call folding (telemetry #79) --------------------------------
+
+    /// A consecutive repeat of a foldable check folds; the FIRST call never
+    /// does, and any other tool in between breaks the run (the app clears the
+    /// anchor, which is what `prev: None` models here).
+    #[test]
+    fn only_consecutive_repeats_of_a_foldable_check_fold() {
+        assert!(!tool_call_folds(None, "compile_rustlite"));
+        assert!(tool_call_folds(Some("compile_rustlite"), "compile_rustlite"));
+        assert!(!tool_call_folds(Some("create_file"), "compile_rustlite"));
+        assert!(!tool_call_folds(Some("compile_rustlite"), "create_file"));
+    }
+
+    /// Value moves, burns and card-bearing tools must NEVER fold — a second
+    /// `send_lh` has to show up as its own row, not as a `×2` the owner can
+    /// miss, and a card is a chronological anchor.
+    #[test]
+    fn destructive_and_card_tools_never_fold() {
+        for name in [
+            "send_lh",
+            "batch_send_lh",
+            "release_subdomain",
+            "spend_treasury",
+            "found_company",
+            "attest",
+            "create_and_publish_app",
+            "run_cartridge",
+            "embed_app",
+            "create_file",
+            "edit_file",
+            "view_file",
+            "list_directory",
+            "update_plan",
+            "run_wasm_cli",
+            "render_html",
+        ] {
+            assert!(
+                !tool_call_folds(Some(name), name),
+                "{name} must not fold — it is destructive or renders a card"
+            );
+            assert!(!FOLDABLE_TOOLS.contains(&name), "{name} is in FOLDABLE_TOOLS");
+        }
+    }
+
+    /// Replay grouping covers every call exactly once, in order: repeats of a
+    /// foldable check collapse into one run, everything else stands alone.
+    #[test]
+    fn fold_runs_group_consecutive_repeats_only() {
+        assert_eq!(fold_runs(&[]), vec![]);
+        assert_eq!(fold_runs(&["compile_rustlite"]), vec![(0, 1)]);
+        assert_eq!(fold_runs(&["compile_rustlite"; 8]), vec![(0, 8)]);
+        // A different tool between repeats breaks the run — the two compile
+        // groups must NOT merge across it.
+        assert_eq!(
+            fold_runs(&[
+                "compile_rustlite",
+                "compile_rustlite",
+                "create_file",
+                "compile_rustlite",
+            ]),
+            vec![(0, 2), (2, 1), (3, 1)]
+        );
+        // Repeats of a NON-foldable tool each keep their own pill.
+        assert_eq!(fold_runs(&["send_lh", "send_lh"]), vec![(0, 1), (1, 1)]);
+        // Every call is covered exactly once, in order.
+        let names = ["a", "compile_rustlite", "compile_rustlite", "b"];
+        let covered: usize = fold_runs(&names).iter().map(|(_, len)| len).sum();
+        assert_eq!(covered, names.len());
+    }
+
+    /// The count reads `×N` only once there IS a repeat; a lone call leaves the
+    /// span empty (CSS hides it) so an unfolded pill looks exactly as before.
+    #[test]
+    fn fold_count_shows_only_from_two() {
+        assert_eq!(fold_count_label(0), "");
+        assert_eq!(fold_count_label(1), "");
+        assert_eq!(fold_count_label(2), "×2");
+        assert_eq!(fold_count_label(8), "×8");
+    }
 
     // --- Auto-embed predicate (the cartridge close-the-loop decision) --------
 

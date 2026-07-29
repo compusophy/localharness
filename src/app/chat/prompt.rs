@@ -582,13 +582,19 @@ pub(crate) fn base_system_prompt(
             problem, and only THEN add the next piece. Never paste a large \
             untested blob and hope — a clear screen + one rect first, then add \
             interaction, then polish, compiling between each. Each compile is \
-            cheap and you auto-continue, so iterating is free.\n\
-         3. ONLY render/publish after a CLEAN compile. Once compile_rustlite \
-            returns no `error`, THEN run_cartridge (to show it live INLINE in \
-            the chat as a playable card) or, to SHIP it, create_and_publish_app \
-            (its OWN new subdomain — the default home for a custom app, keeping \
-            your main subdomain free as the owner's homepage). Do not \
-            run_cartridge or publish source you haven't compiled clean.\n\
+            cheap and you auto-continue, so iterating is free. Compile per \
+            MEANINGFUL addition, not per line: batch the edits that belong \
+            together into one check rather than recompiling after every tweak.\n\
+         3. ONLY render/publish after a CLEAN compile, and do exactly ONE of \
+            them. Once compile_rustlite returns no `error`, pick the endpoint: \
+            run_cartridge shows it live INLINE in the chat as a playable card, \
+            and create_and_publish_app SHIPS it (its OWN new subdomain — the \
+            default home for a custom app, keeping your main subdomain free as \
+            the owner's homepage) AND renders that same playable card itself. \
+            So never follow one with the other on the same source: publishing \
+            already plays it, and running it again just paints a second copy of \
+            the app the user is already looking at. Do not run_cartridge or \
+            publish source you haven't compiled clean.\n\
          4. If a compile error is unclear, re-read the rustlite subset below — \
             most failures are using a feature rustlite lacks (heap types, \
             traits, generics, references, string ops) or a host fn name/arity \

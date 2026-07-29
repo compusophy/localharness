@@ -66,6 +66,22 @@ thread_local! {
     /// One-shot guard so the TTFT line logs once per turn (the stream loop runs
     /// many iterations).
     static TTFT_LOGGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The tool pill a consecutive repeat folds into (telemetry #79): the host
+    /// `#tool-{id}` allocated for the FIRST call, that call's tool name, and how
+    /// many have folded in so far. Deliberately spans turns — the auto-continue
+    /// loop paints one bubble per continuation, so a compile→fix→compile run
+    /// puts each check in a bubble of its own and a per-turn anchor would never
+    /// fold anything. Cleared by [`break_fold`] whenever the transcript is
+    /// wiped or a new user message starts a fresh exchange.
+    static FOLD_ANCHOR: std::cell::RefCell<Option<(u32, String, u32)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Drop the repeat-fold anchor so the next tool call starts a fresh pill.
+/// Called when a new user message begins an exchange and whenever the
+/// transcript is repainted (the anchored ids are gone with the old DOM).
+pub(crate) fn break_fold() {
+    FOLD_ANCHOR.with(|c| *c.borrow_mut() = None);
 }
 
 /// Emit a phase-benchmark line to BOTH the console (desktop devtools) and the
@@ -195,6 +211,12 @@ pub(crate) async fn run_send() {
         // A bare "!" force-prefix with nothing behind it — nothing to send.
         return;
     }
+
+    // A new user message starts a fresh exchange: the next tool call must open
+    // its own pill, never fold into one from before this message (#79), and no
+    // cartridge bytes may survive from a turn that was cancelled mid-paint.
+    break_fold();
+    super::display::reset_pending_embeds();
 
     // ── phase benchmark (perf:) ── t0 is the origin for every phase delta; the
     // TTFT line in `stream_turn` reads it back. Resets the one-shot TTFT guard.
@@ -653,6 +675,11 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
     let mut text_segments: Vec<(u32, String)> = vec![(seg_id, String::new())];
     // Did this turn put ANYTHING visible on screen (text or a tool call)?
     let mut any_visible = false;
+    // Did it paint into its OWN bubble? A turn whose only output folded into an
+    // earlier turn's pill (telemetry #79) is real work — `any_visible`, so it
+    // never draws an "(empty response)" — but its own shell would linger as an
+    // empty bordered box, so it gets dropped at end-of-turn.
+    let mut painted_own_body = false;
     // Completion signals tracked across the stream:
     let mut saw_tool_call = false; // any goal-step tool action this turn?
     let mut saw_finish = false; // the model called `finish`?
@@ -694,6 +721,7 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
             Ok(StreamChunk::Text { text, .. }) => {
                 if !text.is_empty() {
                     any_visible = true;
+                    painted_own_body = true;
                     stage::enter(crate::turn_stage::Stage::Streaming);
                     let (cur_id, cur_text) = text_segments
                         .last_mut()
@@ -727,10 +755,47 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                     saw_tool_call = true;
                 }
                 let tool_seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
-                dom::append_html(
-                    &assistant_body_id,
-                    &templates::tool_call_block(tool_seg_id, &call).into_string(),
-                );
+                // Repeat folding (telemetry #79): a consecutive repeat of a
+                // cheap check (`compile_rustlite` and friends) appends its
+                // attempt INTO the pill above and bumps that pill's `×N`,
+                // instead of stacking an Nth 38px row — eight compile checks
+                // filled a 411px phone screen. Anything else lands as its own
+                // pill and becomes the new anchor. The decision is the pure,
+                // native-tested `turn_flow::tool_call_folds`.
+                let folded_into = FOLD_ANCHOR.with(|cell| {
+                    let mut anchor = cell.borrow_mut();
+                    match anchor.as_mut() {
+                        Some((host, name, count))
+                            if crate::turn_flow::tool_call_folds(Some(name), &call.name) =>
+                        {
+                            *count += 1;
+                            Some((*host, *count))
+                        }
+                        _ => {
+                            *anchor = Some((tool_seg_id, call.name.clone(), 1));
+                            None
+                        }
+                    }
+                });
+                match folded_into {
+                    Some((host, count)) => {
+                        dom::append_html(
+                            &format!("tool-{host}-body"),
+                            &templates::tool_call_attempt(tool_seg_id, &call.args).into_string(),
+                        );
+                        dom::swap_inner(
+                            &format!("tool-{host}-count"),
+                            &templates::tool_call_count(count).into_string(),
+                        );
+                    }
+                    None => {
+                        painted_own_body = true;
+                        dom::append_html(
+                            &assistant_body_id,
+                            &templates::tool_call_block(tool_seg_id, &call).into_string(),
+                        );
+                    }
+                }
                 pending_tools.push_back((tool_seg_id, call));
 
                 // Open a fresh text segment for whatever the model
@@ -856,6 +921,7 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                 );
                 dom::scroll_to_bottom("transcript");
                 any_visible = true;
+                painted_own_body = true;
             }
         }
         // A pure `finish` turn (no text, no summary, no other tool cards) has
@@ -902,6 +968,16 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
     } else {
         None
     };
+
+    // A continuation turn whose ONLY output folded into an earlier pill
+    // (telemetry #79) left its own shell empty. It is NOT an empty turn — real
+    // work happened, `any_visible` is set, and the classification below still
+    // auto-continues — but the bordered box would read as a blank reply, so
+    // drop it. This is what turns a compile→fix→compile run into ONE growing
+    // `compile_rustlite ×N` pill instead of N near-empty bubbles.
+    if any_visible && !painted_own_body && !TURN_CANCEL.with(|c| c.get()) {
+        dom::remove(&format!("turn-{assistant_turn_id}"));
+    }
 
     // If the user hit stop, append a short redirect prompt.
     if TURN_CANCEL.with(|c| c.get()) {
