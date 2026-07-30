@@ -5,6 +5,85 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.78.0]
+
+### Added
+
+- **`host::math::sin/cos` — integer trig for cartridges** (telemetry #83, born
+  from a live square-torus session). Angle in 1/256-turn units (any i32 wraps,
+  negatives included), result scaled by 256. Implemented as a CODEGEN DESUGAR —
+  a 512-byte sine table baked into the data segment plus an inline load — so
+  there is no new host import, no worker lockstep, and identical results in
+  every runtime (browser, compose children, native). Guarded by verify.sh
+  stage 11 (behavioral execution proof). Live demo: torus.localharness.xyz;
+  canonical source `examples/cartridges/torus.rl`.
+- **`host::net` takes string literals** (telemetry #84): `net::open(url)` /
+  `net::send(handle, msg)` are typed `String` like `http::get` — a literal
+  lowers to the length-prefixed pointer the worker already reads, making
+  WebSockets actually reachable from rustlite (zero ABI change).
+- **The `.agent/` portable-state directory** (telemetry #78 first adoption):
+  `localharness state <name> --dir <dir>` exports manifest.json (chain anchor)
+  + persona.md + lessons.md + agentskills.io `skills/<slug>/SKILL.md`; `--in`
+  accepts the directory through the same version-gate + sanitize-diff-write
+  path. New pure inverse `skills::from_skill_md`. Idempotent (re-import of an
+  export writes zero transactions).
+- **Native verifiable benchmark v1** (telemetry #81): `scripts/bench/` — 14
+  tasks / 145 points across rustlite codegen (wasm introspection + behavioral
+  calls), bashlite scripting (sandboxed exact-stdout), and CLI artifacts; zero
+  LLM judging; offline + `--live` over the metered call path; SEEDED
+  anti-overfit (`--seed` derives fixtures + computed expectations; a memorized
+  answer passes seed 1 and fails seed 7). First baseline recorded:
+  gemini-3.6-flash 75/105 (seed 1). Reward-loop + TerminalBench-adapter plan
+  in `design/bench.md`.
+- **rustlite distillation corpus** (telemetry #82): `datasets/rustlite/` — 320
+  compiler-verified prompt/solution pairs across the full subset (incl. the
+  host bridges and the new trig), `verify.mjs` gate, chat-shaped `export.mjs`
+  → train.jsonl. Strategy in `design/local-models.md`.
+- **`contracts/script/ResetGenesis.s.sol`** — the consolidated fresh-diamond
+  genesis (27 facets / 215 selectors, set-diffed against the live mainnet
+  loupe; drops exactly the retired Session/Schedule/Team selectors). The
+  pre-1.0.0 chain-reset tool; unblocked deleting 14 one-shot cut scripts.
+- **`design/harness-standard.md`** — the five-pillar unified-harness synthesis
+  (telemetry #78) with the adopt/propose split.
+
+### Changed
+
+- **The public face is FULLY off-chain.** The face choice lives in the app
+  store (`<name>/face`, stamped by every publish; face-only POST for
+  "directory"); `resolve_public_face` is store-only with zero chain reads and
+  infers a published html page when the choice is unset. Every sponsored
+  face-choice tx is gone; publish tools/prompt no longer claim "on-chain".
+- **x402 v2 interop**: all clients emit the standard `payment-signature`
+  header (legacy names accepted forever), both proxy parsers take v2's
+  base64(JSON) encoding, gemini 402s carry the base64 `PAYMENT-REQUIRED`
+  challenge header. Live-verified with a real settle.
+- **Session prompt** teaches host::math (with the circle idiom), net's
+  wss:// literals, and drops stale on-chain-publish claims.
+- **Relay allowlist**: `subscribe`/`unsubscribe` added (mainnet Ready-Up
+  subscribes were 403ing); dead `openSession`/`scheduleJob`/`cancelJob`
+  entries removed.
+
+### Removed (reset > compat — the new standing lean policy in CLAUDE.md)
+
+- **The legacy purge (~6,000 LOC)**: on-chain ScheduleFacet client + keeper +
+  proxy drain + `?poke`; SessionFacet client + proxy session gate; retired
+  pairing plumbing (signer-list UI, owner-by-signer RPCs, `?link_device=`);
+  visitor-pays pricing subsystem; `?embed=1` iframe card; daily-claim client;
+  `_authcore` unbound-token fallback (closes a cross-route replay hole);
+  legacy on-chain face/app/html slots + fallbacks; dead contracts sources
+  (Feedback/Push/Team facets, LocalharnessToken) + 14 one-shot cut scripts +
+  retired Session/Schedule facet sources and tests; ~10 zero-caller registry
+  read views; dead CSS/worker messages; company-loop charter docs archived.
+
+### Fixed
+
+- **rustlite parser**: block-like expressions no longer take call-postfix —
+  `if c { .. } (x / 10) % 10` parses as statement + tail instead of "calling"
+  the if-block (the baffling-span LH0202).
+- **Post-compaction stall (#80)** confirmed covered by the shipped
+  detection+nudge (predicate pinned on the wild repro, tab-E2E 10/10) and the
+  stall sweep's paint race hardened.
+
 ## [0.77.0] - 2026-07-29
 
 ### Added
