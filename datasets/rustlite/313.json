@@ -1,0 +1,10 @@
+{
+  "id": "313",
+  "prompt": "A pendulum that swings along a true circular arc: pivot near the top of the screen, a long rod, and a golden bob whose angle oscillates sinusoidally around straight-down like real harmonic motion. Draw the faint arc the bob actually travels so you can see it is a genuine circle - trig, not a triangle-wave fake.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    let w: i32 = host::display::width();\n    let px: i32 = w / 2;\n    let py: i32 = 40;\n    let len: i32 = 170;\n    let mut g: i32 = 24;\n    while g <= 104 {\n        let gx: i32 = px + (len * host::math::cos(g)) / 256;\n        let gy: i32 = py + (len * host::math::sin(g)) / 256;\n        host::display::set_pixel(gx, gy, 0x333333);\n        g = g + 2;\n    }\n    let swing: i32 = (40 * host::math::sin(t * 2)) / 256;\n    let a: i32 = 64 + swing;\n    let bx: i32 = px + (len * host::math::cos(a)) / 256;\n    let by: i32 = py + (len * host::math::sin(a)) / 256;\n    host::display::draw_line(px, py, bx, by, 0xaaaaaa);\n    host::display::fill_rect(px - 3, py - 3, 6, 6, 0x888888);\n    host::display::fill_rect(bx - 8, by - 8, 16, 16, 0xffcc33);\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "physics",
+    "animation"
+  ]
+}

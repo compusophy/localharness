@@ -1,0 +1,10 @@
+{
+  "id": "314",
+  "prompt": "A circular progress ring: a round dotted ring that fills clockwise from the top in bright cyan while the remainder stays dim, with the percentage drawn in the middle. It has to be genuinely circular - use the built-in trig for the dot positions - and just loop the progress forever for the demo.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let r: i32 = 90;\n    let done: i32 = (t / 2) % 256;\n    let mut a: i32 = 0;\n    while a < 256 {\n        let col: i32 = if a < done { 0x33ddff } else { 0x1a2a30 };\n        let x: i32 = cx + (r * host::math::cos(a - 64)) / 256;\n        let y: i32 = cy + (r * host::math::sin(a - 64)) / 256;\n        host::display::fill_rect(x - 2, y - 2, 5, 5, col);\n        a = a + 3;\n    }\n    let pct: i32 = (done * 100) / 256;\n    host::display::draw_number(cx - 20, cy - 8, pct, 0xffffff, 3);\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "widgets",
+    "progress"
+  ]
+}

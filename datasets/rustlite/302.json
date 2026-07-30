@@ -1,0 +1,10 @@
+{
+  "id": "302",
+  "prompt": "A tiny solar system: a golden sun in the middle, a blue planet gliding around it on a smooth circular orbit, and a gray moon circling the planet four times per orbit. The motion should be silky - real sine/cosine, not an eight-point orbit table - and sketch the planet's orbit as a faint dotted ring.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000008);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let mut a: i32 = 0;\n    while a < 256 {\n        let ox: i32 = cx + (120 * host::math::cos(a)) / 256;\n        let oy: i32 = cy + (120 * host::math::sin(a)) / 256;\n        host::display::set_pixel(ox, oy, 0x223344);\n        a = a + 4;\n    }\n    host::display::fill_rect(cx - 10, cy - 10, 20, 20, 0xffcc33);\n    let px: i32 = cx + (120 * host::math::cos(t)) / 256;\n    let py: i32 = cy + (120 * host::math::sin(t)) / 256;\n    host::display::fill_rect(px - 6, py - 6, 12, 12, 0x3399ff);\n    let mx: i32 = px + (24 * host::math::cos(t * 4)) / 256;\n    let my: i32 = py + (24 * host::math::sin(t * 4)) / 256;\n    host::display::fill_rect(mx - 2, my - 2, 5, 5, 0xbbbbbb);\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "orbit",
+    "animation"
+  ]
+}

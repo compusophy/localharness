@@ -1,0 +1,10 @@
+{
+  "id": "317",
+  "prompt": "A round dashboard gauge: a tick arc sweeping from lower-left over the top to lower-right, major ticks every fifth mark, the last few ticks in red, and a white needle that eases back and forth across the dial as the reading oscillates smoothly. Real trig for the tick ring and needle; show the value as a number under the hub.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2 + 30;\n    let r: i32 = 120;\n    let mut i: i32 = 0;\n    while i <= 20 {\n        let a: i32 = 112 + i * 8;\n        let inner: i32 = if (i % 5) == 0 { r - 16 } else { r - 8 };\n        let x0: i32 = cx + (inner * host::math::cos(a)) / 256;\n        let y0: i32 = cy + (inner * host::math::sin(a)) / 256;\n        let x1: i32 = cx + (r * host::math::cos(a)) / 256;\n        let y1: i32 = cy + (r * host::math::sin(a)) / 256;\n        let col: i32 = if i >= 17 { 0xff3333 } else { 0x999999 };\n        host::display::draw_line(x0, y0, x1, y1, col);\n        i = i + 1;\n    }\n    let v: i32 = 50 + (host::math::sin(t) * 50) / 256;\n    let na: i32 = 112 + (v * 160) / 100;\n    let nx: i32 = cx + ((r - 24) * host::math::cos(na)) / 256;\n    let ny: i32 = cy + ((r - 24) * host::math::sin(na)) / 256;\n    host::display::draw_line(cx, cy, nx, ny, 0xffffff);\n    host::display::fill_rect(cx - 3, cy - 3, 7, 7, 0xffffff);\n    host::display::draw_number(cx - 16, cy + 24, v, 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "widgets",
+    "gauge"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "306",
+  "prompt": "A hexagon spinning smoothly about its center, its corners riding a perfect invisible circle - computed with real trig, not hand-tuned vertex coordinates. Alternate the edge colors, drop a small gold dot on each corner, and add a smaller triangle inside rotating the opposite way.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let r: i32 = 120;\n    let mut i: i32 = 0;\n    while i < 6 {\n        let a0: i32 = t + (i * 256) / 6;\n        let a1: i32 = t + ((i + 1) * 256) / 6;\n        let x0: i32 = cx + (r * host::math::cos(a0)) / 256;\n        let y0: i32 = cy + (r * host::math::sin(a0)) / 256;\n        let x1: i32 = cx + (r * host::math::cos(a1)) / 256;\n        let y1: i32 = cy + (r * host::math::sin(a1)) / 256;\n        let col: i32 = if (i & 1) == 0 { 0x66ccff } else { 0xffffff };\n        host::display::draw_line(x0, y0, x1, y1, col);\n        host::display::fill_rect(x0 - 2, y0 - 2, 5, 5, 0xffcc33);\n        i = i + 1;\n    }\n    let mut k: i32 = 0;\n    while k < 3 {\n        let b0: i32 = (0 - t) / 2 + (k * 256) / 3;\n        let b1: i32 = (0 - t) / 2 + ((k + 1) * 256) / 3;\n        let x0: i32 = cx + (55 * host::math::cos(b0)) / 256;\n        let y0: i32 = cy + (55 * host::math::sin(b0)) / 256;\n        let x1: i32 = cx + (55 * host::math::cos(b1)) / 256;\n        let y1: i32 = cy + (55 * host::math::sin(b1)) / 256;\n        host::display::draw_line(x0, y0, x1, y1, 0x888888);\n        k = k + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "polygon",
+    "animation"
+  ]
+}

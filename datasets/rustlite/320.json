@@ -1,0 +1,10 @@
+{
+  "id": "320",
+  "prompt": "A polar flower mandala: three concentric petal layers, each a closed curve whose radius swells and dips sinusoidally with the angle, with 6, 9 and 12 petals, counter-rotating at different speeds in violet, pink and teal. Smooth closed curves via the host's trig - hand-rolled tables always leave a seam where the loop closes.",
+  "solution_rl": "fn layer(cx: i32, cy: i32, base: i32, amp: i32, k: i32, phase: i32, col: i32) {\n    let mut px: i32 = 0;\n    let mut py: i32 = 0;\n    let mut a: i32 = 0;\n    while a <= 256 {\n        let r: i32 = base + (amp * host::math::sin(a * k + phase)) / 256;\n        let x: i32 = cx + (r * host::math::cos(a)) / 256;\n        let y: i32 = cy + (r * host::math::sin(a)) / 256;\n        if a > 0 {\n            host::display::draw_line(px, py, x, y, col);\n        }\n        px = x;\n        py = y;\n        a = a + 2;\n    }\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x02000a);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    layer(cx, cy, 130, 26, 6, t, 0x8844ff);\n    layer(cx, cy, 90, 22, 9, 0 - t, 0xff66aa);\n    layer(cx, cy, 55, 16, 12, t * 2, 0x66ffee);\n    host::display::fill_rect(cx - 3, cy - 3, 6, 6, 0xffffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "mandala",
+    "generative"
+  ]
+}

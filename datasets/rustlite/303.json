@@ -1,0 +1,10 @@
+{
+  "id": "303",
+  "prompt": "An analog clock with a truly round face: a smooth circular rim, twelve tick marks placed by real trig, and hour/minute/second hands rotating around the dial. Assume 60 frames per second to derive the time from t, put 12 o'clock at the top, and give the second hand a red accent.",
+  "solution_rl": "fn hand(cx: i32, cy: i32, a: i32, len: i32, col: i32) {\n    let x: i32 = cx + (len * host::math::cos(a)) / 256;\n    let y: i32 = cy + (len * host::math::sin(a)) / 256;\n    host::display::draw_line(cx, cy, x, y, col);\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x000000);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let r: i32 = 110;\n    let mut a: i32 = 0;\n    while a < 256 {\n        let x0: i32 = cx + (r * host::math::cos(a)) / 256;\n        let y0: i32 = cy + (r * host::math::sin(a)) / 256;\n        let x1: i32 = cx + (r * host::math::cos(a + 4)) / 256;\n        let y1: i32 = cy + (r * host::math::sin(a + 4)) / 256;\n        host::display::draw_line(x0, y0, x1, y1, 0xcccccc);\n        a = a + 4;\n    }\n    let mut i: i32 = 0;\n    while i < 12 {\n        let ta: i32 = (i * 256) / 12;\n        let x0: i32 = cx + ((r - 10) * host::math::cos(ta)) / 256;\n        let y0: i32 = cy + ((r - 10) * host::math::sin(ta)) / 256;\n        let x1: i32 = cx + ((r - 2) * host::math::cos(ta)) / 256;\n        let y1: i32 = cy + ((r - 2) * host::math::sin(ta)) / 256;\n        host::display::draw_line(x0, y0, x1, y1, 0x888888);\n        i = i + 1;\n    }\n    let sec: i32 = (t / 60) % 60;\n    let min: i32 = (t / 3600) % 60;\n    let hr: i32 = (t / 216000) % 12;\n    hand(cx, cy, (sec * 256) / 60 - 64, r - 16, 0xff5555);\n    hand(cx, cy, (min * 256) / 60 - 64, r - 26, 0xffffff);\n    hand(cx, cy, (hr * 256) / 12 + (min * 256) / 720 - 64, r - 50, 0xffffff);\n    host::display::fill_rect(cx - 2, cy - 2, 5, 5, 0xffffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "clock",
+    "widgets"
+  ]
+}

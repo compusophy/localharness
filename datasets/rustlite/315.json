@@ -1,0 +1,10 @@
+{
+  "id": "315",
+  "prompt": "A comet on a circular orbit around a dim star: the bright head leads a tail of fading, shrinking embers trailing behind it along the same round path. Smooth orbital motion via real sine/cosine - I don't want the tail kinking the way it did with my coarse angle table.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000005);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let r: i32 = 130;\n    host::display::fill_rect(cx - 4, cy - 4, 8, 8, 0x554400);\n    let mut k: i32 = 15;\n    while k >= 0 {\n        let a: i32 = t * 3 - k * 6;\n        let x: i32 = cx + (r * host::math::cos(a)) / 256;\n        let y: i32 = cy + (r * host::math::sin(a)) / 256;\n        let b: i32 = 255 - k * 15;\n        let s: i32 = 6 - k / 3;\n        host::display::fill_rect(x - s / 2, y - s / 2, s, s, (b << 16) | (b << 8) | (b / 2));\n        k = k - 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "orbit",
+    "particles"
+  ]
+}

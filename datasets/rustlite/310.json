@@ -1,0 +1,10 @@
+{
+  "id": "310",
+  "prompt": "A rotating 3D sphere rendered as a point cloud: place points on latitude rings (each ring a real circle via sin/cos of latitude and longitude), spin it around the vertical axis, tilt it a little so a pole shows, and project with weak perspective. Shade the dots so the near side glows brighter - it should read as round, not as stacked squares.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let r: i32 = 100;\n    let cb: i32 = host::math::cos(20);\n    let sb: i32 = host::math::sin(20);\n    let mut lat: i32 = 0 - 56;\n    while lat <= 56 {\n        let ring: i32 = (r * host::math::cos(lat)) / 256;\n        let y0: i32 = (r * host::math::sin(lat)) / 256;\n        let mut lon: i32 = 0;\n        while lon < 256 {\n            let x0: i32 = (ring * host::math::cos(lon + t)) / 256;\n            let z0: i32 = (ring * host::math::sin(lon + t)) / 256;\n            let y1: i32 = (y0 * cb - z0 * sb) / 256;\n            let z1: i32 = (y0 * sb + z0 * cb) / 256;\n            let depth: i32 = z1 + 300;\n            let px: i32 = cx + (x0 * 340) / depth;\n            let py: i32 = cy + (y1 * 340) / depth;\n            let mut b: i32 = 160 + z1;\n            if b < 50 { b = 50; }\n            if b > 255 { b = 255; }\n            host::display::fill_rect(px, py, 2, 2, (b << 16) | (b << 8) | 255);\n            lon = lon + 8;\n        }\n        lat = lat + 8;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "3d",
+    "point-cloud"
+  ]
+}

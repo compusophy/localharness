@@ -1,0 +1,11 @@
+{
+  "id": "307",
+  "prompt": "A radar scope: three concentric range rings that are actually round, a bright green sweep arm rotating smoothly with a fading tail, and a contact blip that flares when the sweep passes over it then fades until the next pass. Use proper trig for the rings and sweep - no faceted polygon rings.",
+  "solution_rl": "fn ring(cx: i32, cy: i32, r: i32, col: i32) {\n    let mut a: i32 = 0;\n    while a < 256 {\n        let x0: i32 = cx + (r * host::math::cos(a)) / 256;\n        let y0: i32 = cy + (r * host::math::sin(a)) / 256;\n        let x1: i32 = cx + (r * host::math::cos(a + 8)) / 256;\n        let y1: i32 = cy + (r * host::math::sin(a + 8)) / 256;\n        host::display::draw_line(x0, y0, x1, y1, col);\n        a = a + 8;\n    }\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x001000);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    ring(cx, cy, 50, 0x114411);\n    ring(cx, cy, 100, 0x114411);\n    ring(cx, cy, 150, 0x114411);\n    let mut k: i32 = 5;\n    while k >= 0 {\n        let a: i32 = t * 2 - k * 3;\n        let x: i32 = cx + (150 * host::math::cos(a)) / 256;\n        let y: i32 = cy + (150 * host::math::sin(a)) / 256;\n        let g: i32 = 220 - k * 35;\n        host::display::draw_line(cx, cy, x, y, g << 8);\n        k = k - 1;\n    }\n    let ba: i32 = 40;\n    let bx: i32 = cx + (95 * host::math::cos(ba)) / 256;\n    let by: i32 = cy + (95 * host::math::sin(ba)) / 256;\n    let diff: i32 = (t * 2 - ba) & 255;\n    let mut glow: i32 = 255 - diff;\n    if glow < 60 { glow = 60; }\n    host::display::fill_rect(bx - 3, by - 3, 6, 6, (glow << 8) | (glow / 3));\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "radar",
+    "widgets",
+    "animation"
+  ]
+}

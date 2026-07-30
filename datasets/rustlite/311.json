@@ -1,0 +1,10 @@
+{
+  "id": "311",
+  "prompt": "A classic wireframe cube spinning in 3D: eight corner vertices rotated around two axes with smooth trig, projected with a touch of perspective, and the twelve edges drawn with draw_line. The tumble should be perfectly smooth - no precomputed rotation snapshots.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let s: i32 = 70;\n    let ca: i32 = host::math::cos(t);\n    let sa: i32 = host::math::sin(t);\n    let cb: i32 = host::math::cos(t / 2);\n    let sb: i32 = host::math::sin(t / 2);\n    let mut vx = [0, 0, 0, 0, 0, 0, 0, 0];\n    let mut vy = [0, 0, 0, 0, 0, 0, 0, 0];\n    let mut i: i32 = 0;\n    while i < 8 {\n        let x0: i32 = ((i & 1) * 2 - 1) * s;\n        let y0: i32 = (((i >> 1) & 1) * 2 - 1) * s;\n        let z0: i32 = (((i >> 2) & 1) * 2 - 1) * s;\n        let x1: i32 = (x0 * ca - z0 * sa) / 256;\n        let z1: i32 = (x0 * sa + z0 * ca) / 256;\n        let y2: i32 = (y0 * cb - z1 * sb) / 256;\n        let z2: i32 = (y0 * sb + z1 * cb) / 256;\n        let depth: i32 = z2 + 340;\n        vx[i] = cx + (x1 * 360) / depth;\n        vy[i] = cy + (y2 * 360) / depth;\n        i = i + 1;\n    }\n    let ea = [0, 1, 3, 2, 4, 5, 7, 6, 0, 1, 2, 3];\n    let eb = [1, 3, 2, 0, 5, 7, 6, 4, 4, 5, 6, 7];\n    let mut k: i32 = 0;\n    while k < 12 {\n        let a: i32 = ea[k];\n        let b: i32 = eb[k];\n        host::display::draw_line(vx[a], vy[a], vx[b], vy[b], 0x66ffcc);\n        k = k + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "3d",
+    "wireframe"
+  ]
+}

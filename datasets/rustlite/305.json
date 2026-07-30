@@ -1,0 +1,10 @@
+{
+  "id": "305",
+  "prompt": "Plot a four-petal rose curve (radius proportional to the absolute cosine of twice the angle) centered on screen, spinning slowly. Earlier attempts with a 32-entry sine table looked chunky at the petal tips - use the host's built-in trig so the petals come out smooth, traced with connected segments in pink.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let mut px: i32 = 0;\n    let mut py: i32 = 0;\n    let mut a: i32 = 0;\n    while a <= 256 {\n        let mut c: i32 = host::math::cos(a * 2);\n        if c < 0 { c = 0 - c; }\n        let r: i32 = (140 * c) / 256;\n        let x: i32 = cx + (r * host::math::cos(a + t / 4)) / 256;\n        let y: i32 = cy + (r * host::math::sin(a + t / 4)) / 256;\n        if a > 0 {\n            host::display::draw_line(px, py, x, y, 0xff88bb);\n        }\n        px = x;\n        py = y;\n        a = a + 2;\n    }\n    host::display::fill_rect(cx - 2, cy - 2, 4, 4, 0xffffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "rose-curve",
+    "generative"
+  ]
+}

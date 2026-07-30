@@ -1,0 +1,10 @@
+{
+  "id": "308",
+  "prompt": "Fill the screen with soft interference waves: for each 8-pixel cell, sum three smooth sine waves - one driven by x, one by y, one by the diagonal, all drifting with time - and map the sum to a cyan-to-blue shade. It should undulate smoothly, not show the stair-steps you get from tiny lookup tables.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let mut y: i32 = 0;\n    while y < h {\n        let mut x: i32 = 0;\n        while x < w {\n            let mut v: i32 = host::math::sin(x * 2 + t * 2);\n            v = v + host::math::sin(y * 3 - t);\n            v = v + host::math::sin(x + y + t);\n            let mut b: i32 = (v + 768) / 6;\n            if b > 255 { b = 255; }\n            host::display::fill_rect(x, y, 8, 8, (b << 8) | (255 - b));\n            x = x + 8;\n        }\n        y = y + 8;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "interference",
+    "generative"
+  ]
+}

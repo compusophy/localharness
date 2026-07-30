@@ -1,0 +1,11 @@
+{
+  "id": "316",
+  "prompt": "An old-school demoscene sine-scroller: the text RUSTLITE ROCKS marching right to left, each letter bobbing on a smooth sine wave keyed to its screen x so the ripple travels through the words. Big teal letters on deep blue; the wave must be silky - built-in trig, not an 8-step table.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000010);\n    let w: i32 = host::display::width();\n    let cy: i32 = host::display::height() / 2;\n    let msg = [82, 85, 83, 84, 76, 73, 84, 69, 32, 82, 79, 67, 75, 83];\n    let n: i32 = 14;\n    let span: i32 = n * 26 + w;\n    let head: i32 = w - (t * 3) % span;\n    let mut i: i32 = 0;\n    while i < n {\n        let x: i32 = head + i * 26;\n        let y: i32 = cy + (50 * host::math::sin(x * 2 + t * 2)) / 256;\n        host::display::draw_char(x, y, msg[i], 0x66ffee, 3);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "scroller",
+    "text",
+    "animation"
+  ]
+}

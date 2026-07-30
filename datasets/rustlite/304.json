@@ -1,0 +1,10 @@
+{
+  "id": "304",
+  "prompt": "A spirograph: one arm sweeping a big circle while a pen wheel spins five times faster on its tip, tracing that lacy looped curve. I want it silky-smooth - proper trig, not a coarse angle table - drawn as connected line segments, with the pen phase slowly precessing over time so the lace rotates.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x050208);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let mut px: i32 = 0;\n    let mut py: i32 = 0;\n    let mut a: i32 = 0;\n    while a <= 256 {\n        let x: i32 = cx + (108 * host::math::cos(a)) / 256 + (56 * host::math::cos(a * 5 + t)) / 256;\n        let y: i32 = cy + (108 * host::math::sin(a)) / 256 + (56 * host::math::sin(a * 5 + t)) / 256;\n        if a > 0 {\n            host::display::draw_line(px, py, x, y, 0x66ffcc);\n        }\n        px = x;\n        py = y;\n        a = a + 2;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "spirograph",
+    "generative"
+  ]
+}

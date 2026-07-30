@@ -1,0 +1,10 @@
+{
+  "id": "301",
+  "prompt": "Draw a single perfect circle outline centered on screen - genuinely round, not the chunky 16-segment look I keep getting from little lookup tables. Use the host's built-in trig for the points, connect them with short line segments so the rim is smooth, let the radius breathe gently with time, and mark the center with a small white dot.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let mut m: i32 = w;\n    if h < m { m = h; }\n    let r: i32 = m / 3 + (8 * host::math::sin(t)) / 256;\n    let mut a: i32 = 0;\n    while a < 256 {\n        let x0: i32 = cx + (r * host::math::cos(a)) / 256;\n        let y0: i32 = cy + (r * host::math::sin(a)) / 256;\n        let x1: i32 = cx + (r * host::math::cos(a + 4)) / 256;\n        let y1: i32 = cy + (r * host::math::sin(a + 4)) / 256;\n        host::display::draw_line(x0, y0, x1, y1, 0xffffff);\n        a = a + 4;\n    }\n    host::display::fill_rect(cx - 2, cy - 2, 4, 4, 0xffffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "circle",
+    "animation"
+  ]
+}

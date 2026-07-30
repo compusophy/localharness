@@ -51,3 +51,7 @@ multi-feature apps. New boundaries the corpus now encodes:
   take string LITERALS like `http::get`; rows still teach `open(..) == -1` as
   a first-class OFFLINE state, and host-held text (`http::draw_line`,
   `body_lines`) stays the reading idiom.
+
+Rows 301-320 teach `host::math::sin/cos` (post-#83: angle = 1/256 turn, values
+scaled by 256) as THE trig path; earlier rows' hand-rolled tables remain valid
+history.

@@ -1,0 +1,10 @@
+{
+  "id": "312",
+  "prompt": "A little spinning donut - a 3D torus point cloud like the famous demo but at about half size, in warm amber tones on near-black brown. Sweep the two tube angles with real trig so it is genuinely round, rotate and tilt it over time, and shade the dots by depth.",
+  "solution_rl": "fn shade(z: i32) -> i32 {\n    let mut b: i32 = 150 + z * 2;\n    if b < 50 { b = 50; }\n    if b > 255 { b = 255; }\n    (b << 16) | (((b * 2) / 3) << 8)\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x0a0400);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let big: i32 = 52;\n    let small: i32 = 22;\n    let ca: i32 = host::math::cos(t);\n    let sa: i32 = host::math::sin(t);\n    let cb: i32 = host::math::cos(t / 3);\n    let sb: i32 = host::math::sin(t / 3);\n    let mut u: i32 = 0;\n    while u < 256 {\n        let mut v: i32 = 0;\n        while v < 256 {\n            let ring: i32 = big + (small * host::math::cos(v)) / 256;\n            let x0: i32 = (ring * host::math::cos(u)) / 256;\n            let z0: i32 = (ring * host::math::sin(u)) / 256;\n            let y0: i32 = (small * host::math::sin(v)) / 256;\n            let x1: i32 = (x0 * ca - z0 * sa) / 256;\n            let z1: i32 = (x0 * sa + z0 * ca) / 256;\n            let y2: i32 = (y0 * cb - z1 * sb) / 256;\n            let z2: i32 = (y0 * sb + z1 * cb) / 256;\n            let depth: i32 = z2 + 260;\n            let px: i32 = cx + (x1 * 300) / depth;\n            let py: i32 = cy + (y2 * 300) / depth;\n            host::display::fill_rect(px, py, 2, 2, shade(z2));\n            v = v + 16;\n        }\n        u = u + 6;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "3d",
+    "torus"
+  ]
+}

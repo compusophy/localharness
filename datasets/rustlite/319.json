@@ -1,0 +1,10 @@
+{
+  "id": "319",
+  "prompt": "Show off smooth easing: a cyan box glides left and right across the middle with a sinusoidal ease-in-out (it should hang weightlessly at the ends, no jerk), while a gray ghost box above moves linearly for comparison with its hard turnarounds. Label both; take the position straight from the built-in sine.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    let w: i32 = host::display::width();\n    let cy: i32 = host::display::height() / 2;\n    let cx: i32 = w / 2;\n    let amp: i32 = w / 2 - 40;\n    let ex: i32 = cx + (amp * host::math::sin(t)) / 256;\n    host::display::fill_rect(ex - 12, cy - 12, 24, 24, 0x33ddff);\n    let ph: i32 = t % 512;\n    let lin: i32 = if ph < 256 { ph } else { 512 - ph };\n    let gx: i32 = cx - amp + (amp * 2 * lin) / 256;\n    host::display::fill_rect(gx - 12, cy - 92, 24, 24, 0x444444);\n    host::display::draw_string(20, cy - 120, \"linear\", 0x666666, 2);\n    host::display::draw_string(20, cy + 40, \"sine ease\", 0x33ddff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "easing",
+    "animation"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "318",
+  "prompt": "A kaleidoscope of eight arms around the center: each arm carries a chain of growing dots whose radius and angle both wobble on smooth sines so the whole thing shimmers organically, arms alternating pink and blue with a white core. Place the arms with real trig at perfect eighth-turn spacing - no lookup-table wobble.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x050008);\n    let cx: i32 = host::display::width() / 2;\n    let cy: i32 = host::display::height() / 2;\n    let mut arm: i32 = 0;\n    while arm < 8 {\n        let base: i32 = arm * 32 + t / 2;\n        let mut j: i32 = 0;\n        while j < 7 {\n            let r: i32 = 24 + j * 18 + (10 * host::math::sin(t * 2 + j * 24)) / 256;\n            let a: i32 = base + (12 * host::math::sin(t + j * 40)) / 256;\n            let x: i32 = cx + (r * host::math::cos(a)) / 256;\n            let y: i32 = cy + (r * host::math::sin(a)) / 256;\n            let s: i32 = 3 + j / 2;\n            let col: i32 = if (arm & 1) == 0 { 0xff66aa } else { 0x66ccff };\n            host::display::fill_rect(x - s / 2, y - s / 2, s, s, col);\n            j = j + 1;\n        }\n        arm = arm + 1;\n    }\n    host::display::fill_rect(cx - 4, cy - 4, 8, 8, 0xffffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "symmetry",
+    "generative"
+  ]
+}

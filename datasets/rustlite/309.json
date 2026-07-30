@@ -1,0 +1,10 @@
+{
+  "id": "309",
+  "prompt": "Trace a 3:2 Lissajous figure filling most of the screen, drawn as connected line segments so the curve stays smooth and round at the lobes - genuine sine/cosine, please. Drift the x-phase with time so the figure slowly tumbles through its whole family of shapes.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000005);\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let ax: i32 = (w * 2) / 5;\n    let ay: i32 = (h * 2) / 5;\n    let mut px: i32 = 0;\n    let mut py: i32 = 0;\n    let mut a: i32 = 0;\n    while a <= 256 {\n        let x: i32 = cx + (ax * host::math::cos(a * 3 + t)) / 256;\n        let y: i32 = cy + (ay * host::math::sin(a * 2)) / 256;\n        if a > 0 {\n            host::display::draw_line(px, py, x, y, 0xffaa33);\n        }\n        px = x;\n        py = y;\n        a = a + 2;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "host-math",
+    "lissajous",
+    "generative"
+  ]
+}
