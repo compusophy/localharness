@@ -1750,58 +1750,64 @@ async fn resolve_cartridge(name: &str, prefer_local: bool, id: Option<u64>) -> O
     legacy_cartridge_onchain(name, id).await
 }
 
-/// Resolve the public face for tenant `name`. Reads the on-chain choice
-/// (`directory` / `app` / `html`) and gathers content. `is_owner_preview`
-/// (the owner viewing their own face via `?view=public`) prefers the device's
+/// HTML content for the public face: owner preview prefers the device's local
+/// `index.html` draft; then the off-chain store; a store miss falls back to
+/// the LEGACY on-chain `public.html` slot (pre-pivot publishes).
+async fn resolve_face_html(name: &str, id: Option<u64>, is_owner_preview: bool) -> Option<String> {
+    if is_owner_preview {
+        if let Some(h) = local_public_html().await {
+            return Some(h);
+        }
+    }
+    let i = id?;
+    let store = registry::public_html_of(i).await;
+    let bytes = if registry::store_miss_falls_back(&store) {
+        let legacy = registry::public_html_onchain_of(i).await.ok().flatten();
+        if legacy.is_some() {
+            web_sys::console::log_1(&JsValue::from_str(&format!(
+                "public face: html store miss for '{name}', serving legacy on-chain public.html"
+            )));
+        }
+        legacy
+    } else {
+        store.ok().flatten()
+    };
+    bytes.map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// Resolve the public face for tenant `name`. The choice (`directory` / `app`
+/// / `html`) reads STORE-FIRST (`registry::effective_face_choice` — every
+/// publish stamps `<name>/face`; the on-chain slot is only the pre-pivot
+/// fallback) and content is gathered the same way. `is_owner_preview` (the
+/// owner viewing their own face via `?view=public`) prefers the device's
 /// local working copy so unpublished edits show; a VISITOR (false) only ever
-/// gets the PUBLISHED on-chain copy — the device-local OPFS draft must never
-/// leak to visitors. An explicit choice with no content available falls back
-/// to the directory; an UNSET choice infers "app if a published cartridge
-/// exists, else directory" so subdomains that published a cartridge before the
-/// picker shipped keep showing it.
+/// gets the PUBLISHED copy — the device-local OPFS draft must never leak to
+/// visitors. An explicit choice with no content available falls back to the
+/// directory; an UNSET choice infers "app if a published cartridge exists,
+/// else html if a page is published, else directory" — so published content
+/// stays reachable even with no face record anywhere.
 async fn resolve_public_face(name: &str, is_owner_preview: bool) -> PublicFace {
     let id = registry::id_of_name(name).await.ok().filter(|&i| i != 0);
-    let choice = match id {
-        Some(i) => registry::public_face_of(i).await.ok().flatten(),
-        None => None,
-    };
+    let choice = registry::effective_face_choice(name, id).await;
     match choice.as_deref() {
         Some("directory") => PublicFace::Directory,
-        Some("html") => {
-            if is_owner_preview {
-                if let Some(h) = local_public_html().await {
-                    return PublicFace::Html(h);
-                }
-            }
-            if let Some(i) = id {
-                let store = registry::public_html_of(i).await;
-                let bytes = if registry::store_miss_falls_back(&store) {
-                    // Store miss (404 / fetch failure): pre-pivot HTML faces
-                    // live in the LEGACY on-chain `public.html` slot.
-                    let legacy = registry::public_html_onchain_of(i).await.ok().flatten();
-                    if legacy.is_some() {
-                        web_sys::console::log_1(&JsValue::from_str(&format!(
-                            "public face: html store miss for '{name}', serving legacy on-chain public.html"
-                        )));
-                    }
-                    legacy
-                } else {
-                    store.ok().flatten()
-                };
-                if let Some(bytes) = bytes {
-                    return PublicFace::Html(String::from_utf8_lossy(&bytes).into_owned());
-                }
-            }
-            PublicFace::Directory
-        }
-        // "app" or unset/legacy — prefer a cartridge (off-chain app store, by
-        // name; store-miss → legacy on-chain slot), fall back to directory.
-        // With apps off-chain the publish no longer writes a
-        // `public_face="app"` choice, so the UNSET case is the normal path for
-        // a published app.
-        _ => match resolve_cartridge(name, is_owner_preview, id).await {
-            Some(w) => PublicFace::Cartridge(w),
+        Some("html") => match resolve_face_html(name, id, is_owner_preview).await {
+            Some(h) => PublicFace::Html(h),
             None => PublicFace::Directory,
+        },
+        // "app" or unset — prefer a cartridge (off-chain app store, by name;
+        // store-miss → legacy on-chain slot); an UNSET choice also infers a
+        // published html page before giving up to the directory.
+        other => match resolve_cartridge(name, is_owner_preview, id).await {
+            Some(w) => PublicFace::Cartridge(w),
+            None => {
+                if other.is_none() {
+                    if let Some(h) = resolve_face_html(name, id, is_owner_preview).await {
+                        return PublicFace::Html(h);
+                    }
+                }
+                PublicFace::Directory
+            }
         },
     }
 }

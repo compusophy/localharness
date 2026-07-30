@@ -161,15 +161,24 @@ export default async function handler(req: Request): Promise<Response> {
   const name = String(payload.name ?? '').trim().toLowerCase();
   if (!/^[a-z0-9-]{1,63}$/.test(name)) return json({ error: 'invalid name' }, 400, origin);
 
-  // Two asset kinds, ONE auth/ownership gate: an APP cartridge (wasm) or an HTML
-  // page. `html` (a UTF-8 string) selects the page face; otherwise `wasm_hex`
-  // (the cartridge). Build the file commit list first, then gate, then write.
+  // Three shapes, ONE auth/ownership gate: an APP cartridge (`wasm_hex`), an
+  // HTML page (`html`), or a FACE-ONLY choice write (`face` with no content —
+  // how "directory" is picked). The face CHOICE lives in the store too
+  // (`<name>/face`): a content publish stamps its own kind so publishing an
+  // app/html page IS choosing it — the chain keeps only ownership, and NO
+  // public-face path writes on-chain. Build the commit list, then gate, then write.
   const htmlRaw = typeof payload.html === 'string' ? (payload.html as string) : '';
   const isHtml = htmlRaw.trim() !== '';
+  const faceRaw = typeof payload.face === 'string' ? (payload.face as string).trim().toLowerCase() : '';
+  const hasWasm = String(payload.wasm_hex ?? '').trim() !== '';
+  if (faceRaw && !['directory', 'app', 'html'].includes(faceRaw)) {
+    return json({ error: 'face must be one of: directory, app, html' }, 400, origin);
+  }
   type Commit = { path: string; b64: string; message: string };
   const commits: Commit[] = [];
   let bytes = 0;
   let primaryPath = '';
+  let kind = '';
 
   if (isHtml) {
     const htmlBytes = new TextEncoder().encode(htmlRaw);
@@ -177,9 +186,10 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: `html too large (${htmlBytes.length} > ${MAX_HTML_BYTES})` }, 413, origin);
     }
     bytes = htmlBytes.length;
+    kind = 'html';
     primaryPath = `${name}/index.html`;
     commits.push({ path: primaryPath, b64: bytesToBase64(htmlBytes), message: `publish ${name}/index.html (${bytes} bytes)` });
-  } else {
+  } else if (hasWasm) {
     // wasm arrives as hex (the CLI/browser already speak hex; no base64 dep
     // needed client-side). Validate shape + the wasm magic before any write.
     const wasmHex = String(payload.wasm_hex ?? '').replace(/^0x/, '');
@@ -194,6 +204,7 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: 'not a WebAssembly module (bad magic)' }, 400, origin);
     }
     bytes = wasm.length;
+    kind = 'app';
     primaryPath = `${name}/app.wasm`;
     commits.push({ path: primaryPath, b64: bytesToBase64(wasm), message: `publish ${name}/app.wasm (${bytes} bytes)` });
     const source = String(payload.source ?? '');
@@ -201,7 +212,24 @@ export default async function handler(req: Request): Promise<Response> {
     if (source.trim()) {
       commits.push({ path: `${name}/app.rl`, b64: bytesToBase64(new TextEncoder().encode(source)), message: `publish ${name}/app.rl` });
     }
+  } else if (faceRaw) {
+    // Face-only: no bytes, just the choice (e.g. switch back to "directory").
+    kind = faceRaw;
+    primaryPath = `${name}/face`;
+  } else {
+    return json({ error: 'supply `wasm_hex`, `html`, or `face`' }, 400, origin);
   }
+
+  // Stamp the face record: a content publish stamps its own kind (last publish
+  // wins), a face-only POST stamps the asked choice. ONE authed write covers
+  // bytes + routing — the "stored but visitors saw the directory" bug (krafto)
+  // is structurally impossible here.
+  const faceChoice = isHtml || hasWasm ? kind : faceRaw;
+  commits.push({
+    path: `${name}/face`,
+    b64: btoa(faceChoice),
+    message: `face ${name} -> ${faceChoice}`,
+  });
 
   // Ownership: the authenticated caller MUST own the name on-chain. This is the
   // single authorization gate — the bytes are public, the NFT is the right to
@@ -231,7 +259,7 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   return json(
-    { published: true, name, kind: isHtml ? 'html' : 'app', bytes, repo: APPSTORE_REPO, path: primaryPath },
+    { published: true, name, kind, face: faceChoice, bytes, repo: APPSTORE_REPO, path: primaryPath },
     200,
     origin,
   );

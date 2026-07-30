@@ -281,9 +281,10 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
     }
 }
 
-/// Set `<name>`'s on-chain public face choice: `directory`, `app`, or `html`.
-/// What visitors see. Owner-gated `setMetadata`, sponsored. (`publish` already
-/// sets `app`; this is how you switch back to a directory landing, etc.)
+/// Set `<name>`'s public face choice: `directory`, `app`, or `html`. What
+/// visitors see. OFF-CHAIN — a face-only POST to the app store (free, no gas,
+/// no tx); the proxy gates on the signer owning the name. (`publish` already
+/// stamps `app`; this is how you switch back to a directory landing, etc.)
 pub(crate) async fn set_face(name: &str, choice: &str) -> i32 {
     if !matches!(choice, "directory" | "app" | "html") {
         eprintln!("face must be one of: directory, app, html (got '{choice}')");
@@ -294,17 +295,6 @@ pub(crate) async fn set_face(name: &str, choice: &str) -> i32 {
         Err(code) => return code,
     };
     let addr = bytes_to_hex_str(&wallet::address(&signer));
-    let id = match registry::id_of_name(name).await {
-        Ok(i) if i != 0 => i,
-        Ok(_) => {
-            eprintln!("{name} is not registered");
-            return 1;
-        }
-        Err(e) => {
-            eprintln!("RPC error: {e}");
-            return 1;
-        }
-    };
     match registry::owner_of_name(name).await {
         Ok(Some(o)) if o.eq_ignore_ascii_case(&addr) => {}
         Ok(Some(o)) => {
@@ -316,34 +306,14 @@ pub(crate) async fn set_face(name: &str, choice: &str) -> i32 {
             return 1;
         }
     }
-    let diamond = match parse_address(registry::REGISTRY_ADDRESS()) {
-        Ok(a) => a,
-        Err(_) => {
-            eprintln!("internal: bad registry address constant");
-            return 1;
-        }
-    };
-    let calls = vec![tempo_tx::TempoCall {
-        to: diamond,
-        value_wei: 0,
-        input: registry::encode_set_public_face(id, choice),
-    }];
-    let sponsor = match load_sponsor() {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    match registry::submit_tempo_sponsored(
-        &signer,
-        &sponsor,
-        calls,
-        registry::ALPHA_USD_ADDRESS(),
-        1_200_000,
-    )
-    .await
-    {
-        Ok(tx) => {
-            println!("✓ {name}.localharness.xyz public face → {choice}");
-            println!("  tx: {tx}");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let token = registry::proxy_auth_token(&signer, now, "publish");
+    match registry::publish_face_to_store(name, &token, choice).await {
+        Ok(()) => {
+            println!("✓ {name}.localharness.xyz public face → {choice} (off-chain, free)");
             0
         }
         Err(e) => {
@@ -799,7 +769,7 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
     // ON-CHAIN (rasterized to every visitor's framebuffer); anything else
     // compiles as a rustlite cartridge and publishes OFF-CHAIN to the app store
     // (free, no gas — the blockchain keeps only the name's ownership, which we
-    // already verified above). HTML stays on-chain for now (smaller, rarer).
+    // already verified above). HTML publishes the same way.
     if publishes_as_html(source_path) {
         let html = src.as_bytes();
         if html.is_empty() {
@@ -819,24 +789,13 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
         );
         return match registry::publish_html_to_store(name, &token, &src).await {
             Ok(()) => {
-                // Visitors only see stored html when the on-chain face CHOICE
-                // says "html" — the unset arm infers cartridge-else-directory
-                // (fleet-found: publish printed success while visitors kept
-                // seeing the directory). Set the choice in the same command.
-                let face = match registry::id_of_name(name).await {
-                    Ok(id) if id != 0 => registry::public_face_of(id).await.ok().flatten(),
-                    _ => None,
-                };
-                if face.as_deref() != Some("html") {
-                    let code = set_face(name, "html").await;
-                    if code != 0 {
-                        eprintln!("html is in the store, but visitors won't see it until `localharness face {name} html` succeeds");
-                        return code;
-                    }
-                }
+                // The proxy stamps `<name>/face = "html"` in the same publish,
+                // so visitors are routed to the page with no extra step (and
+                // nothing on-chain — fleet-found: the old two-step printed
+                // success while visitors kept seeing the directory).
                 println!("✓ published — https://{name}.localharness.xyz/ now serves your html");
                 println!("  to every visitor, 24/7, with no browser tab running.");
-                println!("  content: app store (GitHub); ownership + face choice stay on-chain.");
+                println!("  content + face choice: app store; only ownership stays on-chain.");
                 0
             }
             Err(e) => {

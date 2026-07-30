@@ -69,7 +69,9 @@ pub(crate) fn format_whoami(info: &WhoamiInfo) -> String {
     let face = info
         .public_face
         .clone()
-        .unwrap_or_else(|| "unset (auto: app if one is published, else directory)".to_string());
+        .unwrap_or_else(|| {
+            "unset (auto: app if published, else html if published, else directory)".to_string()
+        });
     let price = match info.price_wei {
         Some(wei) => format!("{}/call (agent --pay ask; model run meters ~1 LH on top)", fmt_lh(wei)),
         None => format!(
@@ -183,7 +185,7 @@ pub(crate) async fn resolve_whoami(name: &str) -> Result<WhoamiInfo, String> {
                 .ok()
                 .flatten()
                 .is_some(),
-            registry::public_face_of(token_id).await.ok().flatten(),
+            registry::effective_face_choice(name, Some(token_id)).await,
             registry::x402_price_of(token_id).await.ok().flatten(),
         )
     } else {
@@ -1058,7 +1060,9 @@ mod tests {
         };
         let out = format_whoami(&info);
         assert!(out.contains("persona       none"));
-        assert!(out.contains("face          unset (auto: app if one is published, else directory)"));
+        assert!(out.contains(
+            "face          unset (auto: app if published, else html if published, else directory)"
+        ));
         assert!(out.contains("agent wallet  —"));
         // A failed balance read degrades to "—", never sinks the lookup.
         assert!(out.contains("$LH wallet    —"));

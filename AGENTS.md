@@ -149,8 +149,7 @@ src/app/ (browser IDE):
   mod.rs(mount routing) templates.rs(all maud HTML) dom.rs(web-sys swaps)
   events/(Action enum + parse + the ONE delegated click/keydown/submit/input
     listener set + dispatch in mod.rs; handler bodies per domain: claim admin
-    credits identity schedule devices subdomains key_sync public_face layout
-    (bounty/guild/governance/tba panels removed 0.47.0 — chat tools now)) chat/(
+    credits identity schedule devices subdomains key_sync public_face layout) chat/(
     turn loop in mod.rs; session.rs prompt.rs access.rs plan_state.rs(the live
     update_plan checklist) tools/{platform,bounty,guild,governance,misc})
   history.rs(OPFS conversation + tool-call replay) opfs.rs(file browser/editor
@@ -234,10 +233,9 @@ wasm-opt rejects post-MVP features modern rustc emits).
   backends. ADDITIVE — no new deps. BYOK or platform `$LH` via the proxy. OpenAI
   gotcha: streamed `tool_calls` are index-keyed fragments to concat (`openai/loop.rs`).
 - **`local`** (off): in-browser Gemma 3 270M via Burn wgpu/WebGPU (no proxy/key).
-  HEAVY (~570MB); off the DEFAULT bundle. The full in-tab path (model selector,
-  OPFS download, `start_local` wiring) is ALREADY in `browser-app` gated on
-  `local`; the **`browser-app-local`** composite turns it on. `build-web.sh`
-  ships the lean `browser-app,mainnet` bundle. Gotchas: getrandom-0.4 needs
+  HEAVY (~570MB); off the DEFAULT bundle. In-tab path ships in `browser-app`
+  gated on `local`; the **`browser-app-local`** composite enables it.
+  `build-web.sh` ships the lean `browser-app,mainnet` bundle. Gotchas: getrandom-0.4 needs
   `.cargo/config.toml getrandom_backend="wasm_js"` + renamed `getrandom_v04`;
   burn-store DIRECT (memmap2 wasm-broken); GPU read-back MUST
   `into_data_async().await`.
@@ -367,32 +365,35 @@ rustlite `fn` is already a wasm export, so a library is a normal cartridge whose
   `?edit=1`).
 - **Visitor** → only ever the **public face**. No studio, no edit door.
 
-`resolve_public_face(name)` reads the on-chain choice under
-`keccak256("localharness.public_face")` (`registry::public_face_of`) —
-`directory`/`app`/`html` — preferring local working copy (owner previews
-unpublished edits) else published. `PublicFace`: **Cartridge** (`app.rl` /
-`app_wasm_of` → `display::run_in_root_canvas`), **Html** (`index.html` /
-`public_html_of` → `render_html_in_root_canvas`), **Directory**
-(`paint_public_landing`: profile + siblings via `list_owned_tokens`, personas via
-`personas_of`). UNSET infers "cartridge if one exists, else directory".
-`Host::Other` uses `try_paint_app` (local `app.rl` only). Published content
-resolves STORE-FIRST (off-chain app store); a store MISS (pure rule
-`registry::store_miss_falls_back`) falls back to the LEGACY on-chain
-`setMetadata` slots so pre-pivot (2026-06-23) publishes keep their faces.
+`resolve_public_face(name)` reads the choice STORE-FIRST
+(`registry::effective_face_choice`: `<name>/face`, stamped by EVERY publish;
+legacy on-chain slot only for pre-pivot names) — `directory`/`app`/`html` —
+preferring local working copy (owner previews unpublished edits) else published.
+`PublicFace`: **Cartridge** (`app.rl` / `app_wasm_of` →
+`display::run_in_root_canvas`), **Html** (`index.html` / `public_html_of` →
+`render_html_in_root_canvas`), **Directory** (`paint_public_landing`: profile +
+siblings via `list_owned_tokens`, personas via `personas_of`). UNSET infers
+"cartridge, else published html, else directory". `Host::Other` uses
+`try_paint_app` (local `app.rl` only). Content resolves STORE-FIRST too; a store
+MISS (pure rule `registry::store_miss_falls_back`) falls back to the LEGACY
+on-chain `setMetadata` slots (pre-pivot publishes keep their faces).
 
 **Picker (admin → "public face").** `[directory] [publish app] [publish html]` →
-`Action::SetPublicFace`. `directory` sets only the choice; `app`/`html`
-compile/read local `app.rl`/`index.html` and publish it **plus** set the choice in
-ONE sponsored Tempo tx (two `setMetadata` calls).
+`Action::SetPublicFace`. ALL OFF-CHAIN: `app`/`html` POST local
+`app.rl`/`index.html` to the store (which stamps the face record in the same
+publish); `directory` is a face-only POST. ⛔ NOTHING public-face writes on-chain
+(sponsored path = TBA-owner fallback ONLY); never call a publish "on-chain".
 
 **Second-device owner upgrade.** A seed-bearing owner without `.lh_owner` paints
 as visitor; background `redirect_to_studio_if_owner` navigates to `?edit=1` once
 `verify_owner` proves control.
 
-**Cross-visitor publishing (on-chain).** Local `app.rl`/`index.html` are
-owner-device working copies; *visitors* see published bytes in the diamond under
-`setMetadata(uint256,bytes32,bytes)` (no new facet). Keys:
-`keccak256("localharness.{app.wasm, public.html, public_face, persona, x402_price}")`.
+**Cross-visitor publishing.** Local `app.rl`/`index.html` are owner-device
+working copies; *visitors* see published bytes from the OFF-CHAIN app store
+(`proxy/api/{publish,app}.ts` — bytes + `<name>/face`, free). The diamond
+`setMetadata` slots under
+`keccak256("localharness.{app.wasm, public.html, public_face, persona, x402_price}")`
+are LEGACY face fallbacks; persona/x402_price stay live on-chain.
 `x402_price` = the advertised per-call `$LH` price (decimal-wei UTF-8; default
 0.01 unset; `registry::{x402_price_of, x402_ask_price_of, encode_set_x402_price}`;
 price-LOCKED — floor + 10% ceiling — by ask_agent). Generic
@@ -483,8 +484,8 @@ surface.
 
 Subdomain tools (declared in `chat.rs::start_session`):
 - **`create_subdomain(name)`** — register a name-only subdomain (sponsored mint).
-- **`create_and_publish_app(name, source)`** — ONE-SHOT: compile rustlite, register,
-  publish `app.wasm` + `public_face="app"` in ONE sponsored tx. Compiles FIRST.
+- **`create_and_publish_app(name, source)`** — ONE-SHOT: compile rustlite, register
+  (sponsored), publish to the app store (face stamped, free). Compiles FIRST.
 - **`list_subdomains()`** — read-only.
 - **`release_subdomain(name, confirmation)`** — DESTRUCTIVE, challenge-gated
   (below). Burns the name; refuses MAIN, NOT granted to subagents.
@@ -598,9 +599,8 @@ Stripe on-ramp, in-browser Gemma, `LH_CHAIN`, the mainnet keyless sponsor RELAY
 money key), bashlite (CLI `sh` + browser `execute_script`), ACP server (CLI
 `acp` — registry PR agentclientprotocol#1818), receipts v1. Open:
 
-- **Browser relay E2E + web redeploy** — the keyless bundle routes onboarding
-  through the relay (committed); needs an in-browser onboarding test, then a
-  deliberate `build-web.sh` + deploy.
+- **Browser relay onboarding E2E** — the keyless bundle is deployed; a full
+  in-browser fresh-visitor onboarding run is still unproven.
 - **Relay funded-agent writes (CLOSED; residual gate is POLICY)** — a funded agent
   relays own-$LH moves + the free set + `setMetadata` self-edits ≤4096B (probed
   2026-07-05). `LH_RELAY_FUNDED` stays by DESIGN for >4096B / non-exempt writes;

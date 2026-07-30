@@ -441,6 +441,52 @@ pub async fn html_from_store(name: &str) -> Result<Option<Vec<u8>>, String> {
     http_get_bytes(&format!("{CREDIT_PROXY_URL}api/app?name={n}&kind=html")).await
 }
 
+/// Normalize a stored face-choice blob: trimmed, lowercased, and one of
+/// `directory` / `app` / `html` — anything else is `None` (treat as unset).
+pub fn parse_face_choice(bytes: &[u8]) -> Option<String> {
+    let s = String::from_utf8(bytes.to_vec()).ok()?;
+    let s = s.trim().to_lowercase();
+    matches!(s.as_str(), "directory" | "app" | "html").then_some(s)
+}
+
+/// Fetch a subdomain's FACE CHOICE from the OFF-CHAIN app store
+/// (`GET /api/app?name=<name>&kind=face`). The store is where the choice lives —
+/// `publish.ts` stamps `<name>/face` on every publish (content publishes stamp
+/// their own kind; a face-only POST picks "directory"). `Ok(None)` = no record.
+pub async fn face_from_store(name: &str) -> Result<Option<String>, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Ok(None);
+    }
+    let bytes = http_get_bytes(&format!("{CREDIT_PROXY_URL}api/app?name={n}&kind=face")).await?;
+    Ok(bytes.as_deref().and_then(parse_face_choice))
+}
+
+/// Write a FACE-ONLY choice to the OFF-CHAIN app store (`POST /api/publish` with
+/// a `face` body — no content bytes). How "directory" is picked, and how a stale
+/// choice is corrected, with ZERO on-chain writes. Same personal-sign auth +
+/// on-chain ownership gate as every publish.
+pub async fn publish_face_to_store(name: &str, token: &str, face: &str) -> Result<(), String> {
+    let url = format!("{CREDIT_PROXY_URL}api/publish");
+    let body = serde_json::json!({ "name": name, "face": face });
+    http_post_json_authed(&url, token, &body).await
+}
+
+/// The face choice visitors should honour: the STORE record first (where every
+/// publish stamps it), falling back to the LEGACY on-chain
+/// `localharness.public_face` slot only on a store miss (pre-pivot names whose
+/// choice was written via `setMetadata`). New choices never touch the chain.
+pub async fn effective_face_choice(name: &str, token_id: Option<u64>) -> Option<String> {
+    let store = face_from_store(name).await;
+    if !store_miss_falls_back(&store) {
+        return store.ok().flatten();
+    }
+    match token_id {
+        Some(id) => public_face_of(id).await.ok().flatten(),
+        None => None,
+    }
+}
+
 /// Fetch a subdomain's published cartridge from the OFF-CHAIN app store by name.
 /// `Ok(None)` = no app published (a 404 — the visitor falls back to the
 /// directory/html face). Works on native AND wasm (the browser load path).
@@ -517,15 +563,16 @@ pub fn encode_set_gemini_key(token_id: u64, ciphertext: &[u8]) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, gemini_key_metadata_key(), ciphertext)
 }
 
-// --- Public-face selection (on-chain, visitor-readable) --------------
+// --- Public-face selection (LEGACY on-chain reads) --------------------
 //
 // A subdomain's public face (what visitors see) is one of: a directory
-// landing (default), a cartridge app, or an HTML page. The CHOICE lives
-// on-chain under `keccak256("localharness.public_face")` so every visitor
-// honours it — not just the owner's device. HTML content lives under
-// `keccak256("localharness.public.html")` (cartridge wasm reuses the
-// existing `localharness.app.wasm` slot). All written via the same
-// owner-gated `setMetadata` as the published wasm.
+// landing (default), a cartridge app, or an HTML page. The CHOICE lives in
+// the OFF-CHAIN store now (`<name>/face`, stamped by every publish — see
+// `face_from_store` / `effective_face_choice`); NOTHING public-face writes
+// on-chain anymore. The reads below back the STORE-MISS fallback only:
+// pre-pivot names wrote the choice under
+// `keccak256("localharness.public_face")` and HTML bytes under
+// `keccak256("localharness.public.html")` via owner-gated `setMetadata`.
 
 pub(crate) fn keccak_key(label: &[u8]) -> [u8; 32] {
     use sha3::{Digest, Keccak256};
@@ -554,9 +601,9 @@ pub(crate) fn encode_set_metadata_bytes(token_id: u64, key: [u8; 32], payload: &
 pub(crate) const PUBLIC_FACE_LABEL: &[u8] = b"localharness.public_face";
 pub(crate) const PUBLIC_HTML_LABEL: &[u8] = b"localharness.public.html";
 
-/// The subdomain's chosen public face: `"directory"`, `"app"`, `"html"`,
-/// or `None` if never set (legacy/default — callers infer from whether a
-/// cartridge is published).
+/// LEGACY on-chain face-choice read — the store-miss fallback for pre-pivot
+/// names. Live resolution is [`effective_face_choice`] (store first); `None`
+/// = never set (callers infer from what's published).
 pub async fn public_face_of(token_id: u64) -> Result<Option<String>, String> {
     match metadata_bytes_of(token_id, keccak_key(PUBLIC_FACE_LABEL)).await? {
         Some(b) => Ok(String::from_utf8(b)
@@ -567,7 +614,9 @@ pub async fn public_face_of(token_id: u64) -> Result<Option<String>, String> {
     }
 }
 
-/// Encode `setMetadata` for the public-face choice (a short string).
+/// Encode `setMetadata` for the public-face choice. LEGACY — retained ONLY for
+/// the TBA-owner on-chain fallback (the store's ownership gate needs an EOA
+/// signer); every EOA-owned face write goes to the store, never the chain.
 pub fn encode_set_public_face(token_id: u64, choice: &str) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, keccak_key(PUBLIC_FACE_LABEL), choice.as_bytes())
 }
@@ -786,6 +835,16 @@ mod tests {
     /// the legacy on-chain read; a 404 (`Ok(None)`) and a fetch failure (`Err`)
     /// both fall back — the orphaned-faces fix (pre-2026-06-23 on-chain
     /// publishes the off-chain store 404s on).
+    #[test]
+    fn parse_face_choice_accepts_only_the_three_faces() {
+        assert_eq!(parse_face_choice(b"html\n"), Some("html".into()));
+        assert_eq!(parse_face_choice(b" APP "), Some("app".into()));
+        assert_eq!(parse_face_choice(b"directory"), Some("directory".into()));
+        assert_eq!(parse_face_choice(b""), None);
+        assert_eq!(parse_face_choice(b"iframe"), None);
+        assert_eq!(parse_face_choice(&[0xff, 0xfe]), None);
+    }
+
     #[test]
     fn store_miss_falls_back_on_404_and_error_only() {
         assert!(!store_miss_falls_back(&Ok(Some(vec![0u8]))));

@@ -134,11 +134,12 @@ pub fn base_system_prompt(
            • publish_public_face(choice) — publish YOUR OWN public face \
              (what a visitor to https://<you>.localharness.xyz/ sees), the chat \
              equivalent of admin → public face. choice: \"app\" compiles + \
-             publishes this device's local app.rl as a fullscreen cartridge \
-             OFF-CHAIN (free, no gas), \
+             publishes this device's local app.rl as a fullscreen cartridge, \
              \"html\" publishes local index.html, \"directory\" sets a profile \
-             landing. ONE sponsored (free) tx; own subdomain only; reversible \
-             (republish anytime). Returns {{ choice, url, tx_hash }}.\n\
+             landing. ALL OFF-CHAIN to the app store (free, no gas, NO \
+             transaction — never claim you published \"on-chain\"); own \
+             subdomain only; reversible (republish anytime). Returns \
+             {{ choice, url, off_chain }}.\n\
            • send_lh(recipient, amount, confirmation) — TRANSFER real $LH \
              credits from your owner's wallet. `recipient` is a raw 0x… \
              address OR a subdomain name (the funds go to that name's on-chain \
@@ -515,12 +516,14 @@ pub fn base_system_prompt(
            or broaden ONE query instead), and stop as soon as you can answer. \
            Tool calls themselves aren't charged — the MODEL rounds they trigger \
            are; on-chain writes are sponsored and free.\n\
-         • On-chain actions (create_subdomain, publishing \
-           a public face, etc.) are SPONSORED and signed automatically by the \
+         • On-chain actions (create_subdomain, send_lh, etc.) are SPONSORED \
+           and signed automatically by the \
            owner's master wallet behind the scenes — there is NO wallet popup, \
            prompt, or modal for the user to approve. Transactions just happen, \
            zero-click. NEVER tell the user to approve/confirm a transaction, \
-           check for a wallet prompt, or sign anything; just report the result.\n\
+           check for a wallet prompt, or sign anything; just report the result. \
+           (Publishing apps/pages/faces is NOT on-chain — it's the free \
+           off-chain app store.)\n\
          • DESTRUCTIVE / VALUE-MOVING actions are the EXCEPTION to zero-click \
            and the ONE thing you must never do casually: releasing/burning a \
            subdomain, transferring $LH, deleting files, or anything that \

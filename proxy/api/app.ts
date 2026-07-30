@@ -29,10 +29,19 @@ export default async function handler(req: Request): Promise<Response> {
   const name = (url.searchParams.get('name') ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '');
   if (!name) return new Response('missing name', { status: 400, headers: CORS });
 
-  // kind=html serves the published HTML page face; default = the app cartridge.
-  const isHtml = (url.searchParams.get('kind') ?? '') === 'html';
-  const file = isHtml ? 'index.html' : 'app.wasm';
-  const contentType = isHtml ? 'text/html; charset=utf-8' : 'application/wasm';
+  // kind=html serves the published HTML page face; kind=face serves the tiny
+  // face-choice record (directory/app/html — publish.ts stamps it on every
+  // publish; the browser routes visitors off it, NOT off any on-chain slot);
+  // default = the app cartridge.
+  const kindParam = url.searchParams.get('kind') ?? '';
+  const isHtml = kindParam === 'html';
+  const isFace = kindParam === 'face';
+  const file = isHtml ? 'index.html' : isFace ? 'face' : 'app.wasm';
+  const contentType = isHtml
+    ? 'text/html; charset=utf-8'
+    : isFace
+      ? 'text/plain; charset=utf-8'
+      : 'application/wasm';
 
   const raw = `https://raw.githubusercontent.com/${APPSTORE_REPO}/main/${name}/${file}`;
   let res: Response;
@@ -54,8 +63,11 @@ export default async function handler(req: Request): Promise<Response> {
   const headers: Record<string, string> = {
     ...CORS,
     'content-type': contentType,
-    // Edge + browser cache 5 min — repeat views never re-hit GitHub.
-    'cache-control': 'public, max-age=300, s-maxage=300',
+    // Edge + browser cache 5 min — repeat views never re-hit GitHub. The face
+    // record caches 60s so a publish flips what visitors see within a minute.
+    'cache-control': isFace
+      ? 'public, max-age=60, s-maxage=60'
+      : 'public, max-age=300, s-maxage=300',
   };
   if (isHtml) {
     // A published HTML face is owner-authored but UNTRUSTED active content. The

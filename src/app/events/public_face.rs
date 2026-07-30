@@ -4,12 +4,13 @@ use crate::encoding::parse_address;
 
 use crate::app::dom;
 
-/// Set this subdomain's public face on-chain — `"directory"`, `"app"`, or
-/// `"html"`. The choice lives under `keccak256("localharness.public_face")`
-/// so every visitor honours it. For `"app"`/`"html"` we also publish the
-/// device's local `app.rl`/`index.html` content in the SAME sponsored tx
-/// (owner-signed through the apex iframe), so the chosen face is live
-/// immediately. Owner-only.
+/// Set this subdomain's public face — `"directory"`, `"app"`, or `"html"`.
+/// EVERY choice publishes OFF-CHAIN to the app store (free, no gas): content
+/// publishes carry bytes + the `<name>/face` choice record in ONE authed POST
+/// (the proxy stamps it), and "directory" is a face-only POST. The sponsored
+/// on-chain path below survives ONLY as the legacy fallback for a TBA-owned
+/// name / linked device (the store's ownership gate needs the EOA signer).
+/// Owner-only.
 pub(super) async fn run_set_public_face(choice: &str) {
     let msg = "publish-app-msg";
     let set_err = |m: &str| {
@@ -21,14 +22,16 @@ pub(super) async fn run_set_public_face(choice: &str) {
         return;
     };
 
-    // App face: publish OFF-CHAIN to the app store (free, no gas) when this
-    // device's EOA directly owns the name. Falls through to the on-chain path on
+    // OFF-CHAIN first for every choice. Falls through to the on-chain path on
     // ANY inability (TBA owner, no local signer, or a store error), so a publish
     // never regresses from "works (on-chain gas)" to "broken".
     if choice == "app" && try_publish_app_offchain(&name, msg).await {
         return;
     }
     if choice == "html" && try_publish_html_offchain(&name, msg).await {
+        return;
+    }
+    if choice == "directory" && try_set_directory_offchain(&name, msg).await {
         return;
     }
 
@@ -251,9 +254,8 @@ async fn try_publish_app_offchain(name: &str, msg: &str) -> bool {
     );
     match crate::app::registry::publish_app_to_store(name, &token, &wasm, &src).await {
         Ok(()) => {
-            // Explicit choice write: a STALE prior choice ("html"/"directory")
-            // would shadow the fresh cartridge (see set_face_choice_after_store).
-            let _ = set_face_choice_after_store(name, &owner, "app").await;
+            // The proxy stamped `<name>/face = "app"` in the same publish —
+            // a stale prior choice can't shadow the fresh cartridge.
             dom::swap_inner(
                 msg,
                 &crate::app::templates::publish_share_fragment(name).into_string(),
@@ -265,30 +267,49 @@ async fn try_publish_app_offchain(name: &str, msg: &str) -> bool {
     }
 }
 
-
-/// Write the on-chain `public_face` CHOICE after an off-chain store publish —
-/// the missing half of the picker's fast path (same bug as the chat tool,
-/// found via krafto: bytes in the store, choice unset, visitors saw the
-/// directory). Best-effort here — the picker surfaces the share fragment
-/// either way, and `refresh_public_face_status` shows the live state.
-async fn set_face_choice_after_store(name: &str, owner: &str, choice: &str) -> bool {
-    let Ok(id) = crate::app::registry::id_of_name(name).await else { return false };
-    if id == 0 {
-        return false;
-    }
-    let Ok(registry_addr) =
-        crate::encoding::parse_address(crate::app::registry::REGISTRY_ADDRESS())
+/// FACE-ONLY off-chain write: pick "directory" by POSTing just the choice to
+/// the store (free, no tx). `true` = done (UI updated); `false` = fall back to
+/// the legacy on-chain path (TBA owner / no master / store error).
+async fn try_set_directory_offchain(name: &str, msg: &str) -> bool {
+    let owner = match crate::app::registry::owner_of_name(name).await {
+        Ok(Some(o)) => o,
+        _ => return false,
+    };
+    let Some((signer, addr)) = crate::app::APP
+        .with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)))
     else {
         return false;
     };
-    let calls = vec![crate::tempo_tx::TempoCall {
-        to: registry_addr,
-        value_wei: 0,
-        input: crate::app::registry::encode_set_public_face(id, choice),
-    }];
-    super::run_sponsored_tempo_call(owner, calls, 500_000, "set public face")
+    if !owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
+        return false;
+    }
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let token = crate::registry::proxy_auth_token(&signer, now, "publish");
+    dom::swap_inner(
+        msg,
+        "<span style=\"color:var(--muted)\">saving…</span>",
+    );
+    if crate::app::registry::publish_face_to_store(name, &token, "directory")
         .await
-        .is_ok()
+        .is_err()
+    {
+        return false;
+    }
+    dom::swap_inner(
+        msg,
+        &maud::html! {
+            span style="color:var(--fg)" {
+                "public face → directory ✓ "
+                a href=(format!("https://{name}.localharness.xyz/"))
+                  target="_blank" rel="noopener" style="color:var(--accent)" {
+                    "open →"
+                }
+            }
+        }
+        .into_string(),
+    );
+    super::admin::refresh_public_face_status().await;
+    true
 }
 
 /// HTML-face sibling of [`try_publish_app_offchain`]: publish this device's local
@@ -325,16 +346,9 @@ async fn try_publish_html_offchain(name: &str, msg: &str) -> bool {
     );
     match crate::app::registry::publish_html_to_store(name, &token, &html_str).await {
         Ok(()) => {
-            // THE load-bearing half: an HTML face is only reachable through an
-            // explicit on-chain choice — without this write the page sits in
-            // the store while visitors get the directory (the krafto bug).
-            if !set_face_choice_after_store(name, &owner, "html").await {
-                dom::swap_inner(
-                    msg,
-                    "<span style=\"color:var(--muted)\">stored, but the face                      choice write failed — retry publish</span>",
-                );
-                return true; // stored; the retry only needs the choice write
-            }
+            // The proxy stamped `<name>/face = "html"` in the same publish —
+            // the choice that routes visitors can never be dropped (the
+            // krafto bug is structurally impossible now).
             dom::swap_inner(
                 msg,
                 &crate::app::templates::publish_share_fragment(name).into_string(),

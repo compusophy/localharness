@@ -318,7 +318,7 @@ pub fn write_reads_source_file(cmd: &str) -> bool {
 }
 
 /// `lh-publish <name> <source>` — compile a rustlite cartridge and publish (or
-/// UPDATE) it as `<name>`'s on-chain public face, for ANY subdomain the caller
+/// UPDATE) it as `<name>`'s public face (off-chain app store), for ANY subdomain the caller
 /// OWNS. `source` is the cartridge SOURCE TEXT (the host reads the file). The
 /// owner's seed holds every subdomain NFT, so it signs `setMetadata` for the
 /// target's tokenId — no re-register, no actor model. Refuses unregistered

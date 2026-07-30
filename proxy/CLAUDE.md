@@ -76,25 +76,27 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   is accepted in the JSON body (`auth`) as well as the header: the wasm panic
   hook auto-reports via `navigator.sendBeacon` (headerless by spec) spending a
   pre-signed token (`src/app/debuglog.rs::send_panic_beacon`).
-- `publish.ts` + `app.ts` — the OFF-CHAIN app store (cartridges live in GitHub, NOT
-  on-chain; the chain keeps only the name's ownership). `publish.ts` (POST, personal-
-  sign authed like telemetry) verifies the caller owns `name` on-chain (`ownerOf(
-  idOfName(name))`) then commits `<name>/app.wasm` (+ `app.rl`) to `GH_APPSTORE_REPO`
-  via the Contents API (`GH_APPSTORE_TOKEN` ?? `GH_TELEMETRY_TOKEN`). `app.ts` (GET
-  `?name=`) re-serves the cartridge as `application/wasm` from raw.githubusercontent
-  (public repo, no token) with CORS + 5-min CDN cache — the browser fetches it via
-  `registry::app_wasm_from_store`. Mirrors the feedback/telemetry off-chain model:
-  on-chain `setMetadata` publishing cost ~$0.32–$2.80/cart and drained the sponsor.
-  EVERY app-cartridge publish path POSTs here now: CLI `publish`, the browser studio
-  (`events/public_face.rs`), the agent tools (`chat/tools/platform.rs`:
-  create_and_publish_app / publish_app_to / publish_public_face) + bashlite
-  `lh-publish` — off-chain when the device's MASTER wallet owns the name (proxy
-  re-checks `ownerOf`), with an on-chain fallback for TBA-owned names / linked
-  devices. Only the HTML face + persona/lessons/x402-price metadata stay on-chain
-  (not cartridge bytes). The wasm magic + a 1 MB cap (GitHub Contents-API
-  full-support ceiling; `registry::APP_STORE_MAX_WASM_BYTES`) are enforced
-  server-side. A cartridge over the SEPARATE compose budget (16 KB/child, 256 KB/
-  tree) just can't be a `host::compose` child — top-level faces use the full 1 MB.
+- `publish.ts` + `app.ts` — the OFF-CHAIN app store (apps/html/face-choice live in
+  GitHub, NOT on-chain; the chain keeps only the name's ownership). `publish.ts`
+  (POST, personal-sign authed like telemetry) verifies the caller owns `name`
+  on-chain (`ownerOf(idOfName(name))`) then commits `<name>/app.wasm` (+ `app.rl`)
+  OR `<name>/index.html` OR a face-only choice to `GH_APPSTORE_REPO` via the
+  Contents API (`GH_APPSTORE_TOKEN` ?? `GH_TELEMETRY_TOKEN`) — and ALWAYS stamps
+  `<name>/face` (content publishes stamp their own kind; `face`-only POSTs pick
+  "directory"). The choice travels IN the publish so "bytes stored but visitors
+  see the directory" (the krafto bug) can't happen. `app.ts` (GET `?name=` +
+  `kind=html|face|` default wasm) re-serves from raw.githubusercontent (public
+  repo, no token) with CORS + CDN cache (5 min; face 60s) — the browser reads via
+  `registry::{app_wasm,html,face}_from_store` / `effective_face_choice`. EVERY
+  publish path POSTs here: CLI `publish`/`face`, the browser studio
+  (`events/public_face.rs`), the agent tools (`chat/tools/platform.rs`) + bashlite
+  `lh-publish` — when the device's MASTER wallet owns the name (proxy re-checks
+  `ownerOf`); on-chain `setMetadata` survives ONLY as the TBA-owner/linked-device
+  fallback. Persona/lessons/x402-price metadata stay on-chain. The wasm magic + a
+  1 MB cap (GitHub Contents-API full-support ceiling;
+  `registry::APP_STORE_MAX_WASM_BYTES`) are enforced server-side. A cartridge over
+  the SEPARATE compose budget (16 KB/child, 256 KB/tree) just can't be a
+  `host::compose` child — top-level faces use the full 1 MB.
 - `stripe-*.ts` — fiat on-ramp (Elements). The webhook once missed bare-PI
   `payment_intent.succeeded` (charged, no `$LH`); recovery = `contracts/script/
   MintForReceipt.s.sol`. READ Stripe docs before touching — guessing charged a card.
