@@ -85,10 +85,13 @@ node scripts/test-cartridges.mjs
 step "9/10 variable framebuffer resolution (dims() convention)"
 node scripts/test-variable-resolution.mjs
 
-step "10/10 cartridge-in-cartridge composition (host::compose wiring)"
+step "10/11 cartridge-in-cartridge composition (host::compose wiring)"
 node scripts/test-compose-wiring.mjs
 
-printf "\n${G}PROOF-OF-SPEC OK${N} — all 10 stages passed.\n"
+step "11/11 host::math desugar (baked-table trig, telemetry #83)"
+node scripts/test-math-desugar.mjs
+
+printf "\n${G}PROOF-OF-SPEC OK${N} — all 11 stages passed.\n"
 
 # Opt-in extensions (NOT run here — both hit the LIVE testnet / proxy and spend
 # real sponsor gas, so they must never gate this network-free proof). Run by hand:

@@ -698,8 +698,13 @@ pub fn base_system_prompt(
          frame): pointer_x() -> i32; pointer_y() -> i32; pointer_down() -> i32 (1 \
          while pressed). State across frames: state_get(slot) -> i32 and \
          state_set(slot, value) — 64 slots (0..=63), all start at 0; THIS is your \
-         only persistent memory between frames. (Also available: `use host::net;` \
-         for WebSocket multiplayer — net::open/send/poll/status/close — and `use \
+         only persistent memory between frames. TRIG for anything round/orbital/\
+         3D: host::math::sin(a) and cos(a) — angle in 1/256-turn units (any i32 \
+         wraps), result SCALED BY 256; a circle point is x = cx + (r * \
+         host::math::cos(a)) / 256. NEVER hand-roll a sine table (linear \
+         approximations draw square circles). (Also available: `use host::net;` \
+         for WebSocket multiplayer — net::open(\"wss://…\")/send/poll/status/\
+         close — and `use \
          host::audio;` — audio::tone(freq,dur_ms,wave)/tone_at/noise/stop/\
          set_volume. Use only if the app needs sound or networking.)\n\
          PATTERN — a clickable button with state: each frame clear(); fill_rect \
@@ -1088,7 +1093,10 @@ pub fn lean_system_prompt(
          each frame): pointer_x(); pointer_y(); pointer_down() (1 while \
          pressed). State across frames: state_get(slot) -> i32 / \
          state_set(slot, value) — 64 slots (0..=63), all start at 0; your \
-         only persistent memory between frames. Also `use host::net;` \
+         only persistent memory between frames. Trig for round/3D shapes: \
+         host::math::sin(a)/cos(a) — angle in 1/256-turn units, result \
+         x256 (circle: x = cx + (r*cos(a))/256); never hand-roll a sine \
+         table. Also `use host::net;` \
          (net::open(url)/send/poll/status/close — WebSocket multiplayer; \
          drain poll each frame) and `use host::audio;` (audio::tone(freq,\
          dur_ms,wave)/tone_at/noise/stop/set_volume) — only if needed."

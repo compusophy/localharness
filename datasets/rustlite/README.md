@@ -55,3 +55,11 @@ multi-feature apps. New boundaries the corpus now encodes:
 Rows 301-320 teach `host::math::sin/cos` (post-#83: angle = 1/256 turn, values
 scaled by 256) as THE trig path; earlier rows' hand-rolled tables remain valid
 history.
+
+## Training export
+
+`node datasets/rustlite/export.mjs` writes `train.jsonl` (gitignored — a
+derived artifact): one chat-shaped line per pair (system pins the real
+language contract, user = prompt, assistant = solution). `--stats` prints
+tag/size distributions. The JSONs stay the source of truth; regenerate the
+JSONL at training time.
