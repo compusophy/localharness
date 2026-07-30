@@ -1,7 +1,7 @@
 # SolidityLite — Design
 
 > **UPDATE 2026-06-14 (loop tick 1): the #1 gating risk is RESOLVED.** A live probe
-> (`examples/tempo_create_probe.rs`) deployed a contract via a **sponsored Tempo 0x76
+> (a one-shot probe, since deleted — the result is baked into `TempoTxBuilder::create()` and proven live by `examples/soliditylite_facet_e2e.rs`) deployed a contract via a **sponsored Tempo 0x76
 > CREATE** on Moderato — receipt `status 0x1`, `contractAddress` surfaced
 > (`0xe6366e…510b0a`), non-empty `eth_getCode`. `TempoTxBuilder::create()` (RLP-encodes
 > the call's `to` as empty `0x80`) shipped + unit-tested, non-breaking. The deploy stage

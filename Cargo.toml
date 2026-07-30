@@ -344,13 +344,6 @@ required-features = ["wallet"]
 name = "thought_signature_live"
 required-features = ["wallet"]
 
-# Probe: does a SPONSORED Tempo 0x76 CONTRACT-CREATION tx deploy on Moderato?
-# The gating experiment for the SolidityLite facet-deploy stage — verifies the
-# new TempoTxBuilder::create() empty-`to` path actually deploys on-chain.
-[[example]]
-name = "tempo_create_probe"
-required-features = ["wallet"]
-
 # SolidityLite Installment 0 — child-diamond genesis: deploy an agent-owned
 # Diamond seeded with the prod Cut/Loupe/Ownership facets via sponsored CREATE.
 [[example]]

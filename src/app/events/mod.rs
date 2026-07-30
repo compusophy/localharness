@@ -179,7 +179,6 @@ enum Action {
     ResetArm,
     ResetConfirm,
     ResetCancel,
-    PricingSave,
     /// Open/close the OPFS file-browser modal (header [files] button +
     /// the modal's own ×).
     ToggleFiles,
@@ -241,12 +240,6 @@ enum Action {
     /// Download the in-browser local model (Gemma 3 270M weights + tokenizer)
     /// from the HF CDN into OPFS — the one-time opt-in for on-device inference.
     DownloadLocalModel,
-    /// First-time onboarding: redeem an invite code typed into the
-    /// fresh-visitor `invite_onboarding` surface. Ensures a credit identity
-    /// exists (the user's explicit redeem action — NOT silent generation),
-    /// accepts the invite escrow, then re-paints the now-funded apex so the
-    /// claim-a-name surface appears.
-    RedeemInviteOnboard,
     /// Redeem a one-time code for `$LH` credits.
     RedeemCode,
     /// Buy `$LH` with a card via Stripe Checkout (proxy on-ramp).
@@ -260,11 +253,6 @@ enum Action {
     CreateInvite,
     /// Save this agent's per-call x402 price (`.lh_x402_price`).
     SaveX402Price,
-    /// Unlink a device (remove its signer + index entry) — the X opens a
-    /// typed confirmation; UnlinkConfirm performs it; UnlinkCancel aborts.
-    UnlinkDevice(String),
-    UnlinkConfirm(String),
-    UnlinkCancel,
     /// Toggle off-chain telemetry (auto error reports) on/off for this device.
     ToggleTelemetry,
     /// Header notification bell: enable Web Push for THIS device (address-keyed,
@@ -311,7 +299,6 @@ impl Action {
             "reset-arm" => Action::ResetArm,
             "reset-confirm" => Action::ResetConfirm,
             "reset-cancel" => Action::ResetCancel,
-            "pricing-save" => Action::PricingSave,
             "toggle-files" => Action::ToggleFiles,
             "toggle-feedback" => Action::ToggleFeedback,
             "feedback-submit" => Action::FeedbackSubmit,
@@ -337,16 +324,12 @@ impl Action {
             "set-model-access" => Action::SetModelAccess(arg.unwrap_or_default()),
             "set-model" => Action::SetModel(arg.unwrap_or_default()),
             "download-local-model" => Action::DownloadLocalModel,
-            "redeem-invite-onboard" => Action::RedeemInviteOnboard,
             "redeem-code" => Action::RedeemCode,
             "buy-lh" => Action::BuyLh,
             "cancel-buy" => Action::CancelBuy,
             "redeem-banner" => Action::RedeemBanner,
             "create-invite" => Action::CreateInvite,
             "save-x402-price" => Action::SaveX402Price,
-            "unlink-device" => Action::UnlinkDevice(arg.unwrap_or_default()),
-            "unlink-confirm" => Action::UnlinkConfirm(arg.unwrap_or_default()),
-            "unlink-cancel" => Action::UnlinkCancel,
             "toggle-telemetry" => Action::ToggleTelemetry,
             "notif-bell" => Action::NotifBell,
             "notif-clear-all" => Action::NotifClearAll,
@@ -989,7 +972,6 @@ fn dispatch(action: Action) {
             dom::restore_focus();
         }
         Action::ResetConfirm => layout::reset_confirm_pressed(),
-        Action::PricingSave => layout::pricing_save_pressed(),
         Action::ToggleFiles => {
             wasm_bindgen_futures::spawn_local(async move {
                 super::opfs::toggle_files_modal().await;
@@ -1008,16 +990,12 @@ fn dispatch(action: Action) {
         Action::SetModelAccess(mode) => credits::run_set_model_access(mode),
         Action::SetModel(model) => credits::run_set_model(model),
         Action::DownloadLocalModel => credits::run_download_local_model(),
-        Action::RedeemInviteOnboard => credits::redeem_invite_onboard_pressed(),
         Action::RedeemCode => credits::redeem_code_pressed(),
         Action::BuyLh => credits::buy_lh_pressed(false),
         Action::CancelBuy => credits::cancel_buy_pressed(),
         Action::RedeemBanner => credits::redeem_banner_pressed(),
         Action::CreateInvite => credits::create_invite_pressed(),
         Action::SaveX402Price => admin::save_x402_price_pressed(),
-        Action::UnlinkDevice(addr) => devices::unlink_device_prompt(addr),
-        Action::UnlinkConfirm(addr) => devices::unlink_confirm_pressed(addr),
-        Action::UnlinkCancel => devices::unlink_cancel_pressed(),
         Action::ToggleTelemetry => admin::toggle_telemetry_pressed(),
         Action::NotifBell => admin::notif_bell_pressed(),
         Action::NotifClearAll => admin::notif_clear_all_pressed(),

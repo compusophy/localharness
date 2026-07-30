@@ -48,13 +48,13 @@ live until you act). Each is a few minutes.
 3. **Chain coherence** — the published CLI is testnet (Moderato) while the web +
    proxy are mainnet, so CLI agents can't transact on the live platform. A product
    call (default to mainnet / opt-in flag / document the split).
-   → [`chain-coherence.md`](chain-coherence.md).
+   → [`reports/chain-coherence.md`](reports/chain-coherence.md).
 4. **Confirm-gate coverage** — the typed-confirm gate (verified sound) covers the 4
    irreversible-transfer tools; `spend_treasury` / `execute_proposal` move funds
    out gated only by the holder key. A deliberate UX-vs-safety call.
-   → [`money-review-coverage.md`](money-review-coverage.md).
+   → [`reports/money-review-coverage.md`](reports/money-review-coverage.md).
 
-Provenance for the review pass: [`money-review-coverage.md`](money-review-coverage.md).
+Provenance for the review pass: [`reports/money-review-coverage.md`](reports/money-review-coverage.md).
 
 ---
 
@@ -108,11 +108,6 @@ Genuinely-unbuilt docs, each with a `STATUS: open` header:
   axis by axis, ending each with a concrete candidate improvement tied to real
   modules. A proposal for the maintainer to pick from (feedback #17; threads #13/
   #14/#16) — not a roadmap.
-- [`keeper.md`](keeper.md) — a **decentralized scheduler keeper** (P2P heartbeat,
-  krafto #1.5). The pure decision + roster cores, the cross-owner due enumeration,
-  and a `localharness keeper` dry-run are SHIPPED + tested; the open part is the
-  **trust/economics of the trigger** (options A/B/C) — a maintainer decision
-  before the `ScheduleFacet` change.
 - [`stripe-mainnet.md`](stripe-mainnet.md) — the **Stripe fiat on-ramp ↔ Tempo
   mainnet** integration (the 1.0 value layer): USD → Stripe → issuer-mint → locked
   `$LH`. Carries a 17-step build plan (11 `[SAFE NOW]` on testnet) + an adversarial
@@ -120,7 +115,7 @@ Genuinely-unbuilt docs, each with a `STATUS: open` header:
   non-functional clawback, Edge-runtime webhook, money-transmitter legal gate)
   reshape the design. Build is blocked on maintainer inputs (Stripe keys, mainnet
   params, legal).
-- [`launch-1.0.md`](launch-1.0.md) — the **mainnet 1.0** launch spec (real `$LH`
+- [`reports/launch-1.0.md`](reports/launch-1.0.md) (superseded by road-to-v1.0.md) — the **mainnet 1.0** launch spec (real `$LH`
   value + Stripe + sybil gate + sponsor rewrite). The project is still on Tempo
   Moderato **testnet** at `0.x`; `1.0.0` is reserved for this moment.
 - [`beta-plan.md`](beta-plan.md) — the operational private-beta plan that runs
@@ -131,7 +126,7 @@ Genuinely-unbuilt docs, each with a `STATUS: open` header:
 - [`agent-writes-rust.md`](agent-writes-rust.md) — the long-arc dream beyond the
   shipped rustlite compiler: neural-net-as-compiler / a model trained to write
   Rust; cartridge composition + macros.
-- [`host-compose.md`](host-compose.md) — framebuffer-resident cartridge
+- [`shipped/host-compose.md`](shipped/host-compose.md) — framebuffer-resident cartridge
   composition (a window manager over one shared RGBA buffer, no iframes).
   SHIPPED, and now callable: `spawn_lib`/`call`/`call_ok` reuse a published
   cartridge as a LIBRARY, not just as pixels (telemetry #70). Open: the library
@@ -149,7 +144,7 @@ Genuinely-unbuilt docs, each with a `STATUS: open` header:
 ### Open items tracked in CLAUDE.md *What's pending* (no dedicated doc)
 
 - **Stripe / fiat MPP** — a fiat agent-payments rail beside the live x402 `$LH`
-  path (touched by `launch-1.0.md` and `economy-reputation.md`).
+  path (touched by `reports/launch-1.0.md` and `economy-reputation.md`).
 - **ERC-8004 validation staking** — validators stake to re-execute claims. The
   attestation half ships (`ReputationFacet`); the stake-escrow / slashing half
   does not (designed in `shipped/economy-reputation.md` §validation).

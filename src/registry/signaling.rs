@@ -6,9 +6,8 @@ use super::*;
 // The on-chain seam for the WebRTC collaboration layer: a peer announces an
 // EPHEMERAL signaling key under a TOPIC, discovers others via `peersOf`, then
 // exchanges SDP offers/answers through `postSignal`/`inboxOf` (blobs sealed to
-// the recipient's ephemeral pubkey). Topics:
+// the recipient's ephemeral pubkey). Topic:
 //   - own devices: keccak256("localharness.devices" || owner_addr)
-//   - agent team:  keccak256("localharness.team"   || team_id)
 // `Presence` and `Signal` share the ABI shape `(address, uint64, bytes)`, so one
 // decoder serves both reads.
 
@@ -18,13 +17,6 @@ pub fn devices_topic(owner_addr: &str) -> [u8; 32] {
     if let Ok(a) = parse_eth_address(owner_addr) {
         pre.extend_from_slice(&a);
     }
-    keccak_key(&pre)
-}
-
-/// Signaling topic for an agent team.
-pub fn team_topic(team_id: u64) -> [u8; 32] {
-    let mut pre = b"localharness.team".to_vec();
-    pre.extend_from_slice(&u256_be(team_id as u128));
     keccak_key(&pre)
 }
 
@@ -38,59 +30,6 @@ pub fn announce_digest(topic: &[u8; 32], ephemeral: &[u8; 20], pubkey: &[u8]) ->
     pre.extend_from_slice(ephemeral);
     pre.extend_from_slice(pubkey);
     keccak32(&pre)
-}
-
-/// The 32-byte digest a signer authorizes to evict `ephemeral` from `topic`:
-/// `keccak256("localharness.leave" || topic || ephemeral)` —
-/// `abi.encodePacked(string, bytes32, address)` on-chain. MUST match
-/// `SignalingFacet.leave`'s digest byte-for-byte. The `"localharness.leave"`
-/// prefix DOMAIN-SEPARATES it from `announce_digest` so an announce signature
-/// can't be replayed as a leave.
-pub fn leave_digest(topic: &[u8; 32], ephemeral: &[u8; 20]) -> [u8; 32] {
-    let mut pre = Vec::with_capacity(18 + 32 + 20);
-    pre.extend_from_slice(b"localharness.leave");
-    pre.extend_from_slice(topic);
-    pre.extend_from_slice(ephemeral);
-    keccak32(&pre)
-}
-
-pub(crate) fn encode_leave(
-    topic: &[u8; 32],
-    owner: &[u8; 20],
-    ephemeral: &[u8; 20],
-    sig: &[u8; 65],
-) -> Vec<u8> {
-    // leave(bytes32 topic, address owner, address ephemeral, bytes sig).
-    // Head: topic, owner, ephemeral, off(sig) = 4 words; one trailing `bytes`.
-    let mut d = selector("leave(bytes32,address,address,bytes)").to_vec();
-    d.extend_from_slice(topic);
-    d.extend_from_slice(&addr_word(owner));
-    d.extend_from_slice(&addr_word(ephemeral));
-    d.extend_from_slice(&u256_be(0x80)); // offset to `sig` (4 head words in)
-    push_dynamic_bytes(&mut d, sig);
-    d
-}
-
-/// Leave `topic`'s roster (sponsored; tx caller = `sender`/master), evicting
-/// `ephemeral`. For a DEVICES topic the digest
-/// `keccak256("localharness.leave"||topic||ephemeral)` is signed with `owner_key`
-/// (the seed holder, recovered against `owner` on-chain). Only the seed holder
-/// can edit the roster — mirrors `announce_sponsored`.
-pub async fn leave_sponsored(
-    sender: &SigningKey,
-    owner_key: &SigningKey,
-    owner: &[u8; 20],
-    topic: &[u8; 32],
-    ephemeral: &[u8; 20],
-) -> Result<String, String> {
-    let digest = leave_digest(topic, ephemeral);
-    let sig = crate::wallet::sign_hash(owner_key, &digest); // low-s r‖s‖v, v∈{27,28}
-    sponsored_diamond_call(
-        sender,
-        encode_leave(topic, owner, ephemeral, &sig),
-        1_200_000,
-    )
-    .await
 }
 
 pub(crate) fn encode_announce(
@@ -266,16 +205,6 @@ pub async fn inbox_of(peer: &[u8; 20], from_index: u64) -> Result<Vec<AddrTsByte
     )
     .await?;
     Ok(decode_addr_ts_bytes_array(&res))
-}
-
-/// `peer`'s inbox length (a cheap cursor poll).
-pub async fn inbox_length(peer: &[u8; 20]) -> Result<u64, String> {
-    let res = read_view(selector("inboxLength(address)"), &[addr_word(peer)]).await?;
-    let raw = hex_to_bytes(&res)?;
-    if raw.len() < 32 {
-        return Ok(0);
-    }
-    Ok(u64::from_be_bytes(raw[24..32].try_into().map_err(|_| "bad len")?))
 }
 
 // ─── OFF-CHAIN signaling relay (proxy `/api/signal`) ────────────────────────
@@ -544,66 +473,6 @@ mod tests {
         pre.extend_from_slice(&pubkey);
         assert_eq!(pre.len(), 32 + 20 + 33);
         assert_eq!(announce_digest(&topic, &eph, &pubkey), keccak32(&pre));
-    }
-
-    #[test]
-    fn leave_digest_is_prefixed_packed_topic_ephemeral() {
-        // The signer authorizes keccak256("localharness.leave" || topic ||
-        // ephemeral) — matching SignalingFacet.leave's
-        // keccak256(abi.encodePacked(string, bytes32, address)). The prefix
-        // DOMAIN-SEPARATES it from the announce digest (no prefix), so the two
-        // must differ for the same topic/ephemeral.
-        let topic = [0xABu8; 32];
-        let eph = [0x22u8; 20];
-        let mut pre = b"localharness.leave".to_vec();
-        pre.extend_from_slice(&topic);
-        pre.extend_from_slice(&eph);
-        assert_eq!(pre.len(), 18 + 32 + 20);
-        assert_eq!(leave_digest(&topic, &eph), keccak32(&pre));
-        // Domain separation: a leave digest must NOT equal an announce digest
-        // (else an announce sig could be replayed as a leave).
-        let pubkey = vec![0x02u8; 33];
-        assert_ne!(leave_digest(&topic, &eph), announce_digest(&topic, &eph, &pubkey));
-    }
-
-    #[test]
-    fn encode_leave_4arg_layout() {
-        // Pin the selector + the single-trailing-bytes ABI layout so it matches
-        // leave(bytes32,address,address,bytes).
-        let topic = [0x11u8; 32];
-        let owner = [0x22u8; 20];
-        let eph = [0x33u8; 20];
-        let sig = [0x44u8; 65];
-        let cd = encode_leave(&topic, &owner, &eph, &sig);
-
-        assert_eq!(&cd[..4], &selector("leave(bytes32,address,address,bytes)"));
-        // Head: topic, owner, ephemeral, off(sig)=0x80 (4 head words).
-        assert_eq!(&cd[4..36], &topic[..]);
-        assert_eq!(&cd[36..68], &addr_word(&owner)[..]);
-        assert_eq!(&cd[68..100], &addr_word(&eph)[..]);
-        assert_eq!(&cd[100..132], &u256_be(0x80)[..]); // sig offset
-        // sig tail at 4 + 0x80 = 0x84: len word (65) then 96 padded bytes.
-        let sig_off = 4 + 0x80;
-        assert_eq!(&cd[sig_off..sig_off + 32], &u256_be(65)[..]);
-        assert_eq!(&cd[sig_off + 32..sig_off + 32 + 65], &sig[..]);
-        // Total: 4 sel + 4 head words + (32+96) sig.
-        assert_eq!(cd.len(), 4 + 4 * 32 + (32 + 96));
-    }
-
-    #[test]
-    fn leave_digest_signature_recovers_to_owner() {
-        // The sig the driver attaches for a devices-topic leave MUST recover to
-        // the OWNER over the leave digest — exactly what the facet's `_recover`
-        // checks (`recover(...) == owner`).
-        let w = crate::wallet::generate();
-        let owner = crate::wallet::address(&w.signer); // [u8;20]
-        let topic = [0x11u8; 32];
-        let eph = [0x99u8; 20];
-        let digest = leave_digest(&topic, &eph);
-        let sig = crate::wallet::sign_hash(&w.signer, &digest); // low-s r‖s‖v
-        let recovered = crate::wallet::recover_address(&sig, &digest)
-            .expect("sig recovers");
-        assert_eq!(recovered, owner, "leave sig recovers to the owner");
     }
 
     #[test]

@@ -125,13 +125,6 @@ pub(crate) struct RunFailure {
     pub detail: String,
 }
 
-/// How long [`run_wasm_reporting`] waits for the cartridge's FIRST lifecycle
-/// signal before giving up. Must exceed the worker watchdog's window
-/// (`WATCHDOG_MS` + one `WATCHDOG_TICK_MS` poll = 2000ms) so a first-frame
-/// hang is reported as the watchdog's coded LH1001 kill, not as this
-/// wrapper's vaguer timeout.
-const FIRST_SIGNAL_MS: u32 = 2600;
-
 /// Run `wasm_bytes` as a cartridge INLINE in the chat transcript (issue #52a)
 /// rather than auto-opening the fullscreen overlay: the user strongly prefers
 /// inline-by-default, fullscreen opt-in. This stashes the bytes for the
@@ -150,17 +143,10 @@ pub(crate) fn run_wasm_inline(wasm_bytes: &[u8]) {
     stash_pending_embed(wasm_bytes.to_vec());
 }
 
-/// [`run_wasm`], but AWAIT the cartridge's first lifecycle signal and report
-/// it (issue #7): `Ok(())` once the first frame (or a one-shot `done`)
-/// lands, `Err(RunFailure)` when the worker posts a coded fatal error
-/// (instantiate failure / trap / missing entry) or the watchdog kills a hung
-/// first frame. The old fire-and-forget `run_wasm` told the agent "running
-/// on display" even when the canvas was painting "CARTRIDGE STOPPED".
-///
-/// A healthy cartridge posts its first frame within a few ms, so the await
-/// costs success paths almost nothing; only failures wait (bounded by
-/// [`FIRST_SIGNAL_MS`]). Fire-and-forget callers (public-face boot, opening
-/// a file) keep using `run_wasm` — the overlay is their reporting surface.
+/// The `run_cartridge` tool's entry: stash the bytes for the inline card
+/// (issue #52a) and report `Ok(())` — the card IS the reporting surface.
+/// Fire-and-forget callers (public-face boot, opening a file) keep using
+/// `run_wasm` — the overlay is their reporting surface.
 pub(crate) async fn run_wasm_reporting(wasm_bytes: &[u8]) -> Result<(), RunFailure> {
     // issue #52a: `run_cartridge` now renders INLINE in the chat transcript by
     // default (the user strongly prefers inline-by-default), with fullscreen as
@@ -173,41 +159,6 @@ pub(crate) async fn run_wasm_reporting(wasm_bytes: &[u8]) -> Result<(), RunFailu
     // success signal — the card IS the surface.
     run_wasm_inline(wasm_bytes);
     Ok(())
-}
-
-/// Mount the overlay + await the cartridge's first lifecycle signal — the
-/// OVERLAY reporting path (issue #7), retained for callers that still want a
-/// fullscreen run with a hard pass/fail (none ship today; kept so the
-/// first-frame watchdog plumbing has a home and isn't dead code).
-#[allow(dead_code)]
-pub(crate) async fn run_wasm_reporting_fullscreen(wasm_bytes: &[u8]) -> Result<(), RunFailure> {
-    run_wasm(wasm_bytes).await.map_err(|e| RunFailure {
-        code: None,
-        detail: format!("worker spawn failed: {e:?}"),
-    })?;
-    let mut waited = 0u32;
-    loop {
-        match worker::current_outcome() {
-            worker::RunOutcome::Live => return Ok(()),
-            worker::RunOutcome::Failed { code, detail } => {
-                return Err(RunFailure { code, detail })
-            }
-            worker::RunOutcome::Pending => {}
-        }
-        if waited >= FIRST_SIGNAL_MS {
-            // Shouldn't happen (the watchdog classifies a silent worker
-            // first), but never hang the tool turn on a missing signal.
-            return Err(RunFailure {
-                code: None,
-                detail: format!(
-                    "no frame and no error within {FIRST_SIGNAL_MS}ms of spawning \
-                     the cartridge worker"
-                ),
-            });
-        }
-        crate::runtime::sleep_ms(50).await;
-        waited += 50;
-    }
 }
 
 /// Instantiate `wasm_bytes` against an existing `#display-canvas`

@@ -11,8 +11,9 @@
 //      `<address>:<timestamp>:<signature>` (an Ethereum personal-sign over
 //      `localharness-proxy:<address>:<timestamp>`). A real Gemini key has
 //      no colons, so the two are unambiguous.
-//   2. checks the caller has an active on-chain credit session
-//      (`sessionExpiryOf(address)` on the diamond registry),
+//   2. checks the caller has a funded on-chain meter balance
+//      (`creditOf(address)` on the diamond registry) or a signed x402
+//      per-call authorization,
 //   3. forwards the request to Gemini using the SERVER-HELD key (injected as
 //      the `x-goog-api-key` header — never in the URL) and streams the SSE
 //      response straight back.
@@ -22,15 +23,14 @@
 // function by vercel.json, so the client can use the proxy origin as a
 // drop-in Gemini base URL.
 //
-// KNOWN LIMIT (accepted for the invited testnet beta; see the credit-proxy
-// memory): a session is time-bounded and all-you-can-use within its window,
-// and the auth token is replayable within FRESHNESS_WINDOW_SECS. Abuse is
-// bounded by the on-chain session + the provider's own rate limits. The
-// public / mainnet-safe fix is per-request x402 metering (pay-per-call) — the
-// credit path stays a server-trust meter. Burst safety on the credit path: the
-// floor is debited UP FRONT (nonce-serialized) + an in-isolate per-address
-// reservation + a default output cap → bounded, non-amplified loss (an x402
-// authorization, which the proxy can't over-debit, is the trustless path).
+// KNOWN LIMIT (accepted; see the credit-proxy memory): the auth token is
+// replayable within FRESHNESS_WINDOW_SECS. Abuse is bounded by the on-chain
+// balance + the provider's own rate limits. The public / mainnet-safe fix is
+// per-request x402 metering (pay-per-call) — the credit path stays a
+// server-trust meter. Burst safety on the credit path: the floor is debited UP
+// FRONT (nonce-serialized) + an in-isolate per-address reservation + a default
+// output cap → bounded, non-amplified loss (an x402 authorization, which the
+// proxy can't over-debit, is the trustless path).
 
 import { secp256k1 } from '@noble/curves/secp256k1';
 import {
@@ -49,14 +49,13 @@ export const config = { runtime: 'edge' };
 import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
 import { COST_PER_REQUEST_WEI, priceOf, type Provider } from './_prices';
 // Auth + metering primitives (CORS allow-check, personal-sign recovery +
-// freshness, the creditOf/sessionExpiryOf reads, the InsufficientCreditError
-// thrown by the meter debit) are SHARED in `_auth.ts` (§5 dedup) — byte-for-byte
-// the logic that used to be inlined here. `meterDebit` stays LOCAL (gemini's has
-// the streaming `confirm` + burst-reservation path no other route has).
+// freshness, the creditOf read, the InsufficientCreditError thrown by the
+// meter debit) are SHARED in `_auth.ts` (§5 dedup) — byte-for-byte the logic
+// that used to be inlined here. `meterDebit` stays LOCAL (gemini's has the
+// streaming `confirm` + burst-reservation path no other route has).
 import {
   isAllowedOrigin,
   verifyAuthToken,
-  sessionExpiryOf,
   creditOf,
   InsufficientCreditError,
 } from './_auth';
@@ -75,7 +74,7 @@ const OPENAI_BASE = 'https://api.openai.com';
 // per-call by signing an x402 authorization to THIS address (X-PAYMENT header)
 // instead of pre-funding the creditOf meter — the mainnet-safe meter (the caller
 // signs the exact price; the proxy can't over-debit, the nonce is one-shot).
-// UNSET → x402 metering is off and the session/creditOf path is unchanged.
+// UNSET → x402 metering is off and the creditOf path is unchanged.
 const METER_PAYEE = (process.env.LH_METER_PAYEE ?? '').toLowerCase();
 
 // isHexAddress moved to the shared `_auth.ts` (used there by verifyAuthToken).
@@ -233,11 +232,11 @@ const MAX_CREDITS_BODY_BYTES = Number(process.env.LH_MAX_CREDITS_BODY_BYTES ?? '
 // Option A (design/metering.md): charge ACTUAL token usage instead of the flat
 // per-request price. OFF by default — when unset the flat-debit path below is
 // byte-identical to today. When `LH_TOKEN_METERING=1`, a METER-path caller
-// (funded `creditOf`, NOT x402 / not session-only-free) is debited
+// (funded `creditOf`, NOT x402) is debited
 // `max(flatFloor, usageCostWei(usage, MARGIN_BPS))`, where `usage` is read from
 // the response SSE via a passthrough tee (the caller's bytes are untouched).
-// x402 stays flat-exact (token-based x402 needs the "Upto" scheme — Phase 2);
-// session-only callers stay free. MARGIN_BPS: 10000 = raw cost, 13000 = +30%.
+// x402 stays flat-exact (token-based x402 needs the "Upto" scheme — Phase 2).
+// MARGIN_BPS: 10000 = raw cost, 13000 = +30%.
 //
 // ┌─ HUMAN-REVIEW CHECKLIST before flipping this ON (live billing) ────────────┐
 // │ 1. Make ONE real credit-path call per provider against the live proxy and  │
@@ -299,8 +298,8 @@ function json(body: unknown, status: number, origin: string | null): Response {
 
 // ---- crypto + on-chain reads ------------------------------------------------
 //
-// The personal-sign recovery / address helpers and the creditOf /
-// sessionExpiryOf reads are SHARED in `_auth.ts` (§5 dedup) — imported above,
+// The personal-sign recovery / address helpers and the creditOf read are
+// SHARED in `_auth.ts` (§5 dedup) — imported above,
 // byte-for-byte the logic that used to be inlined here. `meterDebit` stays LOCAL
 // (below): it carries gemini-specific streaming (`confirm=false`) + the
 // in-isolate burst-reservation system, which no other route has.
@@ -543,11 +542,10 @@ export default async function handler(req: Request): Promise<Response> {
     return json({ error: 'request body too large' }, 413, origin);
   }
   // FAIL-LOUD env assertion (road-to-v1 step 2): without the meter key the
-  // debit path only throws AFTER the upstream call — x402 settles 502, funded
-  // callers 502 after the platform already paid the provider, and free-beta
-  // session callers get served un-metered forever. 503 with a named code
-  // instead of silently mis-metering. (Provider keys are asserted per-provider
-  // below, before the gate — already a named error with no charge.)
+  // debit path only throws AFTER the upstream call — x402 settles 502 and funded
+  // callers 502 after the platform already paid the provider. 503 with a named
+  // code instead of silently mis-metering. (Provider keys are asserted
+  // per-provider below, before the gate — already a named error with no charge.)
   const misconfig = envGuard('gemini', ['PROXY_METER_KEY'], [], corsHeaders(origin));
   if (misconfig) return misconfig;
 
@@ -655,8 +653,7 @@ export default async function handler(req: Request): Promise<Response> {
       req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? bearer;
     // verifyAuthToken (in _auth.ts) is byte-for-byte the prior inlined token
     // parse + address/timestamp shape checks + freshness window + ecrecover
-    // identity match — same error strings + 401s. Same `now` clock read is then
-    // reused for the session-expiry comparison below.
+    // identity match — same error strings + 401s.
     const now = Math.floor(Date.now() / 1000);
     // Route-bind the token to this endpoint (audit L9) — a token minted for one
     // route can't be replayed to another inside the 300s freshness window.
@@ -694,15 +691,10 @@ export default async function handler(req: Request): Promise<Response> {
       );
     }
 
-    // On-chain gate: serve if the caller has an active TIME session, a funded
-    // PER-REQUEST balance, OR a signed x402 per-call authorization. All three
-    // supported transparently; session/creditOf are unchanged.
+    // On-chain gate: serve if the caller has a funded PER-REQUEST balance OR a
+    // signed x402 per-call authorization.
     const cost = priceOf(provider, model);
-    const [expiry, credit] = await Promise.all([
-      sessionExpiryOf(address),
-      creditOf(address),
-    ]);
-    const hasSession = expiry > BigInt(now);
+    const credit = await creditOf(address);
     // Subtract this address's still-in-flight charges from the (lock-free) snapshot
     // so a burst within this isolate can't all pass a stale `creditOf` read.
     const availCredit = credit - reservedFor(address);
@@ -743,7 +735,7 @@ export default async function handler(req: Request): Promise<Response> {
         requiredWei: cost,
       });
       // A PRESENT-but-invalid authorization is a hard, specific 402 — do NOT
-      // silently fall back to credit/session; the caller meant to pay via x402.
+      // silently fall back to credit; the caller meant to pay via x402.
       if (verdict && !verdict.ok) {
         return json(
           { error: verdict.error, ...(verdict.quote ? { x402: verdict.quote } : {}) },
@@ -766,11 +758,11 @@ export default async function handler(req: Request): Promise<Response> {
       reservedWei = meterCharge;
     }
 
-    if (!hasSession && !hasCredit && !paidViaX402) {
+    if (!hasCredit && !paidViaX402) {
       return json(
         {
           error:
-            'no $LH credit or active session for this identity — fund the per-request meter (localharness redeem / send / topup), open a session (localharness session), or pay per-call via x402. See https://localharness.xyz/llms.txt',
+            'no $LH credit for this identity — fund the per-request meter (localharness redeem / send / topup), or pay per-call via x402. See https://localharness.xyz/llms.txt',
           // x402 challenge (Coinbase 402→attach→retry): an x402-capable client
           // signs an authorization for `value` $LH to `payTo` and retries with
           // the X-PAYMENT header. Only advertised when x402 metering is enabled.
@@ -860,7 +852,7 @@ export default async function handler(req: Request): Promise<Response> {
 
     // SUCCESS (2xx). NOW take payment. PREFER x402 if the caller signed one
     // (they explicitly opted into trustless pay-per-call); else debit the
-    // creditOf meter; a session-only caller stays free.
+    // creditOf meter.
     //
     // CREDIT/METER PATH: a non-refundable FLOOR (= `cost`) is debited UP FRONT,
     // before streaming, so neither a concurrent burst nor a client that
@@ -904,15 +896,11 @@ export default async function handler(req: Request): Promise<Response> {
       } catch (e) {
         // The broadcast itself failed (RPC/infra). The one-shot nonce is
         // UNCONSUMED, so a retry of the SAME authorization is clean — 502 rather
-        // than serve a call we couldn't charge (no session fallback for x402).
+        // than serve a call we couldn't charge.
         return json({ error: 'x402 settlement submission failed, retry: ' + (e as Error).message }, 502, origin);
       }
     } else if (hasCredit) {
-      // PREFER per-request metering: a FUNDED meter (`availCredit > 0`) means
-      // the caller opted into real per-call billing, so debit even if a
-      // (free-beta `sessionPrice==0`) session is ALSO active — else the free
-      // session would silently make every call free. Session-only callers with no
-      // meter balance stay free. Charge the non-refundable FLOOR up front (both
+      // Per-request metering. Charge the non-refundable FLOOR up front (both
       // the flat AND the token path) so a disconnect/burst can't yield a free
       // call. The in-isolate reservation was taken just after the x402 check and
       // is released in this handler's `finally` once the request is done.
@@ -921,11 +909,9 @@ export default async function handler(req: Request): Promise<Response> {
         // streaming responses flow immediately, not after the meter tx confirms.
         await meterDebit(address, meterCharge, false);
       } catch (e) {
-        // Broadcast itself failed (RPC/infra). Without a (free-beta) session
-        // covering the caller, that's a real 502; otherwise serve under it.
-        if (!hasSession) {
-          return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
-        }
+        // Broadcast itself failed (RPC/infra) — a real 502: never serve a call
+        // we couldn't charge.
+        return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
       }
     }
 

@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, collect_flags, fmt_lh, load_signer, registry, truncate_words, wallet, SCHEDULE_DEFAULT_RUNS, SCHEDULE_MIN_INTERVAL_SECS};
+use crate::{bytes_to_hex_str, collect_flags, load_signer, registry, truncate_words, wallet, SCHEDULE_DEFAULT_RUNS, SCHEDULE_MIN_INTERVAL_SECS};
 
 // ---- schedule / goal / remind / jobs / unschedule ------------------------
 //
@@ -39,10 +39,9 @@ pub(crate) const BUDGET_REMOVED: &str = "--budget is no longer used: scheduled a
     OFF-CHAIN now and bill your meter per run (~1 $LH/model call) — there is no upfront escrow. \
     Remove --budget and re-run.";
 
-/// The EXACT on-chain task marker the scheduler worker recognises as a goal
-/// loop (ralph-on-chain): it wraps the run's persona with the goal-loop frame
-/// and offers the `finish_goal` tool, which ends the job via the facet's
-/// `completeJob` (refunding the unspent escrow) when the goal is met.
+/// The EXACT task marker the scheduler worker recognises as a goal loop
+/// (ralph): it wraps the run's persona with the goal-loop frame and offers the
+/// `finish_goal` tool, which cancels the off-chain job when the goal is met.
 pub(crate) const GOAL_TASK_PREFIX: &str = "GOAL: ";
 
 /// Default `--every` for `goal` — 5 minutes, the worker cron's MVP cadence
@@ -338,41 +337,8 @@ async fn submit_job(caller_name: Option<&str>, parsed: ParsedSchedule, goal_mode
     }
 }
 
-/// True for a TERMINAL job status (Cancelled / Exhausted): no further fire is
-/// scheduled, so the row must not advertise a "next due" time. Pure + testable.
-pub(crate) fn job_is_terminal(status: u8) -> bool {
-    matches!(status, 2 | 3)
-}
-
-/// Render one job row for the `jobs` listing. Pure (no I/O) so the layout is
-/// unit-testable: id, target name, cadence, next run, budget remaining, runs
-/// left, status. A TERMINAL job (cancelled / exhausted) prints no "next" time —
-/// the old row showed "next due now" for a cancelled job that will never fire
-/// again, and the runs-left/budget of a dead job is noise, so both collapse to
-/// "—" (on-chain feedback #82).
-pub(crate) fn format_job_row(id: u64, target: &str, job: &registry::ScheduledJob, task: &str, now: u64) -> String {
-    let terminal = job_is_terminal(job.status);
-    let next = if terminal || job.next_run == 0 {
-        "—".to_string()
-    } else if job.next_run <= now {
-        "due now".to_string()
-    } else {
-        format!("in {}", fmt_interval(job.next_run - now))
-    };
-    // A live job shows its remaining runs + escrow; a terminal one shows neither
-    // (the budget refunded on cancel, the runs spent on exhaust).
-    let runs = if terminal { "—".to_string() } else { job.runs_left.to_string() };
-    let budget = if terminal { "—".to_string() } else { fmt_lh(job.budget_wei) };
-    let snippet = truncate_words(task, 60);
-    format!(
-        "  #{id}  {target}  every {interval}  next {next}  budget {budget}  runs-left {runs}  [{status}]\n      {snippet}",
-        interval = fmt_interval(job.interval),
-        status = job.status_label(),
-    )
-}
-
-/// Render one OFF-CHAIN job row from the proxy's `list` JSON (reminders + agent
-/// jobs). Pure-ish (no I/O); mirrors `format_job_row`'s shape for the on-chain ones.
+/// Render one job row from the proxy's `list` JSON (reminders + agent jobs).
+/// Pure-ish (no I/O).
 fn format_offchain_row(j: &serde_json::Value, now: u64) -> String {
     let id = j.get("id").and_then(|v| v.as_str()).unwrap_or("?");
     let kind = j.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
@@ -396,9 +362,8 @@ fn format_offchain_row(j: &serde_json::Value, now: u64) -> String {
     )
 }
 
-/// `localharness jobs [--as <me>]` — list the caller's scheduled jobs: the
-/// OFF-CHAIN store (reminders + agent jobs) first, then any LEGACY on-chain
-/// ScheduleFacet jobs. Read-only, no `$LH`.
+/// `localharness jobs [--as <me>]` — list the caller's scheduled jobs (the
+/// off-chain store: reminders + agent jobs). Read-only, no `$LH`.
 pub(crate) async fn list_jobs(caller_name: Option<&str>) -> i32 {
     let signer = match load_signer(caller_name) {
         Ok(s) => s,
@@ -407,120 +372,49 @@ pub(crate) async fn list_jobs(caller_name: Option<&str>) -> i32 {
     let addr = bytes_to_hex_str(&wallet::address(&signer));
     let now = now_unix();
 
-    // OFF-CHAIN jobs (the primary store).
     let mut offchain_jobs = match registry::list_offchain_jobs(&signer, now).await {
         Ok(j) => j,
         Err(e) => {
-            eprintln!("(off-chain list unavailable: {e})");
+            eprintln!("(job list unavailable: {e})");
             Vec::new()
         }
     };
-    // LEGACY on-chain jobs (ScheduleFacet) — best-effort, shown after.
-    let ids = registry::jobs_of(&addr).await.unwrap_or_default();
 
     // The store's directory listing lags a write by a few seconds (GitHub
     // Contents-API read-after-write consistency), so `jobs` right after
     // `schedule`/`remind` sees an empty list and looks like a silent failure
     // (telemetry #44). On empty, retry ONCE after ~2s before concluding.
-    if offchain_jobs.is_empty() && ids.is_empty() {
+    if offchain_jobs.is_empty() {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         offchain_jobs = registry::list_offchain_jobs(&signer, now).await.unwrap_or_default();
     }
 
-    if offchain_jobs.is_empty() && ids.is_empty() {
+    if offchain_jobs.is_empty() {
         println!("no scheduled jobs for {addr}");
         return 0;
     }
-    if !offchain_jobs.is_empty() {
-        println!("{} off-chain job(s):", offchain_jobs.len());
-        for j in &offchain_jobs {
-            println!("{}", format_offchain_row(j, now));
-        }
-    }
-    if ids.is_empty() {
-        return 0;
-    }
-    println!("{} on-chain (legacy) job(s):", ids.len());
-    for id in ids {
-        let job = match registry::get_job(id).await {
-            Ok(j) => j,
-            Err(e) => {
-                println!("  #{id}  (could not read: {e})");
-                continue;
-            }
-        };
-        // Resolve the target's name for readability; fall back to the id.
-        let target = registry::name_of_id(job.target_id)
-            .await
-            .ok()
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| format!("token#{}", job.target_id));
-        let task = registry::task_of(id).await.unwrap_or_default();
-        println!("{}", format_job_row(id, &target, &job, &task, now));
-        // #52: surface the LAST run so the owner can tell a fired job from a
-        // silently-skipped one (nextRun in the past + no last-run = never fired).
-        if let Ok((ts, status)) = registry::last_run_of(id).await {
-            if ts == 0 {
-                println!("    last run: — (not yet run)");
-            } else {
-                let ago = now.saturating_sub(ts);
-                let post = match status {
-                    0 => "active",
-                    3 => "exhausted",
-                    _ => "ran",
-                };
-                println!("    last run: {ago}s ago [{post}]");
-            }
-        }
+    println!("{} job(s):", offchain_jobs.len());
+    for j in &offchain_jobs {
+        println!("{}", format_offchain_row(j, now));
     }
     0
 }
 
-/// `localharness unschedule [--as <me>] <jobId>` — cancel a scheduled job. Routes
-/// by id shape: a UUID (off-chain `remind`/store job — has non-digits) cancels via
-/// the proxy; a NUMERIC id (legacy on-chain ScheduleFacet job) cancels via the
-/// facet, which refunds the remaining escrowed `$LH`.
+/// `localharness unschedule [--as <me>] <jobId>` — cancel a scheduled job by
+/// its store id (sponsor-free; just a signed POST, owner-gated server-side).
 pub(crate) async fn unschedule(caller_name: Option<&str>, job_id_arg: &str) -> i32 {
     let raw = job_id_arg.trim().trim_start_matches('#');
     if raw.is_empty() {
         eprintln!("unschedule: missing job id");
         return 2;
     }
-    // A purely-numeric id is a legacy ON-CHAIN job; anything else is an OFF-CHAIN
-    // store id (a uuid). Off-chain cancel is sponsor-free (just a signed POST).
-    let is_onchain = raw.chars().all(|c| c.is_ascii_digit());
-    if !is_onchain {
-        let signer = match load_signer(caller_name) {
-            Ok(s) => s,
-            Err(code) => return code,
-        };
-        return match registry::cancel_offchain_job(&signer, now_unix(), raw).await {
-            Ok(()) => {
-                println!("✓ cancelled off-chain job {raw}");
-                0
-            }
-            Err(e) => {
-                eprintln!("unschedule failed: {e}");
-                1
-            }
-        };
-    }
-    let job_id: u64 = match raw.parse() {
-        Ok(n) => n,
-        Err(_) => {
-            eprintln!("unschedule: '{job_id_arg}' is not a job id");
-            return 2;
-        }
-    };
     let signer = match load_signer(caller_name) {
-        Ok(pair) => pair,
+        Ok(s) => s,
         Err(code) => return code,
     };
-    match registry::cancel_job_sponsored(&signer, job_id).await
-    {
-        Ok(tx) => {
-            println!("✓ cancelled job #{job_id} — remaining budget refunded to your wallet");
-            println!("  tx: {tx}");
+    match registry::cancel_offchain_job(&signer, now_unix(), raw).await {
+        Ok(()) => {
+            println!("✓ cancelled job {raw}");
             0
         }
         Err(e) => {
@@ -648,77 +542,4 @@ mod tests {
         assert!(parse_goal_args(&args(&["t", "x", "--every", "10s"])).is_err());
     }
 
-    #[test]
-    fn format_job_row_contains_key_fields() {
-        let job = registry::ScheduledJob {
-            owner: "0xowner".into(),
-            interval: 300,
-            status: 0,
-            next_run: 1_000 + 120, // 2m out from `now`
-            budget_wei: 1_000_000_000_000_000_000,
-            runs_left: 42,
-            target_id: 7,
-        };
-        let row = format_job_row(3, "oracle", &job, "check\nthe price", 1_000);
-        assert!(row.contains("#3"));
-        assert!(row.contains("oracle"));
-        assert!(row.contains("every 5m"));
-        assert!(row.contains("next in 2m"));
-        assert!(row.contains("runs-left 42"));
-        assert!(row.contains("[active]"));
-        assert!(row.contains("check the price")); // newline flattened
-    }
-
-    #[test]
-    fn job_is_terminal_flags_cancelled_and_exhausted() {
-        assert!(!job_is_terminal(0)); // active
-        assert!(!job_is_terminal(1)); // paused
-        assert!(job_is_terminal(2)); // cancelled
-        assert!(job_is_terminal(3)); // exhausted
-    }
-
-    #[test]
-    fn format_job_row_cancelled_does_not_advertise_next_due() {
-        // The bug: a cancelled job whose next_run is a stale past timestamp
-        // printed "next due now" — it will NEVER fire again. Terminal jobs show
-        // "next —" + collapse budget/runs to "—".
-        let job = registry::ScheduledJob {
-            owner: "0x0".into(),
-            interval: 300,
-            status: 2,       // cancelled
-            next_run: 100,   // stale past timestamp (not zeroed)
-            budget_wei: 1_000_000_000_000_000_000,
-            runs_left: 5,
-            target_id: 1,
-        };
-        let row = format_job_row(7, "bot", &job, "", 5_000);
-        assert!(row.contains("next —"), "cancelled job must not say due now: {row}");
-        assert!(!row.contains("due now"));
-        assert!(row.contains("[cancelled]"));
-        assert!(row.contains("runs-left —"), "terminal runs collapse to —: {row}");
-        assert!(row.contains("budget —"));
-    }
-
-    #[test]
-    fn format_job_row_terminal_and_due() {
-        // next_run == 0 (terminal) → em-dash; status label flows through.
-        let job = registry::ScheduledJob {
-            owner: "0x0".into(),
-            interval: 60,
-            status: 3,
-            next_run: 0,
-            budget_wei: 0,
-            runs_left: 0,
-            target_id: 1,
-        };
-        let row = format_job_row(1, "bot", &job, "", 5_000);
-        assert!(row.contains("next —"));
-        assert!(row.contains("[exhausted]"));
-        // Due-now: next_run in the past.
-        let mut due = job.clone();
-        due.status = 0;
-        due.next_run = 100;
-        let row = format_job_row(2, "bot", &due, "", 5_000);
-        assert!(row.contains("next due now"));
-    }
 }

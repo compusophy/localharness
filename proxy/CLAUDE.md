@@ -15,8 +15,9 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
 ## Endpoints (`api/`; `_`-prefixed = shared helpers, not routes)
 - `gemini.ts` — multi-provider passthrough (Gemini/Claude/OpenAI). Auth = Ethereum
   personal-sign `address:timestamp:signature` in the `x-goog-api-key` header (5-min
-  freshness window — a skewed device clock = stale-auth, not a bad key). Gates on a
-  session OR `creditOf`, debits the meter BEFORE streaming, charges
+  freshness window — a skewed device clock = stale-auth, not a bad key). Gates on
+  `creditOf` (the SessionFacet session gate was purged 2026-07-30), debits the
+  meter BEFORE streaming, charges
   `min(cost,balance)` (a positive balance spends to zero). 1 `$LH`/message; fiat
   gross-mints at $1 = 100 `$LH`.
 - `sponsor.ts` — the KEYLESS mainnet fee-payer RELAY: selector allowlist +
@@ -34,11 +35,12 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   (gas-only, telemetry #45); the hash recompute encodes `to` EMPTY. The TS tx
   wire-port is PINNED to Rust golden vectors — keep them in sync.
 - `scheduler.ts` — Vercel-Cron no-tab job worker (`vercel.json` `* * * * *`, 1-min);
-  calls `recordRun` (SCHEDULER-ROLE, CAS-guarded). Sub-minute can't ride this.
+  fires the OFF-CHAIN jobstore only (the on-chain ScheduleFacet drain + `?poke`
+  keeper heartbeat were purged 2026-07-30). Sub-minute can't ride this.
 - `_env.ts` — FAIL-LOUD env assertions (road-to-v1 step 2): handlers assert THEIR
   critical vars up front → named 503 `LH_PROXY_MISCONFIG` instead of silently
-  mis-metering. gemini: PROXY_METER_KEY (missing = session callers served free +
-  funded callers 502 AFTER the platform paid the provider); sponsor on MAINNET
+  mis-metering. gemini: PROXY_METER_KEY (missing = funded callers 502 AFTER the
+  platform paid the provider); sponsor on MAINNET
   (CHAIN_ID 4217): LH_SPONSOR_KEY (else it silently signs with the COMMITTED
   public testnet key); scheduler: GEMINI_API_KEY + PROXY_METER_KEY (missing =
   owners billed for runs that can't succeed / model run then unbilled).

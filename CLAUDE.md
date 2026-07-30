@@ -116,7 +116,7 @@ src/                  library crate
 │                     signaling_seal.rs kv_reduce.rs kv_room.rs lessons.rs
 │                     push_enroll.rs(verify + bell status, #40) confirm.rs
 │                     cut_guard.rs(facet-cut safety lint, reserved selectors)
-│                     keeper.rs(scheduler keeper core) qr.rs(inline SVG QR)
+│                     qr.rs(inline SVG QR)
 │                     skills.rs(SKILLS LOOP blob core) — native-testable cores
 │                     (framebuffer/compose/reconcile/SDP seal/#22 KV CRDT + AES
 │                     op-seal/lessons/confirm/…)
@@ -287,6 +287,19 @@ modules don't trip a default `cargo check`).
   (`app/remote_call.rs`, caller's $LH → target's TBA). Don't try to make the
   iframe path work cross-machine — there is no target browser involved.
 
+## Lean policy (reset > compat) — ⛔ standing rule
+
+Pre-1.0.0 EVERYTHING resets (names, agents, wallets, chain state, apps), so
+compat code protects nothing. (1) A pivot DELETES the old read+write paths in
+the SAME commit — no fallbacks, no drain paths, no migration shims; old data
+republishes. (2) No dormant code: superseded/shelved = deleted (git keeps the
+recipe); `#[allow(dead_code)]` "kept for reference" = a delete marker.
+Roadmap-pending code survives only if named in What's-pending. (3) A fallback
+that masks the new path's failure is a BUG (shadowed writes report success).
+(4) A purge deletes the docs/prompt/help lines describing the old path in the
+same commit. Precedents: faces ab7b3be2; scheduler/keeper/session/pairing/
+pricing 2026-07-30.
+
 ## Release process
 
 ```sh
@@ -429,7 +442,7 @@ each, gotchas only.
   `dailyAllowance` 0 (DISABLED — sybil hole). Funding = redeem + `send_lh`.
 - **RedeemFacet** — owner `addRedeemCodes`, holder `redeem(code)` (mint + burn).
 - **InviteFacet** — PERMISSIONLESS refundable bearer codes; SUPPLY-NEUTRAL escrow.
-- **SessionFacet** — coarse time-boxed sessions; SHELVED (metering is live path).
+- **SessionFacet** — RETIRED 2026-07-30 (metering bills; drops at reset genesis).
 - **CreditMeterFacet** — per-MESSAGE meter; `meter(addr,amt)` (meter-key-only)
   debits `min(cost,balance)`; `withdrawCredits` pulls unspent back.
 - **MintGateFacet** — fiat→`$LH`: issuer-signed `mintFromFiat`→buyer METER (one-shot
@@ -440,9 +453,9 @@ each, gotchas only.
   (no log scraping; Tempo RPC caps at 100k blocks).
 - **ReleaseFacet** — holder `releaseName` burn (refuses MAIN) + owner
   `adminBurnNames`/`adminResetAll` (testnet); `_burn` clears `register()`.
-- **ScheduleFacet** — escrowed recurring jobs; `recordRun` SCHEDULER-ROLE-only
-  (CAS-guarded); recursion via `scheduleChildJob`; `/goal`→`finish_goal`. Owns
-  `taskOf(uint256)` (BountyFacet must use `bountyTaskOf`).
+- **ScheduleFacet** — RETIRED 2026-07-30 (scheduling = the off-chain jobstore;
+  drops at reset genesis). It owns `taskOf(uint256)` — BountyFacet must keep
+  using `bountyTaskOf`.
 - **SignalingFacet** — OWNER-SIGNED on-chain WebRTC signaling/presence (topic =
   `keccak256("localharness.devices"‖owner)` + ecrecover; 10-min TTL).
 - **BountyFacet** — rung 1: escrowed `postBounty`/`claimBounty`/`acceptResult`→
@@ -516,9 +529,7 @@ with `AUTO_CONTINUE_NUDGE` (no user bubble). Outcomes: `Finished` (called `finis
 plan and died at step one (#75/#69/#67). Bounded by `MAX_AUTO_CONTINUATIONS = 10`;
 respects `TURN_CANCEL` + the `TURN_ACTIVE` one-turn guard. History/opfs saved after
 every turn. (Tab-free work = the off-chain scheduler: `schedule_task`/`cancel_task`
-→ proxy `/api/schedule`, fired by cron — `design/offchain-scheduler.md`; the old
-on-chain escrow button is gone, `events/schedule.rs` keeps only
-`parse_schedule_interval`.)
+→ proxy `/api/schedule`, fired by cron — `design/offchain-scheduler.md`.)
 
 **Ownership = on-chain, not a local cache.** `.lh_owner` stores the on-chain owner
 ADDRESS this device last *proved* it controls (written only after a
@@ -547,37 +558,20 @@ personal-sign token. `registry::is_mainnet()` routes the submit chokepoints + th
 browser's `run_sponsored_tempo_call` to it. Mainnet sponsor `0x066E748367df…0168f`
 (rotated from bundle-exposed `0xE70f4B…`), proxy-env only. `design/cli-mainnet-relay.md`.
 
-### Wire format (live-verified — `examples/tempo_tx_live.rs`)
+### Wire format
 
-```text
-0x76 || rlp([
-    chain_id, mpfpg, mfpg, gas_limit,
-    calls,                // [[to, value, input], ...]
-    access_list,          // EIP-2930
-    nonce_key, nonce,     // Tempo's 2D nonce
-    valid_before, valid_after,
-    fee_token,            // 0x80 (empty) in sender hash if sponsored
-    fee_payer_signature,  // 0x00 placeholder in sender hash; 0x80 or rlp([v,r,s])
-    aa_authorization_list,
-    key_authorization?,   // truly optional; omit when None
-    sender_signature      // flat 65 bytes (r||s||v, v=0/1)
-])
-```
-
-- Sender hash: `keccak256(0x76 || rlp([1..14_without_sender_sig]))`.
-- Fee-payer hash: `keccak256(0x78 || rlp([1..10, fee_token, sender_address,
-  aa_authorization_list, key_authorization?]))`. The spec page OMITS
-  `aa_authorization_list` at position 13 — found by diffing `wevm/ox`'s
-  `TxEnvelopeTempo`. **sender_sig is flat bytes; fee_payer_sig is `rlp([v,r,s])`.**
-- Sponsorship overhead ~275k gas on top of the inner call.
+Lives in `src/registry/CLAUDE.md` + `examples/tempo_tx_live.rs` (the live-verified
+source of truth). Key traps only: sender_sig is FLAT 65 bytes, fee_payer_sig is
+`rlp([v,r,s])`; the fee-payer hash INCLUDES `aa_authorization_list` (the spec page
+omits it); sponsorship overhead ~275k gas.
 
 ### $LH is TIP-20-shaped credit, NOT fee-token-eligible
 
 Tempo `fee_token` validation requires TIP-20 + `currency()=="USD"`.
 `LocalharnessCredits` implements the TIP-20 surface but returns
 `currency()=="credits"`, so the chain rejects it as a fee_token (intentional — $LH =
-in-system credits, not gas). **AlphaUSD** remains the sponsor's fee_token. Mint paths:
-`CreditsFacet.claimDaily()` (disabled) + `RedeemFacet.redeem(code)`.
+in-system credits, not gas). **AlphaUSD** remains the sponsor's fee_token. Mint path:
+`RedeemFacet.redeem(code)`.
 
 ### Sponsor key
 
@@ -590,7 +584,7 @@ must come from the root key, which is why a sponsor key must be embedded in wasm
 ## What's pending
 
 Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, Anthropic +
-OpenAI backends, scheduling + recursion, Mock backend, economy rungs 1–4 +
+OpenAI backends, off-chain scheduling, Mock backend, economy rungs 1–4 +
 Reputation + colony, x402, host::compose, SessionRoom KV, at-rest OPFS enc,
 Stripe on-ramp, in-browser Gemma, `LH_CHAIN`, the mainnet keyless sponsor RELAY
 (`registry::sponsor_relay` + `proxy/api/sponsor.ts` — NO build embeds a mainnet

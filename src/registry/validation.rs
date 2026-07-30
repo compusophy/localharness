@@ -218,24 +218,6 @@ pub(crate) fn decode_validation(bytes: &[u8]) -> Option<Validation> {
     })
 }
 
-/// Read `hasValidated(address validator, uint256 subjectTokenId, bytes32
-/// workRef)` → bool — whether `validator_hex` already staked a verdict about
-/// (`subject`, `work_ref`) (the facet's `AlreadyValidated` dedup, queryable up
-/// front to skip a doomed write). Read-only.
-pub async fn has_validated(
-    validator_hex: &str,
-    subject: u64,
-    work_ref: [u8; 32],
-) -> Result<bool, String> {
-    let validator = parse_eth_address(validator_hex)?;
-    let result = read_view(
-        selector("hasValidated(address,uint256,bytes32)"),
-        &[addr_word(&validator), u256_be(subject as u128), work_ref],
-    )
-    .await?;
-    Ok(decode_u256_as_u64(&result)? != 0)
-}
-
 /// Read `validationCount()` → total validations ever staked (== the highest
 /// id; ids are monotonic from 1). Read-only.
 pub async fn validation_count() -> Result<u64, String> {
@@ -251,13 +233,13 @@ pub async fn validation_count() -> Result<u64, String> {
 mod tests {
     use super::*;
 
-    /// `has_validated` decodes the `hasValidated` read with `decode_u256_as_u64`
-    /// and propagates its `Err` (fail-closed): a malformed / over-long RPC read
-    /// must NOT silently decode as false → "not validated", which would let a
-    /// duplicate-detection guard admit a write that should be rejected. Pins the
-    /// two Err paths (over-long, high-bytes-set), plus the valid decodings.
+    /// Bool-shaped facet reads decode with `decode_u256_as_u64` and propagate
+    /// its `Err` (fail-closed): a malformed / over-long RPC read must NOT
+    /// silently decode as false, which would let a duplicate-detection guard
+    /// admit a write that should be rejected. Pins the two Err paths
+    /// (over-long, high-bytes-set), plus the valid decodings.
     #[test]
-    fn has_validated_decode_is_fail_closed() {
+    fn bool_read_decode_is_fail_closed() {
         assert_eq!(decode_u256_as_u64(&"0".repeat(64)), Ok(0));
         assert_eq!(decode_u256_as_u64(&format!("{}1", "0".repeat(63))), Ok(1));
         // Over-long hex must Err (propagated, not swallowed to false).

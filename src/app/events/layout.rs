@@ -1,5 +1,5 @@
-//! Reset + pricing + display-mode toggles — the typed-confirmation reset,
-//! pricing save, and the live light-theme / mobile-preview switches.
+//! Reset + display-mode toggles — the typed-confirmation reset and the
+//! live light-theme / mobile-preview switches.
 //! (The old panel-collapse class toggles died with the tabbed layout —
 //! the unified stream has no side panels to collapse.)
 
@@ -109,97 +109,4 @@ pub(super) fn reset_confirm_pressed() {
             let _ = window.location().reload();
         }
     });
-}
-
-/// Parse the pricing-input as a decimal test-ETH amount, convert to
-/// wei, persist via `pricing::save`, and re-paint the card so the
-/// new value shows. Owner-only — the input is only rendered when
-/// the verifier confirmed this visitor is the owner — but we still
-/// re-check `verify_state` here as belt-and-suspenders against a
-/// stale DOM.
-pub(super) fn pricing_save_pressed() {
-    let Some(input) = dom::input_by_id("pricing-input") else {
-        return;
-    };
-    let raw = input.value().trim().to_string();
-    let wei = match parse_eth_to_wei(&raw) {
-        Ok(w) => w,
-        Err(err) => {
-            dom::swap_inner(
-                "pricing-msg",
-                &dom::msg_span(dom::Msg::Error, &err.to_string()),
-            );
-            return;
-        }
-    };
-
-    let is_owner = crate::app::APP.with(|cell| {
-        matches!(cell.borrow().verify_state, crate::app::VerifyState::Verified { .. })
-    });
-    if !is_owner {
-        dom::swap_inner(
-            "pricing-msg",
-            "<span style=\"color:var(--error)\">only the verified owner can change pricing</span>",
-        );
-        return;
-    }
-
-    dom::swap_inner(
-        "pricing-msg",
-        "<span style=\"color:var(--muted)\">saving…</span>",
-    );
-    wasm_bindgen_futures::spawn_local(async move {
-        match crate::app::pricing::save(wei).await {
-            Ok(()) => {
-                crate::app::APP
-                    .with(|cell| cell.borrow_mut().pricing_wei = Some(wei));
-                let html = templates::pricing_card_body(wei, true).into_string();
-                dom::swap_outer("pricing-body", &html);
-            }
-            Err(err) => {
-                dom::swap_inner(
-                    "pricing-msg",
-                    &dom::msg_span(dom::Msg::Error, &format!("save failed: {err}")),
-                );
-            }
-        }
-    });
-}
-
-/// Parse a decimal test-ETH amount ("0", "0.001", "1.5") into a wei
-/// `u128`. Rejects negatives, NaN-shaped input, and values with more
-/// than 18 fractional digits (wei is the precision floor).
-fn parse_eth_to_wei(s: &str) -> Result<u128, String> {
-    if s.is_empty() {
-        return Ok(0);
-    }
-    let (whole_str, frac_str) = match s.split_once('.') {
-        Some((w, f)) => (w, f),
-        None => (s, ""),
-    };
-    if !whole_str.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("price must be a positive decimal".into());
-    }
-    if !frac_str.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("price must be a positive decimal".into());
-    }
-    if frac_str.len() > 18 {
-        return Err("price has more precision than wei (18 decimals max)".into());
-    }
-    let whole: u128 = whole_str.parse().map_err(|e| format!("whole: {e}"))?;
-    // Right-pad fraction to 18 digits then parse.
-    let mut padded = String::with_capacity(18);
-    padded.push_str(frac_str);
-    while padded.len() < 18 {
-        padded.push('0');
-    }
-    let frac: u128 = if padded.is_empty() {
-        0
-    } else {
-        padded.parse().map_err(|e| format!("frac: {e}"))?
-    };
-    whole
-        .checked_mul(1_000_000_000_000_000_000)
-        .and_then(|w| w.checked_add(frac))
-        .ok_or_else(|| "price too large".into())
 }

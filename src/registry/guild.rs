@@ -399,8 +399,8 @@ pub async fn spend_treasury_sponsored(
 
 /// Read `guildMembersOf(guildId)` → the guild's member roster as lowercase `0x…`
 /// addresses. Bare dynamic `address[]` ABI return (`[offset][len][addr0]…`), the
-/// SAME decode as `devices_of`. Hostile-length-safe (no pre-alloc; checked
-/// index math stops the decode on a bogus length).
+/// canonical `abi::decode_address_array`. Hostile-length-safe (no pre-alloc;
+/// checked index math stops the decode on a bogus length).
 pub async fn members_of_guild(guild_id: u64) -> Result<Vec<String>, String> {
     let result = read_view(
         selector("guildMembersOf(uint256)"),
@@ -423,18 +423,6 @@ pub async fn role_of_guild(guild_id: u64, addr_hex: &str) -> Result<GuildRole, S
     // uint8 enum right-aligned in a 32-byte word — read the low byte via u64.
     let v = decode_u256_as_u64(&result)?;
     Ok(GuildRole::from_u8(v as u8))
-}
-
-/// Read `isGuildMember(guildId, member)` → whether the address is on the roster.
-/// The single-read membership check (no roster walk).
-pub async fn is_guild_member(guild_id: u64, addr_hex: &str) -> Result<bool, String> {
-    let addr = parse_eth_address(addr_hex)?;
-    let result = read_view(
-        selector("isGuildMember(uint256,address)"),
-        &[u256_be(guild_id as u128), addr_word(&addr)],
-    )
-    .await?;
-    decode_u256_as_u64(&result).map(|v| v != 0)
 }
 
 /// Read `treasuryBalanceOf(guildId)` → the guild's pooled `$LH` (18-decimal wei).
@@ -485,14 +473,6 @@ pub async fn is_guild(guild_id: u64) -> Result<bool, String> {
     let result = read_view(selector("isGuild(uint256)"), &[u256_be(guild_id as u128)]).await?;
     Ok(decode_u256_as_u64(&result)? != 0)
 }
-
-/// Read `guildCount()` → the total number of guilds created (the next-id - 1
-/// counter; informational).
-pub async fn guild_count() -> Result<u64, String> {
-    let result = read_view(selector("guildCount()"), &[]).await?;
-    decode_u256_as_u64(&result)
-}
-
 
 #[cfg(test)]
 mod guild_tests {

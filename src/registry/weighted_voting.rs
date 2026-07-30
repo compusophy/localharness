@@ -301,18 +301,6 @@ pub async fn weighted_tally_of(proposal_id: u64) -> Result<WeightedTally, String
     })
 }
 
-/// Read `hasVotedWeighted(uint256 proposalId, address voter)` → whether `voter`
-/// has cast a ballot (the double-vote guard). Two static args.
-pub async fn has_voted_weighted(proposal_id: u64, voter_hex: &str) -> Result<bool, String> {
-    let voter = parse_eth_address(voter_hex)?;
-    let result = read_view(
-        selector("hasVotedWeighted(uint256,address)"),
-        &[u256_be(proposal_id as u128), addr_word(&voter)],
-    )
-    .await?;
-    decode_u256_as_u64(&result).map(|v| v != 0)
-}
-
 /// Read `weightedProposalsOf(uint256 guildId, uint256 startAfter, uint256
 /// limit)` → `(uint256[] ids, uint256 nextCursor)`. `startAfter` is a 0-based
 /// INDEX into the guild's append-only proposal list (NOT a proposalId); pass 0
@@ -336,13 +324,6 @@ pub async fn weighted_proposals_of(guild_id: u64, start_after: u64, limit: u64) 
 /// `memo`, decoded UTF-8 (empty if none). Same `bytes` ABI shape as a `string`.
 pub async fn weighted_proposal_memo_of(proposal_id: u64) -> Result<String, String> {
     decode_bytes_string_call("weightedProposalMemoOf(uint256)", proposal_id, "weightedProposalMemoOf").await
-}
-
-/// Read `weightedProposalCount()` → total weighted proposals ever created
-/// (== the highest proposalId; ids monotonic from 1).
-pub async fn weighted_proposal_count() -> Result<u64, String> {
-    let result = read_view(selector("weightedProposalCount()"), &[]).await?;
-    decode_u256_as_u64(&result)
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@
 //!
 //! No HTTP, no JS bindings — pure compute. Compiles on every target.
 
-use k256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
+use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
 use sha3::{Digest, Keccak256};
 use zeroize::Zeroize;
@@ -199,19 +199,6 @@ pub fn recover_address(signature: &[u8; 65], prehash: &[u8; 32]) -> Result<[u8; 
     let mut addr = [0u8; 20];
     addr.copy_from_slice(&digest[12..]);
     Ok(addr)
-}
-
-/// Verify a 64-byte (r‖s) signature against a known pubkey-derived
-/// signer. Mostly useful when we already know which address to expect.
-#[allow(dead_code)]
-pub fn verify_hash(
-    signer: &SigningKey,
-    hash: &[u8; 32],
-    signature: &[u8; 65],
-) -> Result<(), String> {
-    let verifying = VerifyingKey::from(signer);
-    let sig = Signature::from_slice(&signature[..64]).map_err(|e| e.to_string())?;
-    verifying.verify_prehash(hash, &sig).map_err(|e| e.to_string())
 }
 
 /// Compressed SEC1 public key (33 bytes, 0x02/0x03 prefix) for a signing
@@ -510,14 +497,6 @@ mod tests {
         let mut sig = sign_hash(&w.signer, &hash);
         sig[64] = 99; // bogus recovery id
         assert!(recover_address(&sig, &hash).is_err());
-    }
-
-    #[test]
-    fn verify_hash_accepts_own_signature() {
-        let w = generate();
-        let hash = [0x01u8; 32];
-        let sig = sign_hash(&w.signer, &hash);
-        verify_hash(&w.signer, &hash, &sig).unwrap();
     }
 
     #[test]

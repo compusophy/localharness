@@ -1,72 +1,49 @@
-// localharness scheduler worker — the tab-independent job firer (Node).
+// localharness scheduler worker — the tab-independent job firer (Edge).
 //
 // This is the engine that makes scheduled agent jobs run WITHOUT a browser
-// tab. The durable job registry lives ON-CHAIN in `ScheduleFacet` on the
-// diamond (design/agent-scheduling.md). This function is the ONE worker (the
-// `scheduler` role = the proxy's PROXY_METER_KEY): a Vercel Cron ticks it on a
-// crontab, it reads the due set off-chain, runs each due job as a BOUNDED AGENT
-// PING-PONG loop under its target's on-chain persona (the agent can `call_agent`
-// other localharness agents during the run — multi-agent orchestration with no
-// tab open), and commits each run with `recordRun(jobId, expectedNextRun,
-// spentWei)` — which atomically debits the job's escrowed budget and advances
-// `nextRun`. AGENT PING-PONG (replaces the old single Gemini turn): every
-// generateContent (the agent's turns + each sub-agent turn) costs COST_WEI and
-// is metered against the job's per-run budget; the budget is the HARD ceiling on
-// the whole run (a runaway loop just drains the escrow → the facet exhausts the
-// job). See `runPingPong` for the loop + the budget gate. CROSS-TICK recursion is
-// now SHIPPED: a scheduled agent can call `schedule_task`, which the worker relays
-// to the scheduler-role `scheduleChildJob(parentJobId, …)` facet fn — the child's
-// budget is DRAWN FROM the running job's remaining escrow (facet-enforced draw +
-// MAX_DEPTH + root cap), so an agent can spawn bounded follow-up work autonomously.
+// tab. The durable job registry lives OFF-CHAIN in the GitHub-backed jobstore
+// (`_jobstore.ts`; jobs are created/cancelled via /api/schedule): a Vercel Cron
+// ticks this function on a crontab, it reads the due set from the store, and
+// fires each due job:
+//   * REMINDER — a pure web-push of the task text (zero chain, zero $LH).
+//   * AGENT — a BOUNDED AGENT PING-PONG loop under the target's on-chain
+//     persona (the agent can `call_agent` other localharness agents during the
+//     run — multi-agent orchestration with no tab open), billed per
+//     generateContent against the OWNER's meter (COST_WEI each, clamped to the
+//     live balance — same as an interactive message). See `runPingPong`.
 //
-// PER-TICK SPEND CAPS (#1): on top of every job's own budget, the worker bounds
-// the TOTAL real (Gemini) $LH it commits across one cron tick — GLOBAL_TICK_CAP_WEI
-// globally and PER_OWNER_TICK_CAP_WEI per owner. A job that would breach either cap
-// SPILLS to the next tick (its nextRun is left unadvanced; logged, never dropped).
-// So even with free/generous per-job budgets and many due jobs, the platform's
+// PER-TICK SPEND CAPS (#1): on top of each owner's balance, the worker bounds
+// the TOTAL real (Gemini) $LH it commits across one cron tick —
+// GLOBAL_TICK_CAP_WEI globally and PER_OWNER_TICK_CAP_WEI per owner. A job that
+// would breach either cap SPILLS to the next tick (its file is left unclaimed;
+// logged, never dropped). So no matter how many jobs are due, the platform's
 // upstream API spend per tick is hard-capped.
 //
 // PER-TICK WALL-CLOCK BUDGET (TICK_SOFT_BUDGET_MS): the tick also self-limits
 // its OWN runtime so the Edge platform never kills it mid-batch (that kill
-// SILENTLY skipped every job after a heavy one — no recordRun, no log, no
-// summary). Each batch job gets a fair-share model deadline (a heavy run is
-// truncated + recorded, never starves the rest), and any due job the tick
-// cannot reach is reported as `deferred` (per-job result + log line; nextRun
-// unchanged, re-fires next tick). A due job either RUNS or its skip is VISIBLE.
+// SILENTLY skipped every job after a heavy one — no log, no summary). Each
+// agent job gets a fair-share model deadline (a heavy run is truncated +
+// billed, never starves the rest); a due job the tick cannot reach is left
+// UNCLAIMED (logged) and re-fires next tick.
 //
-// TRUST ENVELOPE (design §2.6): the worker gains NO new authority. It can only
-// fire owner-defined jobs and spend their PRE-COMMITTED budgets. `recordRun` is
-// the worker's ONLY on-chain write; the facet itself enforces the budget hard
-// stop (marks a job Exhausted when its budget/runs run out and refunds the
-// remainder), the CAS double-fire guard, and skip-don't-pile-up scheduling. The
-// worker just (a) finds due jobs, (b) runs the turn, (c) records the run.
+// CONCURRENCY: firing is CAS-guarded by the store's sha-conditional
+// claim-delete (`claimJob`, _jobstore.ts) — of N overlapping ticks only the
+// claim winner runs + bills. Lose-not-duplicate.
 //
-// SAFETY (this runs autonomously + spends $LH — design §2.5 / §4.1):
+// SAFETY (this runs autonomously + spends $LH):
 //   * CRON_SECRET gate — only Vercel's cron (or a manual dogfood POST carrying
 //     the secret) may invoke it; the public cannot trigger a spend.
-//   * Idempotent / no-hot-loop — `expectedNextRun = job.nextRun` (CAS). A racing
-//     firer (another overlapping tick, or an open tab) that committed first
-//     advances `nextRun`, so our `recordRun` reverts `StaleNextRun` and we do
-//     NOT double-bill. We treat that revert as a benign skip.
-//   * Error -> STILL recordRun — if the Gemini call ERRORS, we still record the
-//     run (advance `nextRun` + debit COST_WEI) so a broken job re-fires at most
-//     once per interval and stays bounded by its budget. A perpetually-failing
-//     job drains its budget and the facet marks it Exhausted — it can never get
-//     stuck in a hot loop.
-//   * Budget = hard stop — every generateContent in the loop debits COST_WEI; we
-//     STOP before any call the remaining budget can't cover, then pass
-//     `calls * COST_WEI` (capped to budget) to recordRun ONCE. The FACET decides
-//     when the budget/runs are spent and exhausts+refunds. The per-job budget
-//     thus bounds the ENTIRE ping-pong run, not one turn.
-//   * Bounded per tick — at most MAX_JOBS_PER_TICK jobs are processed; the rest
-//     spill to the next tick (fair by scan order). A ping-pong job is HEAVIER
-//     than the old single-turn run (a bounded loop, not one call), so the
-//     per-tick default is LOWER (2) — one heavy job must not starve the others'
-//     wall-clock. recordRun receipts are AWAITED (accounting never fire-and-forget).
+//   * Error -> still consumed — if the model call ERRORS, the run is still
+//     consumed (next slot written, the real calls made are debited) so a broken
+//     job re-fires at most once per interval — never a hot loop.
+//   * Broke owner -> consumed without a model call — an owner who can't fund
+//     even one call has the run consumed for free, so a broke job can't
+//     hot-loop the due scan either.
 //
 // Reuses gemini.ts / mcp.ts setup verbatim: the diamond address, Tempo chain,
-// RPC, the PROXY_METER_KEY wallet (now ALSO the scheduler role), persona
-// resolution (`metadata(tokenId, keccak256("localharness.persona"))`), and the
+// RPC, the PROXY_METER_KEY wallet (also the scheduler-role signer for the
+// permissionless `collectTithe` write), persona resolution
+// (`metadata(tokenId, keccak256("localharness.persona"))`), and the
 // non-streaming Gemini generateContent pattern. GEMINI_API_KEY is in env.
 
 import { keccak_256 } from '@noble/hashes/sha3';
@@ -79,19 +56,13 @@ import {
   http,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { SlidingWindow } from './_ratelimit';
-
-// Per-IP cap for the public `?poke` heartbeat (best-effort, per-isolate); the
-// only abuse is read-spam — a due poke is already CAS-bounded to one run/slot.
-const pokeWindow = new SlidingWindow(60, 60_000);
 
 // Edge runtime — matches gemini.ts / mcp.ts, which use the SAME Web
 // `Request`->`Response` handler shape. That shape runs on Edge, NOT on Vercel's
 // Node runtime (a Node function expects `(req, res)`, so a Web handler there
 // 500s with FUNCTION_INVOCATION_FAILED). Edge's ~25s wall-clock caps the
-// per-tick batch (see MAX_JOBS_PER_TICK); leftover due jobs spill to the next
-// cron tick. (For a future high-volume Node 300s budget, rewrite the handler to
-// the `(req, res)` Node signature.)
+// per-tick batch (see MAX_OFFCHAIN_JOBS_PER_TICK + TICK_SOFT_BUDGET_MS);
+// leftover due jobs spill to the next cron tick.
 export const config = { runtime: 'edge' };
 
 // ---- constants (shared with gemini.ts / mcp.ts) ----------------------------
@@ -129,12 +100,10 @@ const RUN_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.6-flash';
 import { COST_PER_REQUEST_WEI } from './_prices';
 const COST_WEI = COST_PER_REQUEST_WEI;
 
-// OFF-CHAIN job store (GitHub-backed) + the meter debit. Scheduled jobs moved
-// off-chain: the store holds the job records (no ScheduleFacet escrow / gas) and
-// an AGENT job bills the owner's existing meter per run (same as an interactive
-// message — no schedule tax); a REMINDER job is a pure web-push (zero chain,
-// zero $LH). The on-chain ScheduleFacet path below is UNTOUCHED — it keeps
-// firing any in-flight legacy jobs until they drain (dual-path migration).
+// The OFF-CHAIN job store (GitHub-backed) + the meter debit. The store holds
+// the job records (no escrow, no gas) and an AGENT job bills the owner's
+// existing meter per run (same as an interactive message — no schedule tax); a
+// REMINDER job is a pure web-push (zero chain, zero $LH).
 import {
   listDue as listDueOffchain,
   claimJob,
@@ -160,20 +129,21 @@ import { SPONSOR_ADDRESS, MIN_FLOAT_WEI } from './sponsor';
 
 // ---- per-TICK spend caps (#1 — the strongest bill-shock fix) ----------------
 //
-// The per-JOB budget (budgetWei) bounds ONE job's run. These two caps bound the
+// The owner's meter balance bounds ONE job's run. These two caps bound the
 // WHOLE TICK across ALL jobs/owners, so the worker's real upstream (Gemini) cost
 // per cron invocation is HARD-bounded regardless of how many jobs are due or how
-// generous individual budgets are — even if $LH itself is free to the owner, the
-// platform's API spend per tick cannot exceed GLOBAL_TICK_CAP_WEI, and no single
-// owner's jobs can consume more than PER_OWNER_TICK_CAP_WEI of that in one tick.
+// funded individual owners are — the platform's API spend per tick cannot exceed
+// GLOBAL_TICK_CAP_WEI, and no single owner's jobs can consume more than
+// PER_OWNER_TICK_CAP_WEI of that in one tick.
 //
-// Enforcement (processJob + runPingPong): we track a running tick total and a
-// per-owner running total. BEFORE running a job — and BEFORE EACH metered call
+// Enforcement (fireOffchainJob + runPingPong): we track a running tick total and
+// a per-owner running total. BEFORE running a job — and BEFORE EACH metered call
 // inside runPingPong — we check that the projected spend (running total + this
 // call's COST_WEI) stays under both caps. If a call would breach either cap we
-// STOP the job there; its `nextRun` is NOT advanced, so it SPILLS to the next
-// tick (logged, never silently dropped). These are an ADDITIONAL ceiling on top
-// of every existing bound (per-job budget, MAX_PINGPONG_ROUNDS, MAX_JOBS_PER_TICK).
+// STOP the job there; its file is left unclaimed, so it SPILLS to the next tick
+// (logged, never silently dropped). These are an ADDITIONAL ceiling on top of
+// every existing bound (owner balance, MAX_PINGPONG_ROUNDS,
+// MAX_OFFCHAIN_JOBS_PER_TICK).
 
 // Total $LH the worker may spend across ALL jobs in a SINGLE tick (default 2 $LH).
 const GLOBAL_TICK_CAP_WEI = ((): bigint => {
@@ -195,20 +165,6 @@ const PER_OWNER_TICK_CAP_WEI = ((): bigint => {
   }
 })();
 
-// How many due jobs we read + process per cron tick. The chain may have more
-// due than this; the rest fire on the next tick. Bounds sponsor gas + Gemini
-// fan-out per invocation (design §4.3 "global worker budget").
-const MAX_JOBS_PER_TICK = ((): number => {
-  // Edge ~25s budget. A ping-pong job is now HEAVIER than the old single-turn
-  // run: it's a BOUNDED tool loop (up to MAX_PINGPONG_ROUNDS generateContent
-  // calls + one sub-agent generateContent per call_agent) followed by an awaited
-  // recordRun receipt. A single heavy job can approach the whole wall-clock, so
-  // the per-tick batch defaults LOWER than before (2, was 4) — leftover due jobs
-  // spill to the next tick. (Raise via env on Pro/Node with a bigger budget.)
-  const n = Number(process.env.SCHEDULER_MAX_JOBS_PER_TICK ?? '2');
-  return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 100) : 2;
-})();
-
 // Max rounds of the agent's OWN tool loop per scheduled run (the agent's turns,
 // not counting sub-agent turns). Kept small so the whole ping-pong run fits
 // inside Edge's ~25s wall-clock: each round is one generateContent (~3-5s), and
@@ -225,19 +181,16 @@ const MAX_PINGPONG_ROUNDS = ((): number => {
 // Edge kills the function at ~25-30s. Before this guard, ONE heavy ping-pong
 // job (8 metered calls ≈ 24-40s of model time) could eat the entire tick: the
 // platform killed the worker MID-BATCH, so every job after it in the batch was
-// skipped with NO recordRun, NO log line, and NO tick summary — the fleet's
-// "goal job silently never fired" repro (job #31: due, never run, runsLeft
-// intact, while job #28 fired 8-call runs every minute). Two fixes hang off
-// this soft budget:
+// skipped with NO log line and NO tick summary — the fleet's "goal job silently
+// never fired" repro. Two fixes hang off this soft budget:
 //   * FAIR-SHARE MODEL DEADLINES — batch job i may run its model loop until
 //     the (i+1)/batchSize fraction of the budget (cumulative, so a quick early
 //     job rolls unused time forward). A heavy early job is TRUNCATED — its
-//     partial work is still recorded + noted 'wall-clock capped' — instead of
+//     partial work is still billed + noted 'wall-clock capped' — instead of
 //     starving every job behind it.
 //   * OBSERVABLE DEFERRALS — any due job the tick cannot reach (batch cap or
-//     budget already gone) gets a `deferred` result row + a log line instead
-//     of vanishing with a killed function. Its nextRun is untouched; it
-//     re-fires next tick.
+//     budget already gone) is left UNCLAIMED with a log line instead of
+//     vanishing with a killed function; it re-fires next tick.
 const TICK_SOFT_BUDGET_MS = ((): number => {
   const n = Number(process.env.SCHEDULER_TICK_SOFT_BUDGET_MS ?? '20000');
   return Number.isFinite(n) && n >= 5000 ? Math.min(Math.trunc(n), 290_000) : 20_000;
@@ -260,104 +213,12 @@ const OFFCHAIN_DUE_SCAN = ((): number => {
     : Math.max(64, floor);
 })();
 
-// Status enum (LibScheduleStorage.Status). Only Active (0) jobs are fired.
-const STATUS_ACTIVE = 0;
-
 const TEMPO_CHAIN = defineChain({
   id: CHAIN_ID,
   name: 'Tempo Moderato',
   nativeCurrency: { name: 'Tempo', symbol: 'TEMPO', decimals: 18 },
   rpcUrls: { default: { http: [TEMPO_RPC] } },
 });
-
-// ScheduleFacet ABI (only the selectors the worker touches).
-const SCHEDULE_ABI = [
-  {
-    name: 'jobsDue',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'startAfter', type: 'uint256' },
-      { name: 'limit', type: 'uint256' },
-    ],
-    outputs: [
-      { name: 'ids', type: 'uint256[]' },
-      { name: 'nextCursor', type: 'uint256' },
-    ],
-  },
-  {
-    name: 'getJob',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [{ name: 'id', type: 'uint256' }],
-    // LibScheduleStorage.Job — field ORDER must match the struct exactly.
-    outputs: [
-      {
-        name: 'job',
-        type: 'tuple',
-        components: [
-          { name: 'owner', type: 'address' },
-          { name: 'interval', type: 'uint64' },
-          { name: 'status', type: 'uint8' },
-          { name: 'nextRun', type: 'uint64' },
-          { name: 'budgetWei', type: 'uint128' },
-          { name: 'runsLeft', type: 'uint32' },
-          { name: 'targetId', type: 'uint256' },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'taskOf',
-    type: 'function',
-    stateMutability: 'view',
-    inputs: [{ name: 'id', type: 'uint256' }],
-    outputs: [{ name: 'task', type: 'bytes' }],
-  },
-  {
-    name: 'recordRun',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'id', type: 'uint256' },
-      { name: 'expectedNextRun', type: 'uint64' },
-      { name: 'spentWei', type: 'uint128' },
-    ],
-    outputs: [{ name: 'newNextRun', type: 'uint64' }],
-  },
-  // scheduleChildJob — SCHEDULER-ROLE-ONLY cross-tick recursion. A scheduled
-  // agent (in runPingPong) spawns a FOLLOW-UP job whose budget is DRAWN FROM the
-  // currently-running PARENT job's remaining escrow. The facet enforces the draw
-  // (reverts InsufficientParentBudget), MAX_DEPTH (reverts MaxDepthExceeded), and
-  // the root spend cap. Returns the new child job id. Signature must match the
-  // sibling facet addition EXACTLY.
-  {
-    name: 'scheduleChildJob',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'parentJobId', type: 'uint256' },
-      { name: 'targetId', type: 'uint256' },
-      { name: 'task', type: 'bytes' },
-      { name: 'interval', type: 'uint64' },
-      { name: 'budgetWei', type: 'uint128' },
-      { name: 'maxRuns', type: 'uint32' },
-    ],
-    outputs: [{ name: 'childJobId', type: 'uint256' }],
-  },
-  // completeJob — SCHEDULER-ROLE-ONLY goal completion (the /goal ralph loop).
-  // When a run's agent calls its `finish_goal` tool, the worker relays it here:
-  // the job goes terminal and the FULL remaining escrow refunds to the owner.
-  // Called AFTER recordRun (so this run's calls are debited first; the refund
-  // is the post-debit remainder). Signature must match the facet EXACTLY.
-  {
-    name: 'completeJob',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'id', type: 'uint256' }],
-    outputs: [],
-  },
-] as const;
 
 // TitheFacet ABI — only `collectTithe(account)`, the PERMISSIONLESS revenue→
 // treasury pull the scheduler may trigger (TitheFacet.sol). It reads ONLY
@@ -425,70 +286,10 @@ const PERSONA_KEY = ('0x' +
 const LESSONS_KEY =
   '0x08564cae936ec460c48a23578c7df5665bad18fe42f3c5dbde517ad67a9d9c89' as `0x${string}`;
 
-interface Job {
-  owner: string;
-  interval: bigint;
-  status: number;
-  nextRun: bigint;
-  budgetWei: bigint;
-  runsLeft: number;
-  targetId: bigint;
-}
-
 // ---- on-chain reads (viem readContract; same RPC/diamond as gemini.ts) ------
 
 function publicClient() {
   return createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
-}
-
-/** `jobsDue(startAfter, limit)` — up to `limit` Active+due job ids. */
-async function jobsDue(
-  startAfter: bigint,
-  limit: bigint,
-): Promise<{ ids: bigint[]; nextCursor: bigint }> {
-  const [ids, nextCursor] = (await publicClient().readContract({
-    address: REGISTRY as `0x${string}`,
-    abi: SCHEDULE_ABI,
-    functionName: 'jobsDue',
-    args: [startAfter, limit],
-  })) as readonly [readonly bigint[], bigint];
-  return { ids: [...ids], nextCursor };
-}
-
-async function getJob(id: bigint): Promise<Job> {
-  const j = (await publicClient().readContract({
-    address: REGISTRY as `0x${string}`,
-    abi: SCHEDULE_ABI,
-    functionName: 'getJob',
-    args: [id],
-  })) as {
-    owner: string;
-    interval: bigint;
-    status: number;
-    nextRun: bigint;
-    budgetWei: bigint;
-    runsLeft: number;
-    targetId: bigint;
-  };
-  return {
-    owner: j.owner,
-    interval: j.interval,
-    status: Number(j.status),
-    nextRun: j.nextRun,
-    budgetWei: j.budgetWei,
-    runsLeft: Number(j.runsLeft),
-    targetId: j.targetId,
-  };
-}
-
-async function taskOf(id: bigint): Promise<string> {
-  const raw = (await publicClient().readContract({
-    address: REGISTRY as `0x${string}`,
-    abi: SCHEDULE_ABI,
-    functionName: 'taskOf',
-    args: [id],
-  })) as `0x${string}`;
-  return decodeUtf8Bytes(raw);
 }
 
 /** persona text for a tokenId (the job's targetId IS the token id). */
@@ -606,43 +407,35 @@ function decodeUtf8Bytes(hex: `0x${string}`): string {
 
 // ---- the agent run: a BOUNDED tool loop with agent ping-pong ----------------
 //
-// AGENT PING-PONG. The old single-turn `runAgent` (one generateContent under the
-// target persona) is a BOUNDED tool loop: the scheduled agent gets
+// AGENT PING-PONG. A scheduled AGENT run is a BOUNDED tool loop: the agent gets
 // `call_agent(name, message)` (consult/delegate to another agent IN-TICK),
-// `schedule_task(target, task, interval_seconds, budget_lh, runs)` (spawn a
-// CROSS-TICK follow-up job), `notify_owner(title, body)` (Web-Push the JOB
-// OWNER's registered device — feedback #69), and `collect_tithe(account)` (trigger
-// the permissionless TitheFacet revenue→treasury pull for a consented account).
-// Each loop round is one generateContent under the
-// JOB's target persona; a `call_agent` functionCall resolves that target's on-chain
-// persona and runs ONE generateContent for the sub-agent (sub-agents are SINGLE
-// turns — no nested loops, so the call tree is bounded to depth 1), feeding the
-// reply back as a functionResponse. Text with no call = the final answer; stop.
+// `notify_owner(title, body)` (Web-Push the JOB OWNER's registered device —
+// feedback #69), `finish_goal(report)` (end a /goal job), and
+// `collect_tithe(account)` (trigger the permissionless TitheFacet revenue→
+// treasury pull for a consented account). Each loop round is one
+// generateContent under the JOB's target persona; a `call_agent` functionCall
+// resolves that target's on-chain persona and runs ONE generateContent for the
+// sub-agent (sub-agents are SINGLE turns — no nested loops, so the call tree is
+// bounded to depth 1), feeding the reply back as a functionResponse. Text with
+// no call = the final answer; stop.
 //
-// The whole run is bounded by: (1) MAX_PINGPONG_ROUNDS caps the agent's own turns;
-// (2) sub-agents never loop; (3) the per-job $LH budget — every generateContent (+
-// every schedule_task, which spends gas + future budget) costs COST_WEI and we STOP
-// before any call the budget can't cover; (4) the per-TICK caps (#1) — the running
-// global/per-owner tick spend can't exceed GLOBAL_TICK_CAP_WEI /
-// PER_OWNER_TICK_CAP_WEI, else the run STOPS and spills. A runaway loop drains its
-// escrow and the facet exhausts the job.
-//
-// CROSS-TICK recursion is SHIPPED via `schedule_task` → `scheduleChildJob(parentJobId
-// = the running job, …)`: the child's budget is drawn from the parent's remaining
-// escrow (facet enforces InsufficientParentBudget / MAX_DEPTH / root cap). A facet
-// revert is fed back as a functionResponse error — never hangs. A schedule_task call
-// is budget/cap-gated exactly like a model call so an agent can't drain via spawning.
+// The whole run is bounded by: (1) MAX_PINGPONG_ROUNDS caps the agent's own
+// turns; (2) sub-agents never loop; (3) the per-run budget (the owner's live
+// meter balance, capped per fire) — every generateContent costs COST_WEI and we
+// STOP before any call the budget can't cover; (4) the per-TICK caps (#1) — the
+// running global/per-owner tick spend can't exceed GLOBAL_TICK_CAP_WEI /
+// PER_OWNER_TICK_CAP_WEI, else the run STOPS and spills.
 
-// ---- /goal — the ralph-on-chain loop ----------------------------------------
+// ---- /goal — the ralph goal loop ---------------------------------------------
 //
 // A job whose task begins with the exact marker `GOAL: ` is a GOAL LOOP (the
 // Ralph technique): the SAME goal prompt is re-fed every iteration, durable
-// progress lives in on-chain state (not the model's memory — there is none
-// across ticks), and the loop ends itself when the agent verifies the goal is
-// met and calls `finish_goal` — which the worker relays to the facet's
-// scheduler-only `completeJob(jobId)`, refunding the unspent escrow to the
-// owner. Until then, every fire is one bounded iteration: inspect state, take
-// the single most valuable next step, leave a progress note.
+// progress lives in external (e.g. on-chain) state — not the model's memory,
+// there is none across ticks — and the loop ends itself when the agent verifies
+// the goal is met and calls `finish_goal`, which ENDS the job in the store (no
+// next slot is written) and pushes the final report to the owner. Until then,
+// every fire is one bounded iteration: inspect state, take the single most
+// valuable next step, leave a progress note.
 
 const GOAL_PREFIX = 'GOAL: ';
 
@@ -704,17 +497,14 @@ interface GeminiContent {
 }
 
 // The tools the scheduled agent gets. Single-`type` schemas with no union /
-// additionalProperties (Gemini 400s on those — see CLAUDE.md gotcha). FIVE tools:
+// additionalProperties (Gemini 400s on those — see CLAUDE.md gotcha). FOUR tools:
 //   * call_agent      — consult/delegate to another agent THIS run (in-tick).
-//   * schedule_task   — spawn a FOLLOW-UP scheduled job funded from THIS job's
-//                       remaining budget (cross-tick recursion via
-//                       scheduleChildJob). The facet enforces budget draw + depth.
 //   * notify_owner    — Web-Push a note to the JOB OWNER's registered device
 //                       (feedback #69). Budget-counted like a model call so a
 //                       loop can't spam the owner's phone.
 //   * finish_goal     — declare the job's GOAL verifiably complete: ends the
-//                       recurring job on-chain (completeJob) and refunds the
-//                       remaining escrow to the owner. The /goal ralph-loop exit.
+//                       recurring job (no next slot is written) and pushes the
+//                       final report to the owner. The /goal ralph-loop exit.
 //   * collect_tithe   — trigger TitheFacet.collectTithe(account), the
 //                       PERMISSIONLESS revenue→treasury pull. Zero new authority
 //                       (the facet pulls only the account's OWN consented share
@@ -723,11 +513,8 @@ interface GeminiContent {
 //
 // NOTE: there is NO `post_bounty` tool. The existing permissionless
 // `BountyFacet.postBounty` escrows from `msg.sender` (the scheduler key → the
-// PLATFORM funds the reward, not the job's escrow) and gates accept/cancel on the
-// poster (→ the bounty + its refund strand under the PLATFORM). It needs a
-// net-new scheduler-role `postBountyFromJob(jobId, …)` that draws from the job's
-// ScheduleFacet escrow + sets the OWNER as poster (the maintainer cuts it); only
-// then is `post_bounty` wired. See `findToolCall`.
+// PLATFORM would fund the reward, not the owner) and gates accept/cancel on the
+// poster (→ the bounty + its refund strand under the PLATFORM). See `findToolCall`.
 const AGENT_TOOLS = {
   functionDeclarations: [
     {
@@ -748,44 +535,6 @@ const AGENT_TOOLS = {
           },
         },
         required: ['name', 'message'],
-      },
-    },
-    {
-      name: 'schedule_task',
-      description:
-        'Schedule a FOLLOW-UP recurring job that runs a target localharness agent on a fixed interval, WITHOUT a browser tab. Its budget is drawn from THIS scheduled job\'s remaining $LH budget (so you can only spawn work you can afford). Use this to set up autonomous follow-on work — e.g. "check this again every hour for the next 3 runs". The job persists on-chain across ticks.',
-      parameters: {
-        type: 'object',
-        properties: {
-          target: {
-            type: 'string',
-            description:
-              'The agent subdomain name to run on the schedule, e.g. "claude" for claude.localharness.xyz.',
-          },
-          task: {
-            type: 'string',
-            description:
-              'The instruction the target agent runs each time the job fires.',
-          },
-          interval_seconds: {
-            type: 'integer',
-            description:
-              'Seconds between runs (minimum 60). The job fires no more often than this.',
-            minimum: 60,
-          },
-          budget_lh: {
-            type: 'number',
-            description:
-              'Total $LH to escrow for this child job, drawn from THIS job\'s remaining budget. Must be > 0 and within what remains.',
-          },
-          runs: {
-            type: 'integer',
-            description:
-              'How many times the job may fire before it stops (must be >= 1).',
-            minimum: 1,
-          },
-        },
-        required: ['target', 'task', 'interval_seconds', 'budget_lh', 'runs'],
       },
     },
     {
@@ -810,14 +559,14 @@ const AGENT_TOOLS = {
     {
       name: 'finish_goal',
       description:
-        'Declare this scheduled job\'s GOAL complete. This permanently ENDS the recurring job on-chain and refunds its remaining $LH budget to the owner — there are no more iterations after this. Call it ONLY when you have verified, against current on-chain state, that the goal is fully achieved. Pass a final report summarizing the outcome and the evidence.',
+        'Declare this scheduled job\'s GOAL complete. This permanently ENDS the recurring job — there are no more iterations after this. Call it ONLY when you have verified, against current state, that the goal is fully achieved. Pass a final report summarizing the outcome and the evidence.',
       parameters: {
         type: 'object',
         properties: {
           report: {
             type: 'string',
             description:
-              'The final outcome summary: what was achieved, and the evidence (on-chain state) that proves the goal is complete.',
+              'The final outcome summary: what was achieved, and the evidence that proves the goal is complete.',
           },
         },
         required: ['report'],
@@ -885,24 +634,19 @@ function partsText(parts: GeminiPart[]): string {
 }
 
 /** First functionCall part addressed to a known tool (call_agent /
- * schedule_task / notify_owner / finish_goal / collect_tithe), if any.
+ * notify_owner / finish_goal / collect_tithe), if any.
  *
  * NOTE: `post_bounty` is deliberately NOT here. It cannot reuse the existing
  * permissionless `BountyFacet.postBounty` from the scheduler key — that escrows
- * `transferFrom(msg.sender, …)` (so the PLATFORM funds the reward, not the job's
- * own escrow) and gates `acceptResult`/`cancelBounty` on `msg.sender == poster`
- * (so the bounty + its refund strand under the PLATFORM, never the owner). Wiring
- * it would silently spend platform funds and break the trust envelope. It needs a
- * net-new scheduler-role `postBountyFromJob(jobId, …)` facet fn that DRAWS the
- * reward from the job's ScheduleFacet escrow and sets the JOB OWNER as poster
- * (mirroring `scheduleChildJob`'s escrow-draw + pinned-parent pattern); the
- * maintainer cuts that, then `post_bounty` joins this allowlist + the tool list. */
+ * `transferFrom(msg.sender, …)` (so the PLATFORM funds the reward, not the
+ * owner) and gates `acceptResult`/`cancelBounty` on `msg.sender == poster` (so
+ * the bounty + its refund strand under the PLATFORM, never the owner). Wiring
+ * it would silently spend platform funds and break the trust envelope. */
 function findToolCall(parts: GeminiPart[]): GeminiFunctionCall | null {
   for (const p of parts) {
     if (
       p.functionCall &&
       (p.functionCall.name === 'call_agent' ||
-        p.functionCall.name === 'schedule_task' ||
         p.functionCall.name === 'notify_owner' ||
         p.functionCall.name === 'finish_goal' ||
         p.functionCall.name === 'collect_tithe')
@@ -911,29 +655,6 @@ function findToolCall(parts: GeminiPart[]): GeminiFunctionCall | null {
     }
   }
   return null;
-}
-
-/** Coerce a Gemini arg (number | numeric-string) to a positive bigint wei value,
- * or throw. `budget_lh` arrives as a decimal $LH amount; convert to 18-dec wei. */
-function lhToWei(v: unknown): bigint {
-  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new Error('budget_lh must be a positive number');
-  }
-  // 18-decimal fixed-point. Round to avoid float dust; reject sub-wei.
-  const wei = BigInt(Math.round(n * 1e6)) * 1_000_000_000_000n; // 1e6 * 1e12 = 1e18
-  if (wei <= 0n) throw new Error('budget_lh too small (rounds to 0 wei)');
-  return wei;
-}
-
-/** Coerce a Gemini integer arg to a bounded positive int, or throw. */
-function toPositiveInt(v: unknown, field: string, max: number): number {
-  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new Error(`${field} must be a positive integer`);
-  }
-  const t = Math.trunc(n);
-  return t > max ? max : t;
 }
 
 /**
@@ -1000,34 +721,6 @@ function commitSpend(tb: TickBudget, owner: string, cost: bigint): void {
   tb.perOwner.set(ownerKey, (tb.perOwner.get(ownerKey) ?? 0n) + cost);
 }
 
-// ---- shared poke spend ledger (L8 / I15) ------------------------------------
-//
-// The cron handler threads ONE tick budget through its whole batch so
-// GLOBAL_TICK_CAP_WEI / PER_OWNER_TICK_CAP_WEI bound the worker's real upstream
-// (Gemini) spend per invocation. The unauthenticated `?poke=<jobId>` heartbeat
-// used to construct a FRESH `newTickBudget()` PER REQUEST, so every poke got a
-// full, independent cap allowance — a caller could enumerate due jobs and poke
-// each to drive the platform's per-minute Gemini fan-out well past the global
-// cap. Share a COARSE, window-reset ledger across pokes in this isolate so
-// aggregate poke-driven spend is bounded the way a cron tick is. Edge isolates
-// are ephemeral + per-region, so this is best-effort — the same guarantee as the
-// per-isolate `pokeWindow` rate limiter — not a global lock; per-job budgets /
-// escrow still bound each individual run.
-const POKE_BUDGET_WINDOW_MS = 60_000; // one cron-tick cadence
-let pokeBudget: TickBudget | null = null;
-let pokeBudgetWindowStart = 0;
-
-/** The poke ledger for `now`, rolled over once per POKE_BUDGET_WINDOW_MS so a
- * burst of pokes within a window shares ONE cap (and a quiet window starts
- * fresh). */
-function sharedPokeBudget(now: number): TickBudget {
-  if (pokeBudget === null || now - pokeBudgetWindowStart >= POKE_BUDGET_WINDOW_MS) {
-    pokeBudget = newTickBudget();
-    pokeBudgetWindowStart = now;
-  }
-  return pokeBudget;
-}
-
 /** Outcome of a bounded ping-pong run. `calls` = generateContent calls made
  * (the agent's turns + each sub-agent turn) = the unit COST_WEI meters on. */
 interface PingPongResult {
@@ -1044,8 +737,7 @@ interface PingPongResult {
    * re-fires on its own interval — never a silent skip). */
   clockCapped: boolean;
   /** Set when the agent called `finish_goal`: its final report. The caller
-   * relays this to the facet's `completeJob` (after recordRun debits this
-   * run's calls) — the job ends + the remainder refunds to the owner. */
+   * ENDS the job (writes no next slot) and pushes the report to the owner. */
   goalReport?: string;
   /** Set when the agent's OWN model turn (generateContent) threw mid-loop: the
    * error message. `calls` still carries the TRUE count made so far, so the
@@ -1058,50 +750,41 @@ interface PingPongResult {
  * The bounded agent tool loop ("agent ping-pong").
  *
  * Every metered action passes TWO gates that are ANDed together:
- *   1. PER-JOB budget — `maxCalls` = how many COST_WEI units the JOB's remaining
- *      budget can pay for (floor(remaining / COST_WEI), computed by the caller).
- *      We never make call N+1 unless `calls < maxCalls`, so `calls` returned here
- *      is always <= maxCalls and `processJob` can charge `calls * COST_WEI`
- *      without exceeding budgetWei (the facet reverts SpendExceedsBudget else).
+ *   1. PER-RUN budget — `maxCalls` = how many COST_WEI units this run may spend
+ *      (computed by the caller from the owner's live meter balance, capped per
+ *      fire). We never make call N+1 unless `calls < maxCalls`, so `calls`
+ *      returned here is always <= maxCalls and the caller can debit
+ *      `calls * COST_WEI` clamped to the live balance.
  *   2. PER-TICK caps (#1) — `canSpend(tb, owner, COST_WEI)`: the running
  *      tick-global + per-owner totals + this call must stay under
- *      GLOBAL_TICK_CAP_WEI / PER_OWNER_TICK_CAP_WEI. If not, we STOP — the job's
- *      nextRun is not advanced, so it spills to the next tick (`tickCapped`).
- * BEFORE every metered action (the agent's own turn, each sub-agent turn, and
- * each schedule_task — which spends gas + sets up future spend) we check BOTH and
- * `commitSpend` after counting it. A blocked action by EITHER gate halts the run.
+ *      GLOBAL_TICK_CAP_WEI / PER_OWNER_TICK_CAP_WEI. If not, we STOP
+ *      (`tickCapped`).
+ * BEFORE every metered action (the agent's own turn and each sub-agent turn) we
+ * check BOTH and `commitSpend` after counting it. A blocked action by EITHER
+ * gate halts the run.
  *
  * Tools the agent may call: `call_agent` (consult/delegate in-tick, depth-1 sub-
- * agents that never recurse), `schedule_task` (spawn a child job funded from
- * THIS job's remaining escrow via `scheduleChildJob`, with `parentJobId` pinned
- * to the running job — the facet enforces budget draw + MAX_DEPTH),
- * `notify_owner` (Web-Push a note to the JOB owner's registered device via
- * `sendOwnerPush` — the owner is wired from the job record, never from model
- * args, so a run can only ever buzz its OWN owner), and `collect_tithe` (trigger
- * the permissionless `TitheFacet.collectTithe(account)` — the facet pulls only
- * the account's OWN consented share into its OWN guild, so the scheduler signs it
- * with zero new authority). A tool error (bad args,
+ * agents that never recurse), `notify_owner` (Web-Push a note to the JOB owner's
+ * registered device via `sendOwnerPush` — the owner is wired from the job
+ * record, never from model args, so a run can only ever buzz its OWN owner),
+ * `finish_goal` (end a /goal job with a final report), and `collect_tithe`
+ * (trigger the permissionless `TitheFacet.collectTithe(account)` — the facet
+ * pulls only the account's OWN consented share into its OWN guild, so the
+ * scheduler signs it with zero new authority). A tool error (bad args,
  * unregistered target, facet revert) becomes an error functionResponse — the
  * loop continues, never hangs.
  *
  * Bounds: MAX_PINGPONG_ROUNDS on the agent's turns, single-turn sub-agents, the
- * per-job budget, the per-tick caps, and Edge's wall-clock. The caller guarantees
- * `maxCalls >= 1` (it doesn't enter the loop otherwise).
+ * per-run budget, the per-tick caps, and Edge's wall-clock. The caller
+ * guarantees `maxCalls >= 1` (it doesn't enter the loop otherwise).
  */
 async function runPingPong(
   persona: string,
   task: string,
   maxCalls: number,
-  parentJobId: bigint,
-  targetId: bigint,
   owner: string,
   tb: TickBudget,
   modelDeadlineMs: number,
-  // OFF-CHAIN runs pass `false`: there is no on-chain parent escrow to draw a
-  // child job from, so `schedule_task` (→ scheduleChildJob(parentJobId)) MUST be
-  // refused — otherwise scheduleChildJob would run against a bogus parentJobId.
-  // On-chain `processJob` passes `true` (parentJobId = the running job's id).
-  allowChildJobs = true,
 ): Promise<PingPongResult> {
   const contents: GeminiContent[] = [
     { role: 'user', parts: [{ text: task }] },
@@ -1182,10 +865,9 @@ async function runPingPong(
       };
     }
 
-    // GOAL COMPLETE (finish_goal). Not metered — it's not a model call, and the
-    // on-chain completeJob (relayed by the caller AFTER recordRun settles this
-    // run's debit) only REFUNDS escrow, never spends it. The report is the
-    // run's final output; the loop stops HERE.
+    // GOAL COMPLETE (finish_goal). Not metered — it's not a model call; it only
+    // ENDS the job (the caller writes no next slot). The report is the run's
+    // final output; the loop stops HERE.
     if (call.name === 'finish_goal') {
       const report =
         typeof call.args?.report === 'string' ? (call.args.report as string).trim() : '';
@@ -1209,104 +891,14 @@ async function runPingPong(
 
     let responsePayload: Record<string, unknown>;
 
-    if (call.name === 'schedule_task') {
-      // OFF-CHAIN runs have no on-chain parent escrow: refuse child spawning
-      // (scheduleChildJob draws from parentJobId's ScheduleFacet escrow, which a
-      // GitHub-store job does not have). Fed back as a tool error — never hangs.
-      if (!allowChildJobs) {
-        contents.push({
-          role: 'function',
-          parts: [
-            {
-              functionResponse: {
-                name: 'schedule_task',
-                response: { error: 'scheduling child jobs is not available in this run' },
-              },
-            },
-          ],
-        });
-        continue;
-      }
-      // CHILD-JOB SPAWN (cross-tick recursion). Counts toward the budget/cap like
-      // a model call — it spends gas now AND sets up future spend (drawn from this
-      // job's escrow). Gate it the same way.
-      if (!mayMeterCall()) {
-        responsePayload = {
-          error: budgetCapped
-            ? 'budget exhausted: not enough remaining $LH to schedule a child job'
-            : clockCapped
-              ? 'tick wall-clock budget reached: cannot schedule a child job this run'
-              : 'per-tick spend cap reached: cannot schedule a child job this tick',
-        };
-      } else {
-        calls++;
-        commitSpend(tb, owner, COST_WEI);
-        try {
-          const target =
-            typeof call.args?.target === 'string'
-              ? (call.args.target as string).trim()
-              : '';
-          if (!target) throw new Error('schedule_task requires a non-empty "target"');
-          const childTask =
-            typeof call.args?.task === 'string' ? (call.args.task as string) : '';
-          if (!childTask.trim()) {
-            throw new Error('schedule_task requires a non-empty "task"');
-          }
-          const interval = BigInt(
-            toPositiveInt(call.args?.interval_seconds, 'interval_seconds', 31_536_000),
-          );
-          if (interval < 60n) {
-            throw new Error('interval_seconds must be at least 60');
-          }
-          const childBudget = lhToWei(call.args?.budget_lh);
-          const childRuns = toPositiveInt(call.args?.runs, 'runs', 4_294_967_295);
-
-          const targetId = await idOfName(target);
-          if (targetId === 0n) {
-            throw new Error(`no such agent: "${target}" is not registered`);
-          }
-          // parentJobId is PINNED to the running job — the agent can't redirect
-          // the budget draw to another job. The facet enforces the escrow draw +
-          // depth + root cap; a revert is surfaced as an error below.
-          const childJobId = await scheduleChildJob(
-            parentJobId,
-            targetId,
-            childTask,
-            interval,
-            childBudget,
-            childRuns,
-          );
-          responsePayload = {
-            scheduled: true,
-            childJobId: childJobId.toString(),
-            target,
-            interval_seconds: Number(interval),
-            runs: childRuns,
-          };
-        } catch (e) {
-          // A facet revert (InsufficientParentBudget / MaxDepthExceeded), an
-          // unregistered target, or a bad arg — feed it back; never hang.
-          responsePayload = { error: (e as Error).message };
-        }
-      }
-      contents.push({
-        role: 'function',
-        parts: [
-          { functionResponse: { name: 'schedule_task', response: responsePayload } },
-        ],
-      });
-      if (tickCapped || clockCapped) break; // a tick cap / spent wall-clock share halts the run
-      continue;
-    }
-
     if (call.name === 'notify_owner') {
       // OWNER PUSH (the goal-loop "notify my owner" affordance — #69).
       // Sends to the JOB OWNER's push-store subscriptions via the same
       // sendOwnerPush plumbing as the post-run summary; the owner comes
       // from the job record, NOT from model args (a run can only buzz its own
       // owner). Not a model call, but COUNTED through the same gate + ledger
-      // as one (mirrors schedule_task): each push costs COST_WEI from the
-      // job's budget, so a runaway loop can't spam the owner's phone for free.
+      // as one: each push costs COST_WEI from the run's budget, so a runaway
+      // loop can't spam the owner's phone for free.
       const title =
         typeof call.args?.title === 'string'
           ? (call.args.title as string).trim().slice(0, 80)
@@ -1351,10 +943,10 @@ async function runPingPong(
 
     if (call.name === 'collect_tithe') {
       // PERMISSIONLESS TITHE PULL (TitheFacet.collectTithe). Not a model call,
-      // but COUNTED through the same gate + ledger as one (mirrors schedule_task /
+      // but COUNTED through the same gate + ledger as one (mirrors
       // notify_owner): it spends scheduler gas + is an agent-initiated action, so
       // metering it keeps a loop from spamming collectTithe for free AND keeps the
-      // per-job-budget / per-tick-cap accounting in lockstep. No new authority —
+      // per-run-budget / per-tick-cap accounting in lockstep. No new authority —
       // the facet pulls only `account`'s own consented share into the account's own
       // guild; a revert (NotConfigured / UnknownGuild / NothingToCollect) is fed
       // back so the agent reacts or finishes.
@@ -1445,7 +1037,7 @@ async function runPingPong(
   };
 }
 
-// ---- recordRun (the worker's ONLY on-chain write; scheduler role) -----------
+// ---- scheduler-role writes (PROXY_METER_KEY signs; gas-only) -----------------
 
 let walletSingleton: ReturnType<typeof createWalletClient> | null = null;
 function schedulerWallet() {
@@ -1463,129 +1055,6 @@ function schedulerWallet() {
   return walletSingleton;
 }
 
-/**
- * Commit one run: `recordRun(id, expectedNextRun, spentWei)`, signed by the
- * scheduler-role key (PROXY_METER_KEY). The facet atomically debits the job's
- * escrowed budget by `spentWei`, advances `nextRun` (skip-don't-pile-up), and —
- * when the budget/runs are spent — marks the job Exhausted + refunds the owner.
- *
- * AWAITS the receipt (the accounting is never fire-and-forget). `expectedNextRun`
- * is the job's CURRENT `nextRun` (the CAS key): a racing firer that already
- * advanced it makes this revert `StaleNextRun` — which is BENIGN (the run was
- * already recorded by the winner; we must NOT double-bill), so the caller treats
- * a revert as a skip rather than an error.
- *
- * Returns 'recorded' on success, 'stale' on a CAS/contract revert (benign skip).
- */
-async function recordRun(
-  id: bigint,
-  expectedNextRun: bigint,
-  spentWei: bigint,
-): Promise<'recorded' | 'stale'> {
-  const wallet = schedulerWallet();
-  let hash: `0x${string}`;
-  try {
-    hash = await wallet.writeContract({
-      address: REGISTRY as `0x${string}`,
-      abi: SCHEDULE_ABI,
-      functionName: 'recordRun',
-      args: [id, expectedNextRun, spentWei],
-      account: wallet.account!,
-      chain: TEMPO_CHAIN,
-    });
-  } catch (e) {
-    // A revert at submission time (CAS StaleNextRun / NotDue / JobNotActive —
-    // another firer already committed this run, or the job changed state). This
-    // is the idempotency guard doing its job: skip, never double-bill.
-    console.warn(`[scheduler] recordRun(${id}) reverted on submit: ${(e as Error).message}`);
-    return 'stale';
-  }
-  const pub = publicClient();
-  let status: 'success' | 'reverted';
-  try {
-    // 12s (matches gemini.ts::meterDebit) — NOT 30s. The cron ticks every
-    // minute and processes up to MAX_JOBS_PER_TICK jobs SEQUENTIALLY, each a
-    // bounded ping-pong loop + this receipt wait; a 30s-per-job wait could let a
-    // single tick blow past Edge's ~25s wall-clock and die mid-batch. Keep each
-    // wait bounded so the whole tick fits.
-    ({ status } = await pub.waitForTransactionReceipt({
-      hash,
-      timeout: 12_000,
-      pollingInterval: 500,
-    }));
-  } catch {
-    // Ambiguous: the tx was SUBMITTED but the receipt didn't arrive in time
-    // (RPC slow / Edge clock). The recordRun is CAS-guarded on `nextRun`, so if
-    // it lands it advances the job exactly once (no double-bill possible); if it
-    // doesn't, next tick re-fires under the same CAS. Treat as a non-recorded
-    // skip — do NOT throw (a throw would just be logged as an error upstream and
-    // tells us nothing more). The chain is the source of truth.
-    console.warn(`[scheduler] recordRun(${id}) submitted (tx ${hash}) but receipt wait timed out — chain CAS will reconcile`);
-    return 'stale';
-  }
-  if (status === 'reverted') {
-    console.warn(`[scheduler] recordRun(${id}) reverted on-chain (tx ${hash}) — treated as a benign skip`);
-    return 'stale';
-  }
-  return 'recorded';
-}
-
-/**
- * scheduleChildJob — the cross-tick recursion write (scheduler-role). Spawns a
- * child job whose `budgetWei` is DRAWN FROM `parentJobId`'s remaining escrow. The
- * FACET enforces everything that matters (InsufficientParentBudget / depth / root
- * cap); the worker just relays the agent's request signed by the scheduler key,
- * with `parentJobId` pinned to the CURRENTLY-running job (the agent can't choose
- * a different parent — it's wired here, not from model args).
- *
- * Returns the new child job id on success, or throws on a facet revert (decoded
- * message — e.g. InsufficientParentBudget, MaxDepthExceeded) so the caller feeds
- * it back as a functionResponse error rather than hanging. Shares the scheduler
- * EOA + sequential nonce with recordRun (the tick processes jobs sequentially, so
- * these don't race the nonce).
- */
-async function scheduleChildJob(
-  parentJobId: bigint,
-  targetId: bigint,
-  task: string,
-  interval: bigint,
-  budgetWei: bigint,
-  maxRuns: number,
-): Promise<bigint> {
-  const wallet = schedulerWallet();
-  const taskBytes = ('0x' +
-    bytesToHex(new TextEncoder().encode(task))) as `0x${string}`;
-  // simulate first so a facet revert is decoded into a readable reason BEFORE we
-  // spend gas (and surfaces the same error the on-chain write would).
-  const pub = publicClient();
-  const { request, result } = await pub.simulateContract({
-    address: REGISTRY as `0x${string}`,
-    abi: SCHEDULE_ABI,
-    functionName: 'scheduleChildJob',
-    args: [parentJobId, targetId, taskBytes, interval, budgetWei, maxRuns],
-    account: wallet.account!,
-  });
-  const hash = await wallet.writeContract(request);
-  try {
-    const { status } = await pub.waitForTransactionReceipt({
-      hash,
-      timeout: 12_000,
-      pollingInterval: 500,
-    });
-    if (status === 'reverted') {
-      throw new Error(`scheduleChildJob reverted on-chain (tx ${hash})`);
-    }
-  } catch (e) {
-    // Receipt timed out OR reverted. The simulate above already passed, so a
-    // timeout most likely means it WILL land — but we can't confirm the child id,
-    // so surface as an error the agent can react to (don't claim a child id we
-    // didn't observe). A hard revert is rethrown verbatim.
-    throw new Error(`scheduleChildJob unconfirmed: ${(e as Error).message}`);
-  }
-  // simulateContract returned the would-be childJobId; the write matched it.
-  return result as bigint;
-}
-
 /** Normalize a Gemini-supplied `account` arg to a checksummed-lowercase 0x EVM
  * address, or null if it isn't a 20-byte hex address — so a malformed arg becomes
  * a functionResponse error and never reaches the chain. */
@@ -1597,9 +1066,9 @@ function asAddress(v: unknown): `0x${string}` | null {
 
 /**
  * collectTithe — the PERMISSIONLESS revenue→treasury pull (TitheFacet), signed
- * by the scheduler key. Same plumbing as `scheduleChildJob`: simulate first so a
- * facet revert (NotConfigured / UnknownGuild / NothingToCollect) is decoded into
- * a readable reason BEFORE spending gas, then write + await the 12s receipt.
+ * by the scheduler key. Simulate first so a facet revert (NotConfigured /
+ * UnknownGuild / NothingToCollect) is decoded into a readable reason BEFORE
+ * spending gas, then write + await the 12s receipt.
  *
  * ZERO new authority is granted by the signer: the facet reads ONLY `account`'s
  * own stored `(guildId, bps)` and clamps the pull to the account's own
@@ -1639,356 +1108,18 @@ async function collectTithe(account: `0x${string}`): Promise<bigint> {
   return result as bigint;
 }
 
-/**
- * completeJob — the /goal exit write (scheduler-role, same plumbing as
- * recordRun). Marks the job terminal + refunds the FULL remaining escrow to
- * the owner. Called AFTER recordRun has settled this run's debit, so the
- * refund is the post-debit remainder and the run's model calls are paid for.
- *
- * A revert is BENIGN-adjacent: if recordRun's debit just exhausted the job
- * (budget drained on this very run), the facet already refunded via the
- * exhaust path and completeJob reverts JobNotActive — the goal outcome is the
- * same (job over, owner refunded), so we log + report 'failed' without
- * throwing. Returns 'completed' on a confirmed success.
- */
-async function completeJob(id: bigint): Promise<'completed' | 'failed'> {
-  const wallet = schedulerWallet();
-  let hash: `0x${string}`;
-  try {
-    hash = await wallet.writeContract({
-      address: REGISTRY as `0x${string}`,
-      abi: SCHEDULE_ABI,
-      functionName: 'completeJob',
-      args: [id],
-      account: wallet.account!,
-      chain: TEMPO_CHAIN,
-    });
-  } catch (e) {
-    console.warn(`[scheduler] completeJob(${id}) reverted on submit: ${(e as Error).message}`);
-    return 'failed';
-  }
-  try {
-    const { status } = await publicClient().waitForTransactionReceipt({
-      hash,
-      timeout: 12_000,
-      pollingInterval: 500,
-    });
-    if (status === 'reverted') {
-      console.warn(`[scheduler] completeJob(${id}) reverted on-chain (tx ${hash})`);
-      return 'failed';
-    }
-  } catch {
-    // Submitted but unconfirmed. completeJob is idempotent-safe (a replay on a
-    // terminal job reverts, never double-refunds); if it lands the job is done,
-    // if not the goal loop fires once more and the agent re-finishes. Report
-    // failed so the log reflects the unconfirmed state.
-    console.warn(`[scheduler] completeJob(${id}) submitted (tx ${hash}) but receipt wait timed out`);
-    return 'failed';
-  }
-  return 'completed';
-}
-
-// ---- one job ----------------------------------------------------------------
-
-interface JobResult {
-  id: string;
-  /** `deferred` = due this tick but never started (batch cap, or the tick's
-   * wall-clock budget ran out first). nextRun is UNCHANGED — it re-fires next
-   * tick. Always logged + reported, never silent. */
-  outcome: 'recorded' | 'skipped' | 'stale' | 'spilled' | 'deferred';
-  ran: 'ok' | 'error' | 'n/a';
-  /** generateContent calls made this run (agent turns + sub-agent turns). */
-  calls?: number;
-  /** $LH wei actually debited (calls * COST_WEI, capped to budget). */
-  spentWei?: string;
-  /** /goal: the agent called finish_goal. 'completed' = completeJob confirmed
-   * on-chain (job over, remainder refunded); 'complete-failed' = the relay
-   * didn't confirm (the loop fires again and the agent can re-finish). */
-  goal?: 'completed' | 'complete-failed';
-  note?: string;
-}
-
-/**
- * Process ONE due job: read its full record + task, (re)confirm it's Active and
- * due, CHECK the per-tick caps (#1) can afford at least one call, run a BOUNDED
- * agent ping-pong loop under its target's persona, then ALWAYS recordRun
- * (advancing nextRun + debiting `calls * COST_WEI`, capped to the budget) — even
- * if Gemini errored, so a broken job can never hot-loop and stays bounded by its
- * budget. The per-job budget bounds the WHOLE ping-pong run; `tb` (the shared
- * tick ledger) caps the WHOLE tick across all jobs/owners on top;
- * `modelDeadlineMs` (this job's fair share of the tick wall-clock, computed by
- * the handler) truncates a heavy run so the jobs behind it still fire.
- */
-async function processJob(
-  id: bigint,
-  tb: TickBudget,
-  modelDeadlineMs: number,
-): Promise<JobResult> {
-  const idStr = id.toString();
-  const job = await getJob(id);
-
-  // Re-validate against the LATEST state (jobsDue read may be a tick stale, or a
-  // racing firer/owner action changed it). Skip without writing if not eligible.
-  if (job.owner === '0x0000000000000000000000000000000000000000') {
-    return { id: idStr, outcome: 'skipped', ran: 'n/a', note: 'unknown job' };
-  }
-  if (job.status !== STATUS_ACTIVE) {
-    return { id: idStr, outcome: 'skipped', ran: 'n/a', note: `status=${job.status} (not Active)` };
-  }
-  const nowTs = BigInt(Math.floor(Date.now() / 1000));
-  if (job.nextRun > nowTs) {
-    return { id: idStr, outcome: 'skipped', ran: 'n/a', note: 'not due yet' };
-  }
-
-  const expectedNextRun = job.nextRun;
-
-  // The facet rejects spentWei > budgetWei. If the remaining budget can't cover
-  // a FULL run (`budgetWei < COST_WEI`), we must NOT skip-and-leave-it: a skipped
-  // job's `nextRun` is never advanced, so it stays Active+due and `jobsDue`
-  // returns it EVERY tick forever (a permanent hot-loop that also starves the
-  // per-tick batch, since a covered run can never land — the budget can only
-  // shrink). Instead, record a FINAL run debiting exactly the dust remainder
-  // (`spentWei = budgetWei`): the facet sees `remaining(0) < spentWei`, marks the
-  // job Exhausted, and refunds 0 — clearing it from the due set for good. We do
-  // NOT run Gemini for this (no budget to pay for it) — it's a pure
-  // accounting-close, not a free model call. This does NOT touch the tick ledger
-  // (no real model spend).
-  if (job.budgetWei < COST_WEI) {
-    const outcome = await recordRun(id, expectedNextRun, job.budgetWei);
-    return {
-      id: idStr,
-      outcome,
-      ran: 'n/a',
-      note: 'budget below per-run cost — closed (Exhausted) without a run',
-    };
-  }
-
-  // PER-TICK CAP GATE (#1) — BEFORE running the job at all. If the tick's global
-  // total OR this owner's running total can't even cover ONE model call this tick,
-  // SPILL the job to the next tick: do NOT recordRun (so nextRun is unchanged and
-  // jobsDue returns it next tick), do NOT spend. This is the additional ceiling on
-  // top of the per-job budget — it bounds the worker's REAL upstream cost per tick
-  // regardless of how many jobs/owners are due. Logged, never silently dropped.
-  if (!canSpend(tb, job.owner, COST_WEI)) {
-    console.warn(
-      `[scheduler] job ${idStr} owner ${job.owner} SPILLED — per-tick cap reached ` +
-        `(global=${tb.global} cap=${GLOBAL_TICK_CAP_WEI}, ownerTickCap=${PER_OWNER_TICK_CAP_WEI}); re-fires next tick`,
-    );
-    return {
-      id: idStr,
-      outcome: 'spilled',
-      ran: 'n/a',
-      note: 'per-tick spend cap reached — spilled to next tick (nextRun unchanged)',
-    };
-  }
-
-  const name = await nameOfId(job.targetId);
-
-  // BUDGET → MAX CALLS. The per-job budget is the HARD ceiling on the ENTIRE
-  // ping-pong run: how many generateContent calls (agent turns + sub-agent turns)
-  // can the remaining budget pay for? `floor(budgetWei / COST_WEI)`. We're past
-  // the `budgetWei < COST_WEI` dust-close above, so maxCalls >= 1. The loop never
-  // makes call N+1 unless `N < maxCalls` AND the tick caps allow it, so the total
-  // it returns is <= maxCalls, and `min(calls * COST_WEI, budgetWei)` can never
-  // exceed budgetWei (the facet reverts SpendExceedsBudget if it did).
-  // MAX_PINGPONG_ROUNDS additionally caps the agent's OWN turns.
-  const maxCalls = Number(job.budgetWei / COST_WEI);
-
-  // Build + run the bounded loop. Persona resolution + Gemini errors must NOT
-  // abort the accounting: capture the outcome + the call count, then record once.
-  let ran: 'ok' | 'error' = 'ok';
-  let runNote = '';
-  let calls = 0;
-  let budgetCapped = false;
-  let tickCapped = false;
-  let clockCapped = false;
-  // `ranLoop` = the ping-pong loop actually executed (and self-committed its calls
-  // to the tick ledger). If a pre-loop READ (persona/task) throws, the loop never
-  // ran and committed nothing — we charge ONE call below and must ALSO commit that
-  // one call to the ledger ourselves so on-chain + ledger stay in lockstep.
-  let ranLoop = false;
-  // /goal: set when the agent called finish_goal — its final report. Relayed
-  // to the facet's completeJob AFTER recordRun settles this run's debit.
-  let goalReport: string | undefined;
-  try {
-    const basePersona = withLessons(
-      (await personaOf(job.targetId)) ?? defaultPersona(name),
-      await lessonsOf(job.targetId),
-    );
-    const rawTask = (await taskOf(id)).trim();
-    // The exact `GOAL: ` marker flags a ralph goal loop: wrap the persona with
-    // the goal-loop frame (inspect state → one step → finish_goal only when
-    // verifiably done) and feed the goal text as the task each iteration.
-    const isGoal = rawTask.startsWith(GOAL_PREFIX);
-    const persona = isGoal
-      ? goalSystemPrompt(basePersona, job.runsLeft, job.budgetWei)
-      : basePersona;
-    // An empty task = "run under the persona's standing instruction" (sentinel).
-    const task = isGoal
-      ? `THE GOAL:\n${rawTask.slice(GOAL_PREFIX.length).trim()}`
-      : rawTask || 'Perform your scheduled task and report concisely.';
-    ranLoop = true;
-    const result = await runPingPong(
-      persona,
-      task,
-      maxCalls,
-      id,
-      job.targetId,
-      job.owner,
-      tb,
-      modelDeadlineMs,
-    );
-    calls = result.calls;
-    budgetCapped = result.budgetCapped;
-    tickCapped = result.tickCapped;
-    clockCapped = result.clockCapped;
-    goalReport = result.goalReport;
-    runNote = result.output;
-    // A model error INSIDE the loop is now RETURNED (not thrown) with the true
-    // call count, so mark the run errored + bill the real `calls` here; the catch
-    // below now only fires for a PRE-loop read failure (L44).
-    if (result.error !== undefined) {
-      ran = 'error';
-      console.error(
-        `[scheduler] job ${idStr} target ${name} model ERROR mid-run ` +
-          `(still recordRun, billing ${calls} call(s)): ${result.error}`,
-      );
-    }
-    // MVP output sink = the Vercel log. The reply is recorded here so a scheduled
-    // run is observable in the function logs.
-    // TODO: richer output routing — persist the transcript on-chain / in a store,
-    // or push the final output to the owner, instead of only logging. (The
-    // ping-pong replies ARE chained in-loop now; this TODO is the OUTPUT side.)
-    console.log(
-      `[scheduler] job ${idStr} target ${name} (#${job.targetId}) ` +
-        `calls=${calls}/${maxCalls} rounds=${result.rounds}` +
-        `${budgetCapped ? ' (budget-capped)' : ''}${tickCapped ? ' (tick-capped)' : ''}` +
-        `${clockCapped ? ' (wall-clock-capped)' : ''} ` +
-        `reply: ${runNote.slice(0, 800)}`,
-    );
-  } catch (e) {
-    ran = 'error';
-    runNote = (e as Error).message;
-    // CRITICAL: still record the run below. A failing job advances its clock and
-    // debits a cost so it re-fires at most once per interval and drains its budget
-    // — never a hot loop.
-    if (!ranLoop) {
-      // The loop never started (a pre-loop read threw). Charge ONE call. The tick
-      // gate above already confirmed one call fits; commit it to the ledger now so
-      // the ledger matches the on-chain debit.
-      calls = 1;
-      commitSpend(tb, job.owner, COST_WEI);
-    } else if (calls === 0) {
-      // Defensive fallback: the loop started but threw WITHOUT returning a count.
-      // runPingPong now RETURNS its own model errors with the true `calls` (L44),
-      // so this is only reachable on an UNEXPECTED throw after its first commit —
-      // the ledger then already holds 1 call, so bill for it.
-      calls = 1;
-    }
-    console.error(`[scheduler] job ${idStr} target ${name} run ERROR (will still recordRun): ${runNote}`);
-  }
-
-  // METER: debit calls * COST_WEI, CAPPED to the budget (the facet reverts
-  // SpendExceedsBudget if spentWei > remaining). When this debit consumes the
-  // budget the facet marks the job Exhausted + refunds the remainder.
-  //
-  // CRITICAL: cap to the LIVE budget, not the start-of-run `job` snapshot. The
-  // agent can call schedule_task (scheduleChildJob) MID-RUN, which draws down the
-  // parent's on-chain budget; capping to the stale snapshot would let spentWei
-  // exceed the live budget → recordRun reverts SpendExceedsBudget → the worker
-  // treats it as 'stale' → nextRun never advances → the job HOT-LOOPS every tick,
-  // burning real upstream spend without ever debiting (the budget leash defeated).
-  // Re-read here so the debit always lands (exhausting the job if depleted). On a
-  // read failure, fall back to the snapshot (no worse than before on that path).
-  let spentWei = BigInt(calls) * COST_WEI;
-  const liveBudgetWei = await getJob(id)
-    .then((j) => j.budgetWei)
-    .catch(() => job.budgetWei);
-  if (spentWei > liveBudgetWei) spentWei = liveBudgetWei;
-
-  const outcome = await recordRun(id, expectedNextRun, spentWei);
-
-  // /goal: the agent declared the goal complete — relay finish_goal to the
-  // facet's completeJob. Ordering matters: recordRun FIRST (debit this run's
-  // calls), completeJob SECOND (refund the post-debit remainder). If that very
-  // debit exhausted the job, the facet already refunded via the exhaust path
-  // and completeJob reports 'failed' on the JobNotActive revert — same outcome
-  // for the owner (job over, remainder refunded), logged either way.
-  // Gate on `outcome === 'recorded'` (matching the push block below): only relay
-  // completeJob when THIS run's recordRun actually landed. On a benign
-  // race/timeout (outcome 'stale' — another firer committed first, or the
-  // receipt didn't arrive) the job was NOT advanced by us; calling completeJob
-  // anyway would end an Active job early + refund its escrow on a run we never
-  // recorded. The goal-loop simply re-fires next tick and the agent re-finishes.
-  let goal: 'completed' | 'complete-failed' | undefined;
-  if (outcome === 'recorded' && goalReport !== undefined) {
-    goal = (await completeJob(id)) === 'completed' ? 'completed' : 'complete-failed';
-    console.log(
-      `[scheduler] job ${idStr} GOAL ${goal === 'completed' ? 'COMPLETE (job ended, remainder refunded)' : 'finish relay unconfirmed'} — report: ${goalReport.slice(0, 800)}`,
-    );
-  }
-
-  // OWNER PUSH — TERMINAL OUTCOMES ONLY (a real user got buzzed once a
-  // minute by a multi-run job that pushed on EVERY run while it flailed):
-  // a goal completing, or this run exhausting the job (last run / budget
-  // drained). A single-run job still pushes on its only run; a recurring
-  // job buzzes when it finishes, not while it works. Still only for runs
-  // WE recorded with output; missing VAPID env / subscription silently
-  // skips; a push failure can never fail the run.
-  // Mirror ScheduleFacet.recordRun's exhaust test EXACTLY (recordRun marks
-  // Exhausted when `runsLeft == 0 || remaining < spentWei`, where
-  // `remaining = budgetWei - spentWei`): the partial-remainder hard stop fires
-  // when what's left can't fund another run of THIS size, not only when the
-  // budget hit exactly zero. Test against the LIVE budget (re-read above), NOT
-  // the start-of-run `job.budgetWei`: a mid-run schedule_task/scheduleChildJob
-  // can draw the parent's budget down, so the stale snapshot over-states what
-  // remains → mispredicts 'not exhausted' → the owner misses the terminal
-  // completion push (L49). `spentWei` is already capped to `liveBudgetWei`, so
-  // `liveBudgetWei - spentWei` never underflows.
-  const exhaustedNow =
-    outcome === 'recorded' &&
-    (job.runsLeft <= 1 || liveBudgetWei - spentWei < spentWei);
-  if (outcome === 'recorded' && ran === 'ok' && (goal === 'completed' || exhaustedNow)) {
-    const pushBody = goalReport !== undefined ? goalReport : runNote;
-    const pushName = goal === 'completed' ? `GOAL COMPLETE: ${name}` : name;
-    await notifyOwnerOfRun(job.owner, idStr, pushName, pushBody);
-  }
-
-  return {
-    id: idStr,
-    outcome,
-    ran,
-    calls,
-    spentWei: spentWei.toString(),
-    goal,
-    note:
-      ran === 'error'
-        ? runNote.slice(0, 200)
-        : goal
-          ? runNote.slice(0, 200)
-          : tickCapped
-            ? 'tick-capped mid-run (remaining work spills to next tick)'
-            : clockCapped
-              ? 'wall-clock capped mid-run (partial work recorded; re-fires on its interval)'
-              : budgetCapped
-                ? 'budget-capped mid-run'
-                : undefined,
-  };
-}
-
-// ---- OFF-CHAIN job firing (GitHub store; no chain) --------------------------
+// ---- job firing (GitHub store) -----------------------------------------------
 //
-// The off-chain analog of processJob, reusing the SAME helpers (persona/lessons,
-// runPingPong, sendOwnerPush) so a scheduled run behaves identically — only the
-// STORE + BILLING differ:
+// Fires ONE due job, reusing the shared helpers (persona/lessons, runPingPong,
+// sendOwnerPush):
 //   * REMINDER — no model call, no charge: web-push `task` to the owner, consume
 //     the run. Zero chain, zero $LH. This is the "notify me in 15 minutes" case.
-//   * AGENT — run the target agent (bounded ping-pong, child-jobs DISABLED since
-//     there's no on-chain parent escrow), then debit the OWNER's meter for the
-//     calls made (clamped to live balance, exactly like an interactive message).
+//   * AGENT — run the target agent (bounded ping-pong), then debit the OWNER's
+//     meter for the calls made (clamped to live balance, exactly like an
+//     interactive message).
 // Outcome is committed to the store: advance the file to nextRun+interval, or
 // delete it when exhausted / on a finish_goal. Per-tick caps (#1) bound agent
-// runs on top of the owner's balance, shared with the on-chain batch via `tb`.
+// runs on top of the owner's balance via the shared tick ledger `tb`.
 
 interface OffchainResult {
   id: string;
@@ -2043,9 +1174,9 @@ async function fireOffchainJob(
     return { id: job.id, kind: 'agent', outcome: 'spilled', note: 'per-tick spend cap — re-fires next tick' };
   }
 
-  // CLAIM (CAS) — the serialization point that replaces the on-chain recordRun
-  // StaleNextRun guard. Only the delete-winner runs + bills; a lost claim
-  // (overlapping tick won, or a transient delete failure) skips WITHOUT billing.
+  // CLAIM (CAS) — the serialization point. Only the delete-winner runs + bills;
+  // a lost claim (overlapping tick won, or a transient delete failure) skips
+  // WITHOUT billing.
   // After a win the old slot is GONE: we MUST writeNextSlot (or leave it
   // exhausted) so the job is represented again — lose-not-duplicate (a crash
   // before that drops ONE fire, never a double-charge).
@@ -2055,7 +1186,7 @@ async function fireOffchainJob(
 
   // The owner's LIVE meter balance is the budget (no escrow). If it can't fund
   // even one call, skip the run but CONSUME it (write next slot) so a broke job
-  // never hot-loops every tick — mirrors the on-chain dust-close.
+  // never hot-loops every tick.
   let credit: bigint;
   try {
     credit = await creditOf(job.owner);
@@ -2080,8 +1211,8 @@ async function fireOffchainJob(
   // `ranLoop` = the ping-pong loop actually started (and self-committed its calls
   // to the tick ledger). A PRE-loop read failure (persona/lessons) leaves it
   // false → the loop committed nothing, so the catch charges + commits ONE call.
-  // Mirrors processJob; replaces the old `calls === 0` guard that double-committed
-  // when runPingPong threw mid-loop after committing N (that throw is gone — L44).
+  // Replaces the old `calls === 0` guard that double-committed when runPingPong
+  // threw mid-loop after committing N (that throw is gone — L44).
   let ranLoop = false;
   try {
     const basePersona = withLessons(
@@ -2099,12 +1230,9 @@ async function fireOffchainJob(
       persona,
       task,
       maxCalls,
-      0n, // parentJobId unused: child jobs are disabled for off-chain runs
-      fallbackTokenId,
       job.owner,
       tb,
       modelDeadlineMs,
-      false, // allowChildJobs = false (no on-chain parent escrow)
     );
     calls = result.calls;
     goalReport = result.goalReport;
@@ -2179,9 +1307,9 @@ async function fireOffchainJob(
 }
 
 /**
- * Fire the OFF-CHAIN due set this tick (after the on-chain batch). Shares the
- * tick ledger `tb` so agent runs count against the SAME per-tick spend caps.
- * Bounded by MAX_OFFCHAIN_JOBS_PER_TICK + the tick's remaining wall-clock.
+ * Fire the due set this tick. `tb` is the tick's shared spend ledger, so agent
+ * runs count against the per-tick spend caps (#1). Bounded by
+ * MAX_OFFCHAIN_JOBS_PER_TICK + the tick's remaining wall-clock.
  */
 async function fireOffchainDue(
   tb: TickBudget,
@@ -2204,8 +1332,8 @@ async function fireOffchainDue(
 
   // REMINDERS FIRST, exempt from the wall-clock gate: a reminder is ~one push
   // (no model, no receipt wait), and the advertised "remind me in 15 minutes"
-  // case must NOT be starved by a slow on-chain/agent batch that already spent the
-  // tick's soft budget. Fire them all (claim-gated, so still single-fire).
+  // case must NOT be starved by slow agent runs that already spent the tick's
+  // soft budget. Fire them all (claim-gated, so still single-fire).
   const reminders = due.filter((d) => d.job.kind === 'reminder');
   // Cap AGENT runs at the processing budget (the wider scan was only to keep
   // reminders in the batch — L48); agents beyond the cap are left UNCLAIMED, so
@@ -2220,21 +1348,21 @@ async function fireOffchainDue(
     }
   }
 
-  // AGENT jobs share the tick's remaining wall-clock with the on-chain batch:
-  // stop STARTING new ones once the soft budget is gone (they re-fire next tick —
-  // their file is untouched because we never claimed it).
+  // AGENT jobs share the tick's remaining wall-clock: stop STARTING new ones
+  // once the soft budget is gone (they re-fire next tick — their file is
+  // untouched because we never claimed it).
   for (let i = 0; i < agents.length; i++) {
     const nowMs = Date.now();
     // Per-agent fair share of the REMAINING wall-clock over the REMAINING agents,
-    // anchored to NOW — not tickStart. The off-chain batch runs AFTER the on-chain
-    // batch + reminders, so a tickStart-anchored deadline (the old
-    // `tickStart + budget*(i+1)/N`) could already be IN THE PAST: fireOffchainJob
-    // would CLAIM (delete) the job, runPingPong would clock-cap at 0 calls, and
-    // writeNextSlot would CONSUME the fire — a one-shot agent job lost having
-    // never run the model (M10). SPILL the rest (leave the files untouched so they
-    // re-fire next tick) once no usable wall-clock remains — mirroring the
-    // on-chain mid-batch defer. (runPingPong additionally GUARANTEES the first
-    // model call past its clock gate, so a claimed job always runs at least once.)
+    // anchored to NOW — not tickStart. The agent batch runs AFTER the reminders,
+    // so a tickStart-anchored deadline (the old `tickStart + budget*(i+1)/N`)
+    // could already be IN THE PAST: fireOffchainJob would CLAIM (delete) the
+    // job, runPingPong would clock-cap at 0 calls, and writeNextSlot would
+    // CONSUME the fire — a one-shot agent job lost having never run the model
+    // (M10). SPILL the rest (leave the files untouched so they re-fire next
+    // tick) once no usable wall-clock remains. (runPingPong additionally
+    // GUARANTEES the first model call past its clock gate, so a claimed job
+    // always runs at least once.)
     const slice = Math.floor((TICK_SOFT_BUDGET_MS - (nowMs - tickStart)) / (agents.length - i));
     if (slice <= 0) {
       console.warn(`[scheduler] offchain: ${agents.length - i} agent job(s) deferred — tick wall-clock budget exhausted`);
@@ -2285,9 +1413,9 @@ function timingSafeEqual(a: string, b: string): boolean {
 //
 // The scheduler is the platform's heartbeat (it already fires every minute), so
 // it carries (a) the fail-LOUD assertion for ITS critical env — a missing
-// GEMINI_API_KEY bills owners for runs that can never succeed (error runs still
-// recordRun); a missing PROXY_METER_KEY runs the model then can't bill = free
-// inference — and (b) the HOURLY health block (minute==0): sponsor-float
+// GEMINI_API_KEY bills owners for runs that can never succeed (error runs are
+// still consumed + billed); a missing PROXY_METER_KEY runs the model then can't
+// bill = free inference — and (b) the HOURLY health block (minute==0): sponsor-float
 // headroom (warn at 10x the LH_RELAY_MIN_FLOAT_WEI breaker floor, not at
 // death), GitHub store reachability (one cheap read), and an env dry-run across
 // routes. A failing set files ONE deduped telemetry issue (_ghissue rails) +
@@ -2348,66 +1476,9 @@ export default async function handler(req: Request): Promise<Response> {
     });
   }
 
-  // FAIL-LOUD env assertion — BOTH the poke and cron paths spend (see the
-  // SCHEDULER_REQUIRED_ENV block above). Cron-authed callers also get the
-  // deduped alert filed below; a public poke just gets the 503 (no GitHub
-  // call rides on an unauthenticated probe).
+  // FAIL-LOUD env assertion (see the SCHEDULER_REQUIRED_ENV block above).
+  // Cron-authed callers get the deduped alert filed below.
   const misconfigured = missingEnv(SCHEDULER_REQUIRED_ENV);
-
-  // PUBLIC keeper poke (decentralized heartbeat, krafto #1.5): `?poke=<jobId>`
-  // runs ONE job. No cron secret needed — processJob re-validates (known + Active
-  // + due) and recordRun is CAS-guarded, so a poke can only run a genuinely-due
-  // job once; not-due → safe no-write skip. Lets any keeper be the heartbeat when
-  // the Vercel cron stalls. Rate-limited per IP (read-spam is the only abuse), and
-  // metered against a SHARED per-isolate ledger so pokes can't bypass the per-tick
-  // spend caps (L8 / I15).
-  {
-    const poke = new URL(req.url).searchParams.get('poke');
-    if (poke !== null) {
-      if (misconfigured.length > 0) return misconfigResponse(misconfigured);
-      // Platform-TRUSTED client IP for the rate-limit key. The LEFTMOST
-      // x-forwarded-for entry is CLIENT-SUPPLIED (an attacker prepends a random
-      // value per request to mint a fresh rate key, defeating the 60/min cap —
-      // L8). Vercel sets `x-real-ip` to the genuine client IP and appends the
-      // real edge hop to the RIGHT of XFF, so prefer x-real-ip, else the
-      // RIGHTMOST XFF hop — never the spoofable left.
-      const xff = (req.headers.get('x-forwarded-for') ?? '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const ip =
-        (req.headers.get('x-real-ip') ?? '').trim() ||
-        (xff.length ? xff[xff.length - 1] : '') ||
-        'unknown';
-      const retry = pokeWindow.hit(ip);
-      if (retry > 0) {
-        return new Response(JSON.stringify({ error: 'rate limited', retryAfterSeconds: retry }), {
-          status: 429,
-          headers: { 'content-type': 'application/json', 'retry-after': String(retry) },
-        });
-      }
-      let id: bigint;
-      try {
-        id = BigInt(poke);
-      } catch {
-        return new Response(JSON.stringify({ error: 'poke must be a numeric jobId' }), {
-          status: 400,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      // SHARED poke ledger (window-reset), NOT a fresh newTickBudget() per
-      // request: otherwise each poke gets a full, independent GLOBAL/PER_OWNER cap
-      // allowance and a caller could poke every due job to blow past the per-tick
-      // spend ceiling (L8 / I15). processJob's canSpend gate now bounds aggregate
-      // poke spend per window; a capped poke returns outcome 'spilled'.
-      const now = Date.now();
-      const result = await processJob(id, sharedPokeBudget(now), now + TICK_SOFT_BUDGET_MS);
-      return new Response(JSON.stringify({ poked: poke, result }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-  }
 
   const secret = process.env.CRON_SECRET;
   if (!secret) {
@@ -2450,132 +1521,23 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   const tickStart = Date.now();
-  const results: JobResult[] = [];
   // ONE per-tick spend ledger (#1), threaded through every job. Bounds the
   // worker's total real (Gemini) spend this tick globally + per owner.
   const tickBudget = newTickBudget();
-  let scanned = 0;
-  // On-chain scan failure is recorded (not a hard 502) so off-chain jobs —
-  // reminders especially — still fire this tick.
-  let onchainError: string | undefined;
-  try {
-    // Collect the FULL due set by FOLLOWING the cursor across pages.
-    // jobsDue(startAfter, limit) scans the INDEX WINDOW
-    // [startAfter, startAfter+limit) of the enumerable jobIds and returns the
-    // due ones in it + nextCursor (the index after the window). A single page
-    // from 0 STARVES newer due jobs once terminal (Exhausted/Cancelled) jobs
-    // pile up at low indices — so page forward until the index is fully
-    // scanned. Bounded (max 64 pages of view calls) so a huge index can't
-    // spin. We scan PAST the batch cap on purpose: every due job we will NOT
-    // process this tick must still be VISIBLE (a `deferred` result row), so a
-    // skip is never silent.
-    const dueAll: bigint[] = [];
-    const SCAN_PAGE = 64n;
-    let cursor = 0n;
-    for (let page = 0; page < 64; page++) {
-      const { ids: pageIds, nextCursor } = await jobsDue(cursor, SCAN_PAGE);
-      for (const id of pageIds) dueAll.push(id);
-      if (nextCursor <= cursor) break; // cursor didn't advance => fully scanned
-      cursor = nextCursor;
-    }
-    const due = dueAll.slice(0, MAX_JOBS_PER_TICK);
-    scanned = dueAll.length;
 
-    // A due job this tick cannot reach is NEVER silent: log + report it.
-    // Its nextRun is untouched, so jobsDue returns it again next tick.
-    const defer = (id: bigint, why: string) => {
-      console.warn(`[scheduler] job ${id} DEFERRED — ${why}; re-fires next tick (nextRun unchanged)`);
-      results.push({
-        id: id.toString(),
-        outcome: 'deferred',
-        ran: 'n/a',
-        note: `${why} — re-fires next tick (nextRun unchanged)`,
-      });
-    };
-
-    // Process SEQUENTIALLY so recordRun txs from the single scheduler account
-    // don't collide on the nonce (they share one EOA). Each run's accounting is
-    // awaited before the next starts — bounded + ordered.
-    for (let i = 0; i < due.length; i++) {
-      const id = due[i];
-      // MID-BATCH WALL-CLOCK GUARD: if earlier jobs (model loops + receipt
-      // waits) already consumed the tick's soft budget, defer the remainder
-      // OBSERVABLY rather than letting the platform kill the function
-      // mid-batch — which would skip them with no recordRun, no log, and no
-      // tick summary (the fleet's "silent fire-skip").
-      if (i > 0 && Date.now() - tickStart >= TICK_SOFT_BUDGET_MS) {
-        for (const rest of due.slice(i)) defer(rest, 'tick wall-clock budget exhausted');
-        break;
-      }
-      // FAIR-SHARE MODEL DEADLINE: job i may run its model loop until the
-      // (i+1)/batchSize fraction of the tick budget. Cumulative, so a quick
-      // early job rolls its unused time forward; a heavy early job is
-      // truncated (its partial work recorded + noted) instead of eating the
-      // whole tick and starving every job behind it.
-      const modelDeadline = tickStart + Math.floor((TICK_SOFT_BUDGET_MS * (i + 1)) / due.length);
-      try {
-        results.push(await processJob(id, tickBudget, modelDeadline));
-      } catch (e) {
-        // A read failure for one job must not abort the whole tick.
-        console.error(`[scheduler] job ${id} unexpected error: ${(e as Error).message}`);
-        results.push({ id: id.toString(), outcome: 'skipped', ran: 'n/a', note: (e as Error).message });
-      }
-    }
-
-    // Due jobs beyond the per-tick batch cap: visible, never silent.
-    for (const id of dueAll.slice(MAX_JOBS_PER_TICK)) {
-      defer(id, `due but beyond the per-tick job cap (${MAX_JOBS_PER_TICK})`);
-    }
-  } catch (e) {
-    // Loud in the function logs — a pre-loop failure (RPC scan, etc.) means no
-    // ON-CHAIN job ran this tick. Record it but DON'T early-return: the off-chain
-    // jobs below (reminders/agent runs in the GitHub store) don't depend on the
-    // chain scan and must still fire. Surfaced in the summary as `onchainError`.
-    console.error(`[scheduler] on-chain tick portion FAILED: ${(e as Error).message}`);
-    onchainError = (e as Error).message;
-  }
-
-  // OFF-CHAIN due set (GitHub store): fired AFTER the on-chain batch, sharing the
-  // per-tick spend ledger so agent runs count against the SAME caps. Self-bounded
-  // (job cap + remaining wall-clock); never throws (its own try/catch).
+  // The due set (GitHub store). Self-bounded (job cap + wall-clock); never
+  // throws (its own try/catch).
   const offchain = await fireOffchainDue(tickBudget, tickStart);
   const offchainPushed = offchain.results.filter((r) => r.outcome === 'pushed').length;
   const offchainRan = offchain.results.filter((r) => r.outcome === 'ran' || r.outcome === 'exhausted').length;
   const offchainErrored = offchain.results.filter((r) => r.outcome === 'error').length;
 
-  const recorded = results.filter((r) => r.outcome === 'recorded').length;
-  const stale = results.filter((r) => r.outcome === 'stale').length;
-  const skipped = results.filter((r) => r.outcome === 'skipped').length;
-  // SPILLED = blocked by a per-tick cap (#1); re-fires next tick (NOT dropped).
-  const spilled = results.filter((r) => r.outcome === 'spilled').length;
-  // DEFERRED = due but never started this tick (batch cap / wall-clock budget);
-  // re-fires next tick (NOT dropped). Reported per job so a skip is never silent.
-  const deferred = results.filter((r) => r.outcome === 'deferred').length;
-  const errored = results.filter((r) => r.ran === 'error').length;
-  // /goal jobs that ended themselves this tick (finish_goal → completeJob).
-  const goalsCompleted = results.filter((r) => r.goal === 'completed').length;
   // Total generateContent calls across the tick (agent + sub-agent turns) — the
   // metered unit; lets a dogfood POST see the ping-pong fan-out at a glance.
-  const totalCalls =
-    results.reduce((acc, r) => acc + (r.calls ?? 0), 0) +
-    offchain.results.reduce((acc, r) => acc + (r.calls ?? 0), 0);
+  const totalCalls = offchain.results.reduce((acc, r) => acc + (r.calls ?? 0), 0);
   const summary = {
     ok: true,
-    scanned,
-    recorded,
-    stale,
-    skipped,
-    spilled,
-    deferred,
-    errored,
-    goalsCompleted,
     totalCalls,
-    // Spilled/deferred jobs are BY DESIGN, not failures: their nextRun is
-    // unchanged and they re-fire next tick (per-tick spend/job/wall-clock caps).
-    note:
-      spilled + deferred > 0
-        ? 'spilled/deferred jobs hit a per-tick cap (spend, job count, or wall-clock); nextRun unchanged — they re-fire next tick'
-        : undefined,
     // Real $LH the worker committed to spend this tick (the per-tick cap unit).
     tickSpentWei: tickBudget.global.toString(),
     globalTickCapWei: GLOBAL_TICK_CAP_WEI.toString(),
@@ -2583,10 +1545,8 @@ export default async function handler(req: Request): Promise<Response> {
     durationMs: Date.now() - tickStart,
     // Hourly self-check results (only on the minute==0 / ?health=1 ticks).
     health,
-    jobs: results,
-    // On-chain scan error (if any) — off-chain jobs still fired despite it.
-    onchainError,
-    // OFF-CHAIN (GitHub store) firing this tick.
+    // The jobstore firing this tick. (Spilled jobs are BY DESIGN, not failures:
+    // their file is unclaimed and they re-fire next tick — per-tick caps.)
     offchainScanned: offchain.scanned,
     offchainPushed,
     offchainRan,
@@ -2594,9 +1554,7 @@ export default async function handler(req: Request): Promise<Response> {
     offchainJobs: offchain.results,
   };
   console.log(
-    `[scheduler] tick: scanned=${scanned} recorded=${recorded} stale=${stale} skipped=${skipped} spilled=${spilled} deferred=${deferred} errored=${errored} goalsCompleted=${goalsCompleted} calls=${totalCalls} spentWei=${tickBudget.global}` +
-      ` | offchain: scanned=${offchain.scanned} pushed=${offchainPushed} ran=${offchainRan} errored=${offchainErrored}` +
-      `${onchainError ? ` | ONCHAIN-ERR: ${onchainError}` : ''} in ${summary.durationMs}ms`,
+    `[scheduler] tick: scanned=${offchain.scanned} pushed=${offchainPushed} ran=${offchainRan} errored=${offchainErrored} calls=${totalCalls} spentWei=${tickBudget.global} in ${summary.durationMs}ms`,
   );
   return new Response(JSON.stringify(summary), {
     status: 200,

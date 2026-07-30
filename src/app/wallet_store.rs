@@ -199,35 +199,6 @@ pub(crate) async fn load_device_key() -> Option<k256::ecdsa::SigningKey> {
     wallet::from_private_key_hex(hex.trim()).ok()
 }
 
-/// Pointer to the on-chain OWNER address this device is linked to. A
-/// linked device (second browser holding only a per-origin signer key,
-/// not the seed) gives the apex no master wallet to key on. This tiny
-/// PUBLIC pointer (a plaintext 0x address) tells the apex which identity
-/// to render; everything shown is then read live on-chain (subdomains,
-/// linked devices, MAIN). Written by the apex `?link_device=` hand-off.
-const LINKED_OWNER_FILE: &str = ".lh_linked_owner";
-
-/// Persist the on-chain owner address this device is linked to.
-pub(crate) async fn persist_linked_owner(owner_hex: &str) -> Result<(), String> {
-    let fs = super::shared_opfs();
-    fs.write_atomic(LINKED_OWNER_FILE, owner_hex.trim().as_bytes())
-        .await
-        .map_err(|e| format!("linked owner save: {e}"))
-}
-
-/// Read this origin's linked-owner pointer, if any.
-pub(crate) async fn load_linked_owner() -> Option<String> {
-    let fs = super::shared_opfs();
-    let bytes = fs.read(LINKED_OWNER_FILE).await.ok()?;
-    let s = String::from_utf8(bytes).ok()?;
-    let t = s.trim();
-    if t.is_empty() || !t.starts_with("0x") {
-        None
-    } else {
-        Some(t.to_string())
-    }
-}
-
 /// Whether this origin's OPFS is at risk of being WIPED on tab close —
 /// the private/incognito-window case (kit-qa #). The seed is the ONLY key
 /// to on-chain ownership and lives in OPFS, so a fresh identity minted in a

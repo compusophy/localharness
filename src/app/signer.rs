@@ -17,7 +17,7 @@
 //!     (registry diamond + $LH token, zero native value), and refuses
 //!     anything else — a hostile subdomain can't get the master wallet
 //!     to sign an arbitrary fund-moving tx.
-//!   - **Identity ops** (`lh-reveal-seed`, `lh-import-seed`,
+//!   - **Identity ops** (`lh-reveal-seed`,
 //!     `lh-create-wallet{overwrite}`) are **apex-origin only** — a
 //!     subdomain iframe cannot exfiltrate or overwrite the master seed.
 //!
@@ -40,7 +40,7 @@
 //!   against `digest`, and signs only its own reconstruction.
 //!   `signature` is 65 bytes hex (r ‖ s ‖ v with v ∈ {27,28}).
 //!
-//! Identity management (lh-reveal-seed / lh-import-seed are APEX-ORIGIN
+//! Identity management (lh-reveal-seed is APEX-ORIGIN
 //! ONLY; lh-create-wallet overwrite=true is apex-only, ensure is open):
 //!   parent  → signer: { type: "lh-create-wallet", id, overwrite: bool? }
 //!   signer → parent:  { type: "lh-sign-response", id, address }
@@ -52,10 +52,6 @@
 //!
 //!   parent  → signer: { type: "lh-reveal-seed", id }
 //!   signer → parent:  { type: "lh-sign-response", id, phrase }
-//!                or:  { type: "lh-sign-response", id, error }
-//!
-//!   parent  → signer: { type: "lh-import-seed", id, phrase }
-//!   signer → parent:  { type: "lh-sign-response", id, address }
 //!                or:  { type: "lh-sign-response", id, error }
 //!
 //!   parent  → signer: { type: "lh-claim-name", id, name }
@@ -83,7 +79,7 @@ use crate::encoding::{bytes_to_hex_str, hex_to_bytes, parse_hex_quantity};
 use crate::wallet;
 
 use super::signer_protocol::{
-    challenge_prehash, MSG_CLAIM_NAME, MSG_CREATE_WALLET, MSG_IMPORT_SEED, MSG_OPEN_KEY,
+    challenge_prehash, MSG_CLAIM_NAME, MSG_CREATE_WALLET, MSG_OPEN_KEY,
     MSG_REVEAL_SEED, MSG_SEAL_KEY, MSG_SIGN_CHALLENGE, MSG_SIGN_DIGEST, MSG_SIGN_RESPONSE,
 };
 
@@ -123,7 +119,6 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
             | MSG_SIGN_DIGEST
             | MSG_CREATE_WALLET
             | MSG_REVEAL_SEED
-            | MSG_IMPORT_SEED
             | MSG_CLAIM_NAME
             | MSG_SEAL_KEY
             | MSG_OPEN_KEY
@@ -223,19 +218,6 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
                 )
             } else {
                 spawn_reply("create-wallet", id, source_jsval, origin, run_create_wallet(overwrite));
-                return Ok(());
-            }
-        }
-        MSG_IMPORT_SEED => {
-            // APEX-ONLY. Importing overwrites the master wallet; honoring
-            // it cross-origin lets a subdomain silently replace the user's
-            // identity with an attacker-controlled key. Import is done on
-            // the apex page (writes local state directly).
-            if !super::tenant::is_apex_origin(&origin) {
-                error_response(&id, "seed import is only available at localharness.xyz")
-            } else {
-                let phrase = require_str("phrase")?;
-                spawn_reply("import-seed", id, source_jsval, origin, run_import_seed(phrase));
                 return Ok(());
             }
         }
@@ -434,12 +416,6 @@ async fn run_claim_name(name: &str) -> Result<(String, String), String> {
     Ok((address_hex, tx_hash))
 }
 
-async fn run_import_seed(phrase: String) -> Result<ReplyFields, String> {
-    let wallet = super::wallet_store::import(&phrase).await?;
-    let addr = wallet.address_hex();
-    super::APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
-    Ok(vec![("address", addr)])
-}
 
 fn build_challenge_response(id: &str, nonce_hex: &str, name: &str) -> Result<JsValue, String> {
     let nonce = hex_to_bytes(nonce_hex)?;
@@ -760,9 +736,6 @@ fn diamond_signable_selectors() -> Vec<[u8; 4]> {
         "withdrawCredits(uint256)",
         "depositCredits(uint256)",
         "redeem(string)",
-        "openSession()",
-        "scheduleJob(uint256,bytes,uint64,uint128,uint32)",
-        "cancelJob(uint256)",
         "createInvite(bytes32,uint256,uint64)",
         "acceptInvite(string)",
         "reclaimInvite(bytes32)",

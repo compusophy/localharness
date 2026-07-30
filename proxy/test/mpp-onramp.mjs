@@ -60,10 +60,12 @@ function addr(priv) {
   return '0x' + bytesToHex(keccak_256(pub.slice(1)).slice(12));
 }
 
-/** Personal-sign proxy auth token over `localharness-proxy:<addr>:<ts>`. */
+/** Personal-sign proxy auth token over `localharness-proxy:<addr>:<ts>:mpp` —
+ * the ROUTE-BOUND message mpp-onramp.ts verifies (the legacy unbound fallback
+ * is gone). */
 function authToken(priv, ts) {
   const a = addr(priv).toLowerCase();
-  const message = `localharness-proxy:${a}:${ts}`;
+  const message = `localharness-proxy:${a}:${ts}:mpp`;
   const msgBytes = new TextEncoder().encode(message);
   const prefix = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${msgBytes.length}`);
   const digest = keccak_256(concat(prefix, msgBytes));

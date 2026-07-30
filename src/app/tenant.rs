@@ -107,27 +107,6 @@ pub(crate) enum Host {
     Other(String),
 }
 
-impl Host {
-    /// Short display label for the chrome.
-    #[allow(dead_code)]
-    pub(crate) fn label(&self) -> String {
-        match self {
-            Host::Apex => format!("{ROOT_DOMAIN} · home"),
-            Host::Tenant(name) => format!("{name}.{ROOT_DOMAIN}"),
-            Host::Other(h) => h.clone(),
-        }
-    }
-
-    /// The tenant slug, if any. `None` for apex / unknown hosts.
-    #[allow(dead_code)]
-    pub(crate) fn tenant(&self) -> Option<&str> {
-        match self {
-            Host::Tenant(name) => Some(name.as_str()),
-            _ => None,
-        }
-    }
-}
-
 /// Read `window.location.hostname` and classify it. Defaults to
 /// `Host::Other("unknown")` if the browser refuses to hand it over
 /// (won't happen in practice).

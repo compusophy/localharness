@@ -57,37 +57,7 @@ pub(crate) fn encode_register_main(token_id: u64) -> Vec<u8> {
     data
 }
 
-// --- MultiSignerAccount (TBA add/remove device signer) ---------------
-
-/// `eth_call isAuthorizedSigner(signer)` on a TBA. Returns true if
-/// `signer` is recognized by the TBA's MultiSignerAccount impl —
-/// either as the NFT holder (implicit) or as a previously-added device.
-pub async fn is_authorized_signer(tba_address: &str, signer_hex: &str) -> Result<bool, String> {
-    let signer_bytes = hex_to_bytes(signer_hex)?;
-    if signer_bytes.len() != 20 {
-        return Err(format!("signer must be 20 bytes, got {}", signer_bytes.len()));
-    }
-    let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(&signer_bytes);
-    let calldata = encode_call_hex(selector("isAuthorizedSigner(address)"), &[padded]);
-    let result_hex = eth_call(tba_address, &calldata).await?;
-    decode_u256_as_u64(&result_hex).map(|v| v != 0)
-}
-
-/// Read `token()` on an ERC-6551 account → its owning tokenId (the 3rd
-/// returned word: chainId, tokenContract, tokenId). Lets us route owner
-/// actions through a TBA when we only know the TBA address.
-pub async fn tba_token_id_of(tba_hex: &str) -> Result<u64, String> {
-    let calldata = encode_call_hex(selector("token()"), &[]);
-    let result = eth_call(tba_hex, &calldata).await?;
-    let bytes = hex_to_bytes(&result)?;
-    if bytes.len() < 96 {
-        return Err("token(): short response".into());
-    }
-    let mut buf = [0u8; 8];
-    buf.copy_from_slice(&bytes[88..96]); // low 8 bytes of the tokenId word
-    Ok(u64::from_be_bytes(buf))
-}
+// --- MultiSignerAccount (TBA execute) ---------------------------------
 
 /// Execute a batch of calls AS the TBA (the asset owner), signed by a
 /// local key authorized on that TBA — the consolidation owner-action
@@ -116,61 +86,6 @@ pub async fn tba_execute_batch_sponsored(
         });
     }
     sponsored_batch(signer, calls, gas_limit).await
-}
-
-/// Read `devicesOf(mainId)` — the identity's linked devices, from the
-/// on-chain enumerable index in ONE call (no log scraping). Returns
-/// lowercase `0x…` addresses.
-pub async fn devices_of(main_id: u64) -> Result<Vec<String>, String> {
-    let result = read_view(selector("devicesOf(uint256)"), &[u256_be(main_id as u128)]).await?;
-    let bytes = hex_to_bytes(&result)?;
-    // ABI dynamic address[]: [offset(32)][len(32)][addr0(32)]... — shared decode.
-    Ok(decode_address_array(&bytes))
-}
-
-pub(crate) fn encode_unlink_device(main_id: u64, device: &[u8; 20]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 64);
-    out.extend_from_slice(&selector("unlinkDevice(uint256,address)"));
-    out.extend_from_slice(&u256_be(main_id as u128));
-    out.extend_from_slice(&addr_word(device));
-    out
-}
-
-pub(crate) fn encode_erc721_transfer_from(from: &[u8; 20], to: &[u8; 20], token_id: u64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 96);
-    out.extend_from_slice(&selector("transferFrom(address,address,uint256)"));
-    out.extend_from_slice(&addr_word(from));
-    out.extend_from_slice(&addr_word(to));
-    out.extend_from_slice(&u256_be(token_id as u128));
-    out
-}
-
-/// CONSOLIDATION: transfer every `token_id` (subdomains owned by `owner`)
-/// into the MAIN's TBA, so one account owns them all and every linked
-/// device controls them. `owner` signs (it currently holds the NFTs);
-/// sponsored. One-way by design — move back later via TBA.execute.
-pub async fn consolidate_into_main_sponsored(
-    owner: &SigningKey,
-    main_tba_hex: &str,
-    token_ids: &[u64],
-) -> Result<String, String> {
-    if token_ids.is_empty() {
-        return Err("no subdomains to consolidate".into());
-    }
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS())?;
-    let to = parse_eth_address(main_tba_hex)?;
-    let from = wallet::address(owner);
-    let calls: Vec<_> = token_ids
-        .iter()
-        .map(|&tid| crate::tempo_tx::TempoCall {
-            to: diamond_addr,
-            value_wei: 0,
-            input: encode_erc721_transfer_from(&from, &to, tid),
-        })
-        .collect();
-    // ~60k per ERC-721 transfer + ~275k sponsorship.
-    let gas = 300_000 + token_ids.len() as u128 * 90_000;
-    sponsored_batch(owner, calls, gas).await
 }
 
 pub(crate) fn encode_release_name(token_id: u64) -> Vec<u8> {
@@ -242,64 +157,6 @@ pub async fn release_name_sponsored(
         .await
 }
 
-/// Batch-release (burn) several names in ONE sponsored tx. `sender` must
-/// own every `token_id`; the on-chain ReleaseFacet refuses a caller's MAIN
-/// per-id (so a MAIN slipped into the list reverts the WHOLE batch — filter
-/// it out before calling). DESTRUCTIVE: the UI/tool MUST require a single
-/// typed master confirmation before calling this. Mirrors
-/// `consolidate_into_main_sponsored`'s multi-call construction, but burns
-/// instead of transfers. (Browser callers use the iframe-signed path in
-/// `app::events::run_bulk_release`; this is the off-bundle/native twin of
-/// `release_name_sponsored`.)
-pub async fn release_names_sponsored(
-    sender: &SigningKey,
-    token_ids: &[u64],
-) -> Result<String, String> {
-    if token_ids.is_empty() {
-        return Err("no subdomains to release".into());
-    }
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS())?;
-    let calls: Vec<_> = token_ids
-        .iter()
-        .map(|&tid| crate::tempo_tx::TempoCall {
-            to: diamond_addr,
-            value_wei: 0,
-            input: encode_release_name(tid),
-        })
-        .collect();
-    // Each burn ~100-150k inner; +275k sponsorship once for the whole batch.
-    // 1M base mirrors the single-release headroom (release_name_sponsored),
-    // then ~250k/extra burn. Over-budget is free (sponsor billed on gas USED).
-    let gas = 1_000_000 + (token_ids.len() as u128).saturating_sub(1) * 250_000;
-    sponsored_batch(sender, calls, gas).await
-}
-
-/// Sponsored TBA remove-signer + index unlink (the unlink half of the
-/// device lifecycle). `sender` must be an authorized signer of the MAIN.
-pub async fn remove_signer_sponsored(
-    sender: &SigningKey,
-    token_id: u64,
-    tba_address: &str,
-    signer_hex: &str,
-) -> Result<String, String> {
-    let signer_addr = parse_eth_address(signer_hex)?;
-    let tba_addr = parse_eth_address(tba_address)?;
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS())?;
-    let remove_call = crate::tempo_tx::TempoCall {
-        to: tba_addr,
-        value_wei: 0,
-        input: encode_remove_signer(&signer_addr),
-    };
-    // Also drop it from the on-chain index so the UI stops showing it.
-    let unlink_call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_unlink_device(token_id, &signer_addr),
-    };
-    sponsored_batch(sender, vec![remove_call, unlink_call], 600_000)
-        .await
-}
-
 // --- Registration cost (LocalharnessRegistryFacet on the diamond) ---
 
 /// `eth_call mainCost()` — the LH amount the diamond's `registerMain`
@@ -349,106 +206,6 @@ pub(crate) fn encode_addr_amount(signature: &str, addr: &[u8; 20], amount_wei: u
 }
 
 
-/// Sponsored Tempo tx that calls `tba.execute(target, value, data, 0)`
-/// on a `MultiSignerAccount` TBA. The TBA must be deployed; we batch
-/// `createTokenBoundAccount(token_id)` first so the call is safe on
-/// counterfactual TBAs too (createTokenBoundAccount is idempotent).
-///
-/// `sender` must be one of the TBA's authorized signers: the NFT
-/// holder of the owning token, or an EOA previously added via
-/// `addSigner`. The TBA's `execute` revert "not authorised" otherwise.
-// Discrete params are the TBA-execute tx fields (signers, token, target,
-// value, calldata, fee token, gas); bundling them into a struct would
-// just move the noise. Kept flat as a low-level wire helper.
-#[allow(clippy::too_many_arguments)]
-pub async fn tba_execute_sponsored(
-    sender: &SigningKey,
-    token_id: u64,
-    tba_address: &str,
-    target_hex: &str,
-    value_wei: u128,
-    inner_data: Vec<u8>,
-    gas_limit: u128,
-) -> Result<String, String> {
-    let tba_addr = parse_eth_address(tba_address)?;
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS())?;
-    let target = parse_eth_address(target_hex)?;
-
-    let create_call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_create_tba(token_id),
-    };
-    let execute_call = crate::tempo_tx::TempoCall {
-        to: tba_addr,
-        value_wei: 0,
-        input: encode_tba_execute(&target, value_wei, &inner_data),
-    };
-    sponsored_batch(sender, vec![create_call, execute_call], gas_limit).await
-}
-
-/// Build the call batch that makes `token_id`'s TBA send `$LH`:
-/// `[diamond.createTokenBoundAccount(token_id) (idempotent),
-///   tba.execute($LH_token, 0, transfer(recipient, amount), 0)]`.
-///
-/// Pure — no chain I/O, no signing — so the browser act panel
-/// (`app::events::tba`, which routes it through the iframe-signed
-/// `run_sponsored_tempo_call`) and the native sponsored wrapper
-/// ([`tba_transfer_lh_sponsored`]) share ONE calldata home, and the layout
-/// is pinned by native unit tests. Rejects a zero amount up front (a
-/// zero-value `transfer` is never an intended act-panel send).
-pub fn tba_send_lh_calls(
-    token_id: u64,
-    tba_hex: &str,
-    recipient_hex: &str,
-    amount_wei: u128,
-) -> Result<Vec<crate::tempo_tx::TempoCall>, String> {
-    if amount_wei == 0 {
-        return Err("amount must be greater than 0".into());
-    }
-    let diamond = parse_eth_address(REGISTRY_ADDRESS())?;
-    let tba = parse_eth_address(tba_hex)?;
-    let recipient = parse_eth_address(recipient_hex)?;
-    let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS())?;
-    let transfer_data = encode_erc20_transfer(&recipient, amount_wei);
-    Ok(vec![
-        crate::tempo_tx::TempoCall {
-            to: diamond,
-            value_wei: 0,
-            input: encode_create_tba(token_id),
-        },
-        crate::tempo_tx::TempoCall {
-            to: tba,
-            value_wei: 0,
-            input: encode_tba_execute(&token, 0, &transfer_data),
-        },
-    ])
-}
-
-/// Gas budget for a `$LH`-send-from-TBA batch ([`tba_send_lh_calls`]):
-/// create TBA — ~742k live-measured on a COLD first deploy (CREATE2 of the
-/// full MultiSignerAccount), near-zero idempotent thereafter — + execute
-/// (~30k) + inner ERC-20 transfer (~52k) + Tempo sponsorship (~275k). A
-/// first transfer from an undeployed TBA needs ~1.1M, so 800k would revert
-/// out-of-gas; 2M covers the cold path and is free on the warm one (the
-/// sponsor is billed on gas USED, not the limit).
-pub const TBA_SEND_LH_GAS: u128 = 2_000_000;
-
-/// Convenience: send LH from `token_id`'s TBA to a recipient. Submits the
-/// [`tba_send_lh_calls`] batch as ONE sponsored Tempo tx. The TBA must hold
-/// enough LH to cover `amount_wei`; `sender` must be authorized on the TBA
-/// (the NFT holder or an enrolled device signer).
-pub async fn tba_transfer_lh_sponsored(
-    sender: &SigningKey,
-    token_id: u64,
-    tba_address: &str,
-    recipient_hex: &str,
-    amount_wei: u128,
-) -> Result<String, String> {
-    let calls = tba_send_lh_calls(token_id, tba_address, recipient_hex, amount_wei)?;
-    sponsored_batch(sender, calls, TBA_SEND_LH_GAS).await
-}
-
 /// Make a token-bound account EXECUTE an arbitrary call — the headless /
 /// agent equivalent of the browser act-panel's "send" button. Fires ONE
 /// sponsored Tempo tx calling `tba.execute(to, value, data, 0)` on the
@@ -469,8 +226,7 @@ pub async fn tba_transfer_lh_sponsored(
 /// `execute` would revert). Callers deploy first via
 /// [`create_token_bound_account_sponsored`] — the CLI does this when
 /// [`is_contract_deployed`] is false. Flat (address-keyed, no token id) — the
-/// low-level primitive the [`tba_execute_sponsored`] (token-id keyed, batches
-/// the deploy) and [`tba_transfer_lh_sponsored`] wrappers build on.
+/// low-level primitive the [`tba_send_lh_sponsored`] wrapper builds on.
 // Discrete params are the wire fields (owner+sponsor signers, TBA, target,
 // value, inner calldata, fee token); bundling into a struct just moves noise.
 #[allow(clippy::too_many_arguments)]
@@ -520,8 +276,8 @@ pub async fn create_token_bound_account_sponsored(
 }
 
 /// Make a TBA send `$LH` — `execute($LH_token, 0, transfer(recipient, amount))`
-/// via [`tba_execute_call_sponsored`]. The flat (address-keyed, deploy NOT
-/// batched) sibling of [`tba_transfer_lh_sponsored`]; the headless CLI calls
+/// via [`tba_execute_call_sponsored`]. Flat (address-keyed, deploy NOT
+/// batched); the headless CLI calls
 /// [`create_token_bound_account_sponsored`] first when the TBA isn't deployed
 /// yet, so this assumes a live TBA. The TBA must hold at least `amount_wei`.
 pub async fn tba_send_lh_sponsored(
@@ -577,13 +333,6 @@ pub(crate) fn encode_create_tba(token_id: u64) -> Vec<u8> {
     data.extend_from_slice(&selector("createTokenBoundAccount(uint256)"));
     data.extend_from_slice(&u256_be(token_id as u128));
     data
-}
-
-pub(crate) fn encode_remove_signer(addr: &[u8; 20]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 32);
-    out.extend_from_slice(&selector("removeSigner(address)"));
-    out.extend_from_slice(&addr_word(addr));
-    out
 }
 
 // `claim_and_maybe_set_main` (the legacy SELF-PAID first-claim) was removed
@@ -708,10 +457,6 @@ pub async fn claim_name_self_paid(
 }
 
 
-// `tba_signers` (deprecated SignerAdded/SignerRemoved log-scraping — Tempo
-// caps eth_getLogs at 100k blocks) was removed as dead code; `devices_of`
-// reads the DeviceRegistryFacet's enumerable index in ONE call instead.
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -720,34 +465,11 @@ mod tests {
     // here would send $LH / NFTs to the wrong place, so pin the layout. ---
 
     #[test]
-    fn erc721_transfer_from_calldata_layout() {
-        let from = [0xAAu8; 20];
-        let to = [0xBBu8; 20];
-        let cd = encode_erc721_transfer_from(&from, &to, 0x1234);
-        // Canonical ERC-721/20 transferFrom(address,address,uint256) selector.
-        assert_eq!(&cd[0..4], &[0x23, 0xb8, 0x72, 0xdd]);
-        assert_eq!(cd.len(), 4 + 96);
-        assert_eq!(&cd[4 + 12..4 + 32], &from); // from in word 0
-        assert_eq!(&cd[4 + 44..4 + 64], &to); // to in word 1
-        assert_eq!(u64::from_be_bytes(cd[4 + 88..4 + 96].try_into().unwrap()), 0x1234);
-    }
-
-    #[test]
     fn release_name_calldata_layout() {
         let cd = encode_release_name(7);
         assert_eq!(&cd[0..4], &selector("releaseName(uint256)"));
         assert_eq!(cd.len(), 36);
         assert_eq!(u64::from_be_bytes(cd[28..36].try_into().unwrap()), 7);
-    }
-
-    #[test]
-    fn unlink_device_calldata_layout() {
-        let dev = [0xCDu8; 20];
-        let unlink = encode_unlink_device(3, &dev);
-        assert_eq!(&unlink[0..4], &selector("unlinkDevice(uint256,address)"));
-        assert_eq!(unlink.len(), 68);
-        assert_eq!(u64::from_be_bytes(unlink[28..36].try_into().unwrap()), 3); // mainId
-        assert_eq!(&unlink[36 + 12..36 + 32], &dev); // device in word 2
     }
 
     /// ERC-20 `transfer(address,uint256)` — the `send_lh` payload. A wrong
@@ -857,52 +579,4 @@ mod tests {
         assert_eq!(cd.len(), 4 + 128 + 32 + 96);
     }
 
-    /// Pin the act-panel batch builder ([`tba_send_lh_calls`]): exactly TWO
-    /// calls — the idempotent `createTokenBoundAccount(token_id)` against the
-    /// DIAMOND, then `execute($LH, 0, transfer(recipient, amount), 0)` against
-    /// the TBA — both zero-native-value. A wrong `to` here either deploys
-    /// nothing (execute reverts: no code) or drives the wrong account, so the
-    /// routing is as load-bearing as the calldata bytes.
-    #[test]
-    fn tba_send_lh_calls_batch_layout() {
-        let tba_hex = format!("0x{}", "aa".repeat(20));
-        let recipient_hex = format!("0x{}", "cd".repeat(20));
-        let amount: u128 = 250_000_000_000_000_000; // 0.25 $LH
-        let calls = tba_send_lh_calls(42, &tba_hex, &recipient_hex, amount).unwrap();
-        assert_eq!(calls.len(), 2);
-
-        // Call 0: diamond.createTokenBoundAccount(42), value 0.
-        let diamond = parse_eth_address(REGISTRY_ADDRESS()).unwrap();
-        assert_eq!(calls[0].to, diamond);
-        assert_eq!(calls[0].value_wei, 0);
-        assert_eq!(calls[0].input, encode_create_tba(42));
-        assert_eq!(
-            u64::from_be_bytes(calls[0].input[28..36].try_into().unwrap()),
-            42
-        );
-
-        // Call 1: tba.execute($LH, 0, transfer(recipient, amount), 0), value 0.
-        assert_eq!(calls[1].to, [0xAAu8; 20]);
-        assert_eq!(calls[1].value_wei, 0);
-        let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS()).unwrap();
-        let inner = encode_erc20_transfer(&[0xCDu8; 20], amount);
-        assert_eq!(calls[1].input, encode_tba_execute(&token, 0, &inner));
-        // The execute target is the $LH token (word 0 of the head)…
-        assert_eq!(&calls[1].input[16..36], &token);
-        // …and the nested transfer rides at the dynamic-data offset.
-        assert_eq!(&calls[1].input[164..164 + inner.len()], inner.as_slice());
-    }
-
-    /// The builder fails CLOSED on bad inputs: zero amount (never a real
-    /// send), malformed TBA / recipient hex. No call batch may exist that a
-    /// later layer would have to remember to reject.
-    #[test]
-    fn tba_send_lh_calls_rejects_bad_inputs() {
-        let tba = format!("0x{}", "aa".repeat(20));
-        let to = format!("0x{}", "cd".repeat(20));
-        assert!(tba_send_lh_calls(1, &tba, &to, 0).is_err()); // zero amount
-        assert!(tba_send_lh_calls(1, "0x1234", &to, 1).is_err()); // short TBA
-        assert!(tba_send_lh_calls(1, &tba, "not-an-address", 1).is_err());
-        assert!(tba_send_lh_calls(1, &tba, "", 1).is_err());
-    }
 }

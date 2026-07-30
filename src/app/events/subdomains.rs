@@ -41,8 +41,8 @@ pub(crate) async fn run_bulk_release(
     if names.is_empty() {
         return Err("no subdomains to release".into());
     }
-    // Resolve owner + MAIN from the current tenant, same preamble as
-    // unlink (owner_main_tba) but we only need the owner hex + MAIN id.
+    // Resolve owner + MAIN from the current tenant — we only need the
+    // owner hex + MAIN id.
     let (_, owner) = crate::app::tenant::current_tenant_owner().await?;
     let main_id = crate::app::registry::main_of(&owner)
         .await
@@ -84,7 +84,7 @@ pub(crate) async fn run_bulk_release(
     if calls.is_empty() {
         return Err("no subdomains to release after filtering".into());
     }
-    // 1M base headroom + ~250k per extra burn (see release_names_sponsored).
+    // 1M base headroom (mirrors release_name_sponsored) + ~250k per extra burn.
     let gas = 1_000_000 + (calls.len() as u128).saturating_sub(1) * 250_000;
     let tx = super::run_sponsored_tempo_call(&owner, calls, gas, "bulk release subdomains").await?;
     Ok((released, tx))

@@ -144,7 +144,7 @@ pub(crate) fn zero_address() -> &'static str {
 // token-wei u128 in the LOW 16. These were re-declared as local closures in
 // every tuple decoder (getJob / getBounty / getProposal / tallyOf /
 // reputationOf); the bare dynamic-array decoders below were copied verbatim
-// across jobs_of / bounties_of / guilds_of (uint256[]) and devices_of /
+// across jobs_of / bounties_of / guilds_of (uint256[]) and
 // members_of_guild (address[]).
 
 /// The LOW 8 bytes of a 32-byte ABI word as a `u64`. Panics if `w` is shorter

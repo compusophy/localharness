@@ -52,11 +52,10 @@
 //!                            402<->200) and the proxy mints $LH into your meter
 //!                            at parity (1 USDC.e = 100 $LH). SELF-PAID — USDC.e
 //!                            is the gas token, so the relay doesn't sponsor it
-//!   credits [--as <me>] [--reclaim]  show wallet + chat meter + session;
+//!   credits [--as <me>] [--reclaim]  show wallet + chat meter;
 //!                            --reclaim pulls unspent meter $LH back to the wallet
 //!   redeem [--as <me>] <code>  redeem a code for $LH into your wallet (funding)
 //!   send [--as <me>] <to> <amt>  send $LH to an address / a name's owner (fund an agent)
-//!   session [--as <me>]      open a proxy session (LEGACY — `topup` is the live path)
 //!   schedule [--as <me>] <target> <task> --every <dur> [--runs <n>]
 //!                            run <target> on a fixed interval OFF-CHAIN (no tab),
 //!                            billed per run from your meter (no escrow)
@@ -417,12 +416,11 @@ WALLET, FUNDING & TBA
                                          the relay doesn't sponsor it) — hold enough
                                          USDC.e for the payment plus its gas
   localharness credits [--as <me>] [--reclaim]
-                                         show your $LH wallet + chat meter + session;
+                                         show your $LH wallet + chat meter;
                                          --reclaim pulls unspent meter $LH back to
                                          the wallet (sponsored withdrawCredits)
   localharness redeem [--as <me>] <code> redeem a code for $LH into your wallet
   localharness send [--as <me>] <to> <amt>  send $LH to an address / a name's owner
-  localharness session [--as <me>]       open a proxy session (LEGACY — `topup` is the live path)
   localharness topup [--as <me>] [<amount>|--all]
                                          deposit wallet $LH into the per-call meter:
                                          an explicit amount, or --all for the whole
@@ -456,13 +454,8 @@ SCHEDULING
                                          schedule a tab-free REMINDER that web-pushes
                                          you at the due time — OFF-CHAIN + FREE (no $LH,
                                          no escrow); --runs N repeats it (default 1)
-  localharness jobs [--as <me>]          list your scheduled jobs (off-chain + on-chain)
-  localharness keeper                     run a decentralized-keeper tick: find every
-                                         DUE job on-chain + POKE the proxy to run each
-                                         (P2P scheduler heartbeat, krafto #1.5) — works
-                                         even if the Vercel cron stalls
-  localharness unschedule [--as <me>] <jobId>  cancel a job (off-chain id or a numeric
-                                         on-chain id; on-chain refunds remaining budget)
+  localharness jobs [--as <me>]          list your scheduled jobs
+  localharness unschedule [--as <me>] <jobId>  cancel a scheduled job by id
 
 INVITES
   localharness invite create [--as <me>] --amount <X> [--ttl <dur>]
@@ -679,7 +672,7 @@ fn command_usage(cmd: &str) -> Option<&'static str> {
         "call" => CALL_USAGE,
         "abtest" => ABTEST_USAGE,
         "send" => "usage: localharness send [--as <me>] <recipient> <amount>\n  send $LH to a 0x address or a name's owner.  e.g. localharness send claude 0.5",
-        "credits" => "usage: localharness credits [--as <me>] [--reclaim]\n  show your $LH wallet (pays CLI `call` via x402) + chat meter + session (read-only).\n  --reclaim: pull unspent meter $LH back into your wallet (sponsored withdrawCredits;\n  rescues sub-price meter dust the wallet-x402 path would otherwise strand).",
+        "credits" => "usage: localharness credits [--as <me>] [--reclaim]\n  show your $LH wallet (pays CLI `call` via x402) + chat meter (read-only).\n  --reclaim: pull unspent meter $LH back into your wallet (sponsored withdrawCredits;\n  rescues sub-price meter dust the wallet-x402 path would otherwise strand).",
         "whoami" | "lookup" => WHOAMI_USAGE,
         "fee" => FEE_USAGE,
         "discover" => "usage: localharness discover <query...>\n  find agents by capability (name/persona search); keywords are ORed and ranked.\n  e.g. localharness discover \"solidity auditor\"",
@@ -917,13 +910,6 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
-        Some("session") => match take_as_flag(&args[1..]) {
-            Ok((caller, _)) => open_session(caller.as_deref()).await,
-            Err(e) => {
-                util::print_err(&e);
-                2
-            }
-        },
         Some("schedule") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => schedule(caller.as_deref(), &rest).await,
             Err(e) => {
@@ -952,7 +938,6 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
-        Some("keeper") => keeper_plan(&args[1..]).await,
         Some("unschedule") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) if !rest.is_empty() => unschedule(caller.as_deref(), &rest[0]).await,
             Ok(_) => {
@@ -1196,88 +1181,6 @@ async fn run(args: &[String]) -> i32 {
             2
         }
     }
-}
-
-/// `keeper` — one decentralized-keeper tick (krafto #1.5): read the cross-owner
-/// `keeper` dispatch: one-shot by default, or `--watch [secs]` to run a
-/// long-lived sub-minute heartbeat (the "serverless server, async tick").
-/// Watch mode ticks every `secs` (default 15s, min 1s) and never exits on a
-/// transient scan error — it just logs and keeps beating. A watching keeper
-/// pokes a due job within ~`secs` of its slot instead of waiting up to the
-/// 1/min Vercel cron; multiple keepers are safe (the on-chain recordRun CAS
-/// dedupes overlapping pokes to one paid run).
-async fn keeper_plan(args: &[String]) -> i32 {
-    let watch_secs: Option<u64> = args.iter().position(|a| a == "--watch").map(|i| {
-        args.get(i + 1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(15).max(1)
-    });
-    match watch_secs {
-        None => keeper_tick().await,
-        Some(secs) => {
-            println!("keeper: watch mode — ticking every {secs}s (Ctrl-C to stop)");
-            loop {
-                keeper_tick().await; // logs its own result; errors never break the beat
-                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-            }
-        }
-    }
-}
-
-/// ONE keeper pass: scan the on-chain due set (`registry::all_due_job_ids`),
-/// pick via `keeper::jobs_to_fire` (solo), and POKE the proxy (`?poke`) to run
-/// each. Trust-free — the proxy re-validates due-ness + CAS, so any keeper is a
-/// heartbeat when the Vercel cron stalls.
-async fn keeper_tick() -> i32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    println!("keeper: scanning on-chain for due jobs across all owners …");
-    let due = match registry::all_due_job_ids().await {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("keeper: {e}");
-            return 1;
-        }
-    };
-    if due.is_empty() {
-        println!("no jobs are due right now.");
-        return 0;
-    }
-    println!("{} due job(s) on-chain: {due:?}", due.len());
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let mut jobs = Vec::new();
-    for id in &due {
-        if let Ok(j) = registry::get_job(*id).await {
-            jobs.push(localharness::keeper::KeeperJob {
-                id: *id,
-                status: j.status,
-                next_run: j.next_run,
-                budget_wei: j.budget_wei,
-                runs_left: j.runs_left,
-            });
-        }
-    }
-    // Sole keeper: my_index 0, keeper_count 1, epoch 0, backoff 30s.
-    let to_fire = localharness::keeper::jobs_to_fire(&jobs, now, CALL_COST_WEI, 0, 1, 0, 30);
-    println!("as the sole keeper, firing {} job(s): {to_fire:?}", to_fire.len());
-
-    // POKE the proxy to run each due job — the decentralized heartbeat (option C,
-    // krafto #1.5). The proxy's `?poke=<id>` re-validates due-ness and recordRun is
-    // CAS-guarded, so a poke only ever runs a genuinely-due job once; a stalled
-    // Vercel cron no longer means stalled jobs.
-    let base = registry::CREDIT_PROXY_URL.trim_end_matches('/');
-    let client = reqwest::Client::new();
-    let mut fired = 0;
-    for id in &to_fire {
-        let url = format!("{base}/api/scheduler?poke={id}");
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                let txt = resp.text().await.unwrap_or_default();
-                println!("  poked job #{id} → {}", txt.chars().take(220).collect::<String>());
-                fired += 1;
-            }
-            Err(e) => println!("  poke job #{id} failed: {e}"),
-        }
-    }
-    println!("keeper: poked {fired}/{} due job(s).", to_fire.len());
-    0
 }
 
 #[cfg(test)]

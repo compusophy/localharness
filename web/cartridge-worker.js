@@ -31,7 +31,6 @@
 //   main -> worker:
 //     { type: 'load',  wasm: ArrayBuffer }   instantiate + start the frame loop
 //     { type: 'input', x, y, down }          latest pointer (poll model)
-//     { type: 'stop' }                        stop the loop (worker stays alive)
 //   worker -> main:
 //     { type: 'frame', fb: ArrayBuffer, w, h }  framebuffer for this tick (xfer)
 //     { type: 'audio', op, args: [...] }        play a tone/noise on the main AudioContext
@@ -1939,11 +1938,6 @@ if (IS_WORKER) {
       case 'chat:msg':
         // MAIN: a new chatroom line arrived from the relay poll.
         applyChatMsg(msg);
-        break;
-      case 'stop':
-        running = false;
-        closeAllSockets();
-        clearAllHttp();
         break;
       default:
         break;

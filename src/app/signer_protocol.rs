@@ -21,8 +21,6 @@ pub(crate) const MSG_SIGN_DIGEST: &str = "lh-sign-digest";
 pub(crate) const MSG_CREATE_WALLET: &str = "lh-create-wallet";
 /// Reveal the master mnemonic (apex-origin only).
 pub(crate) const MSG_REVEAL_SEED: &str = "lh-reveal-seed";
-/// Import a seed phrase, replacing the master wallet (apex-origin only).
-pub(crate) const MSG_IMPORT_SEED: &str = "lh-import-seed";
 /// Run the full apex claim flow for a name (long-running).
 pub(crate) const MSG_CLAIM_NAME: &str = "lh-claim-name";
 /// Seal a plaintext (the Gemini key) under the seed-derived key.

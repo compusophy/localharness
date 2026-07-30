@@ -128,8 +128,8 @@ pub fn encode_vote_calldata(proposal_id: u64, support: bool) -> Vec<u8> {
 /// treasury to `to_hex`, opening a vote that closes at `now + voting_period_secs`.
 /// No escrow/approve — the spend is debited from the guild's EXISTING treasury at
 /// `execute` time, not pulled from the proposer. Returns the tx hash once mined;
-/// read the new proposalId back from `proposals_of(guildId, …)` (its last entry)
-/// or `proposal_count()`. The `memo` `bytes` write scales the gas.
+/// read the new proposalId back from `proposals_of(guildId, …)` (its last
+/// entry). The `memo` `bytes` write scales the gas.
 #[allow(clippy::too_many_arguments)]
 pub async fn propose_sponsored(
     sender: &SigningKey,
@@ -240,19 +240,6 @@ pub async fn tally_of(proposal_id: u64) -> Result<Tally, String> {
     })
 }
 
-/// Read `hasVoted(uint256 proposalId, address voter)` → whether `voter` has cast
-/// a ballot on the proposal (the double-vote guard). Two static args (the
-/// address right-aligned in word 1).
-pub async fn has_voted(proposal_id: u64, voter_hex: &str) -> Result<bool, String> {
-    let voter = parse_eth_address(voter_hex)?;
-    let result = read_view(
-        selector("hasVoted(uint256,address)"),
-        &[u256_be(proposal_id as u128), addr_word(&voter)],
-    )
-    .await?;
-    decode_u256_as_u64(&result).map(|v| v != 0)
-}
-
 /// Read `proposalsOf(uint256 guildId, uint256 startAfter, uint256 limit)` →
 /// `(uint256[] ids, uint256 nextCursor)`. `startAfter` is a 0-based INDEX into
 /// the guild's append-only proposal list (NOT a proposalId); pass 0 to begin,
@@ -278,14 +265,6 @@ pub async fn proposals_of(guild_id: u64, start_after: u64, limit: u64) -> Result
 pub async fn proposal_memo_of(proposal_id: u64) -> Result<String, String> {
     decode_bytes_string_call("proposalMemoOf(uint256)", proposal_id, "proposalMemoOf").await
 }
-
-/// Read `proposalCount()` → total proposals ever created (== the highest
-/// proposalId; ids are monotonic from 1).
-pub async fn proposal_count() -> Result<u64, String> {
-    let result = read_view(selector("proposalCount()"), &[]).await?;
-    decode_u256_as_u64(&result)
-}
-
 
 #[cfg(test)]
 mod voting_tests {

@@ -610,10 +610,9 @@ project; only the facet selectors behind it do.
 ## Files (top-level summary)
 
 - `foundry.toml` — Solidity 0.8.24, optimizer on, Tempo RPC alias
-- `src/LocalharnessRegistry.sol` — legacy flat contract (~110 lines)
 - `src/Diamond.sol` + `src/{facets,interfaces,libraries,upgradeInitializers}/`
-  — the diamond stack
-- `script/Deploy.s.sol` — legacy flat deploy
+  — the diamond stack (retired facet sources — Feedback/Push/Team/flat registry —
+  are deleted or in `archive/`; the reset genesis drops them from the chain too)
 - `script/DeployDiamond.s.sol` — diamond deploy (atomic: facets +
   proxy + cut + init in one transaction sequence)
 - `.gitignore` — `out/`, `cache/`, `broadcast/`, `lib/`

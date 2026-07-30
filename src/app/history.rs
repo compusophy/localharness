@@ -43,12 +43,7 @@ pub(crate) async fn load_into_pending() {
         _ => return,
     };
     // `shared_opfs()` (the seed-keyed `EncryptedFilesystem`) already decrypted
-    // the at-rest layer on `read`, so `bytes` is the transcript JSON for
-    // anything saved by the current single-layer path. BACKWARD-READ: history
-    // written before issue #79 carried a SECOND device-key layer underneath, so
-    // try peeling it; `encryption::open` returns `None` for non-device-key bytes
-    // (the new single-layer/plaintext case), leaving them untouched.
-    let bytes = super::encryption::open(&bytes).await.unwrap_or(bytes);
+    // the at-rest layer on `read`, so `bytes` is the transcript JSON.
 
     // Project the bytes into a transcript and paint each entry. Try BOTH wire
     // formats (see `decode_history_any`): a Claude-backed agent saves Anthropic

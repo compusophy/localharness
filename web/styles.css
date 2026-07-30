@@ -1259,8 +1259,6 @@ h1 {
 .verify-pill.verify-visitor { color: var(--muted); border-color: var(--muted); }
 .verify-pill.verify-unregistered { color: var(--muted);  border-color: var(--border); }
 .verify-pill.verify-failed { color: var(--error);  border-color: var(--error); }
-.tba-pill { color: var(--fg); border-color: var(--fg); text-decoration: none; font-variant-numeric: tabular-nums; }
-.tba-pill:hover { background: rgba(255, 255, 255, 0.05); }
 
 /* Bare agents list — just subdomain names, no border / row chrome.
    Top-aligned on apex (margin handled by .step). */
@@ -1328,61 +1326,6 @@ h1 a:hover { color: var(--accent); }
   align-items: center;
   text-align: center;
 }
-/* clamp: ~36px on a 390px phone, 56px on desktop — always one line. */
-.apex-wordmark {
-  margin: 0;
-  font-size: clamp(32px, 9.5vw, 56px);
-  font-weight: 600;
-  letter-spacing: -0.04em;
-  line-height: 1;
-  color: var(--fg);
-}
-/* 60ch holds the whole sentence on ONE line on desktop; phones wrap
-   naturally inside the column padding. */
-.apex-tagline {
-  margin: 24px 0 0;
-  max-width: 60ch;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--muted);
-}
-/* The literal `<name>` placeholder host — same muted tone (monochrome:
-   no second color), nowrap so the hostname never breaks mid-domain. */
-.apex-tagline-host { white-space: nowrap; }
-/* Hero overrides of the generic .create-form (64px top / 24px gap are the
-   claim page's numbers): a tight input-over-button stack, full-width
-   button so the redeem CTA reads as the page's one action. */
-.apex-hero .create-form {
-  margin: 56px auto 0;
-  gap: 12px;
-  width: 100%;
-  max-width: 360px;
-}
-.apex-hero .create-input { padding: 14px 16px; }
-/* The redeem CTA is the page's ONE action — INVERTED (filled) so it
-   outweighs the outline input above it. Still monochrome: fg-on-bg
-   flipped, no new tone. `.failed` falls back to the outline treatment
-   in the error tone (parity with the global .create-button.failed). */
-.apex-hero .create-button {
-  width: 100%;
-  padding: 14px 32px;
-  background: var(--fg);
-  border-color: var(--fg);
-  color: var(--bg);
-  font-weight: 600;
-}
-.apex-hero .create-button:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--bg);
-}
-.apex-hero .create-button.failed {
-  background: transparent;
-  border-color: var(--error);
-  color: var(--error);
-}
-.apex-hero .step-msg { margin-top: 16px; }
-
 /* Fresh-visitor PRIMARY onboarding CTA (templates::apex_create_identity).
    pip-qa couldn't find a Create button — so this leads the page as the one
    obvious first step. Prominence is monochrome-only: a heavy strong border,
@@ -1399,21 +1342,6 @@ h1 a:hover { color: var(--accent); }
   display: flex;
   flex-direction: column;
   align-items: center;
-}
-.apex-onboard-title {
-  margin: 0;
-  font-size: clamp(26px, 6vw, 34px);
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
-  color: var(--fg);
-}
-.apex-onboard-blurb {
-  margin: 16px 0 0;
-  max-width: 44ch;
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--muted);
 }
 /* Onboarding pitch (landing::onboard_pitch). The label is the NARROW half of
    the chiasma — same 14ch width as the CREATE button below. The offer is the
@@ -1484,24 +1412,6 @@ h1 a:hover { color: var(--accent); }
   color: var(--bg);
 }
 .apex-onboard-cta:disabled { opacity: 0.5; cursor: default; }
-/* Quiet secondary door — text-link weight, never competes with the CTA. */
-.apex-onboard-secondary { margin: 18px 0 0; }
-.apex-onboard-import {
-  background: transparent;
-  border: 0;
-  padding: 4px;
-  font-size: 13px;
-  color: var(--muted);
-  text-decoration: underline;
-  cursor: pointer;
-  font-family: inherit;
-}
-.apex-onboard-import:hover { color: var(--fg); }
-/* When the invite hero follows the primary create CTA it's the SECONDARY
-   path — tighten its top margin (no second viewport-push) and shrink the
-   wordmark so it doesn't rival the create card above it. */
-.apex-onboard + .apex-hero { margin-top: 48px; }
-.apex-onboard + .apex-hero .apex-wordmark { font-size: clamp(20px, 5vw, 28px); }
 
 /* Signer chrome (signer_no_identity / signer_chrome) still uses the old
    headline scale. */
@@ -1600,93 +1510,8 @@ html.preview-mobile select { font-size: 16px !important; }
    it matches the header chrome + input field. See the @media (max-width:600px)
    note above.) */
 
-.key-row { display: flex; gap: 6px; }
-.key-row input { flex: 1; min-width: 0; }
-.add-device-form { display: flex; gap: 6px; }
-.add-device-form input { flex: 1; min-width: 0; }
 .admin-msg-slot:empty { display: none; }
 .admin-msg-slot { margin-top: 8px; font-size: 12px; }
-.admin-credits-row {
-  display: flex; justify-content: space-between; align-items: center;
-  gap: 12px;
-}
-
-/* --- Composable subdomain: embed mode (rendered inside parent iframe) --- */
-/* The card sits on a transparent background so the host can put it
-   on whatever surface it wants. No margin on body — the host's
-   iframe IS the bounding box. */
-.embed-card {
-  display: block;
-  padding: 16px 18px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  font-size: 13px;
-  color: var(--fg);
-  box-sizing: border-box;
-}
-.embed-card-header {
-  display: flex; justify-content: space-between; align-items: baseline;
-  gap: 12px; margin-bottom: 10px;
-}
-.embed-card-name {
-  font-size: 15px; font-weight: 600;
-  color: var(--accent);
-  text-decoration: none;
-  letter-spacing: 0.01em;
-}
-.embed-card-name:hover { text-decoration: underline; }
-.embed-card-badge {
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  padding: 2px 6px;
-}
-.embed-card-rows {
-  display: flex; flex-direction: column; gap: 4px;
-}
-.embed-card-row {
-  display: flex; justify-content: space-between; align-items: baseline;
-  gap: 12px;
-}
-.embed-card-label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em;
-  color: var(--muted);
-}
-.embed-card-value {
-  font-size: 12px;
-}
-.embed-card-muted { color: var(--muted); }
-
-/* --- Compose mode: the host shell --- */
-.compose-shell {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 32px 24px;
-}
-.compose-header { margin-bottom: 20px; }
-.compose-title {
-  font-size: 18px; font-weight: 600; margin: 0; letter-spacing: 0.01em;
-}
-.compose-sub {
-  font-size: 11px; color: var(--muted); margin: 4px 0 0;
-  text-transform: uppercase; letter-spacing: 0.07em;
-}
-.compose-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-}
-.compose-cell {
-  display: block;
-  min-height: 80px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-}
-.compose-iframe {
-  width: 100%; height: 80px; border: 0; display: block; background: transparent;
-}
 
 /* --- Device pairing (admin → linked devices) --- */
 .pair-slot { margin-top: 8px; display: flex; justify-content: center; }
@@ -1694,7 +1519,6 @@ html.preview-mobile select { font-size: 16px !important; }
 /* Standalone action buttons in admin sections sit centered (per design
    feedback — horizontal-center buttons like the home-screen button). */
 .admin-section > button { display: block; margin: 8px auto 0; }
-.admin-credits-row, #model-access-row { justify-content: center; }
 .redeem-row { justify-content: center; }
 .pair-slot.pair-active {
   display: flex; flex-direction: column; gap: 8px;

@@ -1,96 +1,10 @@
-//! Credit access + per-turn payment + ABI helpers for the chat path: how a
-//! turn reaches the model (platform `$LH` credits via the proxy vs BYOK), the
-//! visitor payment gate, and the calldata builders the platform tools share.
-//! Hex/address codecs come from `crate::encoding`.
+//! Credit access + ABI helpers for the chat path: how a turn reaches the
+//! model (platform `$LH` credits via the proxy vs BYOK) and the calldata
+//! builders the platform tools share. Hex/address codecs come from
+//! `crate::encoding`.
 
 use crate::app::{dom, APP};
 use crate::encoding::{bytes_to_hex_str, parse_address};
-
-/// Returns `Ok(Some(tx_hash))` if a payment was collected, `Ok(None)`
-/// if no payment was required (free agent, owner sending, unverified
-/// origin), or `Err(_)` if the visitor refused or the on-chain leg
-/// failed. Caller short-circuits the send on `Err`.
-pub(crate) async fn collect_payment_if_required() -> Result<Option<String>, String> {
-    use crate::app::VerifyState;
-
-    let (pricing_wei, verify_state, tba) = APP.with(|cell| {
-        let app = cell.borrow();
-        (
-            app.pricing_wei,
-            app.verify_state.clone(),
-            app.tba_address.clone(),
-        )
-    });
-    // `None` = pricing not checked yet (verification still running); `Some(0)` = free.
-    // Do NOT collapse None to 0 (`unwrap_or(0)`) — a fast visitor could send before the
-    // price loads and bypass a PRICED agent's gate for free. Fail closed until known
-    // (same posture as the TBA/verify checks below); the window is a few seconds.
-    // EXCEPT Host::Other (localhost / Vercel preview): no tenant, so
-    // `kick_verification` never runs and pricing stays None FOREVER — the
-    // "retry in a moment" would be a lie there. No priced agent exists on
-    // that surface; treat it as free.
-    let Some(price_wei) = pricing_wei else {
-        if matches!(crate::app::tenant::current(), crate::app::tenant::Host::Other(_)) {
-            return Ok(None);
-        }
-        return Err("agent pricing is still loading (verification running) — retry in a moment".into());
-    };
-    if price_wei == 0 {
-        return Ok(None);
-    }
-    let Some(tba) = tba else {
-        // Priced but no TBA known — can't route the funds. Fail closed
-        // rather than silently letting the visitor through for free.
-        return Err("agent is priced but its TBA isn't known yet (verification still running?)".into());
-    };
-    let visitor_address = match verify_state {
-        VerifyState::Verified { .. } => return Ok(None), // owner sends free
-        VerifyState::Visitor { visitor_address, .. } => visitor_address,
-        VerifyState::Pending | VerifyState::Unregistered | VerifyState::Failed { .. } => {
-            // Without a recovered visitor address we can't build a tx
-            // from-them. Fail closed.
-            return Err(
-                "agent is priced but owner verification didn't complete — refresh and retry"
-                    .into(),
-            );
-        }
-    };
-
-    // A real collection is happening — surface it in the pending turn's
-    // stage line (GitHub #19; free / owner turns never show "paying").
-    super::stage::enter(crate::turn_stage::Stage::Paying);
-
-    let purpose = format!(
-        "pay {} LH per turn to this agent",
-        crate::app::format_wei_as_test_eth(price_wei),
-    );
-
-    // Build ERC-20 transfer(tba, price_wei) calldata against the
-    // credits token. Sponsored Tempo tx: visitor's wallet (at apex)
-    // signs the sender_hash, the bundle sponsor pays gas in AlphaUSD.
-    // Visitor holds zero of anything except the LH they're spending.
-    let tba_bytes = parse_address(&tba)?;
-    let calldata = lh_transfer_calldata(&tba_bytes, price_wei);
-
-    let token_addr = parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS())?;
-    let call = crate::tempo_tx::TempoCall {
-        to: token_addr,
-        value_wei: 0,
-        input: calldata,
-    };
-
-    dom::set_status("payment: signing via apex…", false);
-    let tx_hash = crate::app::events::run_sponsored_tempo_call(
-        &visitor_address,
-        vec![call],
-        500_000,
-        &purpose,
-    )
-    .await
-    .map_err(|e| format!("payment: {e}"))?;
-
-    Ok(Some(tx_hash))
-}
 
 /// The localharness credit proxy origin — a drop-in Gemini base URL
 /// (its `vercel.json` rewrites `/v1beta/*` onto the edge fn). Single source
@@ -457,12 +371,4 @@ pub(crate) async fn build_actor_setup(
         tba: tba_out,
         persona_set,
     })
-}
-
-pub(crate) fn short_hash(hash: &str) -> String {
-    let stripped = hash.trim_start_matches("0x");
-    if stripped.len() < 12 {
-        return hash.to_string();
-    }
-    format!("0x{}…{}", &stripped[..6], &stripped[stripped.len() - 4..])
 }

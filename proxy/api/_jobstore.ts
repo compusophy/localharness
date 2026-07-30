@@ -14,8 +14,7 @@
 // FILENAME (`<nextRun_pad>__<owner>__<id>.json`) so the once-a-minute cron can
 // find due jobs — and the create path can count an owner's jobs — from a single
 // directory LISTING (no per-job content read); only the bodies it will actually
-// fire (or return) are fetched. Legacy `<nextRun_pad>__<id>.json` files (owner
-// only in the body) are still tolerated and body-read on owner ops.
+// fire (or return) are fetched.
 //
 // CONCURRENCY (the on-chain CAS, re-derived off-chain): firing a job is gated by
 // `claimJob(path, sha)` — a GitHub Contents-API DELETE conditioned on the file's
@@ -75,8 +74,7 @@ export type JobKind = 'reminder' | 'agent';
  * body; the filename mirrors `nextRun`+`owner`+`id` so the due scan AND the
  * per-owner count need no body read. */
 export interface OffchainJob {
-  /** Stable opaque id (uuid). Distinguishes off-chain jobs from on-chain numeric
-   * ids in the shared `?poke` path. */
+  /** Stable opaque id (uuid). */
   id: string;
   /** 0x-lowercase scheduling identity — BILLED (agent jobs debit this meter) and
    * PUSHED (the reminder/result goes to this owner's subscription). */
@@ -153,21 +151,16 @@ function fileName(job: OffchainJob): string {
   return `${pad(job.nextRun)}__${ownerTag(job.owner)}__${job.id}.json`;
 }
 
-/** Parse a job filename → { nextRun, id, owner }, or null if it doesn't match.
- * Two shapes are tolerated (backward-compat):
- *   NEW: `<nextRun>__<owner>__<id>.json` — owner filterable from the name alone.
- *   OLD: `<nextRun>__<id>.json`          — owner only in the body (owner=null).
- * (ids are uuids and owners are 0x-hex, so neither contains the `__` separator.) */
-function parseName(name: string): { nextRun: number; id: string; owner: string | null } | null {
+/** Parse a job filename `<nextRun>__<owner>__<id>.json` → { nextRun, id,
+ * owner }, or null if it doesn't match. (ids are uuids and owners are 0x-hex,
+ * so neither contains the `__` separator.) */
+function parseName(name: string): { nextRun: number; id: string; owner: string } | null {
   if (!name.endsWith('.json')) return null;
   const parts = name.slice(0, -'.json'.length).split('__');
   if (!/^\d{1,12}$/.test(parts[0] ?? '')) return null;
   const nextRun = Number(parts[0]);
   if (parts.length === 3 && parts[1] && parts[2]) {
     return { nextRun, id: parts[2], owner: parts[1].toLowerCase() };
-  }
-  if (parts.length === 2 && parts[1]) {
-    return { nextRun, id: parts[1], owner: null };
   }
   return null;
 }
@@ -291,7 +284,7 @@ export async function listDue(
   const due = entries
     .map((e) => ({ e, p: parseName(e.name) }))
     .filter(
-      (x): x is { e: GhEntry; p: { nextRun: number; id: string; owner: string | null } } =>
+      (x): x is { e: GhEntry; p: { nextRun: number; id: string; owner: string } } =>
         x.p !== null,
     )
     .filter((x) => x.p.nextRun <= now)
@@ -320,9 +313,8 @@ export async function findById(id: string): Promise<{ job: OffchainJob; path: st
 
 /** A single owner's active-job count AND the global active total, from ONE
  * directory listing. Owner-tagged filenames are attributed on the NAME alone
- * (ZERO body reads); only legacy (untagged) files still cost a body read. Backs
- * the per-owner + global create caps (the per-create gate the M3/L46 fix made
- * O(owner's jobs) instead of O(store)). */
+ * (ZERO body reads). Backs the per-owner + global create caps (the per-create
+ * gate the M3/L46 fix made O(owner's jobs) instead of O(store)). */
 export async function countJobs(owner: string): Promise<{ owned: number; total: number }> {
   const lc = owner.toLowerCase();
   const entries = await ghList();
@@ -332,24 +324,14 @@ export async function countJobs(owner: string): Promise<{ owned: number; total: 
     const p = parseName(e.name);
     if (!p) continue;
     total++;
-    if (p.owner !== null) {
-      if (p.owner === lc) owned++;
-      continue;
-    }
-    // Legacy file (owner only in the body) — fall back to a body read.
-    try {
-      const read = await ghReadBody(e.path);
-      if (read && read.job.owner.toLowerCase() === lc) owned++;
-    } catch {
-      /* skip an unreadable legacy file */
-    }
+    if (p.owner === lc) owned++;
   }
   return { owned, total };
 }
 
 /** All jobs owned by `owner` (0x-lowercase) — the `list` endpoint backing. Reads
- * bodies ONLY for files whose owner tag matches (plus legacy untagged files), so
- * cost is O(owner's jobs), not O(store) — the filename-filter optimization. */
+ * bodies ONLY for files whose owner tag matches, so cost is O(owner's jobs),
+ * not O(store) — the filename-filter optimization. */
 export async function listByOwner(owner: string): Promise<OffchainJob[]> {
   const lc = owner.toLowerCase();
   const entries = await ghList();
@@ -358,7 +340,7 @@ export async function listByOwner(owner: string): Promise<OffchainJob[]> {
     const p = parseName(e.name);
     if (!p) continue;
     // Owner encoded in the name and it isn't ours → skip without a body read.
-    if (p.owner !== null && p.owner !== lc) continue;
+    if (p.owner !== lc) continue;
     try {
       const read = await ghReadBody(e.path);
       if (read && read.job.owner.toLowerCase() === lc) out.push(read.job);

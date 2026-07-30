@@ -590,13 +590,6 @@ pub(super) fn header_admin_toggle() {
     wasm_bindgen_futures::spawn_local(async move {
         super::refresh_credits_pill().await;
     });
-    // Device/signer management lives at the apex only.
-    if matches!(crate::app::tenant::current(), crate::app::tenant::Host::Apex) {
-        wasm_bindgen_futures::spawn_local(async move {
-            super::devices::refresh_signer_list().await;
-        });
-    }
-
     // On a tenant/other host, prefill the agent-config fields (prompt, x402
     // price, tool allowlist) + the model / public-face status into the (still
     // collapsed) `agent` group so they're ready the moment the user expands it.

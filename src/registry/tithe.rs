@@ -35,12 +35,6 @@ pub(crate) fn encode_set_tithe(guild_id: u64, bps: u64) -> Vec<u8> {
     out
 }
 
-/// Encode `revokeTithe()` — a bare selector, no args (clears the caller's own
-/// config).
-pub(crate) fn encode_revoke_tithe() -> Vec<u8> {
-    selector("revokeTithe()").to_vec()
-}
-
 /// Encode `collectTithe(address account)` — one static head word (the account
 /// whose consented tithe to pull, right-aligned).
 pub(crate) fn encode_collect_tithe(account: &[u8; 20]) -> Vec<u8> {
@@ -61,17 +55,6 @@ pub fn set_tithe_call(guild_id: u64, bps: u64) -> Result<crate::tempo_tx::TempoC
         value_wei: 0,
         input: encode_set_tithe(guild_id, bps),
     })
-}
-
-/// Opt OUT of tithing via a sponsored Tempo tx (`revokeTithe()` — clears the
-/// `sender`'s own config). `sender` is the account that previously
-/// `setTithe`'d; sponsored, so it holds no gas token.
-pub async fn revoke_tithe_sponsored(
-    sender: &SigningKey,
-) -> Result<String, String> {
-    // A single `delete` of the config struct + event. 400k mirrors the
-    // bounty-claim / set-role budget (sponsor billed on gas USED).
-    sponsored_diamond_call(sender, encode_revoke_tithe(), 400_000).await
 }
 
 /// Trigger a consented tithe via a sponsored Tempo tx (`collectTithe(account)`).
@@ -124,14 +107,6 @@ mod tithe_tests {
         assert_eq!(cd.len(), 4 + 64);
         assert_eq!(u64::from_be_bytes(cd[4 + 24..4 + 32].try_into().unwrap()), 7); // guildId
         assert_eq!(u64::from_be_bytes(cd[36 + 24..36 + 32].try_into().unwrap()), 500); // bps
-    }
-
-    /// `revokeTithe()` — a bare 4-byte selector, no args.
-    #[test]
-    fn revoke_tithe_calldata_layout() {
-        let cd = encode_revoke_tithe();
-        assert_eq!(&cd[..], &selector("revokeTithe()"));
-        assert_eq!(cd.len(), 4);
     }
 
     /// `collectTithe(address)` — one static word, the account right-aligned in

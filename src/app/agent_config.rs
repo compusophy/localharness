@@ -4,9 +4,7 @@
 //! Both front-ends write the same file: the admin UI (manual edits) and
 //! the `configure_agent` builtin tool (the chat agent editing its own
 //! config). Today it holds the custom system prompt and the tool
-//! allowlist; it supersedes the older `.lh_system_prompt.txt` /
-//! `.lh_tool_allowlist.txt` files, which are still read once as a
-//! migration fallback so existing agents don't lose their config.
+//! allowlist.
 //!
 //! `system_prompt.rs` and `tool_allowlist.rs` are thin wrappers over this
 //! module so their callers (chat::start_session, the admin handlers) don't
@@ -17,8 +15,6 @@ use serde::{Deserialize, Serialize};
 use crate::types::BuiltinTool;
 
 const MANIFEST_PATH: &str = "agent.json";
-const LEGACY_PROMPT: &str = ".lh_system_prompt.txt";
-const LEGACY_ALLOWLIST: &str = ".lh_tool_allowlist.txt";
 
 /// The on-disk manifest. Absent fields mean "use the default" (built-in
 /// system prompt; all tools enabled).
@@ -33,9 +29,7 @@ pub(crate) struct AgentManifest {
     pub tools: Option<Vec<String>>,
 }
 
-/// Read the manifest. Falls back to migrating the legacy per-file config
-/// when `agent.json` is absent, so an agent created before the manifest
-/// keeps its prompt + allowlist.
+/// Read the manifest. Absent or unparsable `agent.json` = the defaults.
 pub(crate) async fn load() -> AgentManifest {
     let fs = super::shared_opfs();
     if let Ok(bytes) = fs.read(MANIFEST_PATH).await {
@@ -43,36 +37,7 @@ pub(crate) async fn load() -> AgentManifest {
             return manifest;
         }
     }
-
-    // Migration: pull from the legacy files if present.
-    let mut manifest = AgentManifest::default();
-    if let Ok(bytes) = fs.read(LEGACY_PROMPT).await {
-        if let Ok(text) = String::from_utf8(bytes) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                manifest.system_prompt = Some(trimmed.to_string());
-            }
-        }
-    }
-    if let Ok(bytes) = fs.read(LEGACY_ALLOWLIST).await {
-        if let Ok(text) = String::from_utf8(bytes) {
-            let tools: Vec<String> = text
-                .lines()
-                .filter_map(|line| {
-                    let t = line.trim();
-                    if t.is_empty() || t.starts_with('#') {
-                        None
-                    } else {
-                        Some(t.to_string())
-                    }
-                })
-                .collect();
-            if !tools.is_empty() {
-                manifest.tools = Some(tools);
-            }
-        }
-    }
-    manifest
+    AgentManifest::default()
 }
 
 /// Persist the manifest as pretty JSON.

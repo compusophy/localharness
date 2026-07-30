@@ -289,9 +289,8 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness schedule` — run an agent on an interval, no tab (off-chain, meter-billed)
 - `localharness goal` — ralph GOAL loop: self-ends when the agent declares it done
 - `localharness remind` — tab-free reminder (web-push), OFF-CHAIN + free, no $LH
-- `localharness jobs` — list your scheduled jobs (off-chain + on-chain)
-- `localharness unschedule` — cancel a job (off-chain id or on-chain numeric id)
-- `localharness keeper` — one decentralized-keeper tick: poke all due jobs
+- `localharness jobs` — list your scheduled jobs
+- `localharness unschedule` — cancel a scheduled job
 - `localharness notify` — Web Push to your device (or --to <agent>)
 - `localharness threads` — list your saved per-(caller,target) conversations
 - `localharness forget` — drop saved conversation threads

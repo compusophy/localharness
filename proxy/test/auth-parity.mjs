@@ -54,6 +54,11 @@ function tokenAt(ts, addr = ADDR, priv = PRIV) {
   return `${addr}:${ts}:${sig}`;
 }
 
+function routeTokenAt(ts, route, addr = ADDR, priv = PRIV) {
+  const sig = personalSign(`localharness-proxy:${addr.toLowerCase()}:${ts}:${route}`, priv);
+  return `${addr}:${ts}:${sig}`;
+}
+
 ok(recoverAddress(`localharness-proxy:${ADDR.toLowerCase()}:1000`, personalSign(`localharness-proxy:${ADDR.toLowerCase()}:1000`, PRIV)).toLowerCase() === ADDR.toLowerCase(), 'recoverAddress round-trips');
 ok(FRESHNESS_WINDOW_SECS === 300, 'freshness window is 300s');
 
@@ -74,6 +79,27 @@ const now = 1_700_000_000;
 {
   const r = verifyAuthToken(tokenAt(now + 301), now);
   ok(r.ok === false && r.error === 'stale or future timestamp', 'future timestamp rejected');
+}
+
+// ---- route binding: the LEGACY unbound fallback is GONE (pre-1.0.0 purge) ----
+{
+  const r = verifyAuthToken(routeTokenAt(now, 'gemini'), now, 'gemini');
+  ok(r.ok === true && r.address === ADDR, 'route-bound token verifies for its route');
+}
+{
+  // An UNBOUND (legacy) token presented to a route-bound verify is REJECTED —
+  // every minter is route-bound; accepting the bare form was a cross-route
+  // replay hole.
+  const r = verifyAuthToken(tokenAt(now), now, 'gemini');
+  ok(
+    r.ok === false && r.status === 401 && r.error === 'signature does not match address',
+    'LEGACY unbound token REJECTED when a route is required',
+  );
+}
+{
+  // A token bound to a DIFFERENT route is rejected (cross-route replay).
+  const r = verifyAuthToken(routeTokenAt(now, 'telemetry'), now, 'gemini');
+  ok(r.ok === false && r.status === 401, 'token bound to another route rejected');
 }
 
 // ---- malformed token error-string parity ------------------------------------

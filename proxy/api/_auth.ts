@@ -3,8 +3,8 @@
 // The personal-sign auth token (recovery, freshness, route-binding) + CORS rules
 // now live in _authcore.ts — dep-light, shared by EVERY route incl. sponsor /
 // publish / telemetry (audit L7/L10). This module re-exports them unchanged and
-// adds the viem-backed reads (`creditOf` / `sessionExpiryOf`) + the
-// `CreditMeterFacet.meter` debit, which pull in viem and so stay OUT of the core.
+// adds the viem-backed `creditOf` read + the `CreditMeterFacet.meter` debit,
+// which pull in viem and so stay OUT of the core.
 
 import {
   createPublicClient,
@@ -106,15 +106,8 @@ export async function ethCall(data: string): Promise<string> {
   return body.result;
 }
 
-/** `sessionExpiryOf(address) -> uint256`, decoded as BigInt unix seconds.
+/** `creditOf(address) -> uint256` — the user's prepaid per-request balance.
  * Compare as BigInt — never lossily coerce a uint256 word to Number. */
-export async function sessionExpiryOf(address: string): Promise<bigint> {
-  return BigInt(
-    await ethCall('0x' + selector('sessionExpiryOf(address)') + encodeAddressWord(address)),
-  );
-}
-
-/** `creditOf(address) -> uint256` — the user's prepaid per-request balance. */
 export async function creditOf(address: string): Promise<bigint> {
   return BigInt(
     await ethCall('0x' + selector('creditOf(address)') + encodeAddressWord(address)),

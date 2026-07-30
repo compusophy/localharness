@@ -43,7 +43,7 @@ pub(crate) use access::{
 pub(crate) use access::model_access_is_credits;
 pub(crate) use session::start_session;
 
-use access::{collect_payment_if_required, resolve_credit_access, short_hash};
+use access::resolve_credit_access;
 
 thread_local! {
     /// True while a turn is streaming — guards against starting a second
@@ -317,28 +317,6 @@ pub(crate) async fn run_send() {
     // Swap the send arrow for the stop button for the whole (possibly
     // multi-turn) run; the guard / loop-end restores it.
     dom::swap_outer("terminal-send", &templates::stop_button().into_string());
-
-    // Payment gate. If the agent's owner has set a per-turn price AND
-    // we know this visitor is *not* the owner, collect payment via
-    // the cross-origin iframe signer before the LLM call runs.
-    // Owner-of-the-agent always sends free; verification-pending /
-    // unregistered / failed states fall through without charging.
-    // (The "paying" stage is entered inside the gate, only when it
-    // actually collects.)
-    match collect_payment_if_required().await {
-        Ok(None) => {} // free or no gate
-        Ok(Some(tx_hash)) => {
-            dom::set_status(
-                &format!("payment received ({}); sending…", short_hash(&tx_hash)),
-                false,
-            );
-        }
-        Err(err) => {
-            fail_pending_turn(assistant_turn_id, &format!("payment failed: {err}"));
-            dom::set_status("payment failed — see the message above", true);
-            return;
-        }
-    }
 
     // Cache the BYOK key so a refresh doesn't lose it. Credits tokens
     // rotate per resolve and carry nothing worth caching.

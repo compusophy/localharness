@@ -35,7 +35,8 @@ function registerCalldata(name) {
   return '0x' + sel('register(string)') + word('20') + word(nb.length.toString(16)) + padded;
 }
 function authToken(priv, addr, ts) {
-  const msg = `localharness-proxy:${addr.toLowerCase()}:${ts}`;
+  // Route-bound to the sponsor endpoint (the legacy unbound form is rejected).
+  const msg = `localharness-proxy:${addr.toLowerCase()}:${ts}:sponsor`;
   const mb = new TextEncoder().encode(msg);
   const pre = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${mb.length}`);
   const d = keccak_256(concat(pre, mb));

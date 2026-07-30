@@ -26,10 +26,10 @@
 // AUTH + BILLING are byte-compatible with api/fetch.ts / api/gemini.ts: the
 // caller sends `<address>:<timestamp>:<signature>` (an Ethereum personal-sign
 // over `localharness-proxy:<address>:<timestamp>`) in `x-goog-api-key` (or
-// `x-api-key`); the proxy recovers the signer, gates on an active SessionFacet
-// session OR a CreditMeterFacet balance, and debits the SAME flat per-request
-// cost — a paid capability like any other proxied call, so a loop can't buzz
-// a phone for free.
+// `x-api-key`); the proxy recovers the signer, gates on a funded
+// CreditMeterFacet balance, and debits the SAME flat per-request cost — a paid
+// capability like any other proxied call, so a loop can't buzz a phone for
+// free.
 //
 // ORDER OF OPERATIONS (the fetch.ts invariant: nothing proxy-side may fail
 // AFTER the caller is charged except the actual upstream send): payload
@@ -74,9 +74,9 @@ export const config = { runtime: 'edge' };
 // ---- constants (mirror api/fetch.ts) ----------------------------------------
 
 // Auth + metering primitives (CORS allow-check, personal-sign recovery +
-// freshness, the creditOf/sessionExpiryOf reads, the generic eth_call, the
-// meter debit) are SHARED in `_auth.ts` (§5 dedup) — byte-for-byte the logic
-// that used to be inlined here.
+// freshness, the creditOf read, the generic eth_call, the meter debit) are
+// SHARED in `_auth.ts` (§5 dedup) — byte-for-byte the logic that used to be
+// inlined here.
 import {
   isAllowedOrigin,
   verifyAuthToken,
@@ -84,7 +84,6 @@ import {
   encodeAddressWord,
   stripHex,
   ethCall,
-  sessionExpiryOf,
   creditOf,
   meterDebit,
   InsufficientCreditError,
@@ -361,44 +360,31 @@ export default async function handler(req: Request): Promise<Response> {
 
     // ---- credit gate + meter debit — same model as a Gemini model call ---------
     const cost = COST_PER_REQUEST_WEI;
-    const [expiry, credit] = await Promise.all([
-      sessionExpiryOf(address),
-      creditOf(address),
-    ]);
-    const hasSession = expiry > BigInt(now);
-    const hasCredit = credit >= cost;
-    if (!hasSession && !hasCredit) {
+    const credit = await creditOf(address);
+    if (credit < cost) {
       return json(
         {
           error:
-            'no $LH credit or active session for this identity — fund the per-request meter (localharness redeem / send / topup) or open a session explicitly (localharness session). See https://localharness.xyz/llms.txt',
+            'no $LH credit for this identity — fund the per-request meter (localharness redeem / send / topup). See https://localharness.xyz/llms.txt',
         },
         402,
         origin,
       );
     }
-    // Prefer per-request metering over a lingering free session (gemini.ts
-    // rationale: a funded meter means the caller opted into per-call billing).
-    if (hasCredit) {
-      try {
-        await meterDebit(address, cost);
-      } catch (e) {
-        if (e instanceof InsufficientCreditError) {
-          if (!hasSession) {
-            return json(
-              {
-                error:
-                  'insufficient $LH credit — the on-chain debit reverted (balance changed since the gate read)',
-              },
-              402,
-              origin,
-            );
-          }
-          // else: covered by an active session — fall through and serve.
-        } else {
-          return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
-        }
+    try {
+      await meterDebit(address, cost);
+    } catch (e) {
+      if (e instanceof InsufficientCreditError) {
+        return json(
+          {
+            error:
+              'insufficient $LH credit — the on-chain debit reverted (balance changed since the gate read)',
+          },
+          402,
+          origin,
+        );
       }
+      return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
     }
 
     // ---- delivery — the one failure a debited caller pays for ------------------

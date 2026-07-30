@@ -88,7 +88,7 @@ export function recoverAddress(message: string, sigHex: string): string {
 export const FRESHNESS_WINDOW_SECS = 300;
 
 export type AuthResult =
-  | { ok: true; address: string; legacy?: boolean }
+  | { ok: true; address: string }
   | { ok: false; status: number; error: string };
 
 /**
@@ -97,13 +97,10 @@ export type AuthResult =
  * personal-sign, requiring the recovered address to match the claimed one.
  *
  * `route` (audit L9): when given, the token must sign
- * `localharness-proxy:<addr>:<ts>:<route>`. A token bound to a DIFFERENT route
- * fails this check AND the legacy fallback (its signature is over neither this
- * route's message nor the bare one), so cross-route replay is blocked for any
- * migrated client. For backward compat with not-yet-migrated clients, a failed
- * route-bound check falls back to the LEGACY unbound message; that path is flagged
- * `legacy: true` and stays replayable until the fallback is retired. Pass no
- * `route` to keep the pre-L9 unbound behavior exactly.
+ * `localharness-proxy:<addr>:<ts>:<route>` — a token bound to a DIFFERENT route
+ * (or the bare unbound message) fails, so cross-route replay is blocked. Every
+ * minter is route-bound (the legacy unbound fallback was removed pre-1.0.0).
+ * Pass no `route` to accept the bare message exactly.
  *
  * Returns the authenticated `address` (CLAIMED casing) or a `{ status, error }`
  * the caller maps straight to `json(error, status)` — all 401. `now` is unix
@@ -139,7 +136,6 @@ export function verifyAuthToken(token: string, now: number, route?: string): Aut
   const base = `localharness-proxy:${lower}:${timestamp}`;
   if (route !== undefined) {
     if (matches(`${base}:${route}`)) return { ok: true, address };
-    if (matches(base)) return { ok: true, address, legacy: true }; // un-migrated client
     return { ok: false, status: 401, error: 'signature does not match address' };
   }
   if (matches(base)) return { ok: true, address };

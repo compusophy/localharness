@@ -63,9 +63,11 @@ function registerCalldata(name) {
 function settleCalldata() {
   return '0x' + sel('settle(address,address,uint256,uint256,uint256,bytes32,bytes)') + word('0').repeat(7);
 }
-/** Personal-sign token over `localharness-proxy:<addr>:<ts>`. */
+/** Personal-sign token over `localharness-proxy:<addr>:<ts>:sponsor` — the
+ * ROUTE-BOUND message sponsor.ts verifies (the legacy unbound fallback is
+ * gone; an unbound token is now rejected). */
 function authToken(priv, addr, ts) {
-  const message = `localharness-proxy:${addr.toLowerCase()}:${ts}`;
+  const message = `localharness-proxy:${addr.toLowerCase()}:${ts}:sponsor`;
   const msgBytes = new TextEncoder().encode(message);
   const prefix = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${msgBytes.length}`);
   const digest = keccak_256(concat(prefix, msgBytes));
@@ -184,10 +186,10 @@ const token = authToken(senderPriv, senderAddr, ts);
 // --- funded caller is refused (onboarding-only) -----------------------------
 {
   stubBalance('1bc16d674ec80000'); // 2 $LH > 1 $LH ceiling
-  // openSession is allowlisted but NOT gate-exempt — register / createInvite /
+  // createRoom is allowlisted but NOT gate-exempt — register / createInvite /
   // settle / transfer are exempt, so use a still-gated selector to exercise
   // the onboarding-only funded gate.
-  const cd = '0x' + sel('openSession()');
+  const cd = '0x' + sel('createRoom()');
   const intent = makeIntent(DIAMOND, cd);
   const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
   const j = await res.json();
@@ -217,6 +219,63 @@ for (const sig of ['setPushSub(bytes)', 'submitFeedback(string)']) {
   ok(
     `${sig} refused 403 LH_RELAY_SELECTOR (removed system)`,
     res.status === 403 && j.code === 'LH_RELAY_SELECTOR',
+    `status=${res.status} code=${j.code}`,
+  );
+}
+
+// --- SessionFacet / on-chain ScheduleFacet writes are OFF the allowlist -------
+// (purged pre-1.0.0: sessions are shelved, scheduling is the off-chain jobstore)
+for (const [sig, cd] of [
+  ['openSession()', '0x' + sel('openSession()')],
+  [
+    'scheduleJob(uint256,bytes,uint64,uint128,uint32)',
+    '0x' + sel('scheduleJob(uint256,bytes,uint64,uint128,uint32)') + word('1') + word('a0') + word('3c') + word('0') + word('1'),
+  ],
+  ['cancelJob(uint256)', '0x' + sel('cancelJob(uint256)') + word('1')],
+]) {
+  stubBalance('0');
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  const j = await res.json();
+  ok(
+    `${sig} refused 403 LH_RELAY_SELECTOR (purged system)`,
+    res.status === 403 && j.code === 'LH_RELAY_SELECTOR',
+    `status=${res.status} code=${j.code}`,
+  );
+}
+
+// --- subscribe/unsubscribe (Ready-Up feed) ARE sponsorable for onboarding -----
+// Was missing from the allowlist → every mainnet subscribe 403'd.
+for (const sig of ['subscribe(uint256)', 'unsubscribe(uint256)']) {
+  stubBalance('0');
+  const cd = '0x' + sel(sig) + word('1');
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  ok(`${sig} sponsored for an unfunded caller (200)`, res.status === 200, `status=${res.status}`);
+}
+
+// --- LEGACY unbound auth token is REJECTED (route binding is mandatory) -------
+// The pre-purge fallback accepted `localharness-proxy:<addr>:<ts>` with no
+// `:sponsor` suffix — a cross-route replay hole, now closed.
+{
+  stubBalance('0');
+  const message = `localharness-proxy:${senderAddr.toLowerCase()}:${ts}`; // no :sponsor
+  const msgBytes = new TextEncoder().encode(message);
+  const prefix = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${msgBytes.length}`);
+  const digest = keccak_256(concat(prefix, msgBytes));
+  const s = secp256k1.sign(digest, hexToBytes(senderPriv.slice(2)));
+  const sig = new Uint8Array(65);
+  sig.set(hexToBytes(s.r.toString(16).padStart(64, '0')), 0);
+  sig.set(hexToBytes(s.s.toString(16).padStart(64, '0')), 32);
+  sig[64] = 27 + s.recovery;
+  const legacyToken = `${senderAddr.toLowerCase()}:${ts}:0x${bytesToHex(sig)}`;
+  const cd = registerCalldata('relaytest');
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), legacyToken));
+  const j = await res.json();
+  ok(
+    'legacy unbound token REJECTED 401 LH_RELAY_AUTH',
+    res.status === 401 && j.code === 'LH_RELAY_AUTH',
     `status=${res.status} code=${j.code}`,
   );
 }

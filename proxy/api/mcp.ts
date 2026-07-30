@@ -652,7 +652,7 @@ async function settleOnChain(a: X402Auth): Promise<`0x${string}`> {
   const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
   let status: 'success' | 'reverted';
   try {
-    // 12s (matches gemini.ts::meterDebit / scheduler.ts::recordRun) — NOT 30s:
+    // 12s (matches gemini.ts::meterDebit) — NOT 30s:
     // under settle-on-success the model call has ALREADY consumed part of
     // Edge's ~25s wall clock before we get here, so the receipt wait must
     // stay tightly bounded. Resolve any ambiguity against the chain below

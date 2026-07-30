@@ -308,12 +308,6 @@ pub async fn parties_of(creator_hex: &str) -> Result<Vec<u64>, String> {
     Ok(decode_u64_array(&bytes))
 }
 
-/// Read `partyCount()` — total parties ever formed (ids are monotonic).
-pub async fn party_count() -> Result<u64, String> {
-    let result = read_view(selector("partyCount()"), &[]).await?;
-    decode_u256_as_u64(&result)
-}
-
 /// Read `liveParties(uint256 startAfter, uint256 limit)` → the LIVE
 /// (Forming/Active), unexpired party ids. Same `(uint256[], uint256
 /// cursor)` ABI shape (and shared decode) as `openBounties`; the cursor is

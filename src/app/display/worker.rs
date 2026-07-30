@@ -116,11 +116,6 @@ fn record_outcome(generation: u32, outcome: RunOutcome) {
     });
 }
 
-/// The current spawn's first outcome so far (clone — cheap).
-pub(super) fn current_outcome() -> RunOutcome {
-    RUN_OUTCOME.with(|o| o.borrow().clone())
-}
-
 /// Everything that must outlive a running worker: the `Worker` itself, the
 /// `onmessage` closure (JS holds a reference into it), the watchdog interval
 /// id + its callback closure, and the `terminated` flag the watchdog/stop

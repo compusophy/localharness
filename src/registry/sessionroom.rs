@@ -129,7 +129,7 @@ pub async fn room_members_of(room_id: u64) -> Result<Vec<String>, String> {
     let res = read_view(selector("roomMembersOf(uint256)"), &[u256_be(room_id as u128)]).await?;
     let bytes = hex_to_bytes(&res)?;
     // Bare dynamic `address[]` ABI return — the canonical `abi::decode_address_array`
-    // (same decode as `devices_of` / `members_of_guild`).
+    // (same decode as `members_of_guild`).
     Ok(decode_address_array(&bytes))
 }
 

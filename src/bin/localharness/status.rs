@@ -1,4 +1,4 @@
-use crate::{bytes_to_hex_str, fmt_interval, fmt_lh, job_is_terminal, load_signer, registry, resolve_caller_key, resolve_caller_label, resolve_key_read_path, truncate_words, wallet, CALL_COST_WEI};
+use crate::{bytes_to_hex_str, fmt_lh, load_signer, registry, resolve_caller_key, resolve_caller_label, resolve_key_read_path, truncate_words, wallet, CALL_COST_WEI};
 
 pub(crate) const WHOAMI_USAGE: &str = "usage: localharness whoami [--json] [--as] <name>";
 
@@ -395,11 +395,6 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
         }
     };
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
     println!("== {label} ==  (read-only economy dashboard)");
 
     // 2. Identity ----------------------------------------------------------
@@ -519,47 +514,9 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
         Err(e) => println!("  (could not read: {e})"),
     }
 
-    // 7. Scheduled jobs (jobsOf → active id + budget + interval) -----------
-    println!("\nscheduled jobs");
-    match registry::jobs_of(&owner_eoa).await {
-        Ok(ids) if ids.is_empty() => println!("  none"),
-        Ok(ids) => {
-            let total = ids.len();
-            for id in ids.into_iter().take(STATUS_LIST_CAP) {
-                match registry::get_job(id).await {
-                    Ok(job) => {
-                        let target = registry::name_of_id(job.target_id)
-                            .await
-                            .ok()
-                            .filter(|n| !n.is_empty())
-                            .unwrap_or_else(|| format!("token#{}", job.target_id));
-                        // A terminal (cancelled/exhausted) job never fires again —
-                        // don't advertise a "next due" time for it (feedback #82).
-                        let next = if job_is_terminal(job.status) || job.next_run == 0 {
-                            "—".to_string()
-                        } else if job.next_run <= now {
-                            "due now".to_string()
-                        } else {
-                            format!("in {}", fmt_interval(job.next_run - now))
-                        };
-                        let budget = if job_is_terminal(job.status) {
-                            "—".to_string()
-                        } else {
-                            fmt_lh(job.budget_wei)
-                        };
-                        println!(
-                            "  #{id}  -> {target}  every {}  next {next}  budget {budget}  [{}]",
-                            fmt_interval(job.interval),
-                            job.status_label()
-                        );
-                    }
-                    Err(e) => println!("  #{id}  (could not read: {e})"),
-                }
-            }
-            print!("{}", status_more_note(total, "jobs"));
-        }
-        Err(e) => println!("  (could not read: {e})"),
-    }
+    // Scheduled jobs live off-chain (signed store reads) — `localharness jobs`
+    // is the listing; a signer-less status for another name can't read them.
+    println!("\nscheduled jobs: see `localharness jobs`");
 
     0
 }

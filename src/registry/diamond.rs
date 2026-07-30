@@ -11,7 +11,6 @@
 //! `cast calldata` output (see the test module).
 
 use super::abi::selector;
-use crate::encoding::bytes_to_hex;
 
 /// The 32-byte ABI word size.
 const WORD: usize = 32;
@@ -121,8 +120,7 @@ fn encode_bytes(data: &[u8]) -> Vec<u8> {
 ///
 /// The outer arg tuple has three head words — offset-to-`cuts`, the static
 /// `init` address, and offset-to-`init_calldata` — followed by the two dynamic
-/// tails (the `FacetCut[]` then the `bytes`). Returns raw calldata bytes; use
-/// [`encode_diamond_cut_hex`] for the `0x…` string form.
+/// tails (the `FacetCut[]` then the `bytes`). Returns raw calldata bytes.
 pub fn encode_diamond_cut(cuts: &[FacetCut], init: &[u8; 20], init_calldata: &[u8]) -> Vec<u8> {
     let sel = selector("diamondCut((address,uint8,bytes4[])[],address,bytes)");
 
@@ -144,12 +142,6 @@ pub fn encode_diamond_cut(cuts: &[FacetCut], init: &[u8; 20], init_calldata: &[u
     buf.extend_from_slice(&cuts_blob);
     buf.extend_from_slice(&calldata_blob);
     buf
-}
-
-/// Like [`encode_diamond_cut`] but returns a `0x`-prefixed lowercase hex string
-/// (the shape `eth_sendRawTransaction` / tx-`input` assembly expect).
-pub fn encode_diamond_cut_hex(cuts: &[FacetCut], init: &[u8; 20], init_calldata: &[u8]) -> String {
-    format!("0x{}", bytes_to_hex(&encode_diamond_cut(cuts, init, init_calldata)))
 }
 
 /// ABI-encode the `Diamond` constructor's argument tuple
@@ -181,15 +173,21 @@ pub fn encode_diamond_constructor_args(owner: &[u8; 20], cuts: &[FacetCut]) -> V
     buf
 }
 
-/// Like [`encode_diamond_constructor_args`] but returns a `0x`-prefixed
-/// lowercase hex string.
-pub fn encode_diamond_constructor_args_hex(owner: &[u8; 20], cuts: &[FacetCut]) -> String {
-    format!("0x{}", bytes_to_hex(&encode_diamond_constructor_args(owner, cuts)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::bytes_to_hex;
+
+    /// Test-local `0x…` hex form of [`encode_diamond_cut`] — the golden
+    /// vectors below are pinned as hex strings.
+    fn cut_hex(cuts: &[FacetCut], init: &[u8; 20], init_calldata: &[u8]) -> String {
+        format!("0x{}", bytes_to_hex(&encode_diamond_cut(cuts, init, init_calldata)))
+    }
+
+    /// Test-local `0x…` hex form of [`encode_diamond_constructor_args`].
+    fn ctor_hex(owner: &[u8; 20], cuts: &[FacetCut]) -> String {
+        format!("0x{}", bytes_to_hex(&encode_diamond_constructor_args(owner, cuts)))
+    }
 
     /// Selector for the diamondCut signature — `cast sig` cross-check.
     /// `cast sig "diamondCut((address,uint8,bytes4[])[],address,bytes)"` →
@@ -240,7 +238,7 @@ mod tests {
             action: 0,
             selectors: vec![[0xaa, 0xbb, 0xcc, 0xdd], [0x11, 0x22, 0x33, 0x44]],
         };
-        let got = encode_diamond_cut_hex(&[cut], &[0u8; 20], &[]);
+        let got = cut_hex(&[cut], &[0u8; 20], &[]);
         assert_eq!(got, expected);
     }
 
@@ -288,23 +286,20 @@ mod tests {
             action: 2,
             selectors: vec![[0xde, 0xad, 0xbe, 0xef]],
         };
-        let got = encode_diamond_cut_hex(&[cut], &init, &[0xca, 0xfe]);
+        let got = cut_hex(&[cut], &init, &[0xca, 0xfe]);
         assert_eq!(got, expected);
     }
 
-    /// Sanity: the raw-bytes form equals the hex form modulo the `0x` prefix,
-    /// and the calldata is always a whole number of 32-byte words past the
-    /// 4-byte selector.
+    /// Sanity: the calldata is always a whole number of 32-byte words past
+    /// the 4-byte selector.
     #[test]
-    fn raw_and_hex_agree_and_word_aligned() {
+    fn cut_calldata_word_aligned() {
         let cut = FacetCut {
             facet: [0x11; 20],
             action: 0,
             selectors: vec![[0xaa, 0xbb, 0xcc, 0xdd]],
         };
         let raw = encode_diamond_cut(std::slice::from_ref(&cut), &[0u8; 20], &[]);
-        let hex = encode_diamond_cut_hex(&[cut], &[0u8; 20], &[]);
-        assert_eq!(hex, format!("0x{}", bytes_to_hex(&raw)));
         assert_eq!((raw.len() - 4) % WORD, 0);
     }
 
@@ -314,7 +309,7 @@ mod tests {
     /// offset-calldata 0x80).
     #[test]
     fn empty_cuts_list() {
-        let got = encode_diamond_cut_hex(&[], &[0u8; 20], &[]);
+        let got = cut_hex(&[], &[0u8; 20], &[]);
         let expected = concat!(
             "0x1f931c1c",
             "0000000000000000000000000000000000000000000000000000000000000060",
@@ -369,13 +364,12 @@ mod tests {
             action: 0,
             selectors: vec![[0xaa, 0xbb, 0xcc, 0xdd], [0x11, 0x22, 0x33, 0x44]],
         };
-        let got = encode_diamond_constructor_args_hex(&[0x11; 20], std::slice::from_ref(&cut));
+        let got = ctor_hex(&[0x11; 20], std::slice::from_ref(&cut));
         assert_eq!(got, expected);
 
-        // Raw form agrees with the hex form, and is whole 32-byte words (no
-        // selector to offset by, unlike diamondCut calldata).
+        // Whole 32-byte words (no selector to offset by, unlike diamondCut
+        // calldata).
         let raw = encode_diamond_constructor_args(&[0x11; 20], std::slice::from_ref(&cut));
-        assert_eq!(got, format!("0x{}", bytes_to_hex(&raw)));
         assert_eq!(raw.len() % WORD, 0);
     }
 
@@ -439,7 +433,7 @@ mod tests {
                 selectors: vec![[0xca, 0xfe, 0xba, 0xbe], [0xfe, 0xed, 0xfa, 0xce]],
             },
         ];
-        let got = encode_diamond_constructor_args_hex(&[0x33; 20], &cuts);
+        let got = ctor_hex(&[0x33; 20], &cuts);
         assert_eq!(got, expected);
     }
 }

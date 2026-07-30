@@ -111,9 +111,12 @@ const DIAMOND_WRITE_SIGS = [
   'withdrawCredits(uint256)',
   'depositCredits(uint256)',
   'redeem(string)',
-  'openSession()',
-  'scheduleJob(uint256,bytes,uint64,uint128,uint32)',
-  'cancelJob(uint256)',
+  // Ready-Up feed membership (SubscribeFacet): subscribe/unsubscribe toggle the
+  // CALLER's own roster entry for a target feed (src/registry/subscribe.rs
+  // sponsored writes). Gas-only, no value. Was missing → every mainnet
+  // subscribe 403'd LH_RELAY_SELECTOR while the browser wired the button.
+  'subscribe(uint256)',
+  'unsubscribe(uint256)',
   'createInvite(bytes32,uint256,uint64)',
   'acceptInvite(string)',
   'reclaimInvite(bytes32)',

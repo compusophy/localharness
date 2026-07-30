@@ -454,69 +454,6 @@ fn truncate_preview(text: &str, max: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
-/// Embed-mode card — the minimal identity surface a subdomain exposes
-/// when loaded as `name.localharness.xyz/?embed=1`. Fields lazy-load:
-/// initial paint passes None for everything except `name`; the second
-/// paint after the on-chain reads passes the resolved values. Always
-/// renders inside `#root` with the rest of the page chrome stripped
-/// out so it composes cleanly in a parent iframe.
-pub(crate) fn embed_card(
-    name: &str,
-    owner_hex: Option<&str>,
-    tba_hex: Option<&str>,
-    lh_balance_wei: Option<u128>,
-    is_main: Option<bool>,
-) -> Markup {
-    let lh_whole = lh_balance_wei.map(|w| w / 1_000_000_000_000_000_000u128);
-    html! {
-        section.embed-card {
-            div.embed-card-header {
-                a.embed-card-name
-                    href=(format!("https://{name}.localharness.xyz/"))
-                    target="_top"
-                    rel="noopener" {
-                    (name)
-                }
-                @if let Some(true) = is_main {
-                    span.embed-card-badge { "main" }
-                }
-            }
-            div.embed-card-rows {
-                @if let Some(addr) = owner_hex {
-                    div.embed-card-row {
-                        span.embed-card-label { "owner" }
-                        code.embed-card-value title=(addr) { (short_addr(addr)) }
-                    }
-                } @else if owner_hex.is_some() {
-                    // empty branch — unreachable; here for symmetry
-                } @else {
-                    div.embed-card-row {
-                        span.embed-card-label { "owner" }
-                        code.embed-card-value.embed-card-muted { "…" }
-                    }
-                }
-                @if let Some(addr) = tba_hex {
-                    div.embed-card-row {
-                        span.embed-card-label { "wallet" }
-                        code.embed-card-value title=(addr) { (short_addr(addr)) }
-                    }
-                }
-                @if let Some(lh) = lh_whole {
-                    div.embed-card-row {
-                        span.embed-card-label { "balance" }
-                        code.embed-card-value { (lh) " LH" }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// `compose_chrome` (the iframe-grid host shell) was removed when host::compose
-// landed iframe-free in the live app: `?compose=` now composites each module's
-// published `app.wasm` into one canvas via `display::mount_composition`
-// (roadmap Track A / Phase 3b). The `?embed=1` identity card above stays.
-
 /// Public agent directory (`?explore=1`) — a browsable gallery of every
 /// agent claimed on the registry. The grid is filled async by
 /// `paint_explore`; this renders the header + a loading placeholder.
@@ -2157,50 +2094,14 @@ pub(crate) fn opfs_wipe_confirm_inline() -> Markup {
     }
 }
 
-/// Full pricing card — currently unused (pricing UI removed from
-/// the agent card in 0.10.15). Comes back when the visitor-pays UX
-/// gets a clearer surface; kept compiled so call sites are warm.
-#[allow(dead_code)]
-pub(crate) fn pricing_card(price_wei: u128) -> Markup {
-    html! {
-        section .pricing-card {
-            div.pricing-header {
-                div.pricing-title { "pricing" }
-            }
-            (pricing_card_body(price_wei, true))
-        }
-    }
-}
-
-/// Single-line read-only pricing display for visitors (non-owners).
-#[allow(dead_code)] // pricing UI hidden from agent card in 0.10.15
-pub(crate) fn pricing_readonly_line(price_wei: u128) -> Markup {
-    let display = if price_wei == 0 {
-        "free".to_string()
-    } else {
-        format!("{} $LH/turn", super::format_wei_as_test_eth(price_wei))
-    };
-    html! {
-        div.financial-line {
-            span.financial-label { "pricing" }
-            span.financial-value { (display) }
-        }
-    }
-}
-
 /// Right-column financial card. Injected by `kick_verification` once
 /// the agent's TBA + balance + owner are known. Just the addresses
-/// and balance for now — pricing UI removed per "i have NO idea what
-/// the PRICING window does on the AGENT thing". The pricing data +
-/// payment loop are still wired (`.lh_pricing.json` + chat send),
-/// just not surfaced in the chrome until we have a clearer UX.
+/// and balance.
 pub(crate) fn financial_card(
     name: &str,
     tba_hex: &str,
     owner_hex: &str,
     lh_balance_wei: u128,
-    _price_wei: u128,
-    _is_owner: bool,
 ) -> Markup {
     let tba_url = crate::registry::explorer_address_url(tba_hex);
     let owner_url = crate::registry::explorer_address_url(owner_hex);
@@ -2267,37 +2168,6 @@ pub(crate) fn confirm_callout(tool_name: &str, code: &str) -> Markup {
             div.confirm-callout-head { "confirm · " (tool_name) }
             div.confirm-callout-body {
                 "type " span.confirm-code { (code) } " in chat to proceed"
-            }
-        }
-    }
-}
-
-/// Pricing card body — owner-only edit form. Kept as a separate
-/// template so `Action::PricingSave` can swap-outer just the body
-/// after a successful save without re-rendering the slot.
-pub(crate) fn pricing_card_body(price_wei: u128, is_owner: bool) -> Markup {
-    let display = if price_wei == 0 {
-        "free".to_string()
-    } else {
-        format!("{} $localharness/turn", super::format_wei_as_test_eth(price_wei))
-    };
-    html! {
-        div #pricing-body .pricing-body {
-            div.pricing-value { (display) }
-            @if is_owner {
-                div.pricing-edit {
-                    input #pricing-input
-                        type="text"
-                        inputmode="decimal"
-                        aria-label="price per turn in $localharness"
-                        placeholder="1.0"
-                        value=(if price_wei == 0 { String::new() } else { super::format_wei_as_test_eth(price_wei) }) {}
-                    span.pricing-unit { "$localharness/turn" }
-                    button.ghost
-                        type="button"
-                        data-action="pricing-save" { "save" }
-                }
-                div #pricing-msg .pricing-msg {}
             }
         }
     }

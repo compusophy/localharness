@@ -365,48 +365,6 @@ impl Peer {
             .map_err(|e| JsValue::from_str(&format!("mesh answer post: {e}")))?;
         Ok(peer)
     }
-
-    /// OFFERER: create an offer, POST it to the relay under `room`, poll for the
-    /// peer's answer, complete the handshake, and best-effort clear the room.
-    /// Returns the connected `Peer` (poll `is_open()` before `send`). Legacy
-    /// 2-peer relay primitive — superseded by the star above, kept for reference.
-    #[allow(dead_code)]
-    pub(crate) async fn connect_offerer(
-        room: &str,
-        signer: &k256::ecdsa::SigningKey,
-        on_msg: impl FnMut(Vec<u8>) + 'static,
-    ) -> Result<Self, JsValue> {
-        let (peer, offer) = Self::offer(on_msg).await?;
-        crate::registry::signal_post(signer, now_secs(), room, "offer", &offer)
-            .await
-            .map_err(|e| JsValue::from_str(&format!("signal_post offer: {e}")))?;
-        let answer = poll_signal(room, "answer", 60)
-            .await
-            .ok_or_else(|| JsValue::from_str("timed out waiting for the peer's answer"))?;
-        peer.accept_answer(&answer).await?;
-        // Cleanup once we have the answer — best-effort (a stale room self-expires).
-        let _ = crate::registry::signal_clear(signer, now_secs(), room).await;
-        Ok(peer)
-    }
-
-    /// ANSWERER: poll the relay for the offer under `room`, answer it, POST the
-    /// answer back, and return the connected `Peer`. Legacy 2-peer relay
-    /// primitive — superseded by the star above, kept for reference.
-    #[allow(dead_code)]
-    pub(crate) async fn connect_answerer(
-        room: &str,
-        signer: &k256::ecdsa::SigningKey,
-        on_msg: impl FnMut(Vec<u8>) + 'static,
-    ) -> Result<Self, JsValue> {
-        let offer = poll_signal(room, "offer", 60)
-            .await
-            .ok_or_else(|| JsValue::from_str("timed out waiting for the peer's offer"))?;
-        let (peer, answer) = Self::answer(&offer, on_msg).await?;
-        crate::registry::signal_post(signer, now_secs(), room, "answer", &answer)
-            .await
-            .map_err(|e| JsValue::from_str(&format!("signal_post answer: {e}")))?;
-        Ok(peer)
-    }
 }
 
 /// Current UNIX seconds (browser clock) for the relay auth token freshness.

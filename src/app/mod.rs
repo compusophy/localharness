@@ -33,7 +33,6 @@ pub(crate) mod display;
 pub(crate) mod cli;
 pub(crate) mod agent_config;
 mod dom;
-mod embed;
 mod events;
 mod feedback;
 mod gas;
@@ -45,7 +44,6 @@ mod net;
 mod notifications;
 mod opfs;
 mod owner;
-mod pricing;
 mod remote_call;
 mod seed_pull;
 mod skills;
@@ -155,14 +153,8 @@ pub(crate) struct App {
     /// renders the chrome; the UI pill reflects whatever's here.
     pub(crate) verify_state: VerifyState,
     /// Agent's ERC-6551 token-bound account, populated by
-    /// `kick_verification` after the on-chain TBA lookup. Read by
-    /// the payment flow so the visitor pays the right address.
+    /// `kick_verification` after the on-chain TBA lookup.
     pub(crate) tba_address: Option<String>,
-    /// Per-turn payment price in wei for this tenant. Populated by
-    /// the same load step that reads the verify state; consulted by
-    /// `chat::run_send` to decide whether to gate the next turn.
-    /// `None` means "haven't checked yet"; `Some(0)` means "free".
-    pub(crate) pricing_wei: Option<u128>,
     /// The agent's on-chain card (name/owner/wallet/balance/…) rendered by
     /// `kick_verification`. Stashed here because the card now lives in the
     /// admin Account tab (folded in from the old right rail), which isn't
@@ -183,8 +175,7 @@ pub(crate) enum VerifyState {
     },
     /// On-chain owner exists but the visitor's wallet signed with a
     /// different address — they're browsing someone else's space.
-    /// `visitor_address` is the recovered signer; payment flow uses it
-    /// as the `from` of the on-chain payment tx.
+    /// `visitor_address` is the recovered signer.
     Visitor {
         owner_address: String,
         visitor_address: String,
@@ -218,7 +209,6 @@ impl App {
             wallet: None,
             verify_state: VerifyState::Pending,
             tba_address: None,
-            pricing_wei: None,
             financial_card_html: None,
         }
     }
@@ -428,8 +418,8 @@ fn webrtc_test_params() -> Option<(String, String)> {
 
 /// Drive the `?webrtctest` harness with GRANULAR status: each signaling step +
 /// a live poll countdown is shown in `#webrtc-status`, so a stuck handshake says
-/// exactly where (and a role mismatch is obvious). Inlines the relay steps (vs
-/// `connect_offerer/answerer`) purely for that per-step visibility.
+/// exactly where (and a role mismatch is obvious). Inlines the relay steps
+/// purely for that per-step visibility.
 async fn run_webrtc_test(room: String, role: String) {
     fn status(html: &str) {
         if let Ok(d) = dom::document() {
@@ -613,21 +603,6 @@ fn mount() -> Result<(), JsValue> {
         return Ok(());
     }
 
-    // Embed mode short-circuit (?embed=1). Paints just the identity
-    // card sized for inclusion in a parent iframe. Activated on any
-    // host so apex and tenants alike can present themselves as
-    // modules.
-    if embed::has_embed_hint() {
-        root.set_inner_html(
-            "<main style=\"padding:24px;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">embed · loading…</main>",
-        );
-        let host_for_embed = host.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            embed::paint_embed(host_for_embed).await;
-        });
-        return Ok(());
-    }
-
     // Explore mode short-circuit (?explore=1). A public directory of
     // every agent on the registry — works on any host.
     if has_explore_hint() {
@@ -697,38 +672,6 @@ fn mount() -> Result<(), JsValue> {
 
     match &host {
         tenant::Host::Apex => {
-            // Linked-device hand-off: a device that just paired redirects here
-            // with `?link_device=<owner>` so the apex (this origin) records
-            // which identity the device belongs to — without it the apex has
-            // no master wallet to key on. Store the pointer, then continue to
-            // `?then` (the subdomain) if present.
-            if let Some(owner) = read_query_param("link_device") {
-                root.set_inner_html(
-                    "<main style=\"padding:48px;text-align:center;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">linking…</main>",
-                );
-                wasm_bindgen_futures::spawn_local(async move {
-                    let _ = wallet_store::persist_linked_owner(&owner).await;
-                    // Validate `then` is a bare DNS label before building the
-                    // redirect URL. An unvalidated value would be an OPEN
-                    // REDIRECT: `?then=evil.com%23` →
-                    // `https://evil.com#.localharness.xyz/` navigates to evil.com.
-                    if let Some(then) = read_query_param("then") {
-                        let valid_label = !then.is_empty()
-                            && then.len() <= 63
-                            && then.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-                        if valid_label {
-                            if let Some(window) = web_sys::window() {
-                                let _ = window
-                                    .location()
-                                    .set_href(&format!("https://{then}.localharness.xyz/"));
-                                return;
-                            }
-                        }
-                    }
-                    paint_apex(tenant::Host::Apex).await;
-                });
-                return Ok(());
-            }
             // Seed-pull (local-seed-per-origin): a subdomain with no local
             // seed sent its top-level tab here to fetch the master seed
             // (the iframe path is dead on mobile). Seal it to the supplied
@@ -898,8 +841,8 @@ async fn paint_workshop(host: &tenant::Host) {
 /// 1. Local `.lh_owner` marker → device thinks it owns the name. Paint
 ///    full chat app, kick verification in the background.
 /// 2. No local marker but the name IS on-chain owned (by anyone) →
-///    paint full chat app as a visitor; verification will recover the
-///    visitor's address and the pricing/payment loop takes it from there.
+///    paint full chat app as a visitor; verification recovers the
+///    visitor's address.
 /// 3. No local marker AND no on-chain owner → genuinely unclaimed;
 ///    paint the "claim this name?" prompt.
 pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
@@ -936,8 +879,8 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
             strip_claim_hint();
         }
     }
-    // Resolve the on-chain owner once — used for the unclaimed check AND
-    // the owner-by-signer check below. (Only when there's no local claim.)
+    // Resolve the on-chain owner once — used for the unclaimed check.
+    // (Only when there's no local claim.)
     let on_chain = if owner.is_none() {
         registry::owner_of_name(&name).await.ok().flatten()
     } else {
@@ -949,48 +892,14 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         return;
     }
 
-    // Owner-by-signer (linked device): if this device's LOCAL key is an
-    // authorized signer of this name's TBA, treat the device as an owner.
-    // Devices enrolled as signers on the name's MultiSigner TBA (under the
-    // retired pairing flow) live there, so we must check the TBA — NOT the
-    // NFT owner, which is normally an EOA with no isAuthorizedSigner (that
-    // always returned false, so paired phones were wrongly treated as
-    // visitors). Falls back to the on-chain owner for the consolidation case
-    // where the owner itself is a TBA. ONE on-load on-chain read = the
-    // source of truth; no polling.
-    let signer_owner = if owner.is_none() {
-        match chat::credit_address_existing().await {
-            Some(my_addr) => {
-                let mut ok = false;
-                if let Ok(Some(tba)) = registry::tba_of_name(&name).await {
-                    ok = registry::is_authorized_signer(&tba, &my_addr)
-                        .await
-                        .unwrap_or(false);
-                }
-                if !ok {
-                    if let Some(oc) = on_chain.as_deref() {
-                        ok = registry::is_authorized_signer(oc, &my_addr)
-                            .await
-                            .unwrap_or(false);
-                    }
-                }
-                ok
-            }
-            None => false,
-        }
-    } else {
-        false
-    };
-
     // Two surfaces per subdomain:
     //  - PUBLIC FACE (fullscreen cartridge) — the visitor surface.
     //  - STUDIO (the workshop chrome below) — the owner surface.
     // The owner lands in the Studio by default and previews their public
     // face with `?view=public`; a visitor only ever sees the public face.
-    // `owner.is_some()` is this device's local claim; `signer_owner` is the
-    // on-chain consolidation case (a linked device controlling a TBA-owned
-    // subdomain).
-    let is_owner_device = owner.is_some() || signer_owner;
+    // `owner.is_some()` is this device's local claim; the second-device
+    // case is covered by `redirect_to_studio_if_owner` below.
+    let is_owner_device = owner.is_some();
     let show_public_face = !is_owner_device || has_view_public_hint();
     if show_public_face {
         // A seed-bearing owner visiting from a device without the local
@@ -1186,11 +1095,6 @@ async fn kick_verification(host: tenant::Host, name: String, painted_from_hint: 
         )));
     }
 
-    // Pricing — per-tenant OPFS, loaded once + stashed for chat send.
-    let price = pricing::load().await.unwrap_or(0);
-    APP.with(|cell| cell.borrow_mut().pricing_wei = Some(price));
-    let is_owner = matches!(outcome, VerifyState::Verified { .. });
-
     // TBA + owner address — both needed for the agent tab.
     let on_chain = matches!(
         outcome,
@@ -1209,14 +1113,14 @@ async fn kick_verification(host: tenant::Host, name: String, painted_from_hint: 
         }
     }
 
-    // Agent card: owner + TBA + $LH balance + pricing. Lives in the admin
+    // Agent card: owner + TBA + $LH balance. Lives in the admin
     // Account tab now (folded in from the retired right rail), so stash the
     // HTML in App state and only swap the live DOM if the slot happens to
     // be present (admin already open). `header_admin_toggle` injects the
     // stash when the admin opens later.
     let card_html = if let (Some(tba), Some(owner)) = (&tba_opt, &owner_addr) {
         let lh_balance = registry::token_balance_of(tba).await.unwrap_or(0);
-        templates::financial_card(&name, tba, owner, lh_balance, price, is_owner).into_string()
+        templates::financial_card(&name, tba, owner, lh_balance).into_string()
     } else {
         r#"<div id="financial-slot" class="financial-empty"></div>"#.to_string()
     };
@@ -1237,14 +1141,7 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
     let Some(root) = doc.get_element_by_id("root") else { return };
 
     let wallet = wallet_store::load().await;
-    // Effective identity for the read-only on-chain views (agents list,
-    // linked devices, MAIN): the master wallet if this device holds the
-    // seed, else the linked-owner pointer a paired device recorded. The
-    // claim form stays seed-gated (a linked device can't mint names).
-    let mut addr_hex = wallet.as_ref().map(|w| w.address_hex());
-    if addr_hex.is_none() {
-        addr_hex = wallet_store::load_linked_owner().await;
-    }
+    let addr_hex = wallet.as_ref().map(|w| w.address_hex());
     APP.with(|cell| cell.borrow_mut().wallet = wallet);
 
     // Auto-redeem a pending `?invite=CODE` once an identity exists — on the

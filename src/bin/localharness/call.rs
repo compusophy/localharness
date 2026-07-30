@@ -171,19 +171,17 @@ pub(crate) fn history_path(caller_label: &str, target: &str, backend: &str) -> s
 }
 
 /// Extract the target from a history filename `<caller>__<target>.<backend>.bin`
-/// (or the legacy `<caller>__<target>.bin`) for the given caller label. `None`
-/// when it doesn't belong to that caller. Pure. A trailing `.gemini`/`.anthropic`
-/// backend tag is stripped so `threads`/`forget` show the bare target.
+/// for the given caller label. `None` when it doesn't belong to that caller or
+/// carries no backend tag. Pure. The trailing `.gemini`/`.anthropic` backend
+/// tag is stripped so `threads`/`forget` show the bare target.
 pub(crate) fn thread_file_target(caller_label: &str, file_name: &str) -> Option<String> {
     let stem = file_name
         .strip_prefix(&format!("{caller_label}__"))?
         .strip_suffix(".bin")
         .filter(|t| !t.is_empty())?;
-    // Drop a known backend tag if present (newer files); legacy files have none.
     let target = stem
         .strip_suffix(".gemini")
-        .or_else(|| stem.strip_suffix(".anthropic"))
-        .unwrap_or(stem);
+        .or_else(|| stem.strip_suffix(".anthropic"))?;
     if target.is_empty() {
         return None;
     }
@@ -977,14 +975,13 @@ pub(crate) fn forget(caller_name: Option<&str>, target: &str) -> i32 {
         println!("forgot {n} conversation(s) for {label}");
         return 0;
     }
-    // A target can have a thread per backend (plus a legacy untagged file);
-    // forget them all so `forget <target>` clears the conversation regardless
-    // of which model it ran under.
+    // A target can have a thread per backend; forget them all so
+    // `forget <target>` clears the conversation regardless of which model
+    // it ran under.
     let mut removed = false;
     for candidate in [
         history_path(&label, target, "gemini"),
         history_path(&label, target, "anthropic"),
-        history_dir().join(format!("{label}__{target}.bin")), // legacy untagged
     ] {
         if std::fs::remove_file(candidate).is_ok() {
             removed = true;
@@ -1303,11 +1300,8 @@ mod tests {
             thread_file_target("claude", "claude__alice.anthropic.bin").as_deref(),
             Some("alice")
         );
-        // Legacy untagged files still parse (backward compatibility).
-        assert_eq!(
-            thread_file_target("claude", "claude__alice.bin").as_deref(),
-            Some("alice")
-        );
+        // Untagged files (the pre-backend-tag format) are not recognized.
+        assert_eq!(thread_file_target("claude", "claude__alice.bin"), None);
         // A target containing the separator stays intact (strip_prefix once).
         assert_eq!(
             thread_file_target("claude", "claude__a__b.gemini.bin").as_deref(),

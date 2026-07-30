@@ -89,7 +89,6 @@ const post = (payload, headers = {}) =>
 // wrong-route body token → 401 (route binding holds in the body lane)
 {
   const res = await post({ kind: 'panic', title: 't', auth: tokenFor('gemini') });
-  // NOTE: a route-bound token for another route also fails the legacy fallback.
   ok(res.status === 401, `wrong-route body token 401s (${res.status})`);
 }
 

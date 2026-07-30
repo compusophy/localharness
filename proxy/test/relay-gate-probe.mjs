@@ -5,7 +5,9 @@
 // Probes, using claude's FUNDED mainnet key (~10 $LH > 1 $LH ceiling):
 //   A. setMetadata(claudeTokenId, scratchKey, 5000B)  -> expect 403 LH_RELAY_FUNDED
 //   B. setMetadata(claudeTokenId, scratchKey, 1024B)  -> expect 200 (<=4096 exemption)
-//   C. scheduleJob(claudeTokenId, "probe", ...)       -> expect 403 LH_RELAY_FUNDED
+//   C. createRoom()                                   -> expect 403 LH_RELAY_FUNDED
+//      (allowlisted but NOT gate-exempt; scheduleJob left the allowlist with the
+//      on-chain ScheduleFacet purge)
 // Run from worktree proxy dir: node <this file>
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -63,12 +65,8 @@ function setMetadataCalldata(tokenId, keyName, valueLen) {
     word('60') + word(valueLen.toString(16)) + padded;
 }
 
-function scheduleJobCalldata(tokenId) {
-  const task = new TextEncoder().encode('probe');
-  const padded = bytesToHex(task).padEnd(64, '0');
-  return '0x' + sel('scheduleJob(uint256,bytes,uint64,uint128,uint32)') +
-    word(tokenId.toString(16)) + word('a0') + word('3c') /*60s*/ + word('0') /*budget*/ +
-    word('1') /*maxRuns*/ + word(task.length.toString(16)) + padded;
+function createRoomCalldata() {
+  return '0x' + sel('createRoom()');
 }
 
 async function probe(label, calldata, gasLimit) {
@@ -108,7 +106,7 @@ if (bal <= 1_000_000_000_000_000_000n) console.log('WARNING: caller is NOT funde
 
 const a = await probe('A: setMetadata 5000B scratch key (expect LH_RELAY_FUNDED)', setMetadataCalldata(tokenId, 'localharness.relay_probe', 5000), 45_000_000n);
 const b = await probe('B: setMetadata 1024B scratch key (expect 200, NOT submitted)', setMetadataCalldata(tokenId, 'localharness.relay_probe', 1024), 10_000_000n);
-const c = await probe('C: scheduleJob (expect LH_RELAY_FUNDED)', scheduleJobCalldata(tokenId), 5_000_000n);
+const c = await probe('C: createRoom (expect LH_RELAY_FUNDED)', createRoomCalldata(), 5_000_000n);
 
 let ok = true;
 function check(n, cond) { console.log(`${cond ? 'ok  ' : 'FAIL'} ${n}`); if (!cond) ok = false; }
