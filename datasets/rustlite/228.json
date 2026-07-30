@@ -1,0 +1,11 @@
+{
+  "id": "228",
+  "prompt": "A 4x4 wall of pulsing neon frames: each cell draws 5 nested hollow squares (a helper builds each outline from four 2px fill_rects) whose insets breathe on a 32-entry sine table with a per-cell LCG phase and palette color, so no two cells pulse in step.",
+  "solution_rl": "fn boxo(x: i32, y: i32, s: i32, c: i32) {\n    host::display::fill_rect(x, y, s, 2, c);\n    host::display::fill_rect(x, y + s - 2, s, 2, c);\n    host::display::fill_rect(x, y, 2, s, c);\n    host::display::fill_rect(x + s - 2, y, 2, s, c);\n}\n\nfn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let m: i32 = if w < h { w } else { h };\n    let cellw: i32 = m / 4;\n    let pal = [0xe8e6e3, 0x7fd1b9, 0xd17f97, 0x8a7fd1];\n    host::display::clear(0x0e0e12);\n    let mut r: i32 = 0;\n    while r < 4 {\n        let mut c: i32 = 0;\n        while c < 4 {\n            let mut hsh: i32 = r * 7919 + c * 104729 + 3;\n            hsh = hsh * 1103515245 + 12345;\n            let ph: i32 = (hsh >> 16) & 31;\n            let col: i32 = pal[(hsh >> 8) & 3];\n            let ox: i32 = c * cellw;\n            let oy: i32 = r * cellw;\n            let mut j: i32 = 0;\n            while j < 5 {\n                let breathe: i32 = (tab[(t * 3 + ph + j * 2) & 31] + 127) * 8 / 254;\n                let inset: i32 = 6 + j * 11 + breathe;\n                let s: i32 = cellw - inset * 2;\n                if s > 4 {\n                    boxo(ox + inset, oy + inset, s, col);\n                }\n                j = j + 1;\n            }\n            c = c + 1;\n        }\n        r = r + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "functions",
+    "trig-table",
+    "prng"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "204",
+  "prompt": "A four-way kaleidoscope: scatter about 40 random squares in one quadrant using an LCG hash of the dot index, and mirror every square across both axes so all four quadrants match. Re-hash from t/30 so the pattern mutates twice a second, in two alternating colors on near-black.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let gen: i32 = t / 30;\n    host::display::clear(0x050510);\n    let mut i: i32 = 0;\n    while i < 40 {\n        let mut hsh: i32 = i * 2654435761 + gen * 97;\n        hsh = hsh * 1103515245 + 12345;\n        let dx: i32 = ((hsh >> 16) & 32767) % cx;\n        hsh = hsh * 1103515245 + 12345;\n        let dy: i32 = ((hsh >> 16) & 32767) % cy;\n        hsh = hsh * 1103515245 + 12345;\n        let c: i32 = if ((hsh >> 16) & 1) == 1 { 0x66ccff } else { 0xff66aa };\n        let s: i32 = 3 + ((hsh >> 20) & 3);\n        host::display::fill_rect(cx - dx - s, cy - dy - s, s, s, c);\n        host::display::fill_rect(cx + dx, cy - dy - s, s, s, c);\n        host::display::fill_rect(cx - dx - s, cy + dy, s, s, c);\n        host::display::fill_rect(cx + dx, cy + dy, s, s, c);\n        i = i + 1;\n    }\n    host::display::draw_line(cx, 0, cx, h - 1, 0x1a1a30);\n    host::display::draw_line(0, cy, w - 1, cy, 0x1a1a30);\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "symmetry",
+    "prng",
+    "animation"
+  ]
+}

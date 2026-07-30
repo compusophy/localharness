@@ -1,0 +1,11 @@
+{
+  "id": "225",
+  "prompt": "Times-table string art: place 32 points on a circle from the sine table, then for each i draw a chord from point i to point (i*k) & 31. Cycle the multiplier k through 2..7 every 150 frames and slowly rotate the whole figure; label the current K with draw_string + draw_number. The k=2 cardioid emerges on its own.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let m: i32 = if w < h { w } else { h };\n    let rad: i32 = m / 2 - 20;\n    let k: i32 = 2 + (t / 150) % 6;\n    let rot: i32 = t / 12;\n    host::display::clear(0x02040a);\n    let mut i: i32 = 0;\n    while i < 32 {\n        let a1: i32 = (i + rot) & 31;\n        let a2: i32 = (i * k + rot) & 31;\n        let x1: i32 = cx + tab[(a1 + 8) & 31] * rad / 127;\n        let y1: i32 = cy + tab[a1] * rad / 127;\n        let x2: i32 = cx + tab[(a2 + 8) & 31] * rad / 127;\n        let y2: i32 = cy + tab[a2] * rad / 127;\n        host::display::draw_line(x1, y1, x2, y2, 0x3fb8c4);\n        host::display::fill_rect(x1 - 2, y1 - 2, 4, 4, 0xf0f6ff);\n        i = i + 1;\n    }\n    host::display::draw_string(8, 8, \"K=\", 0x808080, 2);\n    host::display::draw_number(40, 8, k, 0x808080, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "math",
+    "trig-table",
+    "draw_line"
+  ]
+}

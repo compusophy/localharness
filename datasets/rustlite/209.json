@@ -1,0 +1,11 @@
+{
+  "id": "209",
+  "prompt": "Draw a Sierpinski carpet: an 81x81 cell grid where a cell is a hole whenever any base-3 digit pair of its coordinates is (1,1) - test with a divide-by-3 loop. Pulse the amber fill brightness with a triangle wave of t. Recursion flattened into a digit test; no actual recursion needed.",
+  "solution_rl": "fn hole(x: i32, y: i32) -> i32 {\n    let mut a: i32 = x;\n    let mut b: i32 = y;\n    while (a > 0) || (b > 0) {\n        if (a % 3 == 1) && (b % 3 == 1) { return 1; }\n        a = a / 3;\n        b = b / 3;\n    }\n    0\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let m: i32 = if w < h { w } else { h };\n    let cs: i32 = m / 81;\n    let ox: i32 = (w - cs * 81) / 2;\n    let oy: i32 = (h - cs * 81) / 2;\n    let p: i32 = t / 4 % 64;\n    let tri: i32 = if p > 32 { 64 - p } else { p };\n    let br: i32 = 150 + tri * 2;\n    let c: i32 = br * 65536 + (br * 2 / 3) * 256 + 24;\n    host::display::clear(0x140a04);\n    let mut y: i32 = 0;\n    while y < 81 {\n        let mut x: i32 = 0;\n        while x < 81 {\n            if hole(x, y) == 0 {\n                host::display::fill_rect(ox + x * cs, oy + y * cs, cs, cs, c);\n            }\n            x = x + 1;\n        }\n        y = y + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "math",
+    "loops",
+    "grid"
+  ]
+}

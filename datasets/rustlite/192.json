@@ -1,0 +1,11 @@
+{
+  "id": "192",
+  "prompt": "An hourglass: glass outline drawn with lines, two sand triangles rendered with fill_triangle - the top cone shrinking toward the neck while the bottom pile grows over 20 seconds - plus a flickering falling stream while sand remains. A tap (edge-detected, timer start frame in a state slot) flips it to restart.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, t);\n    }\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(2);\n    if down == 1 && prev == 0 { host::display::state_set(1, t); }\n    host::display::state_set(2, down);\n    let el: i32 = t - host::display::state_get(1);\n    let mut p: i32 = el * 256 / 1200;\n    if p > 256 { p = 256; }\n    host::display::clear(0x101010);\n    let hw: i32 = 70;\n    let hh: i32 = 90;\n    let rem: i32 = 256 - p;\n    let bw: i32 = hw * rem / 256;\n    let ty: i32 = cy - hh * rem / 256;\n    host::display::fill_triangle(cx - bw, ty, cx + bw, ty, cx, cy, 0xd8b060);\n    let pw: i32 = hw * p / 256;\n    let ph: i32 = hh * p / 256;\n    host::display::fill_triangle(cx - pw, cy + hh, cx + pw, cy + hh, cx, cy + hh - ph, 0xd8b060);\n    if p < 256 && (t & 1) == 0 {\n        host::display::draw_line(cx, cy, cx, cy + hh - ph, 0xffd080);\n    }\n    host::display::draw_line(cx - hw, cy - hh, cx + hw, cy - hh, 0xc0c0c0);\n    host::display::draw_line(cx - hw, cy + hh, cx + hw, cy + hh, 0xc0c0c0);\n    host::display::draw_line(cx - hw, cy - hh, cx, cy, 0xc0c0c0);\n    host::display::draw_line(cx + hw, cy - hh, cx, cy, 0xc0c0c0);\n    host::display::draw_line(cx, cy, cx - hw, cy + hh, 0xc0c0c0);\n    host::display::draw_line(cx, cy, cx + hw, cy + hh, 0xc0c0c0);\n    if p == 256 {\n        host::display::draw_string(cx - 52, cy + hh + 16, \"TAP TO FLIP\", 0xffffff, 1);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "time",
+    "fill_triangle",
+    "state",
+    "edge-detect"
+  ]
+}

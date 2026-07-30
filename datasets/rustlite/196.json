@@ -1,0 +1,10 @@
+{
+  "id": "196",
+  "prompt": "A pomodoro timer that cycles by itself: 25 minutes FOCUS then 5 minutes BREAK, compressed so one second stands in for a minute (full cycle = 30 s of t). Theme the screen tomato-red during focus and green during break, drain a fat progress bar toward zero within each phase, show minutes remaining big, and count completed cycles.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let pos: i32 = t % 1800;\n    let cycles: i32 = t / 1800;\n    let focus: i32 = if pos < 1500 { 1 } else { 0 };\n    let bg: i32 = if focus == 1 { 0x1c0808 } else { 0x08200c };\n    let col: i32 = if focus == 1 { 0xe04030 } else { 0x30c050 };\n    let span: i32 = if focus == 1 { 1500 } else { 300 };\n    let into: i32 = if focus == 1 { pos } else { pos - 1500 };\n    let rf: i32 = span - into;\n    host::display::clear(bg);\n    if focus == 1 {\n        host::display::draw_string(24, 30, \"FOCUS\", col, 4);\n    } else {\n        host::display::draw_string(24, 30, \"BREAK\", col, 4);\n    }\n    let bw: i32 = w - 48;\n    host::display::fill_rect(24, h / 2 - 20, bw, 40, 0x000000);\n    host::display::fill_rect(24, h / 2 - 20, rf * bw / span, 40, col);\n    let mins: i32 = (rf + 59) / 60;\n    host::display::draw_number(24, h / 2 + 34, mins, 0xffffff, 3);\n    host::display::draw_string(64, h / 2 + 42, \"MIN LEFT\", 0x808080, 1);\n    host::display::draw_string(24, h - 40, \"CYCLES\", 0x808080, 1);\n    host::display::draw_number(84, h - 44, cycles, 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "time",
+    "modulo",
+    "gauge"
+  ]
+}

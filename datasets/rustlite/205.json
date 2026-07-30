@@ -1,0 +1,11 @@
+{
+  "id": "205",
+  "prompt": "Cover the screen with 32px Truchet tiles: each cell draws one of the two diagonals, picked by an LCG hash of (row, col, generation), and the whole tiling reshuffles every 90 frames. Double up the diagonal lines so they read as thick strokes.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cell: i32 = 32;\n    let cols: i32 = w / cell;\n    let rows: i32 = h / cell;\n    let seed: i32 = (t / 90) * 2654435761 + 7;\n    host::display::clear(0x101018);\n    let mut r: i32 = 0;\n    while r < rows {\n        let mut c: i32 = 0;\n        while c < cols {\n            let mut hsh: i32 = seed + r * 7919 + c * 104729;\n            hsh = hsh * 1103515245 + 12345;\n            let x: i32 = c * cell;\n            let y: i32 = r * cell;\n            if ((hsh >> 16) & 1) == 0 {\n                host::display::draw_line(x, y, x + cell - 1, y + cell - 1, 0xdddddd);\n                host::display::draw_line(x + 1, y, x + cell - 1, y + cell - 2, 0xdddddd);\n            } else {\n                host::display::draw_line(x + cell - 1, y, x, y + cell - 1, 0xdddddd);\n                host::display::draw_line(x + cell - 2, y, x, y + cell - 2, 0xdddddd);\n            }\n            c = c + 1;\n        }\n        r = r + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "tiling",
+    "prng",
+    "draw_line"
+  ]
+}

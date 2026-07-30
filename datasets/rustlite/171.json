@@ -1,0 +1,10 @@
+{
+  "id": "171",
+  "prompt": "Draw a minimal sparkline: sample one period of a wave from a 32-entry integer sine table (rustlite has no floats or sin()), 64 points joined with draw_line segments spanning the full width over a faint midline, with small MAX and MIN labels at the left edge.",
+  "solution_rl": "fn sinv(i: i32) -> i32 {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    tab[i & 31]\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let mid: i32 = h / 2;\n    let amp: i32 = h / 3;\n    host::display::clear(0x0a0a12);\n    host::display::draw_line(0, mid, w - 1, mid, 0x303040);\n    let mut i: i32 = 0;\n    while i < 63 {\n        let x0: i32 = i * (w - 1) / 63;\n        let x1: i32 = (i + 1) * (w - 1) / 63;\n        let y0: i32 = mid - sinv(i) * amp / 127;\n        let y1: i32 = mid - sinv(i + 1) * amp / 127;\n        host::display::draw_line(x0, y0, x1, y1, 0x00e0a0);\n        i = i + 1;\n    }\n    host::display::draw_string(4, mid - amp - 12, \"MAX\", 0x808080, 1);\n    host::display::draw_string(4, mid + amp + 4, \"MIN\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "trig-table",
+    "draw_line"
+  ]
+}

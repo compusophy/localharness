@@ -1,0 +1,11 @@
+{
+  "id": "216",
+  "prompt": "Barber-shop op-art: diagonal red and cream stripes from the band test ((x + y + t*2) / thickness) & 1 over 8px cells, where the stripe thickness itself breathes between 16 and 46 px on a triangle wave of t. The scroll and the breathing together give a warping illusion.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cell: i32 = 8;\n    let p: i32 = t % 120;\n    let tri: i32 = if p > 60 { 120 - p } else { p };\n    let th: i32 = 16 + tri / 2;\n    let mut y: i32 = 0;\n    while y < h {\n        let mut x: i32 = 0;\n        while x < w {\n            let band: i32 = ((x + y + t * 2) / th) & 1;\n            let c: i32 = if band == 0 { 0xc0261f } else { 0xf2ede4 };\n            host::display::fill_rect(x, y, cell, cell, c);\n            x = x + cell;\n        }\n        y = y + cell;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "animation",
+    "math",
+    "grid"
+  ]
+}

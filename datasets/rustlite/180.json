@@ -1,0 +1,10 @@
+{
+  "id": "180",
+  "prompt": "Six horizontal bars ranking sensor levels: value v = (i*37) % 80 + 15 per row, rows labeled A..F using draw_char codes 65..70, bars left-anchored with length proportional to v and the numeric value printed just past each bar's right end.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x0a0a0a);\n    host::display::draw_string(8, 8, \"SENSOR LEVELS\", 0x808080, 1);\n    let rh: i32 = (h - 60) / 6;\n    let mut i: i32 = 0;\n    while i < 6 {\n        let v: i32 = (i * 37) % 80 + 15;\n        let y: i32 = 40 + i * rh;\n        let len: i32 = v * (w - 120) / 100;\n        host::display::draw_char(8, y + rh / 2 - 8, 65 + i, 0xffffff, 2);\n        host::display::fill_rect(32, y + 6, len, rh - 12, 0x50b070);\n        host::display::draw_number(36 + len, y + rh / 2 - 8, v, 0xc0c0c0, 2);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "loops",
+    "draw_number"
+  ]
+}

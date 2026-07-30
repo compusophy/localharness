@@ -1,0 +1,10 @@
+{
+  "id": "187",
+  "prompt": "Plot sine and cosine together on one chart, pure function of nothing but the loop index: an x axis at the vertical middle with 9 tick marks, a y axis at the left with amplitude ticks, both curves as connected segments (cos = the +8 offset in a 32-entry table), and a swatch legend labeling SIN and COS.",
+  "solution_rl": "fn sv(i: i32) -> i32 {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    tab[i & 31]\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let mid: i32 = h / 2;\n    let amp: i32 = h / 3;\n    host::display::clear(0x0a0a0a);\n    host::display::draw_line(0, mid, w - 1, mid, 0x505050);\n    host::display::draw_line(16, mid - amp - 10, 16, mid + amp + 10, 0x505050);\n    let mut k: i32 = 0;\n    while k < 9 {\n        host::display::draw_line(k * (w - 1) / 8, mid - 3, k * (w - 1) / 8, mid + 3, 0x808080);\n        k = k + 1;\n    }\n    host::display::draw_line(12, mid - amp, 20, mid - amp, 0x808080);\n    host::display::draw_line(12, mid + amp, 20, mid + amp, 0x808080);\n    let mut i: i32 = 0;\n    while i < 63 {\n        let x0: i32 = i * (w - 1) / 63;\n        let x1: i32 = (i + 1) * (w - 1) / 63;\n        host::display::draw_line(x0, mid - sv(i) * amp / 127, x1, mid - sv(i + 1) * amp / 127, 0x40ff80);\n        host::display::draw_line(x0, mid - sv(i + 8) * amp / 127, x1, mid - sv(i + 9) * amp / 127, 0xff8040);\n        i = i + 1;\n    }\n    host::display::fill_rect(w - 90, 12, 10, 10, 0x40ff80);\n    host::display::draw_string(w - 74, 12, \"SIN\", 0xc0c0c0, 1);\n    host::display::fill_rect(w - 90, 28, 10, 10, 0xff8040);\n    host::display::draw_string(w - 74, 28, \"COS\", 0xc0c0c0, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "trig-table",
+    "draw_line"
+  ]
+}

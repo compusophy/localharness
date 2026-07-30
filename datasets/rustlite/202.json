@@ -1,0 +1,11 @@
+{
+  "id": "202",
+  "prompt": "A six-digit odometer of total frames: write pow10(k) with a loop, pull digit k with (t / pow10(5 - k)) % 10 so the number is zero-padded to the left, and draw each digit in its own inset boxed cell, most significant first, amber on dark.",
+  "solution_rl": "fn pow10(k: i32) -> i32 {\n    let mut p: i32 = 1;\n    let mut i: i32 = 0;\n    while i < k {\n        p = p * 10;\n        i = i + 1;\n    }\n    p\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x101010);\n    let cw: i32 = 56;\n    let x0: i32 = w / 2 - cw * 3;\n    let y: i32 = h / 2 - 32;\n    let mut k: i32 = 0;\n    while k < 6 {\n        let d: i32 = (t / pow10(5 - k)) % 10;\n        host::display::fill_rect(x0 + k * cw, y, cw - 6, 64, 0x000000);\n        host::display::fill_rect(x0 + k * cw + 2, y + 2, cw - 10, 60, 0x202028);\n        host::display::draw_number(x0 + k * cw + 12, y + 12, d, 0xffe080, 5);\n        k = k + 1;\n    }\n    host::display::draw_string(x0, y + 78, \"TOTAL FRAMES\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "time",
+    "math",
+    "functions",
+    "draw_number"
+  ]
+}

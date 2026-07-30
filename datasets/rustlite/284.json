@@ -1,0 +1,10 @@
+{
+  "id": "284",
+  "prompt": "A presence board for a multiplayer room: 8 fixed rows, one per possible peer. A row's lamp turns green when its index is below peer_count(), a gold activity dot appears while that peer is touching its screen - each peer publishes pointer_down into shared slot 0 and everyone reads it back with get(i, 0) - and MY row gets a YOU tag from self_index(). CONNECTING placeholder until connected() flips to 1.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x0d0d13);\n    if host::display::state_get(0) == 0 {\n        host::mp::auto(8);\n        host::display::state_set(0, 1);\n    }\n    host::display::draw_string(150, 30, \"PRESENCE BOARD\", 0xffffff, 2);\n    if host::mp::connected() == 0 {\n        host::display::draw_string(160, 240, \"CONNECTING\", 0xaa7700, 2);\n    } else {\n        host::mp::set(0, host::display::pointer_down());\n        let n: i32 = host::mp::peer_count();\n        let me: i32 = host::mp::self_index();\n        let mut i: i32 = 0;\n        while i < 8 {\n            let y: i32 = 90 + i * 48;\n            host::display::fill_rect(60, y, 392, 40, 0x181c24);\n            host::display::draw_string(76, y + 14, \"PEER\", 0x8899aa, 1);\n            host::display::draw_number(116, y + 12, i, 0xffffff, 1);\n            if i < n {\n                host::display::fill_rect(200, y + 12, 16, 16, 0x22bb44);\n                if host::mp::get(i, 0) == 1 {\n                    host::display::fill_rect(260, y + 12, 16, 16, 0xffcc33);\n                }\n            } else {\n                host::display::fill_rect(200, y + 12, 16, 16, 0x333333);\n            }\n            if i == me {\n                host::display::draw_string(380, y + 14, \"YOU\", 0x66aaff, 1);\n            }\n            i = i + 1;\n        }\n        host::display::draw_string(60, 486, \"GREEN = HERE   GOLD = TOUCHING\", 0x556677, 1);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "mp",
+    "presence",
+    "ui"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "201",
+  "prompt": "A back-to-back population pyramid: 8 age bands, MALE bars growing leftward and FEMALE bars growing rightward from a center gap (values 20 + (i*29)%50 and 20 + (i*17)%50), the band number printed in the gap, vertical guide lines at both bar baselines and series titles at the top.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    host::display::clear(0x0b0b0f);\n    host::display::draw_string(40, 14, \"MALE\", 0x50a0e0, 2);\n    host::display::draw_string(w - 110, 14, \"FEMALE\", 0xe080b0, 2);\n    let bh: i32 = (h - 140) / 8;\n    let mut i: i32 = 0;\n    while i < 8 {\n        let lv: i32 = 20 + (i * 29) % 50;\n        let rv: i32 = 20 + (i * 17) % 50;\n        let y: i32 = 60 + i * (bh + 6);\n        host::display::fill_rect(cx - 30 - lv * 2, y, lv * 2, bh, 0x50a0e0);\n        host::display::fill_rect(cx + 30, y, rv * 2, bh, 0xe080b0);\n        host::display::draw_number(cx - 12, y + bh / 2 - 6, i + 1, 0xc0c0c0, 2);\n        i = i + 1;\n    }\n    host::display::draw_line(cx - 30, 50, cx - 30, h - 60, 0x404048);\n    host::display::draw_line(cx + 30, 50, cx + 30, h - 60, 0x404048);\n    host::display::draw_string(40, h - 40, \"AGE BAND PYRAMID\", 0x606060, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "loops",
+    "math"
+  ]
+}

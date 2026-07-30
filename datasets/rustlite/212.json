@@ -1,0 +1,11 @@
+{
+  "id": "212",
+  "prompt": "Halftone print effect: a 16px dot grid where each dot's size shrinks with squared distance from a center that orbits via a 32-entry sine table - big dots near the center, vanishing at the edges, like a magnified newspaper photo. Warm dots on near-black.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2 + tab[(t / 4) & 31] * 70 / 127;\n    let cy: i32 = h / 2 + tab[((t / 4) + 8) & 31] * 55 / 127;\n    let cell: i32 = 16;\n    let cols: i32 = w / cell;\n    let rows: i32 = h / cell;\n    host::display::clear(0x0a0a14);\n    let mut by: i32 = 0;\n    while by < rows {\n        let mut bx: i32 = 0;\n        while bx < cols {\n            let x: i32 = bx * cell + cell / 2;\n            let y: i32 = by * cell + cell / 2;\n            let d2: i32 = (x - cx) * (x - cx) + (y - cy) * (y - cy);\n            let mut dk: i32 = d2 / 2000;\n            if dk > 15 { dk = 15; }\n            let s: i32 = 15 - dk;\n            if s > 0 {\n                host::display::fill_rect(x - s / 2, y - s / 2, s, s, 0xffcf7a);\n            }\n            bx = bx + 1;\n        }\n        by = by + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "halftone",
+    "trig-table",
+    "grid"
+  ]
+}

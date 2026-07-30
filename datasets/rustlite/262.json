@@ -1,0 +1,11 @@
+{
+  "id": "262",
+  "prompt": "Let me FEEL the logistic map go chaotic: map pointer_x to the parameter r across 2.000..4.000 (store it x1024 to stay integer - the iteration is x = ((r*x >> 10) * (1024 - x)) >> 10 on a 0..1024 state variable, carefully staged so nothing overflows i32). Each frame restart from the same seed, iterate 100 times, throw away the first 40 as transient, and plot the remaining 60 values left to right as dots: a flat line at low r, period doubling past 3.0, noise near 4.0. Show r x1000 as a number. No state slots needed at all.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let r: i32 = 2048 + host::display::pointer_x() * 2048 / w;\n    host::display::clear(0x0c0c0c);\n    host::display::fill_rect(30, h - 70, w - 60, 1, 0x303030);\n    let mut x: i32 = 300;\n    let mut k: i32 = 0;\n    while k < 100 {\n        x = ((r * x >> 10) * (1024 - x)) >> 10;\n        if x < 1 { x = 1; }\n        if x > 1023 { x = 1023; }\n        if k >= 40 {\n            let px: i32 = 40 + (k - 40) * 7;\n            let py: i32 = h - 80 - x * (h - 160) / 1024;\n            host::display::fill_rect(px, py, 4, 4, 0x70e0a0);\n        }\n        k = k + 1;\n    }\n    host::display::draw_string(30, 20, \"LOGISTIC MAP\", 0x808080, 2);\n    host::display::draw_string(30, 50, \"R X1000\", 0x606060, 1);\n    host::display::draw_number(110, 50, (r * 1000) >> 10, 0xffffff, 1);\n    host::display::draw_string(30, h - 40, \"DRAG X TO SET R\", 0x505050, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "simulation",
+    "chaos",
+    "stateless",
+    "fixed-point"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "222",
+  "prompt": "A self-drawing ink walk: replay a deterministic LCG random walk from a fixed seed every frame - 3px steps in one of 4 directions, clamped to the screen - but replay 3 more steps each frame, so you watch the path draw itself over 20 seconds. The newest 300 steps glow warm, older ink fades to gray, and each cycle reseeds a fresh walk.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let phase: i32 = t % 1500;\n    let cyc: i32 = t / 1500;\n    let mut n: i32 = phase * 3;\n    if n > 3600 { n = 3600; }\n    let mut seed: i32 = 13579 + cyc * 777;\n    let mut x: i32 = w / 2;\n    let mut y: i32 = h / 2;\n    host::display::clear(0x0b0b0d);\n    let mut i: i32 = 0;\n    while i < n {\n        seed = seed * 1103515245 + 12345;\n        let dir: i32 = (seed >> 16) & 3;\n        if dir == 0 { x = x + 3; }\n        if dir == 1 { x = x - 3; }\n        if dir == 2 { y = y + 3; }\n        if dir == 3 { y = y - 3; }\n        if x < 8 { x = 8; }\n        if x > w - 9 { x = w - 9; }\n        if y < 8 { y = 8; }\n        if y > h - 9 { y = h - 9; }\n        let c: i32 = if n - i < 300 { 0xffe9a0 } else { 0x4a4438 };\n        host::display::fill_rect(x, y, 2, 2, c);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "prng",
+    "animation",
+    "loops"
+  ]
+}

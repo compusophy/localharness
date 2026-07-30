@@ -1,0 +1,10 @@
+{
+  "id": "174",
+  "prompt": "A big digital HH:MM:SS clock derived from t (60 fps), starting at 09:41:00. Zero-pad every field by drawing a leading 0 whenever the value is under 10 (draw_number does no padding), and blink the colon dots so they are visible only during the first half of each second.",
+  "solution_rl": "fn pad2(x: i32, y: i32, v: i32, rgb: i32, sc: i32) {\n    if v < 10 {\n        host::display::draw_number(x, y, 0, rgb, sc);\n        host::display::draw_number(x + sc * 8, y, v, rgb, sc);\n    } else {\n        host::display::draw_number(x, y, v, rgb, sc);\n    }\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let total: i32 = t / 60 + 9 * 3600 + 41 * 60;\n    let hh: i32 = (total / 3600) % 24;\n    let mm: i32 = (total / 60) % 60;\n    let ss: i32 = total % 60;\n    host::display::clear(0x050510);\n    let sc: i32 = 4;\n    let dw: i32 = sc * 8;\n    let y: i32 = h / 2 - sc * 4;\n    let x0: i32 = w / 2 - (dw * 3 + 24);\n    pad2(x0, y, hh, 0xffffff, sc);\n    pad2(x0 + dw * 2 + 24, y, mm, 0xffffff, sc);\n    pad2(x0 + dw * 4 + 48, y, ss, 0xffffff, sc);\n    if (t / 30) % 2 == 0 {\n        host::display::fill_rect(x0 + dw * 2 + 8, y + sc * 2, 6, 6, 0xffffff);\n        host::display::fill_rect(x0 + dw * 2 + 8, y + sc * 6, 6, 6, 0xffffff);\n        host::display::fill_rect(x0 + dw * 4 + 32, y + sc * 2, 6, 6, 0xffffff);\n        host::display::fill_rect(x0 + dw * 4 + 32, y + sc * 6, 6, 6, 0xffffff);\n    }\n    host::display::draw_string(x0, y + sc * 10, \"LOCAL TIME\", 0x606060, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "time",
+    "draw_number",
+    "modulo"
+  ]
+}

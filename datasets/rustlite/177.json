@@ -1,0 +1,11 @@
+{
+  "id": "177",
+  "prompt": "Draw a month-view calendar: a header row of weekday initials S M T W T F S with draw_char, then a 5x7 grid numbering 1..31 with the month starting on Wednesday (first three cells empty). Highlight a TODAY cell in white with black text; today advances one day every 2 seconds and wraps.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x101014);\n    let cw: i32 = (w - 16) / 7;\n    let ch: i32 = (h - 60) / 5;\n    let heads = [83, 77, 84, 87, 84, 70, 83];\n    let mut c: i32 = 0;\n    while c < 7 {\n        host::display::draw_char(8 + c * cw + cw / 2 - 8, 10, heads[c], 0x808080, 2);\n        c = c + 1;\n    }\n    let today: i32 = (t / 120) % 31 + 1;\n    let mut cell: i32 = 0;\n    while cell < 35 {\n        let day: i32 = cell - 2;\n        let col: i32 = cell % 7;\n        let row: i32 = cell / 7;\n        let x: i32 = 8 + col * cw;\n        let y: i32 = 34 + row * ch;\n        if day >= 1 && day <= 31 {\n            if day == today {\n                host::display::fill_rect(x + 1, y + 1, cw - 2, ch - 2, 0xffffff);\n                host::display::draw_number(x + 6, y + 6, day, 0x000000, 2);\n            } else {\n                host::display::fill_rect(x + 1, y + 1, cw - 2, ch - 2, 0x1c1c24);\n                host::display::draw_number(x + 6, y + 6, day, 0xc0c0c0, 2);\n            }\n        }\n        cell = cell + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "time",
+    "grid",
+    "arrays",
+    "modulo"
+  ]
+}

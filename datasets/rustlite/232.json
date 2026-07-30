@@ -1,0 +1,11 @@
+{
+  "id": "232",
+  "prompt": "Lava-lamp metaballs: three blobs orbit on 32-entry sine-table paths, and every 8px cell evaluates the field sum k/(d2 + 40) over the three centers. Threshold the field into four green bands (glow core, body, rim, void) so the blobs visibly merge and split as they cross. Integer division IS the falloff curve.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let ax: i32 = cx + tab[(t / 2) & 31] * 100 / 127;\n    let ay: i32 = cy + tab[(t / 2 + 8) & 31] * 80 / 127;\n    let bx: i32 = cx + tab[(t / 3 + 16) & 31] * 110 / 127;\n    let by: i32 = cy + tab[(t / 3 + 24) & 31] * 90 / 127;\n    let gx: i32 = cx + tab[(t / 4 + 5) & 31] * 60 / 127;\n    let gy: i32 = cy + tab[(t / 4 + 21) & 31] * 120 / 127;\n    let cell: i32 = 8;\n    let mut y: i32 = 0;\n    while y < h {\n        let mut x: i32 = 0;\n        while x < w {\n            let mx: i32 = x + cell / 2;\n            let my: i32 = y + cell / 2;\n            let d1: i32 = (mx - ax) * (mx - ax) + (my - ay) * (my - ay);\n            let d2: i32 = (mx - bx) * (mx - bx) + (my - by) * (my - by);\n            let d3: i32 = (mx - gx) * (mx - gx) + (my - gy) * (my - gy);\n            let f: i32 = 260000 / (d1 + 40) + 260000 / (d2 + 40) + 170000 / (d3 + 40);\n            let mut c: i32 = 0x061206;\n            if f > 100 { c = 0x1f8f4a; }\n            if f > 150 { c = 0x66e07a; }\n            if f > 240 { c = 0xdfffd0; }\n            host::display::fill_rect(x, y, cell, cell, c);\n            x = x + cell;\n        }\n        y = y + cell;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "math",
+    "trig-table",
+    "animation"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "219",
+  "prompt": "Rolling parallax hills from value noise: for each 4px column, interpolate between LCG lattice values (segment index = world x / 64, blend by the remainder) to get a smooth ridge height - a dim far layer scrolling at t/8 and a dark near layer at t/3 with a finer 48px lattice. No floats, no sin: hashed lattice plus integer lerp.",
+  "solution_rl": "fn noise(i: i32, salt: i32, amp: i32) -> i32 {\n    let mut hsh: i32 = i * 2654435761 + salt;\n    hsh = hsh * 1103515245 + 12345;\n    ((hsh >> 16) & 32767) % amp\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x0d1026);\n    let mut x: i32 = 0;\n    while x < w {\n        let wf: i32 = x + t / 8;\n        let sf: i32 = 64;\n        let i0: i32 = wf / sf;\n        let f0: i32 = wf % sf;\n        let a0: i32 = noise(i0, 11, 100);\n        let a1: i32 = noise(i0 + 1, 11, 100);\n        let hf: i32 = 90 + a0 + (a1 - a0) * f0 / sf;\n        host::display::fill_rect(x, h - hf, 4, hf, 0x2e3a5c);\n        let wn: i32 = x + t / 3;\n        let sn: i32 = 48;\n        let i1: i32 = wn / sn;\n        let f1: i32 = wn % sn;\n        let b0: i32 = noise(i1, 99, 80);\n        let b1: i32 = noise(i1 + 1, 99, 80);\n        let hn: i32 = 30 + b0 + (b1 - b0) * f1 / sn;\n        host::display::fill_rect(x, h - hn, 4, hn, 0x101728);\n        x = x + 4;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "prng",
+    "math",
+    "animation"
+  ]
+}

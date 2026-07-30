@@ -1,0 +1,11 @@
+{
+  "id": "230",
+  "prompt": "Generate a perfect maze with the binary-tree algorithm: for each 32px cell flip an LCG coin to carve either north or east (top row always carves east, rightmost column north, that corner neither), then draw the walls that REMAIN with draw_line plus a 2px outer border. Every edge-detected click reseeds a brand-new maze.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut seed: i32 = host::display::state_get(1);\n    if seed == 0 { seed = 5150; }\n    if down == 1 && prev == 0 {\n        seed = seed * 1103515245 + 12345;\n        host::display::state_set(1, seed);\n    }\n    host::display::state_set(0, down);\n    let cell: i32 = 32;\n    let cols: i32 = w / cell;\n    let rows: i32 = h / cell;\n    host::display::clear(0x08080a);\n    let mut r: i32 = 0;\n    while r < rows {\n        let mut c: i32 = 0;\n        while c < cols {\n            let x: i32 = c * cell;\n            let y: i32 = r * cell;\n            let mut cn: i32 = 0;\n            let mut ce: i32 = 0;\n            if r == 0 && c == cols - 1 {\n                cn = 0;\n            } else if r == 0 {\n                ce = 1;\n            } else if c == cols - 1 {\n                cn = 1;\n            } else {\n                let mut hsh: i32 = seed + r * 7919 + c * 104729;\n                hsh = hsh * 1103515245 + 12345;\n                if ((hsh >> 16) & 1) == 1 { cn = 1; } else { ce = 1; }\n            }\n            if cn == 0 {\n                host::display::draw_line(x, y, x + cell, y, 0xe0e0e8);\n            }\n            if ce == 0 {\n                host::display::draw_line(x + cell, y, x + cell, y + cell, 0xe0e0e8);\n            }\n            c = c + 1;\n        }\n        r = r + 1;\n    }\n    host::display::fill_rect(0, 0, w, 2, 0xe0e0e8);\n    host::display::fill_rect(0, h - 2, w, 2, 0xe0e0e8);\n    host::display::fill_rect(0, 0, 2, h, 0xe0e0e8);\n    host::display::fill_rect(w - 2, 0, 2, h, 0xe0e0e8);\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "prng",
+    "draw_line",
+    "pointer"
+  ]
+}

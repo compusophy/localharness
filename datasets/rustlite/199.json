@@ -1,0 +1,10 @@
+{
+  "id": "199",
+  "prompt": "Countdown to launch from 3 days out: rem = 3*86400 - t/60 seconds, clamped at zero, split into DAYS / HRS / MIN / SEC with 86400-3600-60 math. Render four boxed, zero-padded fields with captions beneath, and flash a gold LIFTOFF once the clock hits zero.",
+  "solution_rl": "fn pad2(x: i32, y: i32, v: i32, rgb: i32, sc: i32) {\n    if v < 10 {\n        host::display::draw_number(x, y, 0, rgb, sc);\n        host::display::draw_number(x + sc * 8, y, v, rgb, sc);\n    } else {\n        host::display::draw_number(x, y, v, rgb, sc);\n    }\n}\n\nfn cellbox(x: i32, y: i32, cw: i32, chh: i32) {\n    host::display::fill_rect(x, y, cw, chh, 0x2a2a34);\n    host::display::fill_rect(x + 2, y + 2, cw - 4, chh - 4, 0x101016);\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let mut rem: i32 = 3 * 86400 - t / 60;\n    if rem < 0 { rem = 0; }\n    let d: i32 = rem / 86400;\n    let hh: i32 = (rem / 3600) % 24;\n    let mm: i32 = (rem / 60) % 60;\n    let ss: i32 = rem % 60;\n    host::display::clear(0x06060a);\n    host::display::draw_string(20, 20, \"T MINUS\", 0x808080, 2);\n    let cw: i32 = (w - 60) / 4;\n    let y: i32 = h / 2 - 50;\n    cellbox(12, y, cw, 70);\n    pad2(12 + 10, y + 14, d, 0xffffff, 3);\n    host::display::draw_string(12 + 8, y + 76, \"DAYS\", 0x808080, 1);\n    cellbox(24 + cw, y, cw, 70);\n    pad2(24 + cw + 10, y + 14, hh, 0xffffff, 3);\n    host::display::draw_string(24 + cw + 8, y + 76, \"HRS\", 0x808080, 1);\n    cellbox(36 + cw * 2, y, cw, 70);\n    pad2(36 + cw * 2 + 10, y + 14, mm, 0xffffff, 3);\n    host::display::draw_string(36 + cw * 2 + 8, y + 76, \"MIN\", 0x808080, 1);\n    cellbox(48 + cw * 3, y, cw, 70);\n    pad2(48 + cw * 3 + 10, y + 14, ss, 0xffffff, 3);\n    host::display::draw_string(48 + cw * 3 + 8, y + 76, \"SEC\", 0x808080, 1);\n    if rem == 0 && (t / 10) % 2 == 0 {\n        host::display::draw_string(20, y + 110, \"LIFTOFF\", 0xffd040, 4);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "time",
+    "math",
+    "modulo"
+  ]
+}

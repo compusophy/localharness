@@ -1,0 +1,11 @@
+{
+  "id": "184",
+  "prompt": "Print a Celsius-to-Fahrenheit table for -10..40 C in steps of 10: F = C*9/5 + 32 in pure integer math, column headers C and F, alternating row stripes. draw_number can't print a sign, so write a draw_signed helper that draws char 45 for the minus before the absolute value.",
+  "solution_rl": "fn draw_signed(x: i32, y: i32, v: i32, rgb: i32, sc: i32) {\n    if v < 0 {\n        host::display::draw_char(x, y, 45, rgb, sc);\n        host::display::draw_number(x + sc * 8, y, 0 - v, rgb, sc);\n    } else {\n        host::display::draw_number(x, y, v, rgb, sc);\n    }\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    host::display::clear(0x0c0c0c);\n    host::display::draw_string(40, 12, \"C\", 0xffffff, 2);\n    host::display::draw_string(150, 12, \"F\", 0xffffff, 2);\n    host::display::draw_line(20, 34, w - 20, 34, 0x606060);\n    let mut i: i32 = 0;\n    while i < 6 {\n        let c: i32 = i * 10 - 10;\n        let f: i32 = c * 9 / 5 + 32;\n        let y: i32 = 44 + i * 30;\n        if i % 2 == 0 {\n            host::display::fill_rect(20, y - 4, w - 40, 28, 0x16161c);\n        }\n        draw_signed(40, y, c, 0xc0e0ff, 2);\n        draw_signed(150, y, f, 0xffd0a0, 2);\n        i = i + 1;\n    }\n    host::display::draw_string(20, 240, \"F = C*9/5+32\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "math",
+    "functions",
+    "draw_number"
+  ]
+}

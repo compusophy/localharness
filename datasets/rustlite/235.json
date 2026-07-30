@@ -1,0 +1,11 @@
+{
+  "id": "235",
+  "prompt": "A mirror-brush drawing toy: while the pointer is held, record its position into a 16-entry ring buffer packed as x*65536 + y in state slots 8..23 (head counter in another slot). Every frame redraw all buffered stamps 8-fold - the four axis mirrors plus the four swapped-coordinate reflections - with size fading by ring age and a rainbow palette. Release to freeze your mandala.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let down: i32 = host::display::pointer_down();\n    let mut hd: i32 = host::display::state_get(2);\n    if down == 1 {\n        let px: i32 = host::display::pointer_x();\n        let py: i32 = host::display::pointer_y();\n        host::display::state_set(8 + (hd & 15), px * 65536 + py);\n        hd = hd + 1;\n        host::display::state_set(2, hd);\n    }\n    let pal = [0xff6ad5, 0x6adfff, 0xfff06a, 0x8aff6a];\n    host::display::clear(0x08060c);\n    let mut k: i32 = 0;\n    while k < 16 {\n        let v: i32 = host::display::state_get(8 + k);\n        if v != 0 {\n            let x: i32 = v / 65536;\n            let y: i32 = v % 65536;\n            let dx: i32 = x - cx;\n            let dy: i32 = y - cy;\n            let age: i32 = (hd - 1 - k) & 15;\n            let s: i32 = 10 - age / 2;\n            let c: i32 = pal[k & 3];\n            host::display::fill_rect(cx + dx - s / 2, cy + dy - s / 2, s, s, c);\n            host::display::fill_rect(cx - dx - s / 2, cy + dy - s / 2, s, s, c);\n            host::display::fill_rect(cx + dx - s / 2, cy - dy - s / 2, s, s, c);\n            host::display::fill_rect(cx - dx - s / 2, cy - dy - s / 2, s, s, c);\n            host::display::fill_rect(cx + dy - s / 2, cy + dx - s / 2, s, s, c);\n            host::display::fill_rect(cx - dy - s / 2, cy + dx - s / 2, s, s, c);\n            host::display::fill_rect(cx + dy - s / 2, cy - dx - s / 2, s, s, c);\n            host::display::fill_rect(cx - dy - s / 2, cy - dx - s / 2, s, s, c);\n        }\n        k = k + 1;\n    }\n    host::display::draw_line(cx, 0, cx, h - 1, 0x181424);\n    host::display::draw_line(0, cy, w - 1, cy, 0x181424);\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "symmetry",
+    "pointer",
+    "state"
+  ]
+}

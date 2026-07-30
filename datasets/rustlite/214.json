@@ -1,0 +1,11 @@
+{
+  "id": "214",
+  "prompt": "Hypnotic concentric squares: paint centered filled squares from screen-size down to nothing, each 28px smaller than the last, cycling a 6-color palette by (ring index + t/10) so the rings appear to march inward forever. Painter's order does all the work - no outlines needed.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let pal = [0x1b1b2f, 0x3d2c8d, 0x916bbf, 0xc996cc, 0xffd5cd, 0xff7b54];\n    let m: i32 = if w < h { h } else { w };\n    let mut s: i32 = m;\n    let mut i: i32 = 0;\n    while s > 0 {\n        host::display::fill_rect(cx - s / 2, cy - s / 2, s, s, pal[(i + t / 10) % 6]);\n        s = s - 28;\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "animation",
+    "color",
+    "loops"
+  ]
+}

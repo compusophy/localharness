@@ -1,0 +1,11 @@
+{
+  "id": "188",
+  "prompt": "A 12x8 heatmap of v = (x*x + y*y) * 99 / 170 per cell: map value to color by integer-lerping from blue to red (r = v*255/99, b = 255-r, fixed green 40 - build the color as r*65536 + g*256 + b), and add a vertical color-scale bar on the right with 99 at the top and 0 at the bottom.",
+  "solution_rl": "fn heat(v: i32) -> i32 {\n    let r: i32 = v * 255 / 99;\n    let b: i32 = 255 - r;\n    r * 65536 + 40 * 256 + b\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x000000);\n    let cw: i32 = (w - 80) / 12;\n    let ch: i32 = (h - 40) / 8;\n    let mut y: i32 = 0;\n    while y < 8 {\n        let mut x: i32 = 0;\n        while x < 12 {\n            let v: i32 = (x * x + y * y) * 99 / 170;\n            host::display::fill_rect(12 + x * cw, 20 + y * ch, cw - 2, ch - 2, heat(v));\n            x = x + 1;\n        }\n        y = y + 1;\n    }\n    let sx: i32 = w - 52;\n    let mut k: i32 = 0;\n    while k < 8 {\n        host::display::fill_rect(sx, 20 + k * ch, 16, ch, heat(99 - k * 99 / 7));\n        k = k + 1;\n    }\n    host::display::draw_number(sx + 22, 20, 99, 0xc0c0c0, 1);\n    host::display::draw_number(sx + 22, 20 + 7 * ch, 0, 0xc0c0c0, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "grid",
+    "color",
+    "math"
+  ]
+}

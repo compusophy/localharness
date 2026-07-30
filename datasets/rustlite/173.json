@@ -1,0 +1,10 @@
+{
+  "id": "173",
+  "prompt": "An analog clock face: 12 tick marks around a dial plus hour, minute and second hands, all driven off t at 60 fps and starting at 10:08. No floats or trig in rustlite - use a 32-entry integer sine table with cos as the +8 index offset; the minute total should also nudge the hour hand between numerals.",
+  "solution_rl": "fn sv(i: i32) -> i32 {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    tab[i & 31]\n}\n\nfn hand(cx: i32, cy: i32, ang: i32, len: i32, rgb: i32) {\n    let x: i32 = cx + sv(ang) * len / 127;\n    let y: i32 = cy - sv(ang + 8) * len / 127;\n    host::display::draw_line(cx, cy, x, y, rgb);\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let r: i32 = if w < h { w / 2 - 20 } else { h / 2 - 20 };\n    host::display::clear(0x101018);\n    let mut k: i32 = 0;\n    while k < 12 {\n        let a: i32 = k * 32 / 12;\n        let tx: i32 = cx + sv(a) * r / 127;\n        let ty: i32 = cy - sv(a + 8) * r / 127;\n        host::display::fill_rect(tx - 2, ty - 2, 5, 5, 0x707070);\n        k = k + 1;\n    }\n    let secs: i32 = t / 60 + 10 * 3600 + 8 * 60;\n    let s: i32 = secs % 60;\n    let m: i32 = (secs / 60) % 60;\n    let hr: i32 = (secs / 3600) % 12;\n    hand(cx, cy, hr * 32 / 12 + m * 32 / 720, r * 5 / 10, 0xffffff);\n    hand(cx, cy, m * 32 / 60, r * 7 / 10, 0xc0c0c0);\n    hand(cx, cy, s * 32 / 60, r * 9 / 10, 0xff5050);\n    host::display::fill_rect(cx - 2, cy - 2, 5, 5, 0xffffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "time",
+    "trig-table",
+    "functions"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "211",
+  "prompt": "Portrait 320x480 cartridge (export dims() packing (w << 16) | h): an ordered-dither vertical gradient that scrolls forever - quantize each 8px row's level to 0..16 and compare it against a 4x4 Bayer matrix held in a 16-entry array to pick cream or indigo per cell. Classic two-color newspaper shading.",
+  "solution_rl": "fn dims() -> i32 {\n    (320 << 16) | 480\n}\n\nfn frame(t: i32) {\n    let bayer = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cell: i32 = 8;\n    let cols: i32 = w / cell;\n    let rows: i32 = h / cell;\n    let mut by: i32 = 0;\n    while by < rows {\n        let level: i32 = ((by + t / 8) % rows) * 17 / rows;\n        let mut bx: i32 = 0;\n        while bx < cols {\n            let th: i32 = bayer[(bx & 3) + (by & 3) * 4];\n            let c: i32 = if level > th { 0xf5efe0 } else { 0x1c1440 };\n            host::display::fill_rect(bx * cell, by * cell, cell, cell, c);\n            bx = bx + 1;\n        }\n        by = by + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "dither",
+    "dims",
+    "arrays"
+  ]
+}

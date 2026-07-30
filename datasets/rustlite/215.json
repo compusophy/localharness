@@ -1,0 +1,11 @@
+{
+  "id": "215",
+  "prompt": "A dot mandala of six rings: ring k places dots every steps[k] table indices (parallel arrays for steps, radii, dot sizes, colors), even rings spinning clockwise and odd rings counter-clockwise via a 32-entry sine table (cos = index + 8). Finish with an asterisk glyph in the center via draw_char.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let steps = [4, 2, 1, 2, 4, 1];\n    let radii = [36, 70, 104, 138, 172, 206];\n    let sizes = [9, 7, 5, 4, 6, 3];\n    let colors = [0xffd166, 0xef476f, 0x06d6a0, 0xffd166, 0xef476f, 0x06d6a0];\n    host::display::clear(0x0a0510);\n    let mut k: i32 = 0;\n    while k < 6 {\n        let stp: i32 = steps[k];\n        let rad: i32 = radii[k];\n        let sz: i32 = sizes[k];\n        let rot: i32 = if (k & 1) == 0 { t / 6 } else { 0 - t / 6 };\n        let mut j: i32 = 0;\n        while j < 32 {\n            let ai: i32 = (j + rot) & 31;\n            let x: i32 = cx + tab[(ai + 8) & 31] * rad / 127;\n            let y: i32 = cy + tab[ai] * rad / 127;\n            host::display::fill_rect(x - sz / 2, y - sz / 2, sz, sz, colors[k]);\n            j = j + stp;\n        }\n        k = k + 1;\n    }\n    host::display::draw_char(cx - 8, cy - 8, 42, 0xffd166, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "symmetry",
+    "trig-table",
+    "arrays"
+  ]
+}

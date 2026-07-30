@@ -1,0 +1,11 @@
+{
+  "id": "206",
+  "prompt": "Old-school plasma: fill the screen with 8px blocks whose color comes from summing three 32-entry integer sine-table lookups (one driven by x, one by y, one by x+y, all offset by t), mapped into a teal-to-blue gradient. rustlite has no floats - the table IS the sin().",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cell: i32 = 8;\n    let cols: i32 = w / cell;\n    let rows: i32 = h / cell;\n    let mut by: i32 = 0;\n    while by < rows {\n        let mut bx: i32 = 0;\n        while bx < cols {\n            let v: i32 = tab[(bx * 2 + t) & 31] + tab[(by * 3 + t * 2) & 31] + tab[(bx + by + t) & 31];\n            let g: i32 = (v + 381) * 255 / 762;\n            let b: i32 = 255 - g;\n            host::display::fill_rect(bx * cell, by * cell, cell, cell, g * 256 + b);\n            bx = bx + 1;\n        }\n        by = by + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "trig-table",
+    "animation",
+    "grid"
+  ]
+}

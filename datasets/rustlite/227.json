@@ -1,0 +1,11 @@
+{
+  "id": "227",
+  "prompt": "A phyllotaxis sunflower that blooms: seed i sits at angle i*98 (256 units per turn) and radius isqrt(i*176) - write the Newton-iteration isqrt, and interpolate the 32-entry sine table for smooth fine angles. Grow one seed per frame up to 300, spin slowly, and warm each dot's color and size with age.",
+  "solution_rl": "fn sinf(a: i32) -> i32 {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let i: i32 = (a >> 3) & 31;\n    let f: i32 = a & 7;\n    let s0: i32 = tab[i];\n    let s1: i32 = tab[(i + 1) & 31];\n    s0 + (s1 - s0) * f / 8\n}\n\nfn cosf(a: i32) -> i32 {\n    sinf(a + 64)\n}\n\nfn isqrt(n: i32) -> i32 {\n    if n <= 0 { return 0; }\n    let mut x: i32 = n;\n    let mut y: i32 = (x + 1) / 2;\n    while y < x {\n        x = y;\n        y = (x + n / x) / 2;\n    }\n    x\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let pal = [0xffe08a, 0xffb347, 0xff7b54, 0xd64550];\n    let mut n: i32 = t;\n    if n > 300 { n = 300; }\n    let rot: i32 = t / 6;\n    host::display::clear(0x100805);\n    let mut i: i32 = 0;\n    while i < n {\n        let a: i32 = i * 98 + rot;\n        let r: i32 = isqrt(i * 176);\n        let x: i32 = cx + cosf(a) * r / 127;\n        let y: i32 = cy + sinf(a) * r / 127;\n        let s: i32 = 2 + i / 60;\n        host::display::fill_rect(x - s / 2, y - s / 2, s, s, pal[(i / 75) & 3]);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "math",
+    "trig-table",
+    "animation"
+  ]
+}

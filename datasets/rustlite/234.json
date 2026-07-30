@@ -1,0 +1,11 @@
+{
+  "id": "234",
+  "prompt": "An endlessly scrolling generative brick wall: rows of hash-varied brick widths (34..97px) in four terracotta tones on mortar gray, odd world-rows offset half a brick. Key every brick's hash to its WORLD row (screen row + scroll/rowheight) so bricks keep their identity while the wall crawls upward at t/3.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let rowh: i32 = 26;\n    let scroll: i32 = t / 3;\n    let pal = [0x9c4a3c, 0xb05a48, 0x8a4034, 0xa85242];\n    host::display::clear(0x2a2a2e);\n    let mut rr: i32 = 0;\n    while rr < h / rowh + 2 {\n        let wr: i32 = rr + scroll / rowh;\n        let y: i32 = rr * rowh - scroll % rowh;\n        let off: i32 = if (wr & 1) == 1 { 0 - 30 } else { 0 };\n        let mut x: i32 = off;\n        let mut b: i32 = 0;\n        while x < w {\n            let mut hsh: i32 = wr * 7919 + b * 104729;\n            hsh = hsh * 1103515245 + 12345;\n            let bw: i32 = 34 + ((hsh >> 16) & 63);\n            host::display::fill_rect(x, y, bw - 3, rowh - 4, pal[(hsh >> 8) & 3]);\n            x = x + bw;\n            b = b + 1;\n        }\n        rr = rr + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "tiling",
+    "prng",
+    "animation"
+  ]
+}

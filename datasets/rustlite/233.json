@@ -1,0 +1,11 @@
+{
+  "id": "233",
+  "prompt": "Op-art line-fan interference: two pivots at 1/4 and 3/4 width each radiate 32 spokes far past the screen edge (the host clips out-of-bounds drawing), one fan rotating clockwise and the other counter-clockwise via table index offsets of +/- t/10. Where the blue and orange fans cross, moire lattices bloom and dissolve.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let ax: i32 = w / 4;\n    let bx: i32 = w * 3 / 4;\n    let cy: i32 = h / 2;\n    host::display::clear(0x060608);\n    let mut i: i32 = 0;\n    while i < 32 {\n        let a1: i32 = (i + t / 10) & 31;\n        let a2: i32 = (i - t / 10) & 31;\n        let ex1: i32 = ax + tab[(a1 + 8) & 31] * 700 / 127;\n        let ey1: i32 = cy + tab[a1] * 700 / 127;\n        let ex2: i32 = bx + tab[(a2 + 8) & 31] * 700 / 127;\n        let ey2: i32 = cy + tab[a2] * 700 / 127;\n        host::display::draw_line(ax, cy, ex1, ey1, 0x4aa8ff);\n        host::display::draw_line(bx, cy, ex2, ey2, 0xff6a4a);\n        i = i + 1;\n    }\n    host::display::fill_rect(ax - 3, cy - 3, 6, 6, 0xffffff);\n    host::display::fill_rect(bx - 3, cy - 3, 6, 6, 0xffffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "moire",
+    "draw_line",
+    "trig-table"
+  ]
+}

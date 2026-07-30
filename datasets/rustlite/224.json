@@ -1,0 +1,11 @@
+{
+  "id": "224",
+  "prompt": "A recursive windswept tree: branch(x, y, angle, len, depth) draws a line via a 32-entry sine table (angle in 1/32 turns, 0 = straight up), then recurses twice with angle +/-4 and length scaled by 2/3 until depth 0. Add the same table-driven sway to both children so the whole tree leans in the wind; thicken and brown the trunk levels, green the tips.",
+  "solution_rl": "fn branch(x: i32, y: i32, ang: i32, len: i32, depth: i32, t: i32) {\n    if depth == 0 { return; }\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let ai: i32 = ang & 31;\n    let ex: i32 = x + tab[ai] * len / 127;\n    let ey: i32 = y - tab[(ai + 8) & 31] * len / 127;\n    let c: i32 = if depth > 4 { 0x8b5a2b } else { 0x33cc55 };\n    host::display::draw_line(x, y, ex, ey, c);\n    if depth > 4 {\n        host::display::draw_line(x + 1, y, ex + 1, ey, c);\n    }\n    let sway: i32 = tab[(t / 2 + depth * 5) & 31] / 100;\n    branch(ex, ey, ang - 4 + sway, len * 2 / 3, depth - 1, t);\n    branch(ex, ey, ang + 4 + sway, len * 2 / 3, depth - 1, t);\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x0a1006);\n    host::display::fill_rect(0, h - 16, w, 16, 0x1c140a);\n    branch(w / 2, h - 16, 0, 110, 7, t);\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "recursion",
+    "trig-table",
+    "draw_line"
+  ]
+}

@@ -35,3 +35,19 @@ Conventions that avoid real traps:
 - (FIXED 2026-07-30) the old LH0202 trap — a fn tail starting with `(` after a
   block statement mis-parsed as a call of the block — is gone; the parser now
   refuses call-postfix on block-like expressions (they are never callable).
+
+## Wave 3 (171-300) additions
+
+130 pairs added 2026-07-30: 171-203 data-viz/time, 204-236 generative art,
+237-268 simulation systems, 269-300 host bridge APIs (net/http/mp/agent) +
+multi-feature apps. New boundaries the corpus now encodes:
+- Comparisons are Bool-typed: `let s: i32 = x == 0;` is LH0204 — route through
+  `if x == 0 { 1 } else { 0 }`.
+- `bool == bool` is rejected (LH0300 unsupported binop) — bools compose via
+  `&&`/`||`/`!`, never `==`/`!=`.
+- Array literals accept computed expressions (`[t + 1, hh / 10]`), not just
+  literals; shift-by-zero is legal.
+- host::net params are INTEGER-ONLY — a string literal cannot reach
+  `net::open`/`net::send` at all (LH0204), so rows teach `open(..) == -1` as a
+  first-class OFFLINE state; host-held text paths (`http::draw_line`,
+  `body_lines`) are the intended reading idiom.

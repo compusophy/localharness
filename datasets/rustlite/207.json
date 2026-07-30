@@ -1,0 +1,11 @@
+{
+  "id": "207",
+  "prompt": "Interactive moire: two families of concentric rings - one centered left of the middle, the other centered on the pointer. Compute ring parity from real distance (write an integer Newton isqrt, no floats) and XOR the two parities to paint 8px cells light or dark. Moving the pointer warps the interference fringes.",
+  "solution_rl": "fn isqrt(n: i32) -> i32 {\n    if n <= 0 { return 0; }\n    let mut x: i32 = n;\n    let mut y: i32 = (x + 1) / 2;\n    while y < x {\n        x = y;\n        y = (x + n / x) / 2;\n    }\n    x\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cell: i32 = 8;\n    let ax: i32 = w / 2 - 40;\n    let ay: i32 = h / 2;\n    let bx: i32 = host::display::pointer_x();\n    let by: i32 = host::display::pointer_y();\n    let mut cy: i32 = 0;\n    while cy < h {\n        let mut cx: i32 = 0;\n        while cx < w {\n            let x: i32 = cx + cell / 2;\n            let y: i32 = cy + cell / 2;\n            let d1: i32 = isqrt((x - ax) * (x - ax) + (y - ay) * (y - ay));\n            let d2: i32 = isqrt((x - bx) * (x - bx) + (y - by) * (y - by));\n            let p1: i32 = (d1 / 12) & 1;\n            let p2: i32 = (d2 / 12) & 1;\n            let c: i32 = if (p1 ^ p2) == 1 { 0xf0f0f0 } else { 0x181818 };\n            host::display::fill_rect(cx, cy, cell, cell, c);\n            cx = cx + cell;\n        }\n        cy = cy + cell;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "moire",
+    "math",
+    "pointer"
+  ]
+}

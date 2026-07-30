@@ -1,0 +1,11 @@
+{
+  "id": "221",
+  "prompt": "An 8x8 grid of breathing polka dots (odd rows offset by half a spacing): write a disc(cx, cy, r, color) helper that scan-fills each circle row by shrinking a half-width until hw*hw + dy*dy <= r*r, and drive every dot's radius from a 32-entry sine table phased by (col, row) so waves of size roll across the grid. Alternate teal and pink by parity.",
+  "solution_rl": "fn disc(cx: i32, cy: i32, r: i32, c: i32) {\n    let mut dy: i32 = 0 - r;\n    while dy <= r {\n        let mut hw: i32 = r;\n        while hw * hw + dy * dy > r * r {\n            hw = hw - 1;\n        }\n        host::display::fill_rect(cx - hw, cy + dy, hw * 2 + 1, 1, c);\n        dy = dy + 1;\n    }\n}\n\nfn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x121216);\n    let mut row: i32 = 0;\n    while row < 8 {\n        let mut col: i32 = 0;\n        while col < 8 {\n            let x: i32 = 40 + col * 62 + (row & 1) * 31;\n            let y: i32 = 40 + row * 62;\n            let r: i32 = 13 + tab[(t * 2 + col * 3 + row * 5) & 31] * 9 / 127;\n            let c: i32 = if ((row + col) & 1) == 0 { 0x6fd0c2 } else { 0xd06f9d };\n            disc(x, y, r, c);\n            col = col + 1;\n        }\n        row = row + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "functions",
+    "trig-table",
+    "grid"
+  ]
+}

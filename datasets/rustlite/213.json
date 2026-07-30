@@ -1,0 +1,11 @@
+{
+  "id": "213",
+  "prompt": "A constellation generator: 12 stars at LCG-hashed positions joined in sequence by dim blue lines, each star twinkling by rehashing its size from (index, t/10). Tapping the screen reseeds the LCG (edge-detect with the previous pointer_down in a state slot) to chart a new constellation.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut seed: i32 = host::display::state_get(1);\n    if seed == 0 { seed = 424242; }\n    if down == 1 && prev == 0 {\n        seed = seed * 1103515245 + 12345;\n        host::display::state_set(1, seed);\n    }\n    host::display::state_set(0, down);\n    host::display::clear(0x030308);\n    let mut px: i32 = 0;\n    let mut py: i32 = 0;\n    let mut i: i32 = 0;\n    while i < 12 {\n        let mut hsh: i32 = seed + i * 2654435761;\n        hsh = hsh * 1103515245 + 12345;\n        let x: i32 = 40 + ((hsh >> 16) & 32767) % (w - 80);\n        hsh = hsh * 1103515245 + 12345;\n        let y: i32 = 40 + ((hsh >> 16) & 32767) % (h - 80);\n        if i > 0 {\n            host::display::draw_line(px, py, x, y, 0x2a3550);\n        }\n        px = x;\n        py = y;\n        i = i + 1;\n    }\n    let mut j: i32 = 0;\n    while j < 12 {\n        let mut hsh: i32 = seed + j * 2654435761;\n        hsh = hsh * 1103515245 + 12345;\n        let x: i32 = 40 + ((hsh >> 16) & 32767) % (w - 80);\n        hsh = hsh * 1103515245 + 12345;\n        let y: i32 = 40 + ((hsh >> 16) & 32767) % (h - 80);\n        let mut tw: i32 = seed + j * 31 + t / 10;\n        tw = tw * 1103515245 + 12345;\n        let s: i32 = 2 + ((tw >> 16) & 3);\n        host::display::fill_rect(x - s / 2, y - s / 2, s, s, 0xf0f6ff);\n        j = j + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "prng",
+    "pointer",
+    "state"
+  ]
+}

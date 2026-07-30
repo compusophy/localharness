@@ -1,0 +1,11 @@
+{
+  "id": "208",
+  "prompt": "Trace a spirograph: sample 512 points of x = 110*cos(a) + 62*cos(5a/2 + t), y = 110*sin(a) - 62*sin(5a/2 + t) around the center. For a smooth curve, interpolate between entries of a 32-entry sine table (256 angle units per turn) instead of using raw table steps. Color the trace in four bands.",
+  "solution_rl": "fn sinf(a: i32) -> i32 {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let i: i32 = (a >> 3) & 31;\n    let f: i32 = a & 7;\n    let s0: i32 = tab[i];\n    let s1: i32 = tab[(i + 1) & 31];\n    s0 + (s1 - s0) * f / 8\n}\n\nfn cosf(a: i32) -> i32 {\n    sinf(a + 64)\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let pal = [0xff5577, 0xffaa33, 0x33ddff, 0x99ff66];\n    host::display::clear(0x000008);\n    let mut s: i32 = 0;\n    while s < 512 {\n        let x: i32 = cx + 110 * cosf(s) / 127 + 62 * cosf(s * 5 / 2 + t) / 127;\n        let y: i32 = cy + 110 * sinf(s) / 127 - 62 * sinf(s * 5 / 2 + t) / 127;\n        host::display::fill_rect(x, y, 2, 2, pal[(s >> 7) & 3]);\n        s = s + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "trig-table",
+    "motion-path",
+    "math"
+  ]
+}

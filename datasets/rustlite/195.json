@@ -1,0 +1,11 @@
+{
+  "id": "195",
+  "prompt": "A radar / spider chart with eight axes: scores [80, 55, 90, 40, 70, 65, 85, 50] out of 100, dim spokes from the center, reference octagons at 50% and 100% radius, and the data polygon drawn bright by connecting each axis point at radius r * score / 100 (32-entry sine table, axis i at index i*4), with a white dot on every vertex.",
+  "solution_rl": "fn sv(i: i32) -> i32 {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    tab[i & 31]\n}\n\nfn px(cx: i32, i: i32, rr: i32) -> i32 {\n    cx + sv(i * 4) * rr / 127\n}\n\nfn py(cy: i32, i: i32, rr: i32) -> i32 {\n    cy - sv(i * 4 + 8) * rr / 127\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let r: i32 = if w < h { w / 2 - 30 } else { h / 2 - 30 };\n    let scores = [80, 55, 90, 40, 70, 65, 85, 50];\n    host::display::clear(0x08080c);\n    let mut i: i32 = 0;\n    while i < 8 {\n        let j: i32 = (i + 1) & 7;\n        host::display::draw_line(cx, cy, px(cx, i, r), py(cy, i, r), 0x28282f);\n        host::display::draw_line(px(cx, i, r / 2), py(cy, i, r / 2), px(cx, j, r / 2), py(cy, j, r / 2), 0x30303a);\n        host::display::draw_line(px(cx, i, r), py(cy, i, r), px(cx, j, r), py(cy, j, r), 0x40404c);\n        i = i + 1;\n    }\n    i = 0;\n    while i < 8 {\n        let j: i32 = (i + 1) & 7;\n        let ri: i32 = r * scores[i] / 100;\n        let rj: i32 = r * scores[j] / 100;\n        host::display::draw_line(px(cx, i, ri), py(cy, i, ri), px(cx, j, rj), py(cy, j, rj), 0x40ff90);\n        host::display::fill_rect(px(cx, i, ri) - 2, py(cy, i, ri) - 2, 5, 5, 0xffffff);\n        i = i + 1;\n    }\n    host::display::draw_string(8, 8, \"SKILL RADAR\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "trig-table",
+    "arrays",
+    "functions"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "210",
+  "prompt": "A symmetric particle flower: 16 arms rotating slowly around the center, each carrying 8 square petals whose distance from the center pulses on a 32-entry sine table so the bloom breathes. Alternate pink and gold arms and put a white core in the middle.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    host::display::clear(0x000505);\n    let mut arm: i32 = 0;\n    while arm < 16 {\n        let ai: i32 = (arm * 2 + t / 8) & 31;\n        let sa: i32 = tab[ai];\n        let ca: i32 = tab[(ai + 8) & 31];\n        let mut j: i32 = 0;\n        while j < 8 {\n            let puls: i32 = tab[(t * 2 + j * 4 + arm * 4) & 31] * 10 / 127;\n            let r: i32 = 24 + j * 22 + puls;\n            let x: i32 = cx + ca * r / 127;\n            let y: i32 = cy + sa * r / 127;\n            let s: i32 = 3 + j;\n            let c: i32 = if (arm & 1) == 0 { 0xff88cc } else { 0xffe066 };\n            host::display::fill_rect(x - s / 2, y - s / 2, s, s, c);\n            j = j + 1;\n        }\n        arm = arm + 1;\n    }\n    host::display::fill_rect(cx - 6, cy - 6, 12, 12, 0xffffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "symmetry",
+    "trig-table",
+    "particles"
+  ]
+}

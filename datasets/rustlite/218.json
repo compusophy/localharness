@@ -1,0 +1,11 @@
+{
+  "id": "218",
+  "prompt": "A click-to-reshuffle Voronoi mosaic: 6 sites hashed from a seed in a state slot (mutable sx/sy arrays filled by LCG), every 8px cell colored by its nearest site (squared distance, no sqrt) from a 6-color palette, and the sites marked with dark dots. An edge-detected tap lays a fresh mosaic.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut seed: i32 = host::display::state_get(1);\n    if seed == 0 { seed = 777777; }\n    if down == 1 && prev == 0 {\n        seed = seed * 1103515245 + 12345;\n        host::display::state_set(1, seed);\n    }\n    host::display::state_set(0, down);\n    let mut sx = [0; 6];\n    let mut sy = [0; 6];\n    let mut i: i32 = 0;\n    while i < 6 {\n        let mut hsh: i32 = seed + i * 2654435761;\n        hsh = hsh * 1103515245 + 12345;\n        sx[i] = ((hsh >> 16) & 32767) % w;\n        hsh = hsh * 1103515245 + 12345;\n        sy[i] = ((hsh >> 16) & 32767) % h;\n        i = i + 1;\n    }\n    let pal = [0x264653, 0x2a9d8f, 0xe9c46a, 0xf4a261, 0xe76f51, 0x8ab17d];\n    let cell: i32 = 8;\n    let mut y: i32 = 0;\n    while y < h {\n        let mut x: i32 = 0;\n        while x < w {\n            let mx: i32 = x + cell / 2;\n            let my: i32 = y + cell / 2;\n            let mut best: i32 = 0;\n            let mut bd: i32 = 99999999;\n            let mut s: i32 = 0;\n            while s < 6 {\n                let d: i32 = (mx - sx[s]) * (mx - sx[s]) + (my - sy[s]) * (my - sy[s]);\n                if d < bd {\n                    bd = d;\n                    best = s;\n                }\n                s = s + 1;\n            }\n            host::display::fill_rect(x, y, cell, cell, pal[best]);\n            x = x + cell;\n        }\n        y = y + cell;\n    }\n    let mut j: i32 = 0;\n    while j < 6 {\n        host::display::fill_rect(sx[j] - 3, sy[j] - 3, 6, 6, 0x101010);\n        j = j + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "prng",
+    "pointer",
+    "arrays"
+  ]
+}

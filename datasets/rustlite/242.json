@@ -1,0 +1,11 @@
+{
+  "id": "242",
+  "prompt": "A red flag rippling on a pole in gusty wind, fully stateless: 14 vertical strips, each offset vertically by a sine-table wave that travels away from the pole, with amplitude growing toward the free edge. Modulate the whole thing by a slow gust factor (another sine read) and show the gust as a bar meter. Shade each strip brighter or darker by the sign of its wave sample so the folds read. Remember the sine index must be masked with & 31 because the phase expression goes negative.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x1c2838);\n    host::display::fill_rect(56, 40, 8, h - 120, 0x806040);\n    host::display::fill_rect(48, 36, 24, 8, 0x605040);\n    let gust: i32 = 160 + tab[(t / 6) & 31] * 90 / 127;\n    let mut j: i32 = 0;\n    while j < 14 {\n        let amp: i32 = j * gust / 52;\n        let s: i32 = tab[(t * 3 - j * 5) & 31];\n        let off: i32 = s * amp / 127;\n        let c: i32 = if s > 0 { 0xe03838 } else { 0xb02020 };\n        host::display::fill_rect(64 + j * 14, 90 + off, 14, 100, c);\n        j = j + 1;\n    }\n    host::display::fill_rect(20, h - 40, gust, 8, 0x608090);\n    host::display::draw_string(20, h - 60, \"GUST\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "simulation",
+    "cloth",
+    "sine-table",
+    "stateless"
+  ]
+}

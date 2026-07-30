@@ -1,0 +1,10 @@
+{
+  "id": "179",
+  "prompt": "A grouped bar chart comparing two series over 5 categories - THIS = 20 + (i*i*7) % 60 and LAST = 15 + (i*23) % 60, computed in the loop, no data arrays needed. Draw each pair side by side above a shared baseline with a gap between groups, category numbers underneath, and a two-swatch THIS/LAST legend.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x0c0c0c);\n    let base: i32 = h - 60;\n    let gw: i32 = (w - 40) / 5;\n    let bw: i32 = (gw - 16) / 2;\n    let mut i: i32 = 0;\n    while i < 5 {\n        let this: i32 = 20 + (i * i * 7) % 60;\n        let last: i32 = 15 + (i * 23) % 60;\n        let gx: i32 = 20 + i * gw;\n        host::display::fill_rect(gx, base - this * 3, bw, this * 3, 0x40c0ff);\n        host::display::fill_rect(gx + bw + 4, base - last * 3, bw, last * 3, 0x606870);\n        host::display::draw_number(gx + bw / 2, base + 8, i + 1, 0x808080, 2);\n        i = i + 1;\n    }\n    host::display::draw_line(16, base, w - 16, base, 0xc0c0c0);\n    host::display::fill_rect(20, 12, 10, 10, 0x40c0ff);\n    host::display::draw_string(36, 12, \"THIS\", 0xc0c0c0, 1);\n    host::display::fill_rect(90, 12, 10, 10, 0x606870);\n    host::display::draw_string(106, 12, \"LAST\", 0xc0c0c0, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "loops",
+    "math"
+  ]
+}

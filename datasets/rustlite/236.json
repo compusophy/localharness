@@ -1,0 +1,11 @@
+{
+  "id": "236",
+  "prompt": "An alien terminal screensaver: a 24px grid of random printable glyphs (codes 33..126 via draw_char - it takes a character CODE, so hashed integers work) in phosphor green, roughly one cell in eight left blank, and a brighter scanline sweep rolling down the rows. Click to reseed the whole glyph field (edge-detected press in a state slot).",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut seed: i32 = host::display::state_get(1);\n    if seed == 0 { seed = 90210; }\n    if down == 1 && prev == 0 {\n        seed = seed * 1103515245 + 12345;\n        host::display::state_set(1, seed);\n    }\n    host::display::state_set(0, down);\n    let cell: i32 = 24;\n    let cols: i32 = w / cell;\n    let rows: i32 = h / cell;\n    host::display::clear(0x020803);\n    let mut r: i32 = 0;\n    while r < rows {\n        let sweep: i32 = if ((r * 3 + t / 2) & 31) == 0 { 1 } else { 0 };\n        let mut c: i32 = 0;\n        while c < cols {\n            let mut hsh: i32 = seed + r * 7919 + c * 104729;\n            hsh = hsh * 1103515245 + 12345;\n            if ((hsh >> 8) & 7) != 0 {\n                let code: i32 = 33 + ((hsh >> 16) & 32767) % 94;\n                let col: i32 = if sweep == 1 { 0xccffdd } else { 0x22cc55 };\n                host::display::draw_char(c * cell + 4, r * cell + 4, code, col, 2);\n            }\n            c = c + 1;\n        }\n        r = r + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "prng",
+    "draw_char",
+    "pointer"
+  ]
+}

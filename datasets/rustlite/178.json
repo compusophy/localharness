@@ -1,0 +1,11 @@
+{
+  "id": "178",
+  "prompt": "Roll two LCG dice every frame and grow a persistent histogram of their sums: 11 bins for 2..12 live in state slots 10..20 (locals reset every frame), bars auto-rescale so the tallest always fits the chart, each bin is labeled with its sum, and a corner counter shows total rolls. The bell shape should emerge live.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let mut seed: i32 = host::display::state_get(0);\n    seed = seed * 1103515245 + 12345;\n    let d1: i32 = ((seed >> 16) & 32767) % 6 + 1;\n    seed = seed * 1103515245 + 12345;\n    let d2: i32 = ((seed >> 16) & 32767) % 6 + 1;\n    host::display::state_set(0, seed);\n    let bin: i32 = 10 + d1 + d2 - 2;\n    host::display::state_set(bin, host::display::state_get(bin) + 1);\n    host::display::state_set(1, host::display::state_get(1) + 1);\n    host::display::clear(0x000000);\n    let mut mx: i32 = 1;\n    let mut i: i32 = 0;\n    while i < 11 {\n        if host::display::state_get(10 + i) > mx { mx = host::display::state_get(10 + i); }\n        i = i + 1;\n    }\n    let bw: i32 = (w - 24) / 11;\n    let chh: i32 = h - 90;\n    i = 0;\n    while i < 11 {\n        let v: i32 = host::display::state_get(10 + i);\n        let bh: i32 = v * chh / mx;\n        host::display::fill_rect(12 + i * bw, h - 44 - bh, bw - 4, bh, 0x30a0ff);\n        host::display::draw_number(12 + i * bw + 2, h - 34, i + 2, 0x808080, 1);\n        i = i + 1;\n    }\n    host::display::draw_string(8, 8, \"ROLLS\", 0x808080, 1);\n    host::display::draw_number(60, 8, host::display::state_get(1), 0xffffff, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "prng",
+    "state",
+    "no-struct-boundary"
+  ]
+}

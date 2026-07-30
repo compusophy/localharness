@@ -1,0 +1,11 @@
+{
+  "id": "182",
+  "prompt": "A 2x2 dashboard of big-number stat tiles: UPTIME S (t/60), FRAMES (t), TAPS (an edge-detected click counter in a state slot) and TAPS PER MIN (taps * 3600 / (t + 1) - integer math only). Each tile is a bordered card with a small gray caption and a huge white value.",
+  "solution_rl": "fn tile(x: i32, y: i32, tw: i32, th: i32) {\n    host::display::fill_rect(x, y, tw, th, 0x303038);\n    host::display::fill_rect(x + 2, y + 2, tw - 4, th - 4, 0x14141a);\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let mut taps: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 { taps = taps + 1; }\n    host::display::state_set(0, taps);\n    host::display::state_set(1, down);\n    host::display::clear(0x000000);\n    let tw: i32 = w / 2 - 12;\n    let th: i32 = h / 2 - 12;\n    tile(8, 8, tw, th);\n    host::display::draw_string(20, 20, \"UPTIME S\", 0x808080, 1);\n    host::display::draw_number(20, 40, t / 60, 0xffffff, 5);\n    tile(w / 2 + 4, 8, tw, th);\n    host::display::draw_string(w / 2 + 16, 20, \"FRAMES\", 0x808080, 1);\n    host::display::draw_number(w / 2 + 16, 40, t, 0xffffff, 4);\n    tile(8, h / 2 + 4, tw, th);\n    host::display::draw_string(20, h / 2 + 16, \"TAPS\", 0x808080, 1);\n    host::display::draw_number(20, h / 2 + 36, taps, 0xffffff, 5);\n    tile(w / 2 + 4, h / 2 + 4, tw, th);\n    host::display::draw_string(w / 2 + 16, h / 2 + 16, \"TAPS PER MIN\", 0x808080, 1);\n    host::display::draw_number(w / 2 + 16, h / 2 + 36, taps * 3600 / (t + 1), 0xffffff, 5);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "ui",
+    "state",
+    "edge-detect"
+  ]
+}

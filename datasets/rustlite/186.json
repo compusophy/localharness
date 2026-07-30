@@ -1,0 +1,10 @@
+{
+  "id": "186",
+  "prompt": "An area chart that scrolls forever: for every 4px column compute a wave as the sum of two sine-table octaves (full amplitude plus half amplitude at a different frequency), fill from the baseline up in a dark blue, and cap each column with a 2px bright rim so the curve reads as a line over a filled area.",
+  "solution_rl": "fn sv(i: i32) -> i32 {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    tab[i & 31]\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x02060a);\n    let base: i32 = h - 40;\n    let mut x: i32 = 0;\n    while x < w {\n        let v: i32 = sv(x / 16 + t / 8) + sv(x / 7 + t / 3) / 2;\n        let ah: i32 = 40 + (v + 190) * (h - 120) / 380;\n        host::display::fill_rect(x, base - ah, 4, ah, 0x0a4060);\n        host::display::fill_rect(x, base - ah, 4, 2, 0x40c0ff);\n        x = x + 4;\n    }\n    host::display::draw_line(0, base, w - 1, base, 0x808080);\n    host::display::draw_string(8, 8, \"THROUGHPUT\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "trig-table",
+    "animation"
+  ]
+}

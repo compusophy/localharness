@@ -1,0 +1,11 @@
+{
+  "id": "176",
+  "prompt": "A 30-second countdown ring: 32 blocks placed around a circle with an integer sine table go dark clockwise as time drains, the remaining whole seconds sit big in the center, the background flashes red once time hits zero, and a tap (edge-detected) resets the timer.",
+  "solution_rl": "fn sv(i: i32) -> i32 {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    tab[i & 31]\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let r: i32 = if w < h { w / 2 - 30 } else { h / 2 - 30 };\n    if host::display::state_get(2) == 0 {\n        host::display::state_set(2, 1);\n        host::display::state_set(0, 1800);\n    }\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let mut rem: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 { rem = 1800; }\n    if rem > 0 { rem = rem - 1; }\n    host::display::state_set(0, rem);\n    host::display::state_set(1, down);\n    let bg: i32 = if rem == 0 && (t / 8) % 2 == 0 { 0x400000 } else { 0x0a0a0a };\n    host::display::clear(bg);\n    let lit: i32 = (rem * 32 + 1799) / 1800;\n    let mut i: i32 = 0;\n    while i < 32 {\n        let x: i32 = cx + sv(i) * r / 127;\n        let y: i32 = cy - sv(i + 8) * r / 127;\n        let col: i32 = if i < lit { 0x00d0ff } else { 0x202020 };\n        host::display::fill_rect(x - 5, y - 5, 11, 11, col);\n        i = i + 1;\n    }\n    let secs: i32 = (rem + 59) / 60;\n    host::display::draw_number(cx - 16, cy - 16, secs, 0xffffff, 4);\n    if rem == 0 {\n        host::display::draw_string(cx - 44, cy + 30, \"TAP TO RESET\", 0xff8080, 1);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "time",
+    "trig-table",
+    "state",
+    "edge-detect"
+  ]
+}

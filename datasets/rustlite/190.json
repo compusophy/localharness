@@ -1,0 +1,11 @@
+{
+  "id": "190",
+  "prompt": "Build a real seven-segment display renderer: seg_mask(d) maps each digit 0..9 to a 7-bit mask via match, seven_seg(x, y, d, rgb) draws the 3 horizontal and 4 vertical bars, lighting each from its mask bit (parenthesized shifts) and leaving unlit segments faintly visible. Show a two-digit seconds counter (t/60) in LED red.",
+  "solution_rl": "fn seg_mask(d: i32) -> i32 {\n    match d {\n        0 => 63,\n        1 => 6,\n        2 => 91,\n        3 => 79,\n        4 => 102,\n        5 => 109,\n        6 => 125,\n        7 => 7,\n        8 => 127,\n        _ => 111,\n    }\n}\n\nfn seg_col(m: i32, b: i32, rgb: i32) -> i32 {\n    if ((m >> b) & 1) == 1 { rgb } else { 0x181818 }\n}\n\nfn seven_seg(x: i32, y: i32, d: i32, rgb: i32) {\n    let m: i32 = seg_mask(d);\n    host::display::fill_rect(x + 8, y, 32, 8, seg_col(m, 0, rgb));\n    host::display::fill_rect(x + 40, y + 8, 8, 32, seg_col(m, 1, rgb));\n    host::display::fill_rect(x + 40, y + 48, 8, 32, seg_col(m, 2, rgb));\n    host::display::fill_rect(x + 8, y + 80, 32, 8, seg_col(m, 3, rgb));\n    host::display::fill_rect(x, y + 48, 8, 32, seg_col(m, 4, rgb));\n    host::display::fill_rect(x, y + 8, 8, 32, seg_col(m, 5, rgb));\n    host::display::fill_rect(x + 8, y + 40, 32, 8, seg_col(m, 6, rgb));\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x000000);\n    let s: i32 = (t / 60) % 100;\n    seven_seg(w / 2 - 60, h / 2 - 44, s / 10, 0xff2020);\n    seven_seg(w / 2 + 12, h / 2 - 44, s % 10, 0xff2020);\n    host::display::draw_string(w / 2 - 60, h / 2 + 56, \"SECONDS\", 0x606060, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "time",
+    "bitmask",
+    "match",
+    "functions"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "172",
+  "prompt": "A live scrolling chart like a heart-rate monitor: every 3rd frame push a new reading from a clamped LCG random walk into a 48-sample ring buffer kept in state slots 8..55 (locals die every frame - slots are the only persistence), then draw the samples oldest-to-newest as a connected line with the newest at the right edge, plus the current value as a number.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(2, 7);\n        host::display::state_set(3, 50);\n        let mut k: i32 = 0;\n        while k < 48 {\n            host::display::state_set(8 + k, 50);\n            k = k + 1;\n        }\n    }\n    if t % 3 == 0 {\n        let seed: i32 = host::display::state_get(2) * 1103515245 + 12345;\n        host::display::state_set(2, seed);\n        let step: i32 = ((seed >> 16) & 15) - 7;\n        let mut v: i32 = host::display::state_get(3) + step;\n        if v < 5 { v = 5; }\n        if v > 95 { v = 95; }\n        host::display::state_set(3, v);\n        let head: i32 = host::display::state_get(1);\n        host::display::state_set(8 + head, v);\n        host::display::state_set(1, (head + 1) % 48);\n    }\n    host::display::clear(0x000000);\n    let head: i32 = host::display::state_get(1);\n    let top: i32 = 40;\n    let ch: i32 = h - 80;\n    let mut i: i32 = 0;\n    while i < 47 {\n        let a: i32 = host::display::state_get(8 + (head + i) % 48);\n        let b: i32 = host::display::state_get(8 + (head + i + 1) % 48);\n        let x0: i32 = 8 + i * (w - 16) / 47;\n        let x1: i32 = 8 + (i + 1) * (w - 16) / 47;\n        host::display::draw_line(x0, top + ch - a * ch / 100, x1, top + ch - b * ch / 100, 0x00ff66);\n        i = i + 1;\n    }\n    host::display::draw_string(8, 8, \"LIVE FEED\", 0x808080, 1);\n    host::display::draw_number(8, 20, host::display::state_get(3), 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "chart",
+    "state",
+    "prng",
+    "no-struct-boundary"
+  ]
+}

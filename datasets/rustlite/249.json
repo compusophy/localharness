@@ -1,0 +1,11 @@
+{
+  "id": "249",
+  "prompt": "Communicating vessels, honey-thick: 20 water columns start as a staircase and slowly level out because each frame every adjacent pair transfers (difference)/8 from the higher to the lower - pure viscous equalization, deliberately NO velocity term so nothing sloshes or overshoots (that would be a wave sim). Holding the pointer pours extra water into the touched column. Column levels live in state slots; print the running TOTAL so I can see the flow conserves water exactly.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let colw: i32 = w / 20;\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        let mut i: i32 = 0;\n        while i < 20 {\n            host::display::state_set(8 + i, 240 - i * 11);\n            i = i + 1;\n        }\n    }\n    let mut lvl = [0; 20];\n    let mut i: i32 = 0;\n    while i < 20 {\n        lvl[i] = host::display::state_get(8 + i);\n        i = i + 1;\n    }\n    if host::display::pointer_down() == 1 {\n        let mut c: i32 = host::display::pointer_x() / colw;\n        if c < 0 { c = 0; }\n        if c > 19 { c = 19; }\n        lvl[c] = lvl[c] + 6;\n        if lvl[c] > 320 { lvl[c] = 320; }\n    }\n    i = 0;\n    while i < 19 {\n        let flow: i32 = (lvl[i] - lvl[i + 1]) / 8;\n        lvl[i] = lvl[i] - flow;\n        lvl[i + 1] = lvl[i + 1] + flow;\n        i = i + 1;\n    }\n    let mut total: i32 = 0;\n    i = 0;\n    while i < 20 {\n        host::display::state_set(8 + i, lvl[i]);\n        total = total + lvl[i];\n        i = i + 1;\n    }\n    host::display::clear(0x0c0c10);\n    i = 0;\n    while i < 20 {\n        host::display::fill_rect(i * colw, h - lvl[i], colw - 1, lvl[i], 0x2060c0);\n        host::display::fill_rect(i * colw, h - lvl[i], colw - 1, 3, 0x60a0e0);\n        i = i + 1;\n    }\n    host::display::draw_string(8, 8, \"TOTAL\", 0x606060, 1);\n    host::display::draw_number(60, 8, total, 0x9090a0, 1);\n    host::display::draw_string(8, 24, \"HOLD TO POUR\", 0x606060, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "simulation",
+    "water",
+    "state",
+    "conservation"
+  ]
+}

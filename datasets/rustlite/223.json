@@ -1,0 +1,11 @@
+{
+  "id": "223",
+  "prompt": "A lightning storm: every 24 frames hash a fresh bolt - 16 segments walking from a random top x down to the ground, each segment's x jittered by an LCG of (generation, segment) and clamped on-screen. Draw a dim purple halo (the same polyline offset 2px each way) under a white core, and flash the sky for the first 3 frames of each bolt.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let gen: i32 = t / 24;\n    let flash: i32 = t % 24;\n    if flash < 3 {\n        host::display::clear(0x2a2a44);\n    } else {\n        host::display::clear(0x05050d);\n    }\n    host::display::fill_rect(0, h - 12, w, 12, 0x101018);\n    let mut hsh: i32 = gen * 2654435761 + 5;\n    hsh = hsh * 1103515245 + 12345;\n    let mut px: i32 = w / 4 + ((hsh >> 16) & 32767) % (w / 2);\n    let mut py: i32 = 0;\n    let mut i: i32 = 0;\n    while i < 16 {\n        let mut jh: i32 = gen * 7919 + i * 104729;\n        jh = jh * 1103515245 + 12345;\n        let mut nx: i32 = px + ((jh >> 16) & 63) - 31;\n        if nx < 20 { nx = 20; }\n        if nx > w - 20 { nx = w - 20; }\n        let ny: i32 = py + h / 16;\n        host::display::draw_line(px + 2, py, nx + 2, ny, 0x333366);\n        host::display::draw_line(px - 2, py, nx - 2, ny, 0x333366);\n        host::display::draw_line(px, py, nx, ny, 0xf0f0ff);\n        px = nx;\n        py = ny;\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "prng",
+    "draw_line",
+    "animation"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "257",
+  "prompt": "Heat diffusion along a rod of 24 cells: every frame each cell moves toward its neighbors by (left + right - 2*self)/4 - the classic discrete Laplacian - with the ends leaking to a cold ambient and everything decaying slightly so the rod cools when I stop. Holding the pointer injects heat into the cell underneath it. Store temperatures x16 in state slots for precision; render each cell as a bar whose height AND color track temperature (red channel up, blue channel down, so hot glows red and cold sits blue).",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let colw: i32 = w / 24;\n    let mut tmp = [0; 24];\n    let mut i: i32 = 0;\n    while i < 24 {\n        tmp[i] = host::display::state_get(8 + i);\n        i = i + 1;\n    }\n    if host::display::pointer_down() == 1 {\n        let mut c: i32 = host::display::pointer_x() / colw;\n        if c < 0 { c = 0; }\n        if c > 23 { c = 23; }\n        tmp[c] = tmp[c] + 400;\n        if tmp[c] > 4080 { tmp[c] = 4080; }\n    }\n    let mut nxt = [0; 24];\n    i = 0;\n    while i < 24 {\n        let left: i32 = if i > 0 { tmp[i - 1] } else { 0 };\n        let right: i32 = if i < 23 { tmp[i + 1] } else { 0 };\n        nxt[i] = tmp[i] + (left + right - 2 * tmp[i]) / 4;\n        nxt[i] = nxt[i] - nxt[i] / 128;\n        if nxt[i] < 0 { nxt[i] = 0; }\n        i = i + 1;\n    }\n    host::display::clear(0x0a0a0c);\n    i = 0;\n    while i < 24 {\n        host::display::state_set(8 + i, nxt[i]);\n        let r: i32 = nxt[i] / 16;\n        let b: i32 = 255 - r;\n        let bh: i32 = 40 + nxt[i] / 16;\n        host::display::fill_rect(i * colw, h - bh, colw - 1, bh, r * 65536 + 32 * 256 + b);\n        i = i + 1;\n    }\n    host::display::draw_string(8, 8, \"HOLD TO HEAT THE ROD\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "simulation",
+    "diffusion",
+    "state",
+    "color-math"
+  ]
+}

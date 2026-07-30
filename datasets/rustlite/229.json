@@ -1,0 +1,11 @@
+{
+  "id": "229",
+  "prompt": "Kaleidoscopic wallpaper: fold every 8px cell's coordinates across the vertical and horizontal midlines AND the diagonal (sort the folded pair), hash the folded coordinate with an LCG, and color from an 8-entry palette - instant 8-fold symmetry from pure coordinate folding. A tap (edge-detected via a state slot) rerolls the pattern.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut seed: i32 = host::display::state_get(1);\n    if seed == 0 { seed = 31337; }\n    if down == 1 && prev == 0 {\n        seed = seed * 1103515245 + 12345;\n        host::display::state_set(1, seed);\n    }\n    host::display::state_set(0, down);\n    let pal = [0x101018, 0x1f3a5f, 0x3f6fa8, 0x77aadd, 0xd0e4f7, 0xe8c170, 0xa85f38, 0x5a2e2e];\n    let cell: i32 = 8;\n    let cols: i32 = w / cell;\n    let rows: i32 = h / cell;\n    let mut by: i32 = 0;\n    while by < rows {\n        let mut bx: i32 = 0;\n        while bx < cols {\n            let mut fx: i32 = bx;\n            if bx >= cols / 2 { fx = cols - 1 - bx; }\n            let mut fy: i32 = by;\n            if by >= rows / 2 { fy = rows - 1 - by; }\n            let mut a: i32 = fx;\n            let mut b: i32 = fy;\n            if b > a {\n                let tmp: i32 = a;\n                a = b;\n                b = tmp;\n            }\n            let mut hsh: i32 = seed + a * 7919 + b * 104729;\n            hsh = hsh * 1103515245 + 12345;\n            host::display::fill_rect(bx * cell, by * cell, cell, cell, pal[(hsh >> 16) & 7]);\n            bx = bx + 1;\n        }\n        by = by + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "generative",
+    "symmetry",
+    "prng",
+    "pointer"
+  ]
+}

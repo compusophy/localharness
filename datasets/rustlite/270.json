@@ -1,0 +1,10 @@
+{
+  "id": "270",
+  "prompt": "Drain a socket inbox properly: host::net::poll(handle, out_ptr, max) copies ONE queued message per call (length-prefixed, into cartridge memory at out_ptr) and returns its payload length, 0 when the inbox is empty - so loop it until it returns 0 every frame or messages back up. Count total messages ever received and remember the last payload's byte length in state slots, plus an OPEN/NOT OPEN lamp from status(). If the latched open(0) came back -1, show a NO SOCKET screen instead.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x0b0b10);\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(1, host::net::open(0));\n        host::display::state_set(0, 1);\n    }\n    let h: i32 = host::display::state_get(1);\n    host::display::draw_string(60, 60, \"INBOX DRAIN\", 0xffffff, 2);\n    if h < 0 {\n        host::display::draw_string(60, 120, \"NO SOCKET\", 0xbb3333, 2);\n        host::display::draw_string(60, 160, \"OPEN RETURNED -1\", 0x777777, 1);\n    } else {\n        let mut got: i32 = host::net::poll(h, 4096, 200);\n        while got > 0 {\n            host::display::state_set(2, host::display::state_get(2) + 1);\n            host::display::state_set(3, got);\n            got = host::net::poll(h, 4096, 200);\n        }\n        host::display::draw_string(60, 130, \"MESSAGES\", 0x888888, 1);\n        host::display::draw_number(60, 150, host::display::state_get(2), 0x66ddff, 4);\n        host::display::draw_string(60, 220, \"LAST PAYLOAD BYTES\", 0x888888, 1);\n        host::display::draw_number(60, 240, host::display::state_get(3), 0xffffff, 4);\n        if host::net::status(h) == 1 {\n            host::display::fill_rect(60, 320, 12, 12, 0x22bb44);\n            host::display::draw_string(84, 322, \"OPEN\", 0x22bb44, 1);\n        } else {\n            host::display::fill_rect(60, 320, 12, 12, 0xaa7700);\n            host::display::draw_string(84, 322, \"NOT OPEN\", 0xaa7700, 1);\n        }\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "net",
+    "poll-model",
+    "state"
+  ]
+}

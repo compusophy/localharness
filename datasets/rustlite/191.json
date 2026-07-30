@@ -1,0 +1,11 @@
+{
+  "id": "191",
+  "prompt": "A three-row world clock: one base time runs off t (starting 14:25 UTC) and rows for NYC, LON and TYO apply hour offsets from the array [-5, 0, 9] - normalize with ((h + off) % 24 + 24) % 24 so the negative offset can't go negative. Zero-padded HH:MM per row with colon dots, city codes colored differently via a match on the row index.",
+  "solution_rl": "fn pad2(x: i32, y: i32, v: i32, rgb: i32, sc: i32) {\n    if v < 10 {\n        host::display::draw_number(x, y, 0, rgb, sc);\n        host::display::draw_number(x + sc * 8, y, v, rgb, sc);\n    } else {\n        host::display::draw_number(x, y, v, rgb, sc);\n    }\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let offs = [-5, 0, 9];\n    let total: i32 = t / 60 + 14 * 3600 + 25 * 60;\n    let mm: i32 = (total / 60) % 60;\n    host::display::clear(0x0a0a10);\n    host::display::draw_string(16, 12, \"WORLD CLOCK\", 0x808080, 1);\n    let mut i: i32 = 0;\n    while i < 3 {\n        let hh: i32 = ((total / 3600 + offs[i]) % 24 + 24) % 24;\n        let y: i32 = 50 + i * 70;\n        match i {\n            0 => {\n                host::display::draw_string(16, y, \"NYC\", 0x80a0ff, 2);\n            }\n            1 => {\n                host::display::draw_string(16, y, \"LON\", 0x80ffa0, 2);\n            }\n            _ => {\n                host::display::draw_string(16, y, \"TYO\", 0xffa080, 2);\n            }\n        }\n        pad2(90, y - 6, hh, 0xffffff, 3);\n        host::display::fill_rect(146, y + 2, 4, 4, 0xffffff);\n        host::display::fill_rect(146, y + 12, 4, 4, 0xffffff);\n        pad2(158, y - 6, mm, 0xffffff, 3);\n        i = i + 1;\n    }\n    host::display::draw_string(16, 270, \"UTC-5 UTC+0 UTC+9\", 0x606060, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "time",
+    "arrays",
+    "modulo",
+    "match"
+  ]
+}

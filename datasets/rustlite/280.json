@@ -1,0 +1,10 @@
+{
+  "id": "280",
+  "prompt": "Drop-in multiplayer cursors with ZERO lobby UI: host::mp::auto(room) joins a shared numbered room and elects the host automatically - nobody types a code. Until self_index() turns non-negative show a JOINING screen with animated dots; after that publish my pointer into my shared slots 0 and 1 with mp::set, and each frame draw EVERY peer's cursor via mp::get(peer, slot) - mine gold, others green, each tagged with its peer index. Footer shows peer_count().",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x10141a);\n    if host::display::state_get(0) == 0 {\n        host::mp::auto(5);\n        host::display::state_set(0, 1);\n    }\n    let me: i32 = host::mp::self_index();\n    if me < 0 {\n        host::display::draw_string(140, 220, \"JOINING ROOM\", 0x8899aa, 2);\n        let dots: i32 = (t / 15) % 4;\n        let mut d: i32 = 0;\n        while d < dots {\n            host::display::fill_rect(220 + d * 20, 270, 10, 10, 0xffcc33);\n            d = d + 1;\n        }\n    } else {\n        host::mp::set(0, host::display::pointer_x());\n        host::mp::set(1, host::display::pointer_y());\n        let n: i32 = host::mp::peer_count();\n        let mut i: i32 = 0;\n        while i < n {\n            let cx: i32 = host::mp::get(i, 0);\n            let cy: i32 = host::mp::get(i, 1);\n            let mut col: i32 = 0x33ff88;\n            if i == me {\n                col = 0xffcc33;\n            }\n            host::display::fill_rect(cx - 7, cy - 7, 14, 14, col);\n            host::display::draw_number(cx - 3, cy - 22, i, 0xffffff, 1);\n            i = i + 1;\n        }\n        host::display::draw_string(8, 8, \"SHARED CURSORS\", 0x8899aa, 1);\n        host::display::draw_string(8, 490, \"PEERS\", 0x8899aa, 1);\n        host::display::draw_number(56, 488, n, 0xffffff, 1);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "mp",
+    "multiplayer",
+    "cursors"
+  ]
+}
