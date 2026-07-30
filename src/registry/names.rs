@@ -479,26 +479,6 @@ pub async fn publish_face_to_store(name: &str, token: &str, face: &str) -> Resul
     http_post_json_authed(&url, token, &body).await
 }
 
-/// The face choice visitors should honour: the STORE record first (where every
-/// publish stamps it), falling back to the LEGACY on-chain
-/// `localharness.public_face` slot only on a store miss (pre-pivot names whose
-/// choice was written via `setMetadata`). New choices never touch the chain.
-/// `fresh` = bust the store cache (owner status reads right after a publish).
-pub async fn effective_face_choice(
-    name: &str,
-    token_id: Option<u64>,
-    fresh: bool,
-) -> Option<String> {
-    let store = face_from_store(name, fresh).await;
-    if !store_miss_falls_back(&store) {
-        return store.ok().flatten();
-    }
-    match token_id {
-        Some(id) => public_face_of(id).await.ok().flatten(),
-        None => None,
-    }
-}
-
 /// Fetch a subdomain's published cartridge from the OFF-CHAIN app store by name.
 /// `Ok(None)` = no app published (a 404 — the visitor falls back to the
 /// directory/html face). Works on native AND wasm (the browser load path).
@@ -517,40 +497,6 @@ pub async fn app_wasm_from_store(name: &str) -> Result<Option<Vec<u8>>, String> 
 pub async fn app_wasm_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
     let name = name_of_id(token_id).await?;
     app_wasm_from_store(&name).await
-}
-
-/// LEGACY on-chain cartridge read: pre-pivot (2026-06-23 apps-off-chain)
-/// publishes stored `app.wasm` bytes in the diamond under
-/// `keccak256("localharness.app.wasm")`. New publishes live in the off-chain
-/// store; this backs the STORE-MISS fallback so those orphaned public faces
-/// (e.g. mario/console) keep resolving for visitors.
-pub async fn app_wasm_onchain_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
-    metadata_bytes_of(token_id, app_metadata_key()).await
-}
-
-/// Store-first face resolution: `true` when the off-chain app-store outcome —
-/// a 404 (`Ok(None)`) OR a fetch failure (`Err`) — should fall back to the
-/// LEGACY on-chain metadata slot. Published store bytes always win, so the
-/// on-chain read only fires on a miss (store stays the cheap first hop).
-pub fn store_miss_falls_back<T>(store: &Result<Option<T>, String>) -> bool {
-    !matches!(store, Ok(Some(_)))
-}
-
-/// Storage key for the legacy on-chain app wasm: `keccak256("localharness.app.wasm")`.
-/// Retained for back-compat reads of pre-off-chain publishes; new publishes go to
-/// the app store (no on-chain bytes).
-pub(crate) fn app_metadata_key() -> [u8; 32] {
-    use sha3::{Digest, Keccak256};
-    let digest = Keccak256::digest(b"localharness.app.wasm");
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    out
-}
-
-/// Encode `setMetadata(tokenId, appKey, wasm)` calldata. LEGACY — the on-chain
-/// publish path; kept for tooling/tests. Live publishing is off-chain now.
-pub fn encode_set_app_wasm(token_id: u64, wasm: &[u8]) -> Vec<u8> {
-    encode_set_metadata_bytes(token_id, app_metadata_key(), wasm)
 }
 
 /// Storage key for the seed-encrypted Gemini API key:
@@ -575,16 +521,14 @@ pub fn encode_set_gemini_key(token_id: u64, ciphertext: &[u8]) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, gemini_key_metadata_key(), ciphertext)
 }
 
-// --- Public-face selection (LEGACY on-chain reads) --------------------
-//
-// A subdomain's public face (what visitors see) is one of: a directory
-// landing (default), a cartridge app, or an HTML page. The CHOICE lives in
-// the OFF-CHAIN store now (`<name>/face`, stamped by every publish — see
-// `face_from_store` / `effective_face_choice`); NOTHING public-face writes
-// on-chain anymore. The reads below back the STORE-MISS fallback only:
-// pre-pivot names wrote the choice under
-// `keccak256("localharness.public_face")` and HTML bytes under
-// `keccak256("localharness.public.html")` via owner-gated `setMetadata`.
+// The public face (choice + content) lives ENTIRELY in the off-chain store
+// (`<name>/face` + `<name>/{app.wasm,index.html}` — see `face_from_store` /
+// `publish_face_to_store` above). Nothing public-face touches the chain; the
+// legacy on-chain slots (`localharness.{public_face,public.html,app.wasm}`)
+// and their fallback reads were PURGED 2026-07-30 (pre-1.0.0 reset — old
+// publishes republish, they don't get compat code). The metadata plumbing
+// below stays for the still-on-chain slots: persona / lessons / skills /
+// x402_price / gemini key.
 
 pub(crate) fn keccak_key(label: &[u8]) -> [u8; 32] {
     use sha3::{Digest, Keccak256};
@@ -608,51 +552,6 @@ pub(crate) async fn metadata_bytes_of(token_id: u64, key: [u8; 32]) -> Result<Op
 /// Encode `setMetadata(tokenId, key, payload)` calldata for a sponsored tx.
 pub(crate) fn encode_set_metadata_bytes(token_id: u64, key: [u8; 32], payload: &[u8]) -> Vec<u8> {
     encode_set_metadata(token_id, key, payload)
-}
-
-pub(crate) const PUBLIC_FACE_LABEL: &[u8] = b"localharness.public_face";
-pub(crate) const PUBLIC_HTML_LABEL: &[u8] = b"localharness.public.html";
-
-/// LEGACY on-chain face-choice read — the store-miss fallback for pre-pivot
-/// names. Live resolution is [`effective_face_choice`] (store first); `None`
-/// = never set (callers infer from what's published).
-pub async fn public_face_of(token_id: u64) -> Result<Option<String>, String> {
-    match metadata_bytes_of(token_id, keccak_key(PUBLIC_FACE_LABEL)).await? {
-        Some(b) => Ok(String::from_utf8(b)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())),
-        None => Ok(None),
-    }
-}
-
-/// Encode `setMetadata` for the public-face choice. LEGACY — retained ONLY for
-/// the TBA-owner on-chain fallback (the store's ownership gate needs an EOA
-/// signer); every EOA-owned face write goes to the store, never the chain.
-pub fn encode_set_public_face(token_id: u64, choice: &str) -> Vec<u8> {
-    encode_set_metadata_bytes(token_id, keccak_key(PUBLIC_FACE_LABEL), choice.as_bytes())
-}
-
-/// Read a subdomain's published public-face HTML. OFF-CHAIN now (the app store,
-/// fetched by name) — resolves `token_id`→name then reads the store. Kept on the
-/// `token_id` signature for its callers (resolve_public_face).
-pub async fn public_html_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
-    let name = name_of_id(token_id).await?;
-    html_from_store(&name).await
-}
-
-/// LEGACY on-chain HTML read (`keccak256("localharness.public.html")`) — the
-/// store-miss fallback sibling of [`app_wasm_onchain_of`], for pre-pivot HTML
-/// faces (e.g. frank) the off-chain store 404s on.
-pub async fn public_html_onchain_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
-    metadata_bytes_of(token_id, keccak_key(PUBLIC_HTML_LABEL)).await
-}
-
-/// Encode `setMetadata` for the published public-face HTML. LEGACY — the on-chain
-/// HTML publish; retained for the TBA-owner on-chain fallback. Live HTML publishing
-/// is off-chain ([`publish_html_to_store`]).
-pub fn encode_set_public_html(token_id: u64, html: &[u8]) -> Vec<u8> {
-    encode_set_metadata_bytes(token_id, keccak_key(PUBLIC_HTML_LABEL), html)
 }
 
 pub(crate) const PERSONA_LABEL: &[u8] = b"localharness.persona";
@@ -855,17 +754,6 @@ mod tests {
         assert_eq!(parse_face_choice(b""), None);
         assert_eq!(parse_face_choice(b"iframe"), None);
         assert_eq!(parse_face_choice(&[0xff, 0xfe]), None);
-    }
-
-    #[test]
-    fn store_miss_falls_back_on_404_and_error_only() {
-        assert!(!store_miss_falls_back(&Ok(Some(vec![0u8]))));
-        // Empty PUBLISHED bytes are still a hit (store wins).
-        assert!(!store_miss_falls_back(&Ok(Some(Vec::<u8>::new()))));
-        assert!(store_miss_falls_back(&Ok(None::<Vec<u8>>)));
-        assert!(store_miss_falls_back(&Err::<Option<Vec<u8>>, _>(
-            "GET: HTTP 500".into()
-        )));
     }
 
     /// `rank_agent_matches` hostile inputs: case-insensitivity, name-tier vs
@@ -1083,9 +971,8 @@ mod tests {
     fn capability_key_distinct_from_other_metadata_keys() {
         let cap = keccak_key(CAPABILITY_LABEL);
         assert_ne!(cap, keccak_key(PERSONA_LABEL));
-        assert_ne!(cap, keccak_key(PUBLIC_FACE_LABEL));
-        assert_ne!(cap, keccak_key(PUBLIC_HTML_LABEL));
-        assert_ne!(cap, app_metadata_key());
+        assert_ne!(cap, keccak_key(LESSONS_LABEL));
+        assert_ne!(cap, keccak_key(SKILLS_LABEL));
     }
 
     #[test]
@@ -1106,13 +993,10 @@ mod tests {
 
     #[test]
     fn lessons_key_distinct_from_other_metadata_keys() {
-        // The lessons slot must never collide with persona/app/html/face —
-        // and the TS worker inlines its literal hash, so pin it here too.
+        // The lessons slot must never collide with persona/skills — and the
+        // TS worker inlines its literal hash, so pin it here too.
         let lessons = keccak_key(LESSONS_LABEL);
         assert_ne!(lessons, keccak_key(PERSONA_LABEL));
-        assert_ne!(lessons, keccak_key(PUBLIC_FACE_LABEL));
-        assert_ne!(lessons, keccak_key(PUBLIC_HTML_LABEL));
-        assert_ne!(lessons, app_metadata_key());
         // Must equal the literal inlined in proxy/api/scheduler.ts (LESSONS_KEY).
         let hex: String = lessons.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
@@ -1139,23 +1023,10 @@ mod tests {
 
     #[test]
     fn skills_key_distinct_from_other_metadata_keys() {
-        // The skills slot must never collide with persona/lessons/app/html/face.
+        // The skills slot must never collide with persona/lessons.
         let skills = keccak_key(SKILLS_LABEL);
         assert_ne!(skills, keccak_key(LESSONS_LABEL));
         assert_ne!(skills, keccak_key(PERSONA_LABEL));
-        assert_ne!(skills, keccak_key(PUBLIC_FACE_LABEL));
-        assert_ne!(skills, keccak_key(PUBLIC_HTML_LABEL));
-        assert_ne!(skills, app_metadata_key());
-    }
-
-    #[test]
-    fn persona_key_distinct_from_other_metadata_keys() {
-        // A copy-paste label collision would make persona overwrite the
-        // app/html/public_face slots — assert the keys are all distinct.
-        let persona = keccak_key(PERSONA_LABEL);
-        assert_ne!(persona, keccak_key(PUBLIC_FACE_LABEL));
-        assert_ne!(persona, keccak_key(PUBLIC_HTML_LABEL));
-        assert_ne!(persona, app_metadata_key());
     }
 
     #[test]

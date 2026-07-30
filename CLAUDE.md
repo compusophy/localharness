@@ -365,24 +365,23 @@ rustlite `fn` is already a wasm export, so a library is a normal cartridge whose
   `?edit=1`).
 - **Visitor** → only ever the **public face**. No studio, no edit door.
 
-`resolve_public_face(name)` reads the choice STORE-FIRST
-(`registry::effective_face_choice`: `<name>/face`, stamped by EVERY publish;
-legacy on-chain slot only for pre-pivot names) — `directory`/`app`/`html` —
-preferring local working copy (owner previews unpublished edits) else published.
-`PublicFace`: **Cartridge** (`app.rl` / `app_wasm_of` →
-`display::run_in_root_canvas`), **Html** (`index.html` / `public_html_of` →
+`resolve_public_face(name)` is STORE-ONLY (zero chain reads): choice from
+`registry::face_from_store` (`<name>/face`, stamped by EVERY publish), content
+by name — preferring local working copy (owner previews unpublished edits) else
+published. `PublicFace`: **Cartridge** (`app.rl` / `app_wasm_from_store` →
+`display::run_in_root_canvas`), **Html** (`index.html` / `html_from_store` →
 `render_html_in_root_canvas`), **Directory** (`paint_public_landing`: profile +
 siblings via `list_owned_tokens`, personas via `personas_of`). UNSET infers
 "cartridge, else published html, else directory". `Host::Other` uses
-`try_paint_app` (local `app.rl` only). Content resolves STORE-FIRST too; a store
-MISS (pure rule `registry::store_miss_falls_back`) falls back to the LEGACY
-on-chain `setMetadata` slots (pre-pivot publishes keep their faces).
+`try_paint_app` (local `app.rl` only). ⛔ The legacy on-chain face/app/html
+slots + fallback reads were PURGED (2026-07-30, pre-1.0.0 reset) — never
+reintroduce them; old publishes just republish.
 
 **Picker (admin → "public face").** `[directory] [publish app] [publish html]` →
-`Action::SetPublicFace`. ALL OFF-CHAIN: `app`/`html` POST local
-`app.rl`/`index.html` to the store (which stamps the face record in the same
-publish); `directory` is a face-only POST. ⛔ NOTHING public-face writes on-chain
-(sponsored path = TBA-owner fallback ONLY); never call a publish "on-chain".
+`Action::SetPublicFace`. STORE-ONLY: `app`/`html` POST local
+`app.rl`/`index.html` (the store stamps the face record in the same publish);
+`directory` is a face-only POST. TBA-owned names / linked devices without the
+seed error honestly (store TBA-auth = follow-up); never call a publish "on-chain".
 
 **Second-device owner upgrade.** A seed-bearing owner without `.lh_owner` paints
 as visitor; background `redirect_to_studio_if_owner` navigates to `?edit=1` once
@@ -390,10 +389,9 @@ as visitor; background `redirect_to_studio_if_owner` navigates to `?edit=1` once
 
 **Cross-visitor publishing.** Local `app.rl`/`index.html` are owner-device
 working copies; *visitors* see published bytes from the OFF-CHAIN app store
-(`proxy/api/{publish,app}.ts` — bytes + `<name>/face`, free). The diamond
-`setMetadata` slots under
-`keccak256("localharness.{app.wasm, public.html, public_face, persona, x402_price}")`
-are LEGACY face fallbacks; persona/x402_price stay live on-chain.
+(`proxy/api/{publish,app}.ts` — bytes + `<name>/face`, free). On-chain
+`setMetadata` slots remain ONLY for persona / lessons / skills / x402_price /
+gemini-key.
 `x402_price` = the advertised per-call `$LH` price (decimal-wei UTF-8; default
 0.01 unset; `registry::{x402_price_of, x402_ask_price_of, encode_set_x402_price}`;
 price-LOCKED — floor + 10% ceiling — by ask_agent). Generic

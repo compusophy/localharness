@@ -655,28 +655,23 @@ pub(super) fn header_admin_toggle() {
     }
 }
 
-/// Read the subdomain's current public-face choice (STORE-first via
-/// `effective_face_choice`; legacy on-chain slot only as fallback) and reflect
-/// it in the `#public-face-status` slot. No-op off a tenant or if the slot
-/// isn't mounted.
+/// Read the subdomain's current public-face choice (the store record — the
+/// only place it lives) and reflect it in the `#public-face-status` slot.
+/// No-op off a tenant or if the slot isn't mounted.
 pub(super) async fn refresh_public_face_status() {
     let Some(name) = crate::app::tenant::current_name() else { return };
     if dom::by_id("public-face-status").is_none() {
         return;
     }
-    // Timeout-capped so a dead RPC resolves to the directory-default label
-    // instead of leaving the placeholder text up forever.
-    let face = match crate::app::net::read(crate::app::registry::id_of_name(&name)).await {
-        // `fresh` busts the 60s store cache — this runs right after a publish,
-        // where a cached read would show the OLD face and call it current.
-        Ok(Ok(id)) if id != 0 => crate::app::net::read(
-            crate::app::registry::effective_face_choice(&name, Some(id), true),
-        )
+    // Timeout-capped so a dead store resolves to the default label instead of
+    // leaving the placeholder text up forever. `fresh` busts the 60s store
+    // cache — this runs right after a publish, where a cached read would show
+    // the OLD face and call it current.
+    let face = crate::app::net::read(crate::app::registry::face_from_store(&name, true))
         .await
         .ok()
-        .flatten(),
-        _ => None,
-    };
+        .and_then(Result::ok)
+        .flatten();
     // Surface local-only working copies: an `app.rl`/`index.html` on this
     // device that visitors can't see until published. Binary state
     // (published vs local only) — no byte-level staleness diffing.

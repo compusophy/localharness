@@ -215,29 +215,49 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
     )
 }
 
+/// The device's MASTER-wallet signer, asserted to be `owner`. Publishing is
+/// STORE-ONLY: the proxy authorizes via `ownerOf(name) == token signer`, so the
+/// token MUST be signed by the OWNER — read `APP.wallet` (the master) DIRECTLY,
+/// NOT credit_signer(), which can return (or even MINT) a per-origin DEVICE key
+/// that is not the owner. No on-chain fallback exists anymore (purged with the
+/// pre-1.0.0 reset): a TBA-owned name or a linked device without the seed gets
+/// an honest error until the store gains TBA/authorized-signer auth.
+fn owner_master_signer(
+    tool: &str,
+    owner: &str,
+) -> Result<k256::ecdsa::SigningKey, crate::error::Error> {
+    let master = crate::app::APP
+        .with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)));
+    match master {
+        Some((signer, addr))
+            if owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) =>
+        {
+            Ok(signer)
+        }
+        _ => Err(crate::error::Error::other(format!(
+            "{tool}: publishing needs this device to hold the owner wallet of the name \
+             (owner {owner}); TBA-owned names / linked devices without the seed can't \
+             publish yet"
+        ))),
+    }
+}
+
 /// Publish a compiled rustlite cartridge as `name`'s app face — the ONE
 /// publish-app shape shared by `create_and_publish_app` (fresh + update),
 /// `publish_app_to` (cross-subdomain), and `publish_public_face` ("app").
 ///
-/// OFF-CHAIN (free, no gas) when this device's EOA directly owns `name`: the
-/// compiled wasm goes to the app store (`registry::publish_app_to_store`), which
-/// the proxy authorizes via on-chain ownership (`ownerOf(name) == token signer`)
-/// and which stamps the `<name>/face` choice record in the SAME publish — bytes
-/// + routing in one authed POST, nothing on-chain (the krafto bug — bytes stored
-/// but the choice never written — is structurally impossible now). On-chain
-/// `setMetadata` publishing cost ~$0.32–$2.80/cart and drained the gas sponsor;
-/// this kills that. A NON-EOA owner (TBA consolidation) or absent local signer
-/// falls back to the legacy on-chain `setMetadata` batch (the agent tools never
-/// had a TBA path, so this is unchanged for them). Returns `(tx, wasm)`: `tx` is
-/// `Some` only on that legacy fallback; `wasm` is the compiled cartridge so
-/// callers can auto-embed the just-published app inline (close the cartridge
-/// loop) without recompiling.
+/// STORE-ONLY (free, no gas, no tx): the compiled wasm goes to the app store
+/// (`registry::publish_app_to_store`), which the proxy authorizes via on-chain
+/// ownership and which stamps the `<name>/face` choice record in the SAME
+/// publish — bytes + routing in one authed POST, so the "stored but never
+/// routed" bug (krafto) is structurally impossible. Returns the compiled wasm
+/// so callers can auto-embed the just-published app inline (close the
+/// cartridge loop) without recompiling.
 async fn publish_app_face(
     name: &str,
-    token_id: u64,
     source: &str,
     owner: &str,
-) -> Result<(Option<String>, Vec<u8>), crate::error::Error> {
+) -> Result<Vec<u8>, crate::error::Error> {
     if source.trim().is_empty() {
         return Err(crate::error::Error::other("source cannot be empty"));
     }
@@ -253,71 +273,22 @@ async fn publish_app_face(
             crate::app::registry::APP_STORE_MAX_WASM_BYTES
         )));
     }
-    // OFF-CHAIN when the device's MASTER wallet owns the name. The off-chain
-    // token MUST be signed by the OWNER — the proxy authorizes via
-    // ownerOf(name) == token signer — so read `APP.wallet` (the master) DIRECTLY,
-    // NOT credit_signer(): credit_signer can return, or even MINT, a per-origin
-    // DEVICE key (a linked second device) that is NOT the owner, which would both
-    // fail the proxy's ownerOf gate and silently route us to the costly on-chain
-    // path. A pure read; no key generation. The off-chain POST is THE path here
-    // (its error surfaces directly), not a try-then-fall-through.
-    let master = crate::app::APP
-        .with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)));
-    if let Some((signer, addr)) = master {
-        if owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
-            let now = (js_sys::Date::now() / 1000.0) as u64;
-            let token = crate::registry::proxy_auth_token(&signer, now, "publish");
-            crate::app::registry::publish_app_to_store(name, &token, &wasm, source)
-                .await
-                .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-            // The proxy stamped `<name>/face = "app"` alongside the bytes, so
-            // a stale prior choice can't shadow the fresh cartridge. Done —
-            // no tx, no gas, nothing on-chain.
-            return Ok((None, wasm));
-        }
-    }
-    // ON-CHAIN fallback — reached only when the owner ISN'T this device's master
-    // wallet: a TBA-owned name (consolidation), or a linked device without the
-    // seed loaded (off-chain publish needs the owner to sign; full linked-device
-    // off-chain support = a proxy authorized-signer follow-up). Logged so this
-    // (sponsor-gas-priced) regression is observable, not silent. The legacy
-    // sponsored setMetadata batch; length-scaled gas (~7.6k gas/BYTE).
-    // KNOWN RESIDUAL: if this name was EOA-owned before (a store face record
-    // exists) and was later TBA-consolidated, the store record shadows this
-    // on-chain choice (reads are store-first). Real fix = proxy-side TBA auth.
-    crate::app::debuglog::log(&format!(
-        "publish_app_face: off-chain unavailable for {name} (owner {owner} is not the \
-         local master wallet) — on-chain fallback"
-    ));
-    let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
-        .map_err(crate::error::Error::other)?;
-    let mk = |input: Vec<u8>| crate::tempo_tx::TempoCall {
-        to: registry_addr,
-        value_wei: 0,
-        input,
-    };
-    let calls = vec![
-        mk(crate::app::registry::encode_set_app_wasm(token_id, &wasm)),
-        mk(crate::app::registry::encode_set_public_face(token_id, "app")),
-    ];
-    let gas = crate::app::gas::set_metadata_gas(wasm.len());
-    let tx = crate::app::events::run_sponsored_tempo_call(owner, calls, gas, "publish app")
+    let signer = owner_master_signer("publish", owner)?;
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let token = crate::registry::proxy_auth_token(&signer, now, "publish");
+    crate::app::registry::publish_app_to_store(name, &token, &wasm, source)
         .await
         .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-    Ok((Some(tx), wasm))
+    Ok(wasm)
 }
 
 /// Publish an HTML page as `name`'s public face — the HTML-face sibling of
-/// [`publish_app_face`]. OFF-CHAIN (free) when the device MASTER wallet owns the
-/// name (read `APP.wallet` directly — see publish_app_face for why not
-/// credit_signer); on-chain `setMetadata` fallback for a TBA-owned name. `Ok(Some
-/// (tx))` when on-chain, `Ok(None)` when off-chain.
+/// [`publish_app_face`]. STORE-ONLY (free); same owner-master-signer rule.
 async fn publish_html_face(
     name: &str,
-    token_id: u64,
     html: &[u8],
     owner: &str,
-) -> Result<Option<String>, crate::error::Error> {
+) -> Result<(), crate::error::Error> {
     if html.is_empty() {
         return Err(crate::error::Error::other("index.html is empty"));
     }
@@ -328,44 +299,13 @@ async fn publish_html_face(
             crate::app::registry::APP_STORE_MAX_WASM_BYTES
         )));
     }
-    let master = crate::app::APP
-        .with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)));
-    if let Some((signer, addr)) = master {
-        if owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
-            let now = (js_sys::Date::now() / 1000.0) as u64;
-            let token = crate::registry::proxy_auth_token(&signer, now, "publish");
-            let html_str = String::from_utf8_lossy(html).into_owned();
-            crate::app::registry::publish_html_to_store(name, &token, &html_str)
-                .await
-                .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-            // The proxy stamped `<name>/face = "html"` alongside the bytes —
-            // the choice that routes visitors travels IN the publish, so it
-            // can never be dropped (the krafto bug). Nothing on-chain.
-            return Ok(None);
-        }
-    }
-    // ON-CHAIN fallback (TBA-owned name / no local master) — legacy sponsored
-    // setMetadata batch.
-    crate::app::debuglog::log(&format!(
-        "publish_html_face: off-chain unavailable for {name} (owner {owner} is not the \
-         local master wallet) — on-chain fallback"
-    ));
-    let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
-        .map_err(crate::error::Error::other)?;
-    let mk = |input: Vec<u8>| crate::tempo_tx::TempoCall {
-        to: registry_addr,
-        value_wei: 0,
-        input,
-    };
-    let calls = vec![
-        mk(crate::app::registry::encode_set_public_html(token_id, html)),
-        mk(crate::app::registry::encode_set_public_face(token_id, "html")),
-    ];
-    let gas = crate::app::gas::set_metadata_gas(html.len());
-    let tx = crate::app::events::run_sponsored_tempo_call(owner, calls, gas, "publish html")
+    let signer = owner_master_signer("publish", owner)?;
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let token = crate::registry::proxy_auth_token(&signer, now, "publish");
+    let html_str = String::from_utf8_lossy(html).into_owned();
+    crate::app::registry::publish_html_to_store(name, &token, &html_str)
         .await
-        .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-    Ok(Some(tx))
+        .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))
 }
 
 /// Resolve a registered name's `(token_id, owner)` for an OWNER-AUTHORIZED
@@ -485,21 +425,16 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
 
             // UPDATE path: the caller already owns `name` → re-publish in place,
             // NO re-register (which would fail), NO persona/prefund (those are
-            // spawn-time actor setup). Off-chain store publish (a tx only on
-            // the TBA-owner fallback — `tx_hash` present only then).
-            if let Some((token_id, owner)) = existing {
-                let (tx, wasm) = publish_app_face(&cleaned, token_id, source, &owner).await?;
+            // spawn-time actor setup). Store-only publish, no tx.
+            if let Some((_token_id, owner)) = existing {
+                let wasm = publish_app_face(&cleaned, source, &owner).await?;
                 stash_published_app_embed(&cleaned, wasm);
-                let mut r = serde_json::json!({
+                return Ok(serde_json::json!({
                     "name": cleaned,
                     "url": format!("https://{cleaned}.localharness.xyz/"),
-                    "off_chain": tx.is_none(),
+                    "off_chain": true,
                     "updated": true,
-                });
-                if let Some(tx) = tx {
-                    r["tx_hash"] = serde_json::json!(tx);
-                }
-                return Ok(r);
+                }));
             }
 
             // FRESH path: register the name, then publish. The owner's master
@@ -527,7 +462,7 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
             };
             // Publish the app OFF-CHAIN (free) to the app store — the owner's
             // master wallet (just minted the name) signs the proxy auth token.
-            let (app_tx, wasm) = publish_app_face(&cleaned, token_id, source, &owner).await?;
+            let wasm = publish_app_face(&cleaned, source, &owner).await?;
             stash_published_app_embed(&cleaned, wasm);
             // ACTOR MODEL: persona + prefund stay ON-CHAIN (they're identity /
             // economy primitives, and small/cheap unlike the app bytes). Submit
@@ -549,17 +484,16 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
                     .map_err(|e| crate::error::Error::other(format!("actor setup failed: {e}")))?,
                 )
             };
-            let off_chain = app_tx.is_none();
             let mut result = serde_json::json!({
                 "name": cleaned,
                 "url": format!("https://{cleaned}.localharness.xyz/"),
-                "off_chain": off_chain,
+                "off_chain": true,
                 "updated": false,
             });
-            // Report the most relevant on-chain tx if one ran (app fallback,
-            // else actor setup) — omitted entirely on the pure-store path so
-            // no model ever relays a fake "hash".
-            if let Some(tx) = app_tx.or(setup_tx) {
+            // The publish itself is store-only; the only tx that can exist is
+            // the actor setup (persona/prefund). Omitted otherwise so no model
+            // ever relays a fake "hash".
+            if let Some(tx) = setup_tx {
                 result["tx_hash"] = serde_json::json!(tx);
             }
             if setup.persona_set {
@@ -637,7 +571,7 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .map_err(crate::error::Error::other)?;
             // Resolve + ownership-gate the target. None = unregistered (refuse —
             // this tool only UPDATES owned names); Err = owned-by-other / RPC.
-            let (token_id, owner) = owned_token_for_publish(&cleaned, &signer_owner)
+            let (_token_id, owner) = owned_token_for_publish(&cleaned, &signer_owner)
                 .await?
                 .ok_or_else(|| {
                     crate::error::Error::other(format!(
@@ -647,17 +581,13 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 })?;
             // (No auto-embed here: the target is a DIFFERENT subdomain being
             // updated from MAIN; the wasm is dropped.)
-            let (tx, _wasm) = publish_app_face(&cleaned, token_id, source, &owner).await?;
-            let mut r = serde_json::json!({
+            let _wasm = publish_app_face(&cleaned, source, &owner).await?;
+            Ok(serde_json::json!({
                 "name": cleaned,
                 "url": format!("https://{cleaned}.localharness.xyz/"),
-                "off_chain": tx.is_none(),
+                "off_chain": true,
                 "updated": true,
-            });
-            if let Some(tx) = tx {
-                r["tx_hash"] = serde_json::json!(tx);
-            }
-            Ok(r)
+            }))
         },
     )
 }
@@ -666,8 +596,7 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// render it INLINE in the chat transcript as a live, interactive card (NOT
 /// an iframe — cartridges are framebuffer wasm; an iframe of a subdomain that
 /// itself boots a cartridge hits recursion/partitioning limits). Resolves
-/// `name` → published `app.wasm` (off-chain store; legacy on-chain slot as
-/// fallback); if the subdomain has a published
+/// `name` → published `app.wasm` (the off-chain store); if the subdomain has a published
 /// cartridge, stashes its bytes for the transcript's `#embed-canvas` card to
 /// launch (via `display::run_in_canvas`) and returns `{ name, url,
 /// embedded: true }`. A subdomain with no published app (directory/html face,
@@ -734,11 +663,10 @@ pub(crate) fn embed_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 
 /// `publish_public_face(choice)` — publish THIS agent's OWN public face from
 /// chat (the agent-tool mirror of admin → public face, feature request #27).
-/// `choice` is "directory" | "app" | "html". EVERY choice publishes OFF-CHAIN
-/// to the app store (free, no gas — the store stamps the `<name>/face` choice
-/// record; content publishes carry their bytes in the same POST). The ONLY
-/// on-chain path left is the legacy fallback for a TBA-owned name (the store's
-/// ownership gate needs the EOA). Owner-only, own subdomain only. Mirrors
+/// `choice` is "directory" | "app" | "html". EVERY choice publishes to the app
+/// store (free, no gas, no tx — the store stamps the `<name>/face` choice
+/// record; content publishes carry their bytes in the same POST). Nothing
+/// touches the chain. Owner-only, own subdomain only. Mirrors
 /// `events::public_face::run_set_public_face` minus the DOM. Reversible.
 pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     // Hoisted table: `crate::tool_params::PublishPublicFaceParams`.
@@ -770,77 +698,27 @@ pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Too
                     "publish_public_face only works on your own subdomain",
                 ));
             };
-            let token_id = match crate::app::registry::id_of_name(&name).await {
-                Ok(id) if id != 0 => id,
-                _ => return Err(crate::error::Error::other("name isn't registered on-chain")),
-            };
             let owner = match crate::app::registry::owner_of_name(&name).await {
                 Ok(Some(o)) => o,
                 _ => return Err(crate::error::Error::other("name isn't registered on-chain")),
             };
-            // Every face publishes OFF-CHAIN (the store stamps the choice);
-            // the result carries `off_chain` and only the legacy TBA fallback
-            // ever returns a `tx_hash`.
-            let face_result = |tx: Option<String>| {
-                let mut r = serde_json::json!({
-                    "choice": choice,
-                    "url": format!("https://{name}.localharness.xyz/"),
-                    "off_chain": tx.is_none(),
-                });
-                if let Some(tx) = tx {
-                    r["tx_hash"] = serde_json::json!(tx);
-                }
-                r
-            };
+            // Every face publishes to the STORE (which stamps the choice);
+            // nothing here touches the chain.
             match choice.as_str() {
                 "directory" => {
-                    // FACE-ONLY store write (free). Legacy on-chain choice
-                    // write only for a TBA-owned name (the store's ownership
-                    // gate needs the EOA signer).
-                    let master = crate::app::APP.with(|c| {
-                        c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address))
-                    });
-                    if let Some((signer, addr)) = master {
-                        if owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
-                            let now = (js_sys::Date::now() / 1000.0) as u64;
-                            let token =
-                                crate::registry::proxy_auth_token(&signer, now, "publish");
-                            crate::app::registry::publish_face_to_store(
-                                &name,
-                                &token,
-                                "directory",
-                            )
-                            .await
-                            .map_err(|e| {
-                                crate::error::Error::other(format!("publish failed: {e}"))
-                            })?;
-                            return Ok(face_result(None));
-                        }
-                    }
-                    let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
-                        .map_err(crate::error::Error::other)?;
-                    let calls = vec![crate::tempo_tx::TempoCall {
-                        to: registry_addr,
-                        value_wei: 0,
-                        input: crate::app::registry::encode_set_public_face(
-                            token_id,
-                            "directory",
-                        ),
-                    }];
-                    let tx = crate::app::events::run_sponsored_tempo_call(
-                        &owner,
-                        calls,
-                        500_000,
-                        "publish public face",
-                    )
-                    .await
-                    .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-                    Ok(face_result(Some(tx)))
+                    // FACE-ONLY store write (free).
+                    let signer = owner_master_signer("publish_public_face", &owner)?;
+                    let now = (js_sys::Date::now() / 1000.0) as u64;
+                    let token = crate::registry::proxy_auth_token(&signer, now, "publish");
+                    crate::app::registry::publish_face_to_store(&name, &token, "directory")
+                        .await
+                        .map_err(|e| {
+                            crate::error::Error::other(format!("publish failed: {e}"))
+                        })?;
                 }
                 "app" => {
-                    // Publish this device's local app.rl to the app store —
-                    // bytes + face record in one POST (EOA owner) or the
-                    // legacy on-chain batch (TBA).
+                    // Publish this device's local app.rl — bytes + face
+                    // record in one POST.
                     let fs = crate::app::shared_opfs();
                     let src = match fs.read("app.rl").await {
                         Ok(b) if !b.is_empty() => String::from_utf8_lossy(&b).into_owned(),
@@ -851,8 +729,7 @@ pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Too
                             ))
                         }
                     };
-                    let (tx, _wasm) = publish_app_face(&name, token_id, &src, &owner).await?;
-                    Ok(face_result(tx))
+                    let _wasm = publish_app_face(&name, &src, &owner).await?;
                 }
                 "html" => {
                     // Publish this device's local index.html — same shape.
@@ -865,11 +742,15 @@ pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Too
                             ))
                         }
                     };
-                    let tx = publish_html_face(&name, token_id, &html, &owner).await?;
-                    Ok(face_result(tx))
+                    publish_html_face(&name, &html, &owner).await?;
                 }
                 _ => unreachable!(),
             }
+            Ok(serde_json::json!({
+                "choice": choice,
+                "url": format!("https://{name}.localharness.xyz/"),
+                "off_chain": true,
+            }))
         },
     )
 }

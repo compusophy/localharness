@@ -1573,8 +1573,8 @@ pub(crate) fn verify_receipt_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 fuel: 0,
             };
 
-            // Fetch the module's LIVE published bytes by name (store-first,
-            // legacy on-chain fallback — the same resolution compose uses).
+            // Fetch the module's LIVE published bytes by name from the app
+            // store (the same resolution compose uses).
             let Some(bytes) = crate::app::compose_module_wasm(module).await else {
                 return Ok(serde_json::json!({
                     "verdict": "unverifiable",

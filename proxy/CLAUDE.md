@@ -90,9 +90,10 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   `registry::{app_wasm,html,face}_from_store` / `effective_face_choice`. EVERY
   publish path POSTs here: CLI `publish`/`face`, the browser studio
   (`events/public_face.rs`), the agent tools (`chat/tools/platform.rs`) + bashlite
-  `lh-publish` — when the device's MASTER wallet owns the name (proxy re-checks
-  `ownerOf`); on-chain `setMetadata` survives ONLY as the TBA-owner/linked-device
-  fallback. Persona/lessons/x402-price metadata stay on-chain. The wasm magic + a
+  `lh-publish` — the store is the ONLY publish path (the legacy on-chain
+  face/app/html slots + fallbacks were PURGED 2026-07-30; TBA-owned names /
+  linked devices error honestly until the store gains TBA auth).
+  Persona/lessons/x402-price metadata stay on-chain. The wasm magic + a
   1 MB cap (GitHub Contents-API full-support ceiling;
   `registry::APP_STORE_MAX_WASM_BYTES`) are enforced server-side. A cartridge over
   the SEPARATE compose budget (16 KB/child, 256 KB/tree) just can't be a

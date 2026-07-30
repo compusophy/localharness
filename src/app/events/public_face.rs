@@ -1,308 +1,146 @@
 //! Public face — publish the subdomain face choice (directory / app / html).
 
-use crate::encoding::parse_address;
-
 use crate::app::dom;
 
 /// Set this subdomain's public face — `"directory"`, `"app"`, or `"html"`.
-/// EVERY choice publishes OFF-CHAIN to the app store (free, no gas): content
-/// publishes carry bytes + the `<name>/face` choice record in ONE authed POST
-/// (the proxy stamps it), and "directory" is a face-only POST. The sponsored
-/// on-chain path below survives ONLY as the legacy fallback for a TBA-owned
-/// name / linked device (the store's ownership gate needs the EOA signer).
-/// Owner-only.
+/// STORE-ONLY: content publishes carry bytes + the `<name>/face` choice record
+/// in ONE authed POST (the proxy stamps it), and "directory" is a face-only
+/// POST. Free, no gas, no tx — nothing here touches the chain (the sponsored
+/// legacy path was purged with the pre-1.0.0 reset; a TBA-owned name or a
+/// linked device without the seed gets an honest error until the store gains
+/// TBA/authorized-signer auth). Owner-only.
 pub(super) async fn run_set_public_face(choice: &str) {
     let msg = "publish-app-msg";
-    let set_err = |m: &str| {
-        dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, m));
-    };
-
     let Some(name) = crate::app::tenant::current_name() else {
-        set_err("only on a subdomain");
+        dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, "only on a subdomain"));
         return;
     };
-
-    // OFF-CHAIN first for every choice. Falls through to the on-chain path
-    // only on INELIGIBILITY (TBA owner, no local signer, missing content,
-    // compile error). ⛔ A store ERROR never falls through: reads are
-    // store-first, so an on-chain choice written while a stale store record
-    // exists is INERT — the helpers surface the error and the owner retries.
-    if choice == "app" && try_publish_app_offchain(&name, msg).await {
-        return;
-    }
-    if choice == "html" && try_publish_html_offchain(&name, msg).await {
-        return;
-    }
-    if choice == "directory" && try_set_directory_offchain(&name, msg).await {
-        return;
-    }
-
-    // The verified-EOA address IF this device verified as the on-chain
-    // owner directly. May be None when the owner is a TBA we sign for
-    // (consolidation) — that path is decided in the submit branch below.
-    let verified_eoa = crate::app::APP.with(|cell| {
-        use crate::app::VerifyState;
-        match &cell.borrow().verify_state {
-            VerifyState::Verified { address } => Some(address.clone()),
-            _ => None,
-        }
-    });
-
-    let id = match crate::app::registry::id_of_name(&name).await {
-        Ok(id) if id != 0 => id,
-        _ => {
-            set_err("name isn't registered on-chain");
-            return;
-        }
-    };
-
-    let registry_addr = match parse_address(crate::app::registry::REGISTRY_ADDRESS()) {
-        Ok(a) => a,
-        Err(e) => {
-            set_err(&e);
-            return;
-        }
-    };
-    let mk = |input: Vec<u8>| crate::tempo_tx::TempoCall {
-        to: registry_addr,
-        value_wei: 0,
-        input,
-    };
-
-    // Build the call batch + gas estimate for the chosen face. Storing
-    // `bytes` costs ~20k gas per 32-byte word (cold SSTORE) on top of the
-    // ~275k Tempo sponsorship + base call.
-    let (calls, gas): (Vec<crate::tempo_tx::TempoCall>, u128) = match choice {
-        "directory" => (
-            vec![mk(crate::app::registry::encode_set_public_face(id, "directory"))],
-            500_000,
-        ),
-        "app" => {
-            let fs = crate::app::shared_opfs();
-            let src = match fs.read("app.rl").await {
-                Ok(b) if !b.is_empty() => String::from_utf8_lossy(&b).into_owned(),
-                _ => {
-                    set_err("no app.rl on this device — build one first (run_cartridge)");
-                    return;
-                }
-            };
-            let wasm = match crate::rustlite::compile(&src) {
-                Ok(w) => w,
-                Err(e) => {
-                    // The status line is single-line — append the line/col
-                    // locator (the caret snippet wouldn't survive it).
-                    let loc = e
-                        .location(&src)
-                        .map(|l| format!(" ({l})"))
-                        .unwrap_or_default();
-                    set_err(&format!("compile: {e}{loc}"));
-                    return;
-                }
-            };
-            if wasm.len() > 16_384 {
-                set_err("app wasm too large to publish (max 16 KB)");
-                return;
-            }
-            (
-                vec![
-                    mk(crate::app::registry::encode_set_app_wasm(id, &wasm)),
-                    mk(crate::app::registry::encode_set_public_face(id, "app")),
-                ],
-                crate::app::gas::set_metadata_gas(wasm.len()),
-            )
-        }
-        "html" => {
-            let fs = crate::app::shared_opfs();
-            let html = match fs.read("index.html").await {
-                Ok(b) if !b.is_empty() => b,
-                _ => {
-                    set_err("no index.html on this device — create one first");
-                    return;
-                }
-            };
-            if html.len() > 24_576 {
-                set_err("index.html too large to publish (max 24 KB)");
-                return;
-            }
-            (
-                vec![
-                    mk(crate::app::registry::encode_set_public_html(id, &html)),
-                    mk(crate::app::registry::encode_set_public_face(id, "html")),
-                ],
-                crate::app::gas::set_metadata_gas(html.len()),
-            )
-        }
-        _ => {
-            set_err("unknown public face");
-            return;
-        }
-    };
-
-    dom::swap_inner(msg, "<span style=\"color:var(--muted)\">saving…</span>");
-
-    // Decide the execution path from the on-chain owner:
-    //  - owner is a TBA this device signs for (consolidation) → execute
-    //    the setMetadata batch THROUGH the TBA, signed by our local key.
-    //  - owner is our verified EOA → direct sponsored call (existing).
-    let on_chain_owner = match crate::app::registry::owner_of_name(&name).await {
-        Ok(Some(o)) => o,
-        _ => {
-            set_err("name isn't registered on-chain");
-            return;
-        }
-    };
-    let local = crate::app::chat::credit_signer().await;
-    let is_signer = match &local {
-        Some((_, addr)) => {
-            let addr_hex = crate::encoding::bytes_to_hex_str(addr);
-            crate::app::registry::is_authorized_signer(&on_chain_owner, &addr_hex)
-                .await
-                .unwrap_or(false)
-        }
-        None => false,
-    };
-    let result = if is_signer {
-        let (signer, _) = local.unwrap();
-        let token_id = match crate::app::registry::tba_token_id_of(&on_chain_owner).await {
-            Ok(t) => t,
-            Err(e) => {
-                set_err(&e);
-                return;
-            }
-        };
-        let targets: Vec<([u8; 20], Vec<u8>)> =
-            calls.iter().map(|c| (registry_addr, c.input.clone())).collect();
-        crate::app::registry::tba_execute_batch_sponsored(&signer, token_id, &on_chain_owner, &targets, gas + 800_000)
-        .await
-    } else if let Some(owner_hex) =
-        verified_eoa.filter(|a| a.eq_ignore_ascii_case(&on_chain_owner))
-    {
-        super::run_sponsored_tempo_call(&owner_hex, calls, gas, "public face").await
-    } else {
-        set_err("verify as owner first");
-        return;
-    };
-    match result {
-        Ok(_tx) => {
-            if choice == "directory" {
-                dom::swap_inner(
-                    msg,
-                    &maud::html! {
-                        span style="color:var(--fg)" {
-                            "public face → directory ✓ "
-                            a href=(format!("https://{name}.localharness.xyz/"))
-                              target="_blank" rel="noopener" style="color:var(--accent)" {
-                                "open →"
-                            }
-                        }
-                    }
-                    .into_string(),
-                );
-            } else {
-                // The share moment: published app/html is live for every
-                // visitor — surface the URL + [copy] + QR right here.
-                dom::swap_inner(
-                    msg,
-                    &crate::app::templates::publish_share_fragment(&name).into_string(),
-                );
-            }
-            super::admin::refresh_public_face_status().await;
-        }
-        Err(e) => set_err(&format!("failed: {e}")),
+    match choice {
+        "app" => publish_app_offchain(&name, msg).await,
+        "html" => publish_html_offchain(&name, msg).await,
+        "directory" => set_directory_offchain(&name, msg).await,
+        _ => dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, "unknown public face")),
     }
 }
 
-/// Try to publish this device's local `app.rl` to the OFF-CHAIN app store. `true`
-/// = published (UI updated; the caller should return); `false` = not handled here
-/// so the caller falls back to the on-chain path — no `app.rl`, a compile error,
-/// too large, no local signer, the name is TBA-owned (not our EOA), or the store
-/// POST failed. Reuses the SAME personal-sign token the model calls use; the
-/// proxy authorizes via on-chain ownership (`ownerOf(name) == signer`).
-async fn try_publish_app_offchain(name: &str, msg: &str) -> bool {
-    let fs = crate::app::shared_opfs();
-    let src = match fs.read("app.rl").await {
-        Ok(b) if !b.is_empty() => String::from_utf8_lossy(&b).into_owned(),
-        _ => return false, // no app.rl → let the on-chain path report it
-    };
-    let wasm = match crate::rustlite::compile(&src) {
-        Ok(w) => w,
-        Err(_) => return false, // compile error → on-chain path renders the caret
-    };
-    if wasm.len() > crate::app::registry::APP_STORE_MAX_WASM_BYTES {
-        return false;
-    }
-    // The proxy gates the publish on ownerOf(name) == token signer, which holds
-    // only when this device's MASTER wallet owns the name directly. Read
-    // `APP.wallet` (the master) DIRECTLY — NOT credit_signer(), which can return
-    // or MINT a per-origin device key (a linked device) that isn't the owner. A
-    // TBA-owned name or a master-not-loaded device → on-chain path below.
+/// The device MASTER wallet's signer, verified to be `name`'s on-chain owner —
+/// the one identity the store's `ownerOf(name) == token signer` gate accepts.
+/// Read `APP.wallet` DIRECTLY, never credit_signer(): that can return (or even
+/// MINT) a per-origin DEVICE key that is not the owner. Errors are painted
+/// into `msg`; `None` = already reported.
+async fn store_publish_signer(name: &str, msg: &str) -> Option<k256::ecdsa::SigningKey> {
+    let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, m));
     let owner = match crate::app::registry::owner_of_name(name).await {
         Ok(Some(o)) => o,
-        _ => return false,
+        _ => {
+            set_err("name isn't registered on-chain");
+            return None;
+        }
     };
     let Some((signer, addr)) = crate::app::APP
         .with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)))
     else {
-        return false;
+        set_err("publishing needs this device to hold the owner wallet");
+        return None;
     };
     if !owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
-        return false; // TBA / different owner → on-chain path
+        set_err(&format!(
+            "this device's wallet doesn't own {name} (owner {owner}) — TBA-owned names / \
+             linked devices can't publish yet"
+        ));
+        return None;
     }
+    Some(signer)
+}
+
+/// Publish this device's local `app.rl` to the app store (bytes + the face
+/// record in one POST). All errors paint into `msg` — no fallback path.
+async fn publish_app_offchain(name: &str, msg: &str) {
+    let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, m));
+    let fs = crate::app::shared_opfs();
+    let src = match fs.read("app.rl").await {
+        Ok(b) if !b.is_empty() => String::from_utf8_lossy(&b).into_owned(),
+        _ => {
+            set_err("no app.rl on this device — build one first (run_cartridge)");
+            return;
+        }
+    };
+    let wasm = match crate::rustlite::compile(&src) {
+        Ok(w) => w,
+        Err(e) => {
+            // The status line is single-line — append the line/col locator
+            // (the caret snippet wouldn't survive it).
+            let loc = e.location(&src).map(|l| format!(" ({l})")).unwrap_or_default();
+            set_err(&format!("compile: {e}{loc}"));
+            return;
+        }
+    };
+    if wasm.len() > crate::app::registry::APP_STORE_MAX_WASM_BYTES {
+        set_err("app wasm too large to publish (max 1 MB)");
+        return;
+    }
+    let Some(signer) = store_publish_signer(name, msg).await else { return };
     let now = (js_sys::Date::now() / 1000.0) as u64;
     let token = crate::registry::proxy_auth_token(&signer, now, "publish");
-    dom::swap_inner(
-        msg,
-        "<span style=\"color:var(--muted)\">publishing (off-chain)…</span>",
-    );
+    dom::swap_inner(msg, "<span style=\"color:var(--muted)\">publishing…</span>");
     match crate::app::registry::publish_app_to_store(name, &token, &wasm, &src).await {
         Ok(()) => {
-            // The proxy stamped `<name>/face = "app"` in the same publish —
-            // a stale prior choice can't shadow the fresh cartridge.
             dom::swap_inner(
                 msg,
                 &crate::app::templates::publish_share_fragment(name).into_string(),
             );
             super::admin::refresh_public_face_status().await;
-            true
         }
-        // ⛔ A store ERROR must NOT fall through to the on-chain publish: the
-        // store is the face authority, so an on-chain write shadowed by a
-        // stale store record would "succeed" while visitors keep the old
-        // face (the exact bug class this pivot kills). Surface it honestly.
-        Err(e) => {
-            dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("publish failed: {e} — retry")));
-            true
-        }
+        Err(e) => set_err(&format!("publish failed: {e} — retry")),
     }
 }
 
-/// FACE-ONLY off-chain write: pick "directory" by POSTing just the choice to
-/// the store (free, no tx). `true` = done (UI updated); `false` = fall back to
-/// the legacy on-chain path (TBA owner / no master / store error).
-async fn try_set_directory_offchain(name: &str, msg: &str) -> bool {
-    let owner = match crate::app::registry::owner_of_name(name).await {
-        Ok(Some(o)) => o,
-        _ => return false,
+/// HTML-face sibling of [`publish_app_offchain`]: publish this device's local
+/// `index.html` to the app store.
+async fn publish_html_offchain(name: &str, msg: &str) {
+    let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, m));
+    let fs = crate::app::shared_opfs();
+    let html = match fs.read("index.html").await {
+        Ok(b) if !b.is_empty() => b,
+        _ => {
+            set_err("no index.html on this device — create one first");
+            return;
+        }
     };
-    let Some((signer, addr)) = crate::app::APP
-        .with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)))
-    else {
-        return false;
-    };
-    if !owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
-        return false;
+    if html.len() > crate::app::registry::APP_STORE_MAX_WASM_BYTES {
+        set_err("index.html too large to publish (max 1 MB)");
+        return;
     }
+    let Some(signer) = store_publish_signer(name, msg).await else { return };
     let now = (js_sys::Date::now() / 1000.0) as u64;
     let token = crate::registry::proxy_auth_token(&signer, now, "publish");
-    dom::swap_inner(
-        msg,
-        "<span style=\"color:var(--muted)\">saving…</span>",
-    );
-    if let Err(e) = crate::app::registry::publish_face_to_store(name, &token, "directory").await {
-        // Same rule as the content publishes: never fall on-chain past a
-        // store error — a stale store record would shadow the choice.
-        dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("failed: {e} — retry")));
-        return true;
+    let html_str = String::from_utf8_lossy(&html).into_owned();
+    dom::swap_inner(msg, "<span style=\"color:var(--muted)\">publishing…</span>");
+    match crate::app::registry::publish_html_to_store(name, &token, &html_str).await {
+        Ok(()) => {
+            dom::swap_inner(
+                msg,
+                &crate::app::templates::publish_share_fragment(name).into_string(),
+            );
+            super::admin::refresh_public_face_status().await;
+        }
+        Err(e) => set_err(&format!("publish failed: {e} — retry")),
+    }
+}
+
+/// FACE-ONLY store write: pick "directory" by POSTing just the choice.
+async fn set_directory_offchain(name: &str, msg: &str) {
+    let Some(signer) = store_publish_signer(name, msg).await else { return };
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let token = crate::registry::proxy_auth_token(&signer, now, "publish");
+    dom::swap_inner(msg, "<span style=\"color:var(--muted)\">saving…</span>");
+    if let Err(e) = crate::app::registry::publish_face_to_store(name, &token, "directory").await
+    {
+        dom::swap_inner(
+            msg,
+            &dom::msg_span(dom::Msg::Error, &format!("failed: {e} — retry")),
+        );
+        return;
     }
     dom::swap_inner(
         msg,
@@ -318,59 +156,6 @@ async fn try_set_directory_offchain(name: &str, msg: &str) -> bool {
         .into_string(),
     );
     super::admin::refresh_public_face_status().await;
-    true
-}
-
-/// HTML-face sibling of [`try_publish_app_offchain`]: publish this device's local
-/// `index.html` to the OFF-CHAIN app store. `true` = published (caller returns);
-/// `false` = fall back to the on-chain path (no index.html, too large, not the
-/// master wallet, or a store error). Same MASTER-wallet (not credit_signer) rule.
-async fn try_publish_html_offchain(name: &str, msg: &str) -> bool {
-    let fs = crate::app::shared_opfs();
-    let html = match fs.read("index.html").await {
-        Ok(b) if !b.is_empty() => b,
-        _ => return false,
-    };
-    if html.len() > crate::app::registry::APP_STORE_MAX_WASM_BYTES {
-        return false;
-    }
-    let owner = match crate::app::registry::owner_of_name(name).await {
-        Ok(Some(o)) => o,
-        _ => return false,
-    };
-    let Some((signer, addr)) = crate::app::APP
-        .with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)))
-    else {
-        return false;
-    };
-    if !owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
-        return false; // TBA / different owner → on-chain path
-    }
-    let now = (js_sys::Date::now() / 1000.0) as u64;
-    let token = crate::registry::proxy_auth_token(&signer, now, "publish");
-    let html_str = String::from_utf8_lossy(&html).into_owned();
-    dom::swap_inner(
-        msg,
-        "<span style=\"color:var(--muted)\">publishing (off-chain)…</span>",
-    );
-    match crate::app::registry::publish_html_to_store(name, &token, &html_str).await {
-        Ok(()) => {
-            // The proxy stamped `<name>/face = "html"` in the same publish —
-            // the choice that routes visitors can never be dropped (the
-            // krafto bug is structurally impossible now).
-            dom::swap_inner(
-                msg,
-                &crate::app::templates::publish_share_fragment(name).into_string(),
-            );
-            super::admin::refresh_public_face_status().await;
-            true
-        }
-        // ⛔ Never fall on-chain past a store error (see the app sibling).
-        Err(e) => {
-            dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("publish failed: {e} — retry")));
-            true
-        }
-    }
 }
 
 /// Copy `text` to the clipboard (`navigator.clipboard.writeText`) and

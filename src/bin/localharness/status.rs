@@ -185,7 +185,7 @@ pub(crate) async fn resolve_whoami(name: &str) -> Result<WhoamiInfo, String> {
                 .ok()
                 .flatten()
                 .is_some(),
-            registry::effective_face_choice(name, Some(token_id), true).await,
+            registry::face_from_store(name, true).await.ok().flatten(),
             registry::x402_price_of(token_id).await.ok().flatten(),
         )
     } else {
