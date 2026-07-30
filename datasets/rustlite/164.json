@@ -1,0 +1,11 @@
+{
+  "id": "164",
+  "prompt": "Confetti from a shared PRNG library: spawn_lib(\"lib-rng\") once (latch + handle in state slots), and when its status is READY scatter ten 14px squares whose x and y each come from call(h, \"pick\", seed, lo, hi, 0) - seeds derive from a generation counter t / 90 so the pattern reshuffles every 90 frames yet stays deterministic within one. Any call where call_ok() != 0 poisons an ok-flag for the frame and shows an error line instead of trusting garbage; show mount LOADING/FAILED states as well.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x08080c);\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, host::compose::spawn_lib(\"lib-rng\"));\n    }\n    let h: i32 = host::display::state_get(1);\n    let st: i32 = host::compose::status(h);\n    if st == 0 {\n        host::display::draw_string(8, 8, \"LOADING LIB-RNG\", 0xffff00, 1);\n    }\n    if st == 2 {\n        host::display::draw_string(8, 8, \"LIB-RNG FAILED\", 0xff0000, 1);\n    }\n    if st == 1 {\n        let gen: i32 = t / 90;\n        let mut ok: i32 = 1;\n        let mut i: i32 = 0;\n        while i < 10 {\n            let x: i32 = host::compose::call(h, \"pick\", gen * 100 + i * 2, 10, 470, 0);\n            if host::compose::call_ok() != 0 { ok = 0; }\n            let y: i32 = host::compose::call(h, \"pick\", gen * 100 + i * 2 + 1, 40, 470, 0);\n            if host::compose::call_ok() != 0 { ok = 0; }\n            if ok == 1 {\n                host::display::fill_rect(x, y, 14, 14, 0xff40ff);\n            }\n            i = i + 1;\n        }\n        if ok == 1 {\n            host::display::draw_string(8, 8, \"CONFETTI BY LIB-RNG\", 0x00ff66, 1);\n        } else {\n            host::display::draw_string(8, 8, \"A CALL FAILED\", 0xff0000, 1);\n        }\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "compose",
+    "library",
+    "prng",
+    "state"
+  ]
+}

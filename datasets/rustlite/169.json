@@ -1,0 +1,10 @@
+{
+  "id": "169",
+  "prompt": "A Droste cartridge published as \"mirror\" that embeds ITSELF: spawn_module(\"mirror\", w/4, h/4, w/2, h/2) latched once in state slots. host::compose is recursive - each child owns its own compose table - and the fractal ends at the host's depth cap, where spawn returns a NEGATIVE handle: when it does, print DEPTH CAP REACHED instead of polling status. Draw a pulsing border and a title so every nesting level is visible.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let c: i32 = 40 + (t % 60) * 3;\n    host::display::clear(0x000000);\n    host::display::fill_rect(0, 0, w, 24, c * 65536);\n    host::display::fill_rect(0, h - 24, w, 24, c * 65536);\n    host::display::fill_rect(0, 0, 24, h, c * 65536);\n    host::display::fill_rect(w - 24, 0, 24, h, c * 65536);\n    host::display::draw_string(36, 36, \"MIRROR\", 0xffffff, 2);\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, host::compose::spawn_module(\"mirror\", w / 4, h / 4, w / 2, h / 2));\n    }\n    let hdl: i32 = host::display::state_get(1);\n    if hdl < 0 {\n        host::display::draw_string(36, h - 48, \"DEPTH CAP REACHED\", 0xffff00, 1);\n    } else {\n        let st: i32 = host::compose::status(hdl);\n        if st == 0 { host::display::draw_string(36, h - 48, \"NESTING...\", 0x808080, 1); }\n        if st == 2 { host::display::draw_string(36, h - 48, \"CHILD REFUSED\", 0xff0000, 1); }\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "compose",
+    "state",
+    "animation"
+  ]
+}

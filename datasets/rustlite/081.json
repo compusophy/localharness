@@ -1,0 +1,11 @@
+{
+  "id": "081",
+  "prompt": "Make a momentary push button centered near the top: a 120x48 rect that only counts as pressed while the pointer is DOWN and inside it. While held it should look pressed (nudged 3px and darker, with a HOLDING label); on release count one completed press and show the total. Track the held flag in a state slot since locals reset every frame.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let bx: i32 = w / 2 - 60;\n    let by: i32 = 80;\n    let down: i32 = host::display::pointer_down();\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let inside: i32 = if px >= bx && px < bx + 120 && py >= by && py < by + 48 { 1 } else { 0 };\n    let held: i32 = if down == 1 && inside == 1 { 1 } else { 0 };\n    let prev: i32 = host::display::state_get(0);\n    let mut fires: i32 = host::display::state_get(1);\n    if held == 0 && prev == 1 {\n        fires = fires + 1;\n        host::display::state_set(1, fires);\n    }\n    host::display::state_set(0, held);\n    host::display::clear(0x101010);\n    if held == 1 {\n        host::display::fill_rect(bx + 3, by + 3, 120, 48, 0x224466);\n        host::display::draw_string(bx + 24, by + 23, \"HOLDING\", 0x00ff88, 1);\n    } else {\n        host::display::fill_rect(bx, by, 120, 48, 0x3060a0);\n        host::display::draw_string(bx + 30, by + 20, \"PRESS\", 0xffffff, 1);\n    }\n    host::display::draw_string(8, 8, \"RELEASES\", 0x808080, 1);\n    host::display::draw_number(80, 8, fires, 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "button"
+  ]
+}

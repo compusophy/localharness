@@ -1,0 +1,12 @@
+{
+  "id": "107",
+  "prompt": "A resizable panel: a rect anchored at (40,40) with a 16x16 grab handle on its bottom-right corner. Only a press that starts on the handle begins resizing; while held the corner tracks the pointer with width and height clamped to sane bounds, and releasing stops. Persist w/h plus the resizing flag in state slots (seed them once via a latch), brighten the handle mid-resize, and print the size as W then an X (draw_char code 88) then H.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    if host::display::state_get(4) == 0 {\n        host::display::state_set(4, 1);\n        host::display::state_set(0, 160);\n        host::display::state_set(1, 110);\n    }\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(3);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let mut rw: i32 = host::display::state_get(0);\n    let mut rh: i32 = host::display::state_get(1);\n    let mut sizing: i32 = host::display::state_get(2);\n    let hx: i32 = 40 + rw - 8;\n    let hy: i32 = 40 + rh - 8;\n    if down == 1 && prev == 0 && px >= hx - 8 && px < hx + 16 && py >= hy - 8 && py < hy + 16 {\n        sizing = 1;\n    }\n    if down == 0 { sizing = 0; }\n    if sizing == 1 {\n        rw = px - 40;\n        rh = py - 40;\n        if rw < 40 { rw = 40; }\n        if rh < 40 { rh = 40; }\n        if rw > w - 80 { rw = w - 80; }\n        if rh > h - 100 { rh = h - 100; }\n        host::display::state_set(0, rw);\n        host::display::state_set(1, rh);\n    }\n    host::display::state_set(2, sizing);\n    host::display::state_set(3, down);\n    host::display::clear(0x101010);\n    host::display::fill_rect(40, 40, rw, rh, 0x203040);\n    host::display::fill_rect(40, 40, rw, 2, 0x6080a0);\n    host::display::fill_rect(40, 40 + rh - 2, rw, 2, 0x6080a0);\n    host::display::fill_rect(40, 40, 2, rh, 0x6080a0);\n    host::display::fill_rect(40 + rw - 2, 40, 2, rh, 0x6080a0);\n    let hc: i32 = if sizing == 1 { 0xffffff } else { 0x80a0c0 };\n    host::display::fill_rect(hx, hy, 16, 16, hc);\n    host::display::draw_number(40, h - 40, rw, 0xffffff, 2);\n    host::display::draw_char(96, h - 40, 88, 0x808080, 2);\n    host::display::draw_number(114, h - 40, rh, 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "drag",
+    "resize"
+  ]
+}

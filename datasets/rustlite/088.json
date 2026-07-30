@@ -1,0 +1,11 @@
+{
+  "id": "088",
+  "prompt": "Detect a DOUBLE TAP: on each edge-detected press remember the frame number t in a state slot; if a new press lands within 18 frames of the previous one, treat it as a double tap - toggle a square between small (60px) and zoomed (180px) and flash a DOUBLE TAP banner for about 24 frames. A lone tap must do nothing but arm the timer.",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut flash: i32 = host::display::state_get(3);\n    let mut zoom: i32 = host::display::state_get(2);\n    if down == 1 && prev == 0 {\n        let last: i32 = host::display::state_get(1);\n        let now: i32 = t + 1;\n        if last != 0 && now - last <= 18 {\n            zoom = 1 - zoom;\n            host::display::state_set(2, zoom);\n            flash = 24;\n            host::display::state_set(1, 0);\n        } else {\n            host::display::state_set(1, now);\n        }\n    }\n    if flash > 0 { flash = flash - 1; }\n    host::display::state_set(3, flash);\n    host::display::state_set(0, down);\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x101018);\n    let size: i32 = if zoom == 1 { 180 } else { 60 };\n    host::display::fill_rect(w / 2 - size / 2, h / 2 - size / 2, size, size, 0x00aaff);\n    if flash > 0 {\n        host::display::draw_string(w / 2 - 60, 30, \"DOUBLE TAP\", 0xffff00, 2);\n    }\n    host::display::draw_string(8, h - 20, \"DOUBLE TAP TO ZOOM\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "gesture"
+  ]
+}

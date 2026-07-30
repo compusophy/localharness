@@ -1,0 +1,11 @@
+{
+  "id": "093",
+  "prompt": "Build a scrollable list with a draggable scrollbar: 24 items total, 8 visible rows, and a scrollbar on the right whose thumb height is viewport/total of the track. Dragging on the scrollbar column maps pointer_y to the scroll offset (clamped 0..16, kept in a state slot); rows render as alternating stripes with ITEM plus its live index so scrolling is visible.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let ly: i32 = 40;\n    let lh: i32 = h - 80;\n    let rowh: i32 = lh / 8;\n    let total: i32 = 24;\n    let sbx: i32 = w - 40;\n    let mut off: i32 = host::display::state_get(0);\n    if down == 1 && px >= sbx - 10 {\n        let mut rel: i32 = (py - ly) * (total - 8) / lh;\n        if rel < 0 { rel = 0; }\n        if rel > total - 8 { rel = total - 8; }\n        off = rel;\n        host::display::state_set(0, off);\n    }\n    host::display::clear(0x101010);\n    host::display::draw_string(30, 16, \"DRAG THE SCROLLBAR\", 0x808080, 1);\n    let mut i: i32 = 0;\n    while i < 8 {\n        let ry: i32 = ly + i * rowh;\n        let n: i32 = off + i;\n        let mut rc: i32 = 0x181818;\n        if n % 2 == 0 { rc = 0x222222; }\n        host::display::fill_rect(30, ry, sbx - 50, rowh - 2, rc);\n        host::display::draw_string(40, ry + rowh / 2 - 4, \"ITEM\", 0x808080, 1);\n        host::display::draw_number(80, ry + rowh / 2 - 4, n, 0xffffff, 1);\n        i = i + 1;\n    }\n    host::display::fill_rect(sbx, ly, 12, lh, 0x282828);\n    let th: i32 = lh * 8 / total;\n    let toff: i32 = off * (lh - th) / (total - 8);\n    host::display::fill_rect(sbx, ly + toff, 12, th, 0x808080);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "scrollbar"
+  ]
+}

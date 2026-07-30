@@ -1,0 +1,11 @@
+{
+  "id": "071",
+  "prompt": "Tap anywhere to drop a stone: each click spawns an expanding ripple ring that fades out over 90 frames, and up to 4 ripples can be live at once. Store (x, y, birth) triplets in a state-slot ring buffer (slots 8..19, head index in a slot, store birth as t+1 so slot 0 means empty) with edge-detected clicks. Draw each ring as 32 dots from an integer sine table at radius = age.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let was: i32 = host::display::state_get(2);\n    host::display::state_set(2, down);\n    if down == 1 && was == 0 {\n        let head: i32 = host::display::state_get(1);\n        host::display::state_set(8 + head * 3, host::display::pointer_x());\n        host::display::state_set(9 + head * 3, host::display::pointer_y());\n        host::display::state_set(10 + head * 3, t + 1);\n        host::display::state_set(1, (head + 1) % 4);\n    }\n    host::display::clear(0x000014);\n    let mut r: i32 = 0;\n    while r < 4 {\n        let birth: i32 = host::display::state_get(10 + r * 3);\n        if birth > 0 {\n            let age: i32 = t + 1 - birth;\n            if age < 90 {\n                let cx: i32 = host::display::state_get(8 + r * 3);\n                let cy: i32 = host::display::state_get(9 + r * 3);\n                let blue: i32 = 255 - age * 2;\n                let c: i32 = blue / 2 * 256 + blue;\n                let mut k: i32 = 0;\n                while k < 32 {\n                    let x: i32 = cx + tab[k] * age / 127;\n                    let y: i32 = cy + tab[(k + 8) & 31] * age / 127;\n                    host::display::fill_rect(x, y, 2, 2, c);\n                    k = k + 1;\n                }\n            }\n        }\n        r = r + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "pointer",
+    "state",
+    "trig-table",
+    "particles"
+  ]
+}

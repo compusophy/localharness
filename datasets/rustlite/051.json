@@ -1,0 +1,10 @@
+{
+  "id": "051",
+  "prompt": "Make it rain: about 50 slanted rain streaks falling at different speeds on a near-black blue night background. rustlite locals reset every frame, so derive each drop's x, y and speed deterministically from an LCG hash of its index (no state needed); y adds t*speed and wraps past the bottom. Faster drops get longer streaks (draw_line).",
+  "solution_rl": "fn hash(seed: i32) -> i32 {\n    let mut h: i32 = seed * 747796405 + 2891336453;\n    h = (h >> 16) ^ h;\n    if h < 0 { h = 0 - h; }\n    h\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x000010);\n    let mut i: i32 = 0;\n    while i < 48 {\n        let speed: i32 = hash(i * 7 + 1) % 4 + 3;\n        let len: i32 = speed * 3;\n        let x: i32 = (hash(i * 13 + 5) + t / 4) % w;\n        let y: i32 = (hash(i * 11 + 3) + t * speed) % (h + len);\n        host::display::draw_line(x, y - len, x - 2, y, 0x4060c0);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "particles",
+    "prng",
+    "animation"
+  ]
+}

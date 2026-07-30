@@ -1,0 +1,10 @@
+{
+  "id": "160",
+  "prompt": "Decimal-digits utility library (a spawn_lib target - every fn is exported): digits(n) counts decimal digits sign-safely, pow10(k) by a loop, digit_at(n, k) returns the k-th digit counting from the least-significant end, and reverse(n) turns 90210 into 1209 with a divide/mod loop. The landing frame() prints digits(90210), digit_at(90210, 2), and reverse(90210) as its own self-test.",
+  "solution_rl": "fn digits(n: i32) -> i32 {\n    let mut v: i32 = n;\n    if v < 0 { v = 0 - v; }\n    let mut c: i32 = 1;\n    while v >= 10 {\n        v = v / 10;\n        c = c + 1;\n    }\n    c\n}\n\nfn pow10(k: i32) -> i32 {\n    let mut p: i32 = 1;\n    let mut i: i32 = 0;\n    while i < k {\n        p = p * 10;\n        i = i + 1;\n    }\n    p\n}\n\nfn digit_at(n: i32, k: i32) -> i32 {\n    let mut v: i32 = n;\n    if v < 0 { v = 0 - v; }\n    let d: i32 = v / pow10(k);\n    d % 10\n}\n\nfn reverse(n: i32) -> i32 {\n    let mut v: i32 = n;\n    if v < 0 { v = 0 - v; }\n    let mut r: i32 = 0;\n    while v > 0 {\n        r = r * 10 + v % 10;\n        v = v / 10;\n    }\n    r\n}\n\nfn dims() -> i32 {\n    (256 << 16) | 112\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 8, \"LIB DIGITS\", 0xffffff, 2);\n    host::display::draw_string(8, 32, \"DIGITS POW10\", 0x00ff66, 1);\n    host::display::draw_string(8, 46, \"DIGIT_AT REVERSE\", 0x00ff66, 1);\n    host::display::draw_number(8, 66, digits(90210), 0xffff00, 1);\n    host::display::draw_number(60, 66, digit_at(90210, 2), 0xffff00, 1);\n    host::display::draw_number(112, 66, reverse(90210), 0xffff00, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "library",
+    "functions",
+    "loops"
+  ]
+}

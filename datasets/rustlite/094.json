@@ -1,0 +1,11 @@
+{
+  "id": "094",
+  "prompt": "A quantity stepper: [-] and [+] buttons flanking a big number, clamped 0..20. A fresh click steps once immediately (edge-detect with the previous pointer_down in a slot); KEEP HOLDING a button and after 30 frames it auto-repeats a step every 6 frames (track the held-frame count in another slot). Write one clamped bump(v, d) helper for both directions.",
+  "solution_rl": "fn bump(v: i32, d: i32) -> i32 {\n    let mut n: i32 = v + d;\n    if n < 0 { n = 0; }\n    if n > 20 { n = 20; }\n    n\n}\n\nfn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let mut v: i32 = host::display::state_get(0);\n    let mut hold: i32 = host::display::state_get(2);\n    let inminus: i32 = if px >= 40 && px < 92 && py >= 100 && py < 152 { 1 } else { 0 };\n    let inplus: i32 = if px >= 220 && px < 272 && py >= 100 && py < 152 { 1 } else { 0 };\n    if down == 1 && (inminus == 1 || inplus == 1) {\n        let d: i32 = if inplus == 1 { 1 } else { -1 };\n        if prev == 0 {\n            v = bump(v, d);\n            hold = 0;\n        } else {\n            hold = hold + 1;\n            if hold > 30 && hold % 6 == 0 { v = bump(v, d); }\n        }\n        host::display::state_set(0, v);\n    } else {\n        hold = 0;\n    }\n    host::display::state_set(1, down);\n    host::display::state_set(2, hold);\n    host::display::clear(0x101010);\n    host::display::fill_rect(40, 100, 52, 52, 0x303040);\n    host::display::draw_string(60, 118, \"-\", 0xffffff, 3);\n    host::display::fill_rect(220, 100, 52, 52, 0x303040);\n    host::display::draw_string(238, 118, \"+\", 0xffffff, 3);\n    host::display::draw_number(140, 112, v, 0x00ff88, 4);\n    host::display::draw_string(40, 60, \"QUANTITY 0 - 20\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "stepper"
+  ]
+}

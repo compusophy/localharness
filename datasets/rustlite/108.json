@@ -1,0 +1,12 @@
+{
+  "id": "108",
+  "prompt": "Swipe navigation between three pages: record pointer_x on the press edge, and on the release edge compare total horizontal travel - more than 40px leftward goes to the next page, more than 40px rightward goes back, small moves do nothing. Clamp to pages 0..2, give each page its own background tint and a PAGE n title, and draw three indicator dots at the bottom with the current one lit.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(3);\n    let px: i32 = host::display::pointer_x();\n    let mut page: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 {\n        host::display::state_set(1, px);\n    }\n    if down == 0 && prev == 1 {\n        let dx: i32 = px - host::display::state_get(1);\n        if dx < -40 && page < 2 { page = page + 1; }\n        if dx > 40 && page > 0 { page = page - 1; }\n        host::display::state_set(0, page);\n    }\n    host::display::state_set(3, down);\n    if page == 0 { host::display::clear(0x102030); }\n    if page == 1 { host::display::clear(0x103018); }\n    if page == 2 { host::display::clear(0x301818); }\n    host::display::draw_string(w / 2 - 40, 60, \"PAGE\", 0xffffff, 2);\n    host::display::draw_number(w / 2 + 24, 60, page + 1, 0xffffff, 2);\n    host::display::draw_string(w / 2 - 90, h / 2, \"SWIPE LEFT OR RIGHT\", 0x808080, 1);\n    let mut i: i32 = 0;\n    while i < 3 {\n        let mut c: i32 = 0x404040;\n        if i == page { c = 0xffffff; }\n        host::display::fill_rect(w / 2 - 30 + i * 24, h - 40, 12, 12, c);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "gesture",
+    "swipe"
+  ]
+}

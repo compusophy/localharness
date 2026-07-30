@@ -1,0 +1,10 @@
+{
+  "id": "153",
+  "prompt": "Kitchen timer: an edge-detected tap arms a 5-second countdown (300 frames held in a state slot - locals do not persist). Show the remaining whole seconds huge (scale 5). The frame the counter hits zero, schedule a bip-bip-BEEP alarm with host::audio::tone_at (two short 988 Hz squares then a long 1319 Hz one) and strobe the background for about 24 frames.",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut left: i32 = host::display::state_get(1);\n    let mut flash: i32 = host::display::state_get(2);\n    if down == 1 && prev == 0 && left == 0 {\n        left = 300;\n    }\n    if left > 0 {\n        left = left - 1;\n        if left == 0 {\n            host::audio::tone_at(988, 120, 1, 0);\n            host::audio::tone_at(988, 120, 1, 200);\n            host::audio::tone_at(1319, 400, 1, 400);\n            flash = 24;\n        }\n    }\n    if flash > 0 { flash = flash - 1; }\n    host::display::state_set(0, down);\n    host::display::state_set(1, left);\n    host::display::state_set(2, flash);\n    let mut bg: i32 = 0x101018;\n    if flash > 0 && (flash / 4) % 2 == 0 { bg = 0xffffff; }\n    host::display::clear(bg);\n    if left > 0 {\n        host::display::draw_number(220, 200, (left + 59) / 60, 0x00ffcc, 5);\n        host::display::draw_string(180, 300, \"COUNTING DOWN\", 0x808080, 1);\n    } else {\n        host::display::draw_string(120, 220, \"TAP = 5 SEC TIMER\", 0xffffff, 2);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "state",
+    "pointer"
+  ]
+}

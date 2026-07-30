@@ -1,0 +1,11 @@
+{
+  "id": "168",
+  "prompt": "A draggable window: spawn_module mounts \"clock\" at (140, 160) size 200x150 and the parent draws a title bar strip just above the rect. While the pointer is held on the bar enter drag mode (a flag in a state slot), follow the pointer, clamp to the screen, and re-bind the child's rect on every move with move_module(h, x, y, w, h). Window position lives in state slots; show LOADING/FAILED from status().",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x0a0a0e);\n    host::display::draw_string(8, 8, \"DRAG THE TITLE BAR\", 0xffffff, 1);\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, host::compose::spawn_module(\"clock\", 140, 160, 200, 150));\n        host::display::state_set(2, 140);\n        host::display::state_set(3, 160);\n    }\n    let h: i32 = host::display::state_get(1);\n    let mut wx: i32 = host::display::state_get(2);\n    let mut wy: i32 = host::display::state_get(3);\n    let mut drag: i32 = host::display::state_get(4);\n    let down: i32 = host::display::pointer_down();\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    if down == 1 {\n        if drag == 0 && px >= wx && px < wx + 200 && py >= wy - 18 && py < wy {\n            drag = 1;\n        }\n        if drag == 1 {\n            wx = px - 100;\n            wy = py + 18;\n            if wx < 0 { wx = 0; }\n            if wx > 312 { wx = 312; }\n            if wy < 18 { wy = 18; }\n            if wy > 362 { wy = 362; }\n            host::compose::move_module(h, wx, wy, 200, 150);\n        }\n    } else {\n        drag = 0;\n    }\n    host::display::state_set(2, wx);\n    host::display::state_set(3, wy);\n    host::display::state_set(4, drag);\n    host::display::fill_rect(wx, wy - 18, 200, 18, 0x3050a0);\n    host::display::draw_string(wx + 6, wy - 14, \"CLOCK\", 0xffffff, 1);\n    let st: i32 = host::compose::status(h);\n    if st == 0 { host::display::draw_string(wx + 8, wy + 60, \"LOADING\", 0xffff00, 1); }\n    if st == 2 { host::display::draw_string(wx + 8, wy + 60, \"FAILED\", 0xff0000, 1); }\n    host::display::present();\n}\n",
+  "tags": [
+    "compose",
+    "state",
+    "pointer",
+    "ui"
+  ]
+}

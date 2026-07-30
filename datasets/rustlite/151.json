@@ -1,0 +1,11 @@
+{
+  "id": "151",
+  "prompt": "Fake audio visualizer with no state slots at all: eight bars whose heights come from an LCG hash of (bar index, t / 4) so they shimmer every few frames, plus a 45 Hz bass thump every 30 frames whose decaying boost (30 - t % 30) lifts every bar right after the hit. Everything derives from t.",
+  "solution_rl": "fn bar_h(i: i32, t: i32) -> i32 {\n    let mut hsh: i32 = (i * 40503 + t / 4) * 1103515245 + 12345;\n    hsh = (hsh >> 13) ^ hsh;\n    if hsh < 0 { hsh = 0 - hsh; }\n    40 + hsh % 120\n}\n\nfn frame(t: i32) {\n    let h: i32 = host::display::height();\n    if t % 30 == 0 {\n        host::audio::tone(45, 120, 0);\n    }\n    let boost: i32 = 30 - t % 30;\n    host::display::clear(0x080808);\n    host::display::draw_string(16, 16, \"VISUALIZER\", 0xffffff, 2);\n    let mut i: i32 = 0;\n    while i < 8 {\n        let bh: i32 = bar_h(i, t) + boost * 2;\n        host::display::fill_rect(16 + i * 62, h - 20 - bh, 48, bh, 0x00ffcc);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "prng",
+    "animation",
+    "loops"
+  ]
+}

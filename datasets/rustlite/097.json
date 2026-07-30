@@ -1,0 +1,12 @@
+{
+  "id": "097",
+  "prompt": "Rubber-band selection: on the press edge anchor a corner at the pointer; while dragging, draw a live 1px selection outline from the anchor to the pointer - normalize with min/abs-diff helpers so dragging up-left works too - and print the current width and height. On release commit the normalized rect to state slots and keep showing the committed region as a filled tint.",
+  "solution_rl": "fn lo2(a: i32, b: i32) -> i32 {\n    if a < b { a } else { b }\n}\n\nfn dif(a: i32, b: i32) -> i32 {\n    if a > b { a - b } else { b - a }\n}\n\nfn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(7);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    if down == 1 && prev == 0 {\n        host::display::state_set(0, px);\n        host::display::state_set(1, py);\n        host::display::state_set(2, 1);\n    }\n    let active: i32 = host::display::state_get(2);\n    let ax: i32 = host::display::state_get(0);\n    let ay: i32 = host::display::state_get(1);\n    if down == 0 && active == 1 {\n        host::display::state_set(2, 0);\n        host::display::state_set(3, lo2(ax, px));\n        host::display::state_set(4, lo2(ay, py));\n        host::display::state_set(5, dif(ax, px));\n        host::display::state_set(6, dif(ay, py));\n    }\n    host::display::state_set(7, down);\n    host::display::clear(0x101014);\n    let cw: i32 = host::display::state_get(5);\n    let ch: i32 = host::display::state_get(6);\n    if cw > 0 && ch > 0 {\n        host::display::fill_rect(host::display::state_get(3), host::display::state_get(4), cw, ch, 0x203a20);\n    }\n    if active == 1 && down == 1 {\n        let x: i32 = lo2(ax, px);\n        let y: i32 = lo2(ay, py);\n        let bw: i32 = dif(ax, px);\n        let bh: i32 = dif(ay, py);\n        host::display::fill_rect(x, y, bw, 1, 0x00ff88);\n        host::display::fill_rect(x, y + bh, bw, 1, 0x00ff88);\n        host::display::fill_rect(x, y, 1, bh, 0x00ff88);\n        host::display::fill_rect(x + bw, y, 1, bh, 0x00ff88);\n        host::display::draw_number(8, 24, bw, 0xffffff, 1);\n        host::display::draw_number(48, 24, bh, 0x808080, 1);\n    }\n    host::display::draw_string(8, 8, \"DRAG TO SELECT A REGION\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "drag",
+    "selection"
+  ]
+}

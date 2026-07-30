@@ -1,0 +1,10 @@
+{
+  "id": "146",
+  "prompt": "A touch theremin: while the pointer is held, fire a short 70 ms sine blip every 6 frames whose frequency maps pointer_y to 200..1000 Hz (top of the screen = highest pitch). Draw a cursor square at the finger plus the live frequency as a number, and stay completely silent when nothing is held.",
+  "solution_rl": "fn frame(t: i32) {\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    host::display::clear(0x080810);\n    host::display::draw_string(8, 8, \"HOLD = THEREMIN\", 0xffffff, 1);\n    if down == 1 {\n        let px: i32 = host::display::pointer_x();\n        let py: i32 = host::display::pointer_y();\n        let f: i32 = 200 + (h - py) * 800 / h;\n        if t % 6 == 0 {\n            host::audio::tone(f, 70, 0);\n        }\n        host::display::fill_rect(px - 6, py - 6, 12, 12, 0x00ffcc);\n        host::display::draw_number(8, 30, f, 0x00ffcc, 2);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "pointer",
+    "modulo"
+  ]
+}

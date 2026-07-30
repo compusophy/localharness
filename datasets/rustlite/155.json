@@ -1,0 +1,12 @@
+{
+  "id": "155",
+  "prompt": "Lay a one-octave piano strip along the bottom 180px of the screen: seven keys, frequencies [262, 294, 330, 349, 392, 440, 494] from an array, key width = width() / 7. An edge-detected tap inside the strip plays that key as a 300 ms sine and remembers it (key index + an 8-frame glow timer in state slots) so the pressed key lights blue; print its frequency while glowing.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let freqs = [262, 294, 330, 349, 392, 440, 494];\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut lastk: i32 = host::display::state_get(1);\n    let mut glow: i32 = host::display::state_get(2);\n    let kw: i32 = w / 7;\n    let ktop: i32 = h - 180;\n    if down == 1 && prev == 0 {\n        let px: i32 = host::display::pointer_x();\n        let py: i32 = host::display::pointer_y();\n        if py >= ktop {\n            let mut k: i32 = px / kw;\n            if k > 6 { k = 6; }\n            host::audio::tone(freqs[k], 300, 0);\n            lastk = k;\n            glow = 8;\n        }\n    }\n    if glow > 0 { glow = glow - 1; }\n    host::display::state_set(0, down);\n    host::display::state_set(1, lastk);\n    host::display::state_set(2, glow);\n    host::display::clear(0x101010);\n    let mut i: i32 = 0;\n    while i < 7 {\n        let mut c: i32 = 0xe8e8e8;\n        if glow > 0 && i == lastk { c = 0x00c8ff; }\n        host::display::fill_rect(i * kw + 2, ktop, kw - 4, 176, c);\n        i = i + 1;\n    }\n    host::display::draw_string(8, 8, \"ONE OCTAVE\", 0xffffff, 2);\n    if glow > 0 {\n        host::display::draw_number(8, 40, freqs[lastk], 0x00c8ff, 2);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "pointer",
+    "arrays",
+    "state",
+    "ui"
+  ]
+}

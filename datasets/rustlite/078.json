@@ -1,0 +1,10 @@
+{
+  "id": "078",
+  "prompt": "An elevator car that rides between two floors on a 180-frame timetable: 60 frames gliding up with smoothstep easing (3p^2 - 2p^3 in 0..256 integer math), 30 parked at the top, 60 gliding down, 30 parked at the bottom. Draw the shaft, both floor lines, and the car; label the current segment UP / TOP / DOWN / BOTTOM.",
+  "solution_rl": "fn ease(p: i32) -> i32 {\n    (3 * p * p - p * p * p / 128) / 256\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let top: i32 = 30;\n    let bot: i32 = h - 70;\n    let ph: i32 = t % 180;\n    let mut y: i32 = bot;\n    host::display::clear(0x000000);\n    if ph < 60 {\n        y = bot - (bot - top) * ease(ph * 256 / 60) / 256;\n        host::display::draw_string(8, 8, \"UP\", 0xffffff, 2);\n    } else if ph < 90 {\n        y = top;\n        host::display::draw_string(8, 8, \"TOP\", 0x80ff80, 2);\n    } else if ph < 150 {\n        y = top + (bot - top) * ease((ph - 90) * 256 / 60) / 256;\n        host::display::draw_string(8, 8, \"DOWN\", 0xffffff, 2);\n    } else {\n        host::display::draw_string(8, 8, \"BOTTOM\", 0x80ff80, 2);\n    }\n    let cx: i32 = w / 2;\n    host::display::fill_rect(cx - 26, 0, 2, h, 0x303030);\n    host::display::fill_rect(cx + 24, 0, 2, h, 0x303030);\n    host::display::fill_rect(cx - 40, top + 40, 80, 2, 0x505050);\n    host::display::fill_rect(cx - 40, bot + 40, 80, 2, 0x505050);\n    host::display::fill_rect(cx - 20, y, 40, 40, 0xc0a020);\n    host::display::present();\n}\n",
+  "tags": [
+    "easing",
+    "animation",
+    "functions"
+  ]
+}

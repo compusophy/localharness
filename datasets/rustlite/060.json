@@ -1,0 +1,12 @@
+{
+  "id": "060",
+  "prompt": "Interactive water surface: 24 columns of water displacement that ripple outward when you touch them. Persist per-column displacement in state slots 8..31 and velocity in 32..55 (locals reset every frame). Each frame pull every column toward the average of its neighbors (accel = (left+right)/2 - me), damp velocity by 15/16, and while the pointer is down slam the touched column to -60. Draw bars from the midline, up for negative displacement.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let mid: i32 = h / 2;\n    let cols: i32 = 24;\n    let cw: i32 = w / cols;\n    let mut cur = [0; 24];\n    let mut i: i32 = 0;\n    while i < cols {\n        cur[i] = host::display::state_get(8 + i);\n        i = i + 1;\n    }\n    if host::display::pointer_down() == 1 {\n        let mut tap: i32 = host::display::pointer_x() / cw;\n        if tap < 0 { tap = 0; }\n        if tap > cols - 1 { tap = cols - 1; }\n        cur[tap] = 0 - 60;\n    }\n    i = 0;\n    while i < cols {\n        let left: i32 = if i == 0 { cur[0] } else { cur[i - 1] };\n        let right: i32 = if i == cols - 1 { cur[cols - 1] } else { cur[i + 1] };\n        let accel: i32 = (left + right) / 2 - cur[i];\n        let mut v: i32 = host::display::state_get(32 + i) + accel / 2;\n        v = v * 15 / 16;\n        host::display::state_set(32 + i, v);\n        host::display::state_set(8 + i, cur[i] + v);\n        i = i + 1;\n    }\n    host::display::clear(0x000010);\n    i = 0;\n    while i < cols {\n        let d: i32 = host::display::state_get(8 + i);\n        if d < 0 {\n            host::display::fill_rect(i * cw, mid + d, cw - 1, 0 - d, 0x2080ff);\n        } else {\n            host::display::fill_rect(i * cw, mid, cw - 1, d + 1, 0x2080ff);\n        }\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "simulation",
+    "state",
+    "pointer",
+    "arrays",
+    "grid"
+  ]
+}

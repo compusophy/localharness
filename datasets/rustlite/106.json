@@ -1,0 +1,12 @@
+{
+  "id": "106",
+  "prompt": "A one-octave piano strip: 7 white keys spanning the screen width, hit-tested by pointer_x / key_width. An edge-detected press plays that key with host::audio::tone(freq, 160, 3) (triangle wave) using frequencies from an array [262,294,330,349,392,440,494]; the key under a held pointer tints blue. Letter the keys C D E F G A B via draw_char codes kept in a second array - rustlite has no string arrays.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let freqs = [262, 294, 330, 349, 392, 440, 494];\n    let names = [67, 68, 69, 70, 71, 65, 66];\n    let kw: i32 = w / 7;\n    let ky: i32 = h / 2 - 80;\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let mut cur: i32 = -1;\n    if py >= ky && py < ky + 160 {\n        cur = px / kw;\n        if cur > 6 { cur = 6; }\n    }\n    if down == 1 && prev == 0 && cur >= 0 {\n        host::audio::tone(freqs[cur], 160, 3);\n    }\n    host::display::state_set(0, down);\n    host::display::clear(0x101010);\n    let mut i: i32 = 0;\n    while i < 7 {\n        let mut c: i32 = 0xe8e8e8;\n        if down == 1 && i == cur { c = 0x88ccff; }\n        host::display::fill_rect(i * kw + 1, ky, kw - 2, 160, c);\n        host::display::draw_char(i * kw + kw / 2 - 3, ky + 130, names[i], 0x303030, 1);\n        i = i + 1;\n    }\n    host::display::draw_string(8, 8, \"TAP A KEY\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "audio",
+    "arrays",
+    "piano"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "064",
+  "prompt": "A calm breathing square: fold t into a 0..256 ping-pong, push it through the smoothstep curve 3p^2 - 2p^3 (all integer math, result scaled back to 0..256), and use the eased value to drive BOTH the size (40..120 px) and the grayscale brightness of one centered square. It should visibly pause at the extremes instead of snapping.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let period: i32 = 256;\n    let phase: i32 = t * 2 % (period * 2);\n    let p: i32 = if phase < period { phase } else { period * 2 - phase };\n    let s: i32 = (3 * p * p - p * p * p / 128) / 256;\n    let size: i32 = 40 + s * 80 / 256;\n    let g: i32 = 48 + s * 200 / 256;\n    host::display::clear(0x000000);\n    host::display::fill_rect(w / 2 - size / 2, h / 2 - size / 2, size, size, g * 65536 + g * 256 + g);\n    host::display::present();\n}\n",
+  "tags": [
+    "easing",
+    "animation",
+    "math"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "053",
+  "prompt": "I want a spark fountain: embers spray up from a nozzle at the bottom center, arc over under gravity, and fade from yellow to orange to dark red with age. Keep it stateless — give each of ~40 sparks a looping age of (t + phase) % LIFE with phase/vx/vy hashed from the spark index, and place it on the parabola x = cx + vx*age/2, y = base - vy*age + age*age/8.",
+  "solution_rl": "fn hash(seed: i32) -> i32 {\n    let mut h: i32 = seed * 747796405 + 2891336453;\n    h = (h >> 16) ^ h;\n    if h < 0 { h = 0 - h; }\n    h\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let base: i32 = h - 8;\n    let life: i32 = 64;\n    host::display::clear(0x000000);\n    host::display::fill_rect(cx - 6, base, 12, 8, 0x404040);\n    let mut i: i32 = 0;\n    while i < 40 {\n        let age: i32 = (t + hash(i * 3 + 1) % life) % life;\n        let vx: i32 = hash(i * 7 + 2) % 7 - 3;\n        let vy: i32 = hash(i * 11 + 5) % 4 + 5;\n        let x: i32 = cx + vx * age / 2;\n        let y: i32 = base - vy * age + age * age / 8;\n        let c: i32 = if age < 20 { 0xffff80 } else if age < 44 { 0xff9020 } else { 0x802010 };\n        if y < base {\n            host::display::fill_rect(x, y, 3, 3, c);\n        }\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "particles",
+    "physics",
+    "prng"
+  ]
+}

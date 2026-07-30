@@ -1,0 +1,11 @@
+{
+  "id": "075",
+  "prompt": "A field of dots doing \"the wave\": lay out a 16x12 dot grid and give every dot a vertical offset from a 16-entry sine table indexed by 2*col + row + t/1 so a diagonal wave rolls across the field forever. Color each dot by its phase too (crest bright cyan, trough deep blue). Pure function of t — no state.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 49, 90, 117, 127, 117, 90, 49, 0, -49, -90, -117, -127, -117, -90, -49];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cols: i32 = 16;\n    let rows: i32 = 12;\n    host::display::clear(0x000008);\n    let mut gy: i32 = 0;\n    while gy < rows {\n        let mut gx: i32 = 0;\n        while gx < cols {\n            let idx: i32 = (gx * 2 + gy + t / 2) & 15;\n            let s: i32 = tab[idx];\n            let x: i32 = (gx * 2 + 1) * w / (cols * 2);\n            let y: i32 = (gy * 2 + 1) * h / (rows * 2) + s * 10 / 127;\n            let c: i32 = if s > 60 { 0x40ffff } else if s > 0 - 60 { 0x2080c0 } else { 0x103060 };\n            host::display::fill_rect(x - 2, y - 2, 4, 4, c);\n            gx = gx + 1;\n        }\n        gy = gy + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "grid",
+    "trig-table",
+    "animation",
+    "loops"
+  ]
+}

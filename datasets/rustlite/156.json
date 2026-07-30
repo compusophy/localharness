@@ -1,0 +1,9 @@
+{
+  "id": "156",
+  "prompt": "Write a GEOMETRY library cartridge others mount with host::compose::spawn_lib and invoke by export name: dist2(dx, dy) squared length, manhattan(dx, dy), in_circle(dx, dy, r) returning 0/1, and wrap(v, max) - a modulo that stays positive for negative v. compose::call forwards at most 4 ints, so keep every export within 4 params. Add dims() and a frame() landing card listing the exports (a headless mount never ticks frame; it is just the subdomain landing page) and prove dist2 by printing dist2(3, 4).",
+  "solution_rl": "fn dist2(dx: i32, dy: i32) -> i32 {\n    dx * dx + dy * dy\n}\n\nfn manhattan(dx: i32, dy: i32) -> i32 {\n    let mut a: i32 = dx;\n    if a < 0 { a = 0 - a; }\n    let mut b: i32 = dy;\n    if b < 0 { b = 0 - b; }\n    a + b\n}\n\nfn in_circle(dx: i32, dy: i32, r: i32) -> i32 {\n    if dist2(dx, dy) <= r * r { 1 } else { 0 }\n}\n\nfn wrap(v: i32, max: i32) -> i32 {\n    let m: i32 = v % max;\n    if m < 0 { m + max } else { m }\n}\n\nfn dims() -> i32 {\n    (256 << 16) | 112\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 8, \"LIB GEOM\", 0xffffff, 2);\n    host::display::draw_string(8, 34, \"DIST2 MANHATTAN\", 0x00ff66, 1);\n    host::display::draw_string(8, 48, \"IN_CIRCLE WRAP\", 0x00ff66, 1);\n    host::display::draw_string(8, 70, \"MOUNT: SPAWN_LIB\", 0x808080, 1);\n    host::display::draw_number(8, 88, dist2(3, 4), 0xffff00, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "library",
+    "functions"
+  ]
+}

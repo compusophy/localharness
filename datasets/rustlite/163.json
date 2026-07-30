@@ -1,0 +1,11 @@
+{
+  "id": "163",
+  "prompt": "Animate with someone else's math: mount the published \"lib-math\" cartridge headless (spawn_lib, latched once in state slots), and once status(h) == 1 slide a box between x=40 and x=440 by calling its 3-arg lerp(a, b, n16) export with a 0..16 triangle of t - pad the 4th arg with 0, call always takes four ints. call returns the export's own i32 so 0 is ambiguous: check call_ok() == 0 before drawing, and surface the LOADING and FAILED mount states too.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x101014);\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, host::compose::spawn_lib(\"lib-math\"));\n    }\n    let h: i32 = host::display::state_get(1);\n    let st: i32 = host::compose::status(h);\n    if st == 0 {\n        host::display::draw_string(8, 8, \"MOUNTING LIB-MATH\", 0xffff00, 1);\n    }\n    if st == 2 {\n        host::display::draw_string(8, 8, \"MOUNT FAILED\", 0xff0000, 1);\n    }\n    if st == 1 {\n        let mut n: i32 = t % 32;\n        if n > 16 { n = 32 - n; }\n        let x: i32 = host::compose::call(h, \"lerp\", 40, 440, n, 0);\n        if host::compose::call_ok() == 0 {\n            host::display::fill_rect(x, 220, 32, 32, 0x00c8ff);\n            host::display::draw_string(8, 8, \"LERP VIA LIBRARY\", 0x00ff66, 1);\n        } else {\n            host::display::draw_string(8, 8, \"CALL FAILED\", 0xff0000, 1);\n            host::display::draw_number(8, 22, host::compose::call_ok(), 0xff0000, 1);\n        }\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "compose",
+    "library",
+    "state",
+    "animation"
+  ]
+}

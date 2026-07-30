@@ -1,0 +1,11 @@
+{
+  "id": "090",
+  "prompt": "A battery widget: hold the pointer anywhere to charge (+1 every 2nd frame, cap 100), release and it drains (-1 every 5th frame, floor 0). Seed the level to 50 once via an init-latch state slot. Draw a vertical battery shell with a terminal cap and ten segment blocks filling bottom-up, coloring them red under 30, yellow under 70, green otherwise, plus the numeric level.",
+  "solution_rl": "fn frame(t: i32) {\n    if host::display::state_get(1) == 0 {\n        host::display::state_set(1, 1);\n        host::display::state_set(0, 50);\n    }\n    let mut c: i32 = host::display::state_get(0);\n    let down: i32 = host::display::pointer_down();\n    if down == 1 {\n        if t % 2 == 0 && c < 100 { c = c + 1; }\n    } else {\n        if t % 5 == 0 && c > 0 { c = c - 1; }\n    }\n    host::display::state_set(0, c);\n    host::display::clear(0x101010);\n    let col: i32 = if c < 30 { 0xff3030 } else { if c < 70 { 0xffcc00 } else { 0x00cc55 } };\n    let bx: i32 = 100;\n    let by: i32 = 90;\n    host::display::fill_rect(bx - 4, by - 4, 108, 248, 0x505050);\n    host::display::fill_rect(bx, by, 100, 240, 0x000000);\n    host::display::fill_rect(bx + 30, by - 16, 40, 12, 0x505050);\n    let mut i: i32 = 0;\n    while i < 10 {\n        if c > i * 10 {\n            host::display::fill_rect(bx + 6, by + 240 - (i + 1) * 24 + 3, 88, 18, col);\n        }\n        i = i + 1;\n    }\n    host::display::draw_number(bx, by + 250, c, col, 3);\n    host::display::draw_string(bx, by + 284, \"HOLD TO CHARGE\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "gauge"
+  ]
+}

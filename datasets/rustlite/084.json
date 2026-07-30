@@ -1,0 +1,12 @@
+{
+  "id": "084",
+  "prompt": "Give me a 4x4 grid of toggle cells: tapping a cell flips just that cell (edge-detect the click with the previous pointer_down in a state slot so holding does not re-flip). Store all 16 on/off flags as one bitmask in a single state slot, render on cells green and off cells as hollow squares, and show how many are on.",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let gx: i32 = 40;\n    let gy: i32 = 60;\n    let cs: i32 = 44;\n    let mut mask: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 {\n        let cx: i32 = (px - gx) / cs;\n        let cy: i32 = (py - gy) / cs;\n        if px >= gx && py >= gy && cx < 4 && cy < 4 {\n            mask = mask ^ (1 << (cy * 4 + cx));\n            host::display::state_set(0, mask);\n        }\n    }\n    host::display::state_set(1, down);\n    host::display::clear(0x101010);\n    let mut i: i32 = 0;\n    let mut on: i32 = 0;\n    while i < 16 {\n        let x: i32 = gx + (i % 4) * cs;\n        let y: i32 = gy + (i / 4) * cs;\n        if ((mask >> i) & 1) == 1 {\n            host::display::fill_rect(x + 2, y + 2, cs - 4, cs - 4, 0x00cc66);\n            on = on + 1;\n        } else {\n            host::display::fill_rect(x + 2, y + 2, cs - 4, cs - 4, 0x303030);\n            host::display::fill_rect(x + 4, y + 4, cs - 8, cs - 8, 0x101010);\n        }\n        i = i + 1;\n    }\n    host::display::draw_string(40, 20, \"ON\", 0x808080, 2);\n    host::display::draw_number(80, 20, on, 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "bitmask",
+    "toggle"
+  ]
+}

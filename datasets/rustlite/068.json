@@ -1,0 +1,11 @@
+{
+  "id": "068",
+  "prompt": "A drunk firefly wandering the screen leaving a 16-step trail. Each frame advance an LCG seed (state slot) and take a 4px step in one of 4 directions from its top bits, clamped to the screen. Remember the last 16 positions in a ring buffer built from state slots 16..47 (x,y pairs plus a head index slot — rustlite has no persistent arrays), draw the trail dim and the head bright.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(2, 12345);\n        host::display::state_set(3, w / 2);\n        host::display::state_set(4, h / 2);\n    }\n    let seed: i32 = host::display::state_get(2) * 1103515245 + 12345;\n    host::display::state_set(2, seed);\n    let mut dir: i32 = (seed >> 16) & 3;\n    let mut x: i32 = host::display::state_get(3);\n    let mut y: i32 = host::display::state_get(4);\n    if dir == 0 { x = x + 4; }\n    if dir == 1 { x = x - 4; }\n    if dir == 2 { y = y + 4; }\n    if dir == 3 { y = y - 4; }\n    if x < 4 { x = 4; }\n    if x > w - 4 { x = w - 4; }\n    if y < 4 { y = 4; }\n    if y > h - 4 { y = h - 4; }\n    host::display::state_set(3, x);\n    host::display::state_set(4, y);\n    let head: i32 = host::display::state_get(1);\n    host::display::state_set(16 + head * 2, x);\n    host::display::state_set(17 + head * 2, y);\n    host::display::state_set(1, (head + 1) % 16);\n    host::display::clear(0x000000);\n    let mut i: i32 = 0;\n    while i < 16 {\n        let tx: i32 = host::display::state_get(16 + i * 2);\n        let ty: i32 = host::display::state_get(17 + i * 2);\n        host::display::fill_rect(tx - 1, ty - 1, 2, 2, 0x204020);\n        i = i + 1;\n    }\n    host::display::fill_rect(x - 3, y - 3, 6, 6, 0xc0ff40);\n    host::display::present();\n}\n",
+  "tags": [
+    "state",
+    "prng",
+    "simulation",
+    "no-struct-boundary"
+  ]
+}

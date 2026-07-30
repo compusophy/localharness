@@ -1,0 +1,11 @@
+{
+  "id": "159",
+  "prompt": "Integer TRIG library (rustlite has no floats): sin256(deg) from a 16-entry quarter-wave lookup table folded with symmetry - valid for ANY degree including negatives, result in -256..256 - and cos256(deg) = sin256(deg + 90). Ship it spawn_lib-ready with a landing frame() that plots one full sine period across the card using set_pixel over a baseline.",
+  "solution_rl": "fn sin256(deg: i32) -> i32 {\n    let quarter = [0, 27, 53, 79, 104, 128, 150, 171, 190, 207, 222, 234, 243, 250, 255, 256];\n    let mut d: i32 = deg % 360;\n    if d < 0 { d = d + 360; }\n    let mut sign: i32 = 1;\n    if d >= 180 {\n        sign = -1;\n        d = d - 180;\n    }\n    if d >= 90 { d = 180 - d; }\n    sign * quarter[d / 6]\n}\n\nfn cos256(deg: i32) -> i32 {\n    sin256(deg + 90)\n}\n\nfn dims() -> i32 {\n    (256 << 16) | 128\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 4, \"LIB TRIG\", 0xffffff, 2);\n    host::display::draw_string(120, 8, \"SIN256 COS256\", 0x00ff66, 1);\n    host::display::fill_rect(0, 64, 256, 1, 0x303030);\n    let mut x: i32 = 0;\n    while x < 256 {\n        let deg: i32 = x * 360 / 256;\n        host::display::set_pixel(x, 64 - sin256(deg) * 44 / 256, 0x00ffcc);\n        x = x + 1;\n    }\n    host::display::draw_number(8, 110, cos256(0), 0xffff00, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "library",
+    "functions",
+    "math",
+    "arrays"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "148",
+  "prompt": "Sound-effects board with three full-width rows: LASER (six sawtooth tones stepping down from 1200 Hz, scheduled 40 ms apart with host::audio::tone_at), BOOM (a single noise(400) burst), and POWERUP (five square tones climbing from 300 Hz, 60 ms apart). Pick the row from pointer_y on an edge-detected tap and label each zone.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 {\n        let row: i32 = host::display::pointer_y() * 3 / h;\n        if row == 0 {\n            let mut i: i32 = 0;\n            while i < 6 {\n                host::audio::tone_at(1200 - i * 150, 60, 2, i * 40);\n                i = i + 1;\n            }\n        }\n        if row == 1 {\n            host::audio::noise(400);\n        }\n        if row >= 2 {\n            let mut j: i32 = 0;\n            while j < 5 {\n                host::audio::tone_at(300 + j * 120, 70, 1, j * 60);\n                j = j + 1;\n            }\n        }\n    }\n    host::display::state_set(0, down);\n    host::display::clear(0x000000);\n    host::display::fill_rect(6, 6, w - 12, h / 3 - 12, 0x201038);\n    host::display::fill_rect(6, h / 3 + 6, w - 12, h / 3 - 12, 0x381010);\n    host::display::fill_rect(6, h * 2 / 3 + 6, w - 12, h / 3 - 12, 0x103818);\n    host::display::draw_string(24, h / 6, \"LASER\", 0xffffff, 3);\n    host::display::draw_string(24, h / 2, \"BOOM\", 0xffffff, 3);\n    host::display::draw_string(24, h * 5 / 6, \"POWERUP\", 0xffffff, 3);\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "pointer",
+    "state",
+    "loops"
+  ]
+}

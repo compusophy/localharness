@@ -1,0 +1,12 @@
+{
+  "id": "103",
+  "prompt": "Hover tooltips: three icon squares lettered S, L and Q with draw_char. When the pointer RESTS on the same icon for more than 30 frames - track the hovered index (stored +1 so 0 can mean none) and a dwell counter in state slots, resetting the counter whenever the index changes - pop a small tooltip box above it naming the action (SAVE / LOAD / QUIT). No click needed; moving away hides it.",
+  "solution_rl": "fn frame(t: i32) {\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let mut hover: i32 = -1;\n    if py >= 120 && py < 160 {\n        if px >= 60 && px < 100 { hover = 0; }\n        if px >= 140 && px < 180 { hover = 1; }\n        if px >= 220 && px < 260 { hover = 2; }\n    }\n    let last: i32 = host::display::state_get(0) - 1;\n    let mut frames: i32 = host::display::state_get(1);\n    if hover == last { frames = frames + 1; } else { frames = 0; }\n    host::display::state_set(0, hover + 1);\n    host::display::state_set(1, frames);\n    host::display::clear(0x101014);\n    host::display::fill_rect(60, 120, 40, 40, 0x304060);\n    host::display::fill_rect(140, 120, 40, 40, 0x304060);\n    host::display::fill_rect(220, 120, 40, 40, 0x304060);\n    host::display::draw_char(74, 132, 83, 0xffffff, 2);\n    host::display::draw_char(154, 132, 76, 0xffffff, 2);\n    host::display::draw_char(234, 132, 81, 0xffffff, 2);\n    if hover >= 0 && frames > 30 {\n        let tipx: i32 = 60 + hover * 80;\n        host::display::fill_rect(tipx - 10, 82, 68, 26, 0x404040);\n        host::display::fill_rect(tipx - 8, 84, 64, 22, 0x000000);\n        if hover == 0 { host::display::draw_string(tipx, 92, \"SAVE\", 0xffff88, 1); }\n        if hover == 1 { host::display::draw_string(tipx, 92, \"LOAD\", 0xffff88, 1); }\n        if hover == 2 { host::display::draw_string(tipx, 92, \"QUIT\", 0xffff88, 1); }\n    }\n    host::display::draw_string(40, 40, \"REST THE POINTER ON AN ICON\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "hover",
+    "tooltip"
+  ]
+}

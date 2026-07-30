@@ -1,0 +1,10 @@
+{
+  "id": "162",
+  "prompt": "GRID-math library so other cartridges stop rewriting index arithmetic: idx(x, y, w) flattens 2-D to 1-D, col(i, w) and row(i, w) invert it, wrapn(v, n) is the always-positive modulo. spawn_lib mounts it headless, so give it a landing frame() anyway: a numbered 4x3 grid where a highlight cell walks all 12 cells using wrapn(t / 20, 12) round-tripped through col/row.",
+  "solution_rl": "fn idx(x: i32, y: i32, w: i32) -> i32 {\n    y * w + x\n}\n\nfn col(i: i32, w: i32) -> i32 {\n    i % w\n}\n\nfn row(i: i32, w: i32) -> i32 {\n    i / w\n}\n\nfn wrapn(v: i32, n: i32) -> i32 {\n    let m: i32 = v % n;\n    if m < 0 { m + n } else { m }\n}\n\nfn dims() -> i32 {\n    (256 << 16) | 160\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 8, \"LIB GRID\", 0xffffff, 2);\n    host::display::draw_string(8, 30, \"IDX COL ROW WRAPN\", 0x00ff66, 1);\n    let mut i: i32 = 0;\n    while i < 12 {\n        let x: i32 = 12 + col(i, 4) * 58;\n        let y: i32 = 48 + row(i, 4) * 34;\n        host::display::fill_rect(x, y, 52, 28, 0x202030);\n        host::display::draw_number(x + 6, y + 8, i, 0xffff00, 1);\n        i = i + 1;\n    }\n    let hot: i32 = wrapn(t / 20, 12);\n    let hx: i32 = 12 + col(hot, 4) * 58;\n    let hy: i32 = 48 + row(hot, 4) * 34;\n    host::display::fill_rect(hx, hy, 52, 28, 0x00ff66);\n    host::display::draw_number(hx + 6, hy + 8, hot, 0x000000, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "library",
+    "functions",
+    "loops"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "056",
+  "prompt": "Tiny solar system: a yellow sun in the center, a blue planet circling it, and a gray moon circling the planet three times as fast. rustlite is integer-only, so drive both orbits from a 32-entry sine lookup table with amplitude 127 (cosine = the same table shifted 8 entries) and scale by radius/127.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let r: i32 = if w < h { w / 3 } else { h / 3 };\n    host::display::clear(0x000000);\n    host::display::fill_rect(cx - 8, cy - 8, 16, 16, 0xffcc00);\n    let a: i32 = (t / 2) & 31;\n    let px: i32 = cx + tab[a] * r / 127;\n    let py: i32 = cy + tab[(a + 8) & 31] * r / 127;\n    host::display::fill_rect(px - 5, py - 5, 10, 10, 0x4090ff);\n    let m: i32 = (t * 3 / 2) & 31;\n    let mx: i32 = px + tab[m] * 18 / 127;\n    let my: i32 = py + tab[(m + 8) & 31] * 18 / 127;\n    host::display::fill_rect(mx - 2, my - 2, 4, 4, 0xc0c0c0);\n    host::display::present();\n}\n",
+  "tags": [
+    "trig-table",
+    "animation",
+    "motion-path"
+  ]
+}

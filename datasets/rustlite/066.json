@@ -1,0 +1,11 @@
+{
+  "id": "066",
+  "prompt": "Cannon range toy: a cannon sits at the bottom-left; each click (edge-detected — keep the previous pointer_down in a state slot) fires one cannonball with a fixed muzzle velocity that arcs under gravity until it hits the ground, then you can fire again. Ball position in 1/16-px fixed-point state slots, an in-flight flag in another. Show FLYING or TAP TO FIRE.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let ground: i32 = h - 10;\n    let down: i32 = host::display::pointer_down();\n    let was: i32 = host::display::state_get(1);\n    host::display::state_set(1, down);\n    let mut flying: i32 = host::display::state_get(2);\n    if flying == 0 && down == 1 && was == 0 {\n        flying = 1;\n        host::display::state_set(3, 14 * 16);\n        host::display::state_set(4, (ground - 14) * 16);\n        host::display::state_set(5, 58);\n        host::display::state_set(6, 0 - 110);\n    }\n    host::display::clear(0x000000);\n    host::display::fill_rect(0, ground, w, h - ground, 0x304020);\n    host::display::fill_rect(6, ground - 14, 18, 14, 0x707070);\n    host::display::draw_line(15, ground - 14, 30, ground - 30, 0x707070);\n    if flying == 1 {\n        let mut x: i32 = host::display::state_get(3) + host::display::state_get(5);\n        let mut vy: i32 = host::display::state_get(6) + 4;\n        let mut y: i32 = host::display::state_get(4) + vy;\n        if y > (ground - 6) * 16 || x > w * 16 {\n            flying = 0;\n        }\n        host::display::state_set(3, x);\n        host::display::state_set(4, y);\n        host::display::state_set(6, vy);\n        host::display::fill_rect(x / 16, y / 16, 6, 6, 0xffe080);\n        host::display::draw_string(8, 8, \"FLYING\", 0x808080, 1);\n    } else {\n        host::display::draw_string(8, 8, \"TAP TO FIRE\", 0xffffff, 1);\n    }\n    host::display::state_set(2, flying);\n    host::display::present();\n}\n",
+  "tags": [
+    "physics",
+    "pointer",
+    "state",
+    "no-struct-boundary"
+  ]
+}

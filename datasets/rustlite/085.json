@@ -1,0 +1,12 @@
+{
+  "id": "085",
+  "prompt": "A tiny pixel-art paint tool: a 16x16 grid of 20px cells where HOLDING the pointer paints every cell it passes over (no edge detection for painting - drag to draw). Keep the canvas as 16 row bitmasks in state slots 10..25, because locals reset every frame and there is no persistent array. Add a CLEAR button above the canvas that wipes all rows on an edge-detected click.",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let gx: i32 = 60;\n    let gy: i32 = 60;\n    let cs: i32 = 20;\n    if down == 1 {\n        let cx: i32 = (px - gx) / cs;\n        let cy: i32 = (py - gy) / cs;\n        if px >= gx && py >= gy && cx < 16 && cy < 16 {\n            let row: i32 = host::display::state_get(10 + cy);\n            host::display::state_set(10 + cy, row | (1 << cx));\n        }\n    }\n    if down == 1 && prev == 0 && px >= 60 && px < 140 && py >= 20 && py < 48 {\n        let mut r: i32 = 0;\n        while r < 16 {\n            host::display::state_set(10 + r, 0);\n            r = r + 1;\n        }\n    }\n    host::display::state_set(0, down);\n    host::display::clear(0x101010);\n    host::display::fill_rect(60, 20, 80, 28, 0x802020);\n    host::display::draw_string(72, 30, \"CLEAR\", 0xffffff, 1);\n    host::display::fill_rect(gx - 2, gy - 2, cs * 16 + 4, cs * 16 + 4, 0x303030);\n    host::display::fill_rect(gx, gy, cs * 16, cs * 16, 0x000000);\n    let mut y: i32 = 0;\n    while y < 16 {\n        let row: i32 = host::display::state_get(10 + y);\n        let mut x: i32 = 0;\n        while x < 16 {\n            if ((row >> x) & 1) == 1 {\n                host::display::fill_rect(gx + x * cs, gy + y * cs, cs, cs, 0xffffff);\n            }\n            x = x + 1;\n        }\n        y = y + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "bitmask",
+    "paint"
+  ]
+}

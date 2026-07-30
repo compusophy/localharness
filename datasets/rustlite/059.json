@@ -1,0 +1,11 @@
+{
+  "id": "059",
+  "prompt": "Fill the screen with a 12x9 grid of cells that blink like fireflies: every cell has its own blink period (40..90 frames) and phase, both derived from an LCG hash of the cell id, and lights up bright green for the first third of its period. Unlit cells stay a very dark green so the grid is visible.",
+  "solution_rl": "fn hash(seed: i32) -> i32 {\n    let mut h: i32 = seed * 747796405 + 2891336453;\n    h = (h >> 16) ^ h;\n    if h < 0 { h = 0 - h; }\n    h\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cols: i32 = 12;\n    let rows: i32 = 9;\n    let cw: i32 = w / cols;\n    let ch: i32 = h / rows;\n    host::display::clear(0x000000);\n    let mut gy: i32 = 0;\n    while gy < rows {\n        let mut gx: i32 = 0;\n        while gx < cols {\n            let id: i32 = gy * cols + gx;\n            let period: i32 = 40 + hash(id * 7 + 1) % 50;\n            let phase: i32 = hash(id * 13 + 5) % period;\n            let beat: i32 = (t + phase) % period;\n            if beat < period / 3 {\n                host::display::fill_rect(gx * cw + 2, gy * ch + 2, cw - 4, ch - 4, 0x80ff40);\n            } else {\n                host::display::fill_rect(gx * cw + 2, gy * ch + 2, cw - 4, ch - 4, 0x102008);\n            }\n            gx = gx + 1;\n        }\n        gy = gy + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "grid",
+    "prng",
+    "animation",
+    "loops"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "092",
+  "prompt": "A vertical main menu with 4 items (NEW GAME / CONTINUE / OPTIONS / QUIT). The item under the pointer gets a hover highlight even when the button is not down; an edge-detected click selects it and a green marker sticks to the selected row. Compute the hovered index from (pointer_y - menu_top) / item_height, guard the bounds, and keep selection plus previous pointer_down in state slots.",
+  "solution_rl": "fn frame(t: i32) {\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let mx: i32 = 60;\n    let my: i32 = 80;\n    let mw: i32 = 200;\n    let ih: i32 = 36;\n    let mut hover: i32 = -1;\n    if px >= mx && px < mx + mw && py >= my && py < my + ih * 4 {\n        hover = (py - my) / ih;\n    }\n    let mut sel: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 && hover >= 0 {\n        sel = hover;\n        host::display::state_set(0, sel);\n    }\n    host::display::state_set(1, down);\n    host::display::clear(0x101014);\n    host::display::draw_string(mx, 50, \"MAIN MENU\", 0x808080, 2);\n    let mut i: i32 = 0;\n    while i < 4 {\n        let y: i32 = my + i * ih;\n        let mut bgc: i32 = 0x181820;\n        if i == hover { bgc = 0x303048; }\n        host::display::fill_rect(mx, y, mw, ih - 2, bgc);\n        if i == sel {\n            host::display::fill_rect(mx + 4, y + ih / 2 - 5, 8, 8, 0x00ff88);\n        }\n        i = i + 1;\n    }\n    host::display::draw_string(mx + 20, my + 14, \"NEW GAME\", 0xffffff, 1);\n    host::display::draw_string(mx + 20, my + ih + 14, \"CONTINUE\", 0xffffff, 1);\n    host::display::draw_string(mx + 20, my + ih * 2 + 14, \"OPTIONS\", 0xffffff, 1);\n    host::display::draw_string(mx + 20, my + ih * 3 + 14, \"QUIT\", 0xffffff, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "hover",
+    "menu"
+  ]
+}

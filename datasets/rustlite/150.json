@@ -1,0 +1,11 @@
+{
+  "id": "150",
+  "prompt": "Split the screen into two tap zones: the top half queues a three-second riff ahead of time - twelve sine notes scheduled with host::audio::tone_at, 250 ms apart, cycling four pitches - and the bottom half is a PANIC button that calls host::audio::stop(-1) to kill every sounding AND scheduled voice at once. Edge-detect taps and paint the zones as labeled buttons.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 {\n        if host::display::pointer_y() < h / 2 {\n            let mut i: i32 = 0;\n            while i < 12 {\n                host::audio::tone_at(262 + (i % 4) * 66, 180, 0, i * 250);\n                i = i + 1;\n            }\n        } else {\n            host::audio::stop(-1);\n        }\n    }\n    host::display::state_set(0, down);\n    host::display::clear(0x000000);\n    host::display::fill_rect(8, 8, w - 16, h / 2 - 16, 0x103020);\n    host::display::fill_rect(8, h / 2 + 8, w - 16, h / 2 - 16, 0x401010);\n    host::display::draw_string(24, 24, \"PLAY 3 SEC RIFF\", 0xffffff, 2);\n    host::display::draw_string(24, h / 2 + 24, \"PANIC STOP ALL\", 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "pointer",
+    "state",
+    "loops"
+  ]
+}

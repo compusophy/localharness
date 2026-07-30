@@ -1,0 +1,9 @@
+{
+  "id": "147",
+  "prompt": "Program a four-beat rock groove purely off t (m = t % 120, 30 frames per beat): kick - a 50 Hz sine thump - on beats 1 and 3, snare (noise(140)) on beats 2 and 4, and a short noise(20) hat every 15 frames. Light a kick lamp and a snare lamp for 8 frames on their hits so the beat is visible too.",
+  "solution_rl": "fn frame(t: i32) {\n    let m: i32 = t % 120;\n    if m == 0 || m == 60 { host::audio::tone(50, 150, 0); }\n    if m == 30 || m == 90 { host::audio::noise(140); }\n    if m % 15 == 0 { host::audio::noise(20); }\n    host::display::clear(0x101010);\n    host::display::draw_string(8, 8, \"ROCK BEAT 4/4\", 0x808080, 2);\n    let mut kc: i32 = 0x302010;\n    if m < 8 || (m >= 60 && m < 68) { kc = 0xff8020; }\n    let mut sc: i32 = 0x103020;\n    if (m >= 30 && m < 38) || (m >= 90 && m < 98) { sc = 0x20ff80; }\n    host::display::fill_rect(60, 200, 160, 160, kc);\n    host::display::fill_rect(290, 200, 160, 160, sc);\n    host::display::draw_string(60, 170, \"KICK\", 0xffffff, 2);\n    host::display::draw_string(290, 170, \"SNARE\", 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "modulo"
+  ]
+}

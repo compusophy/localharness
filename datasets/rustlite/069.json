@@ -1,0 +1,11 @@
+{
+  "id": "069",
+  "prompt": "A snake of 8 dots that chases the pointer with lag: dot 0 eases 1/6 of the way toward the pointer each frame, and every later dot eases toward the one before it, so the chain whips around smoothly. Persist the 8 (x, y) pairs in state slots 10..25 (rustlite entities live in slots, not structs). Draw earlier dots bigger and brighter.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        let mut k: i32 = 0;\n        while k < 8 {\n            host::display::state_set(10 + k * 2, w / 2);\n            host::display::state_set(11 + k * 2, h / 2);\n            k = k + 1;\n        }\n    }\n    let mut tx: i32 = host::display::pointer_x();\n    let mut ty: i32 = host::display::pointer_y();\n    host::display::clear(0x000000);\n    let mut i: i32 = 0;\n    while i < 8 {\n        let mut x: i32 = host::display::state_get(10 + i * 2);\n        let mut y: i32 = host::display::state_get(11 + i * 2);\n        x = x + (tx - x) / 6;\n        y = y + (ty - y) / 6;\n        host::display::state_set(10 + i * 2, x);\n        host::display::state_set(11 + i * 2, y);\n        let size: i32 = 16 - i * 2;\n        let g: i32 = 255 - i * 24;\n        host::display::fill_rect(x - size / 2, y - size / 2, size, size, g * 256 + g / 3);\n        tx = x;\n        ty = y;\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "state",
+    "pointer",
+    "easing",
+    "simulation"
+  ]
+}

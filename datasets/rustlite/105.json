@@ -1,0 +1,11 @@
+{
+  "id": "105",
+  "prompt": "A rev gauge with a peak-hold tick: holding the pointer raises speed by 3 per frame (cap 300), releasing decays it by 2 (floor 0). Render 20 segment blocks that light green, turning yellow from segment 12 and red from 17, plus the numeric speed. Track the peak in a second state slot, decaying 1 every 20 frames, and draw it as a white tick above the segment row (clamp its index to 19).",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let mut sp: i32 = host::display::state_get(0);\n    let mut peak: i32 = host::display::state_get(1);\n    if down == 1 {\n        sp = sp + 3;\n        if sp > 300 { sp = 300; }\n    } else {\n        sp = sp - 2;\n        if sp < 0 { sp = 0; }\n    }\n    if sp > peak { peak = sp; }\n    if t % 20 == 0 && peak > 0 { peak = peak - 1; }\n    host::display::state_set(0, sp);\n    host::display::state_set(1, peak);\n    host::display::clear(0x101010);\n    let mut i: i32 = 0;\n    while i < 20 {\n        let mut c: i32 = 0x202020;\n        if sp * 20 / 300 > i {\n            c = 0x00cc44;\n            if i >= 12 { c = 0xffcc00; }\n            if i >= 17 { c = 0xff3030; }\n        }\n        host::display::fill_rect(30 + i * 13, 140, 10, 40, c);\n        i = i + 1;\n    }\n    let mut pidx: i32 = peak * 20 / 300;\n    if pidx > 19 { pidx = 19; }\n    host::display::fill_rect(30 + pidx * 13, 128, 10, 6, 0xffffff);\n    host::display::draw_string(30, 60, \"SPEED\", 0x808080, 1);\n    host::display::draw_number(30, 76, sp, 0xffffff, 3);\n    host::display::draw_string(30, 200, \"HOLD TO REV\", 0x606060, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "gauge"
+  ]
+}

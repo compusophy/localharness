@@ -1,0 +1,11 @@
+{
+  "id": "073",
+  "prompt": "Side-scrolling parallax landscape in three layers moving at different speeds: distant triangle mountains crawl at t/4, a row of mid-ground blocks slides at t/2, and dashed ground stripes race by at 2t. Each layer wraps with modulo; draw one extra tile off the left edge so no gap ever shows. Dusk-purple sky.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x181028);\n    let far: i32 = (t / 4) % 120;\n    let mut i: i32 = 0 - 1;\n    while i < w / 120 + 1 {\n        let x: i32 = i * 120 - far;\n        host::display::fill_triangle(x, h - 60, x + 60, h - 130, x + 120, h - 60, 0x302848);\n        i = i + 1;\n    }\n    let mid: i32 = (t / 2) % 90;\n    i = 0 - 1;\n    while i < w / 90 + 1 {\n        let x: i32 = i * 90 - mid;\n        host::display::fill_rect(x + 20, h - 90, 34, 30, 0x504070);\n        i = i + 1;\n    }\n    host::display::fill_rect(0, h - 60, w, 60, 0x282038);\n    let near: i32 = (t * 2) % 48;\n    i = 0 - 1;\n    while i < w / 48 + 1 {\n        host::display::fill_rect(i * 48 - near, h - 30, 24, 4, 0x8070a0);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "animation",
+    "modulo",
+    "loops",
+    "display"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "076",
+  "prompt": "Falling-sand lite: one grain at a time drops from a random column (LCG seed in a state slot) and lands on a stack; 32 per-column stack heights persist in state slots 8..39 (there are no global arrays in rustlite — slots are the persistence). When any stack reaches the top, wipe all columns and keep pouring. Draw the stacks in sand yellow and the falling grain in white.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cols: i32 = 32;\n    let cw: i32 = w / cols;\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, 999);\n        host::display::state_set(2, 0);\n        host::display::state_set(3, 0);\n    }\n    let mut gx: i32 = host::display::state_get(2);\n    let mut gy: i32 = host::display::state_get(3);\n    if gy == 0 {\n        let seed: i32 = host::display::state_get(1) * 1103515245 + 12345;\n        host::display::state_set(1, seed);\n        gx = (seed >> 16) & 31;\n        gy = 1;\n    }\n    let stack: i32 = host::display::state_get(8 + gx);\n    let top: i32 = h - 4 - stack * 4;\n    gy = gy + 6;\n    if gy >= top {\n        host::display::state_set(8 + gx, stack + 1);\n        if (stack + 1) * 4 > h - 12 {\n            let mut k: i32 = 0;\n            while k < cols {\n                host::display::state_set(8 + k, 0);\n                k = k + 1;\n            }\n        }\n        gy = 0;\n    }\n    host::display::state_set(2, gx);\n    host::display::state_set(3, gy);\n    host::display::clear(0x000000);\n    let mut i: i32 = 0;\n    while i < cols {\n        let sh: i32 = host::display::state_get(8 + i) * 4;\n        host::display::fill_rect(i * cw, h - sh, cw - 1, sh, 0xd0b040);\n        i = i + 1;\n    }\n    if gy > 0 {\n        host::display::fill_rect(gx * cw + cw / 2 - 2, gy, 4, 4, 0xffffff);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "simulation",
+    "state",
+    "prng",
+    "grid"
+  ]
+}

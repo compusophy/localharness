@@ -1,0 +1,11 @@
+{
+  "id": "082",
+  "prompt": "I want a horizontal slider: a track across the screen at y=120 with a draggable thumb. While the pointer is down anywhere in the track band, map pointer_x along the track to a 0..100 value, clamp it, and keep it in a state slot so it sticks after release. Show the filled portion and the value as a big number.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let tx: i32 = 30;\n    let ty: i32 = 120;\n    let tw: i32 = w - 60;\n    let down: i32 = host::display::pointer_down();\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let mut v: i32 = host::display::state_get(0);\n    if down == 1 && py >= ty - 16 && py < ty + 20 {\n        let mut rel: i32 = px - tx;\n        if rel < 0 { rel = 0; }\n        if rel > tw { rel = tw; }\n        v = rel * 100 / tw;\n        host::display::state_set(0, v);\n    }\n    host::display::clear(0x101010);\n    host::display::fill_rect(tx, ty, tw, 4, 0x404040);\n    host::display::fill_rect(tx, ty, v * tw / 100, 4, 0x00ff88);\n    let hx: i32 = tx + v * tw / 100;\n    host::display::fill_rect(hx - 6, ty - 10, 12, 24, 0xffffff);\n    host::display::draw_string(30, 60, \"VALUE\", 0x808080, 1);\n    host::display::draw_number(30, 76, v, 0xffffff, 3);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "slider"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "077",
+  "prompt": "Campfire flames along the bottom edge: each 8px column gets a target height from an LCG hash of (column, t/8), and to keep it from strobing, lerp between this time-chunk's hash and the next one using the t%8 fraction. Draw every column as three stacked bands — red base, orange middle, yellow tip.",
+  "solution_rl": "fn hash(seed: i32) -> i32 {\n    let mut h: i32 = seed * 747796405 + 2891336453;\n    h = (h >> 16) ^ h;\n    if h < 0 { h = 0 - h; }\n    h\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cols: i32 = w / 8;\n    let hmax: i32 = h / 2;\n    let chunk: i32 = t / 8;\n    let frac: i32 = t % 8;\n    host::display::clear(0x000000);\n    let mut k: i32 = 0;\n    while k < cols {\n        let a: i32 = hash(k * 31 + chunk * 7 + 1) % hmax;\n        let b: i32 = hash(k * 31 + (chunk + 1) * 7 + 1) % hmax;\n        let fh: i32 = a + (b - a) * frac / 8 + 8;\n        host::display::fill_rect(k * 8, h - fh / 3, 7, fh / 3, 0xc02000);\n        host::display::fill_rect(k * 8, h - fh * 2 / 3, 7, fh / 3, 0xf07010);\n        host::display::fill_rect(k * 8, h - fh, 7, fh / 3, 0xffd040);\n        k = k + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "prng",
+    "animation",
+    "simulation",
+    "loops"
+  ]
+}

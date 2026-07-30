@@ -1,0 +1,11 @@
+{
+  "id": "098",
+  "prompt": "Long-press to toggle a lock: holding the pointer inside the button for 45 consecutive frames flips it between LOCKED and UNLOCKED - trigger exactly when the held-frame counter (a state slot) EQUALS 45 so keeping it held does not re-toggle. Releasing or sliding off early resets the counter and cancels. While charging, fill a progress strip under the button showing holdf out of 45.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let bx: i32 = w / 2 - 70;\n    let by: i32 = 120;\n    let down: i32 = host::display::pointer_down();\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let inside: i32 = if px >= bx && px < bx + 140 && py >= by && py < by + 56 { 1 } else { 0 };\n    let mut holdf: i32 = host::display::state_get(0);\n    let mut locked: i32 = host::display::state_get(1);\n    if down == 1 && inside == 1 {\n        holdf = holdf + 1;\n        if holdf == 45 {\n            locked = 1 - locked;\n            host::display::state_set(1, locked);\n        }\n    } else {\n        holdf = 0;\n    }\n    host::display::state_set(0, holdf);\n    host::display::clear(0x101010);\n    let bc: i32 = if locked == 1 { 0x883030 } else { 0x306688 };\n    host::display::fill_rect(bx, by, 140, 56, bc);\n    if locked == 1 {\n        host::display::draw_string(bx + 34, by + 24, \"LOCKED\", 0xffffff, 1);\n    } else {\n        host::display::draw_string(bx + 22, by + 24, \"UNLOCKED\", 0xffffff, 1);\n    }\n    if down == 1 && inside == 1 && holdf < 45 {\n        host::display::fill_rect(bx, by + 64, 140, 6, 0x282828);\n        host::display::fill_rect(bx, by + 64, holdf * 140 / 45, 6, 0xffcc00);\n    }\n    host::display::draw_string(bx - 20, by - 30, \"HOLD 45 FRAMES TO TOGGLE\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "gesture"
+  ]
+}

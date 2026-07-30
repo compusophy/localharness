@@ -1,0 +1,10 @@
+{
+  "id": "058",
+  "prompt": "Plot a Lissajous curve with a comet trail: the head follows x = sin(3s/2), y = sin(s + quarter-turn) via a 32-entry integer sine table, and 48 trail samples are just the same formula evaluated at s = t - i (no state, no arrays of history). Head bright teal, trail dimming in two steps.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let ax: i32 = w / 2 - 12;\n    let ay: i32 = h / 2 - 12;\n    host::display::clear(0x000000);\n    let mut i: i32 = 0;\n    while i < 48 {\n        let s: i32 = t - i;\n        let x: i32 = cx + tab[(s * 3 / 2) & 31] * ax / 127;\n        let y: i32 = cy + tab[(s + 8) & 31] * ay / 127;\n        let c: i32 = if i < 4 { 0x00ffcc } else if i < 20 { 0x008877 } else { 0x004033 };\n        host::display::fill_rect(x - 2, y - 2, 4, 4, c);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "trig-table",
+    "motion-path",
+    "animation"
+  ]
+}

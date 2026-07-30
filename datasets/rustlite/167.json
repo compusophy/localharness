@@ -1,0 +1,11 @@
+{
+  "id": "167",
+  "prompt": "Embed lifecycle controls: an OPEN button spawns the published \"visualizer\" cartridge into a rect with spawn_module - only when none is live, tracked by a have-flag plus the handle in state slots - and a CLOSE button tears it down with close_module(h). Print module_count() continuously so the 0/1 flip is visible, dim whichever button currently does nothing, edge-detect the taps, and show LOADING/FAILED while the child mounts.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x101014);\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut hdl: i32 = host::display::state_get(1);\n    let mut have: i32 = host::display::state_get(2);\n    if down == 1 && prev == 0 {\n        let px: i32 = host::display::pointer_x();\n        let py: i32 = host::display::pointer_y();\n        if py >= 20 && py < 70 {\n            if px >= 20 && px < 140 && have == 0 {\n                hdl = host::compose::spawn_module(\"visualizer\", 60, 120, 384, 288);\n                have = 1;\n            }\n            if px >= 160 && px < 280 && have == 1 {\n                host::compose::close_module(hdl);\n                have = 0;\n            }\n        }\n    }\n    host::display::state_set(0, down);\n    host::display::state_set(1, hdl);\n    host::display::state_set(2, have);\n    let mut oc: i32 = 0x204020;\n    if have == 1 { oc = 0x182018; }\n    let mut cc: i32 = 0x402020;\n    if have == 0 { cc = 0x201818; }\n    host::display::fill_rect(20, 20, 120, 50, oc);\n    host::display::fill_rect(160, 20, 120, 50, cc);\n    host::display::draw_string(36, 38, \"OPEN\", 0xffffff, 2);\n    host::display::draw_string(176, 38, \"CLOSE\", 0xffffff, 2);\n    if have == 1 {\n        let st: i32 = host::compose::status(hdl);\n        if st == 0 { host::display::draw_string(60, 100, \"LOADING...\", 0xffff00, 1); }\n        if st == 2 { host::display::draw_string(60, 100, \"EMBED FAILED\", 0xff0000, 1); }\n    }\n    host::display::draw_string(300, 38, \"LIVE:\", 0x808080, 1);\n    host::display::draw_number(340, 38, host::compose::module_count(), 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "compose",
+    "state",
+    "pointer",
+    "ui"
+  ]
+}

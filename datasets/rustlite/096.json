@@ -1,0 +1,12 @@
+{
+  "id": "096",
+  "prompt": "An RGB color mixer: three horizontal slider tracks for R, G and B (0..255 each, seeded once to a non-gray default via an init latch). While the pointer is down, whichever track row band it is in gets its channel set from pointer_x scaled by 255/track_width, clamped. Compose the swatch color as (r << 16) | (g << 8) | b, fill a preview rect with it, and print all three channel values.",
+  "solution_rl": "fn in_row(py: i32, rowy: i32) -> i32 {\n    if py >= rowy - 12 && py < rowy + 16 { 1 } else { 0 }\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    if host::display::state_get(5) == 0 {\n        host::display::state_set(5, 1);\n        host::display::state_set(0, 200);\n        host::display::state_set(1, 80);\n        host::display::state_set(2, 240);\n    }\n    let tx: i32 = 30;\n    let tw: i32 = w - 160;\n    let down: i32 = host::display::pointer_down();\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    if down == 1 {\n        let mut rel: i32 = (px - tx) * 255 / tw;\n        if rel < 0 { rel = 0; }\n        if rel > 255 { rel = 255; }\n        if in_row(py, 80) == 1 { host::display::state_set(0, rel); }\n        if in_row(py, 130) == 1 { host::display::state_set(1, rel); }\n        if in_row(py, 180) == 1 { host::display::state_set(2, rel); }\n    }\n    let r: i32 = host::display::state_get(0);\n    let g: i32 = host::display::state_get(1);\n    let b: i32 = host::display::state_get(2);\n    host::display::clear(0x101010);\n    host::display::fill_rect(tx, 80, tw, 6, 0x401010);\n    host::display::fill_rect(tx, 80, r * tw / 255, 6, 0xff4040);\n    host::display::fill_rect(tx + r * tw / 255 - 4, 72, 8, 22, 0xffffff);\n    host::display::fill_rect(tx, 130, tw, 6, 0x104010);\n    host::display::fill_rect(tx, 130, g * tw / 255, 6, 0x40ff40);\n    host::display::fill_rect(tx + g * tw / 255 - 4, 122, 8, 22, 0xffffff);\n    host::display::fill_rect(tx, 180, tw, 6, 0x101040);\n    host::display::fill_rect(tx, 180, b * tw / 255, 6, 0x4080ff);\n    host::display::fill_rect(tx + b * tw / 255 - 4, 172, 8, 22, 0xffffff);\n    let mix: i32 = (r << 16) | (g << 8) | b;\n    host::display::fill_rect(w - 110, 70, 90, 120, mix);\n    host::display::draw_number(30, 30, r, 0xff6060, 2);\n    host::display::draw_number(110, 30, g, 0x60ff60, 2);\n    host::display::draw_number(190, 30, b, 0x6080ff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "slider",
+    "color"
+  ]
+}

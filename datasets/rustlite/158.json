@@ -1,0 +1,11 @@
+{
+  "id": "158",
+  "prompt": "MUSIC-theory library for other cartridges to outsource their sequencer math to: freq(n) maps scale degree n to a C-major frequency via an array lookup (wrap n first so any integer is safe - the array is a per-frame local, rustlite has no globals), octave_up(f) / octave_down(f) double or halve, and bpm_frames(bpm) = frames per beat at 60 fps (3600 / bpm, guarded against bpm <= 0). Include dims() plus a landing-card frame() that names the exports and prints freq(4) and bpm_frames(120).",
+  "solution_rl": "fn freq(n: i32) -> i32 {\n    let scale = [262, 294, 330, 349, 392, 440, 494, 523];\n    let mut i: i32 = n % 8;\n    if i < 0 { i = i + 8; }\n    scale[i]\n}\n\nfn octave_up(f: i32) -> i32 {\n    f * 2\n}\n\nfn octave_down(f: i32) -> i32 {\n    f / 2\n}\n\nfn bpm_frames(bpm: i32) -> i32 {\n    if bpm <= 0 { 60 } else { 3600 / bpm }\n}\n\nfn dims() -> i32 {\n    (256 << 16) | 112\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 8, \"LIB NOTES\", 0xffffff, 2);\n    host::display::draw_string(8, 32, \"FREQ(N) 0..7 C MAJ\", 0x00ff66, 1);\n    host::display::draw_string(8, 46, \"OCTAVE_UP OCTAVE_DOWN\", 0x00ff66, 1);\n    host::display::draw_string(8, 60, \"BPM_FRAMES(BPM)\", 0x00ff66, 1);\n    host::display::draw_number(8, 80, freq(4), 0xffff00, 1);\n    host::display::draw_number(80, 80, bpm_frames(120), 0xffff00, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "library",
+    "functions",
+    "audio",
+    "arrays"
+  ]
+}

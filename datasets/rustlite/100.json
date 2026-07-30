@@ -1,0 +1,11 @@
+{
+  "id": "100",
+  "prompt": "A 3x3 numeric keypad for the digits 1-9 plus a CLR bar under it: each edge-detected tap appends its digit to a running value (value * 10 + digit, capped before it grows past six digits) shown in a dark readout above; CLR resets to 0. Label the keys with draw_char using code 49 + index (there are no string arrays in rustlite), and give the key under a held pointer a lighter pressed tint.",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let gx: i32 = 70;\n    let gy: i32 = 120;\n    let cs: i32 = 56;\n    let mut v: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 {\n        let cx: i32 = (px - gx) / cs;\n        let cy: i32 = (py - gy) / cs;\n        if px >= gx && py >= gy && cx < 3 && cy < 3 {\n            let d: i32 = cy * 3 + cx + 1;\n            if v < 100000 {\n                v = v * 10 + d;\n                host::display::state_set(0, v);\n            }\n        }\n        if px >= gx && px < gx + cs * 3 - 4 && py >= gy + cs * 3 && py < gy + cs * 3 + 36 {\n            v = 0;\n            host::display::state_set(0, 0);\n        }\n    }\n    host::display::state_set(1, down);\n    host::display::clear(0x101010);\n    host::display::fill_rect(gx - 2, 58, cs * 3, 44, 0x303030);\n    host::display::fill_rect(gx, 60, cs * 3 - 4, 40, 0x000000);\n    host::display::draw_number(gx + 8, 72, v, 0x00ff88, 2);\n    let mut i: i32 = 0;\n    while i < 9 {\n        let x: i32 = gx + (i % 3) * cs;\n        let y: i32 = gy + (i / 3) * cs;\n        let mut c: i32 = 0x282830;\n        if down == 1 && px >= x && px < x + cs - 4 && py >= y && py < y + cs - 4 {\n            c = 0x485060;\n        }\n        host::display::fill_rect(x, y, cs - 4, cs - 4, c);\n        host::display::draw_char(x + 20, y + 18, 49 + i, 0xffffff, 2);\n        i = i + 1;\n    }\n    host::display::fill_rect(gx, gy + cs * 3, cs * 3 - 4, 36, 0x603030);\n    host::display::draw_string(gx + 60, gy + cs * 3 + 12, \"CLR\", 0xffffff, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "keypad"
+  ]
+}

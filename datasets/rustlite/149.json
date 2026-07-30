@@ -1,0 +1,10 @@
+{
+  "id": "149",
+  "prompt": "Press-and-hold organ key: on the press edge start a 10-second 330 Hz triangle tone and KEEP THE RETURNED VOICE HANDLE in a state slot; on the release edge call host::audio::stop(handle) so the note ends exactly when the finger lifts. Tint the whole screen while the note is sounding and swap the label between HOLD FOR NOTE and SOUNDING.",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 {\n        let hdl: i32 = host::audio::tone(330, 10000, 3);\n        host::display::state_set(1, hdl);\n    }\n    if down == 0 && prev == 1 {\n        host::audio::stop(host::display::state_get(1));\n    }\n    host::display::state_set(0, down);\n    let mut bg: i32 = 0x101010;\n    if down == 1 { bg = 0x104020; }\n    host::display::clear(bg);\n    if down == 1 {\n        host::display::draw_string(8, 10, \"SOUNDING\", 0x00ff88, 3);\n    } else {\n        host::display::draw_string(8, 10, \"HOLD FOR NOTE\", 0xffffff, 2);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "pointer",
+    "state"
+  ]
+}

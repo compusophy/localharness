@@ -1,0 +1,12 @@
+{
+  "id": "089",
+  "prompt": "Make a rotary knob you drag vertically: pressing inside the round knob face grabs it (distance check without sqrt - compare dx*dx+dy*dy against the radius squared), then each held frame adds (last_y - pointer_y) to a 0..127 value in a state slot. There is no trig, so aim the needle with two 16-entry arrays of precomputed x/y offsets indexed by value*15/127. Draw the round face with one fill_rect span per row, not per-pixel fills.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let ndx = [40, 37, 28, 15, 0, -15, -28, -37, -40, -37, -28, -15, 0, 15, 28, 37];\n    let ndy = [0, 15, 28, 37, 40, 37, 28, 15, 0, -15, -28, -37, -40, -37, -28, -15];\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(3);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let mut v: i32 = host::display::state_get(0);\n    let mut grab: i32 = host::display::state_get(1);\n    if down == 1 && prev == 0 {\n        let dx: i32 = px - cx;\n        let dy: i32 = py - cy;\n        if dx * dx + dy * dy <= 3600 {\n            grab = 1;\n            host::display::state_set(2, py);\n        }\n    }\n    if down == 0 { grab = 0; }\n    if grab == 1 {\n        let lasty: i32 = host::display::state_get(2);\n        v = v + (lasty - py);\n        if v < 0 { v = 0; }\n        if v > 127 { v = 127; }\n        host::display::state_set(0, v);\n        host::display::state_set(2, py);\n    }\n    host::display::state_set(1, grab);\n    host::display::state_set(3, down);\n    host::display::clear(0x101010);\n    let mut row: i32 = -40;\n    while row <= 40 {\n        let rem: i32 = 1600 - row * row;\n        let mut hw: i32 = 0;\n        while (hw + 1) * (hw + 1) <= rem {\n            hw = hw + 1;\n        }\n        host::display::fill_rect(cx - hw, cy + row, hw * 2 + 1, 1, 0x303038);\n        row = row + 1;\n    }\n    let idx: i32 = v * 15 / 127;\n    host::display::draw_line(cx, cy, cx + ndx[idx], cy - ndy[idx], 0x00ff88);\n    host::display::draw_string(8, 8, \"DRAG KNOB UP OR DOWN\", 0x808080, 1);\n    host::display::draw_number(8, 24, v, 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "arrays",
+    "knob"
+  ]
+}

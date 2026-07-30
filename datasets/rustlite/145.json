@@ -1,0 +1,12 @@
+{
+  "id": "145",
+  "prompt": "Waveform audition tool: rustlite enums are unit-only (no payloads), so model the four host::audio wave codes (0 sine, 1 square, 2 sawtooth, 3 triangle) as a unit enum plus a match that maps each variant to its integer code. Every edge-detected tap cycles to the next wave and plays A440 for 250 ms with it; print the current wave's name at scale 3 and its code as a number.",
+  "solution_rl": "enum Wave { Sine, Square, Saw, Tri }\n\nfn wave_of(n: i32) -> Wave {\n    if n == 0 {\n        Wave::Sine\n    } else {\n        if n == 1 {\n            Wave::Square\n        } else {\n            if n == 2 { Wave::Saw } else { Wave::Tri }\n        }\n    }\n}\n\nfn code(w: Wave) -> i32 {\n    match w {\n        Wave::Sine => 0,\n        Wave::Square => 1,\n        Wave::Saw => 2,\n        Wave::Tri => 3,\n    }\n}\n\nfn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut sel: i32 = host::display::state_get(1);\n    if down == 1 && prev == 0 {\n        sel = (sel + 1) % 4;\n        host::audio::tone(440, 250, code(wave_of(sel)));\n    }\n    host::display::state_set(0, down);\n    host::display::state_set(1, sel);\n    host::display::clear(0x101010);\n    match sel {\n        0 => {\n            host::display::draw_string(20, 30, \"SINE\", 0xffffff, 3);\n        }\n        1 => {\n            host::display::draw_string(20, 30, \"SQUARE\", 0xffffff, 3);\n        }\n        2 => {\n            host::display::draw_string(20, 30, \"SAWTOOTH\", 0xffffff, 3);\n        }\n        _ => {\n            host::display::draw_string(20, 30, \"TRIANGLE\", 0xffffff, 3);\n        }\n    }\n    host::display::draw_string(20, 70, \"TAP TO CYCLE + PLAY A440\", 0x808080, 1);\n    host::display::draw_number(20, 90, code(wave_of(sel)), 0x00ff00, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "enum",
+    "match",
+    "pointer",
+    "state"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "091",
+  "prompt": "I keep confusing pressed vs held - make a demo that shows the difference. Derive PRESSED (down this frame but not last), HELD (down now), and RELEASED (up this frame but down last) from pointer_down plus the previous value kept in a state slot. Light one indicator lamp per signal (the edge lamps will only flash for a single frame), and count total taps and total held frames.",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let pressed: i32 = if down == 1 && prev == 0 { 1 } else { 0 };\n    let released: i32 = if down == 0 && prev == 1 { 1 } else { 0 };\n    host::display::state_set(0, down);\n    let mut presses: i32 = host::display::state_get(1);\n    let mut heldframes: i32 = host::display::state_get(2);\n    if pressed == 1 {\n        presses = presses + 1;\n        host::display::state_set(1, presses);\n    }\n    if down == 1 {\n        heldframes = heldframes + 1;\n        host::display::state_set(2, heldframes);\n    }\n    host::display::clear(0x101010);\n    let c1: i32 = if pressed == 1 { 0x00ff00 } else { 0x203020 };\n    host::display::fill_rect(30, 40, 40, 40, c1);\n    host::display::draw_string(80, 55, \"PRESSED THIS FRAME\", 0xffffff, 1);\n    let c2: i32 = if down == 1 { 0x00aaff } else { 0x202838 };\n    host::display::fill_rect(30, 100, 40, 40, c2);\n    host::display::draw_string(80, 115, \"HELD\", 0xffffff, 1);\n    let c3: i32 = if released == 1 { 0xff8800 } else { 0x382820 };\n    host::display::fill_rect(30, 160, 40, 40, c3);\n    host::display::draw_string(80, 175, \"RELEASED THIS FRAME\", 0xffffff, 1);\n    host::display::draw_string(30, 220, \"TAPS\", 0x808080, 1);\n    host::display::draw_number(80, 220, presses, 0xffffff, 2);\n    host::display::draw_string(30, 250, \"HELD FRAMES\", 0x808080, 1);\n    host::display::draw_number(130, 250, heldframes, 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "edge-detect"
+  ]
+}

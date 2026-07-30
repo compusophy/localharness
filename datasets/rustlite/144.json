@@ -1,0 +1,10 @@
+{
+  "id": "144",
+  "prompt": "Loop the C major scale forever with zero state slots: keep [262, 294, 330, 349, 392, 440, 494, 523] in an array, sound one note every 15 frames with the index derived purely from t, and only call host::audio::tone on the exact frame a note starts. Draw the eight notes as a key row with the sounding key lit plus the current frequency printed as a number.",
+  "solution_rl": "fn frame(t: i32) {\n    let notes = [262, 294, 330, 349, 392, 440, 494, 523];\n    let idx: i32 = (t / 15) % 8;\n    if t % 15 == 0 {\n        host::audio::tone(notes[idx], 130, 0);\n    }\n    host::display::clear(0x101018);\n    host::display::draw_string(8, 8, \"C MAJOR LOOP\", 0xffffff, 2);\n    host::display::draw_number(8, 40, notes[idx], 0x00ffaa, 2);\n    let mut i: i32 = 0;\n    while i < 8 {\n        let mut c: i32 = 0x303038;\n        if i == idx { c = 0x00ffaa; }\n        host::display::fill_rect(8 + i * 62, 300, 54, 120, c);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "arrays",
+    "modulo"
+  ]
+}

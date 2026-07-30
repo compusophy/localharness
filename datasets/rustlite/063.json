@@ -1,0 +1,10 @@
+{
+  "id": "063",
+  "prompt": "Show me why easing matters: three labeled squares race across the screen on a 120-frame loop — LINEAR at constant speed, EASE IN starting slow (progress squared), EASE OUT ending slow (inverted square). Work in 0..256 fixed-point progress since rustlite has no floats. Labels via draw_string.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let dur: i32 = 120;\n    let step: i32 = t % dur;\n    let p: i32 = step * 256 / dur;\n    let span: i32 = w - 60;\n    let lin: i32 = p;\n    let ein: i32 = p * p / 256;\n    let inv: i32 = 256 - p;\n    let eout: i32 = 256 - inv * inv / 256;\n    host::display::clear(0x000000);\n    host::display::draw_string(8, h / 4 - 24, \"LINEAR\", 0x808080, 1);\n    host::display::fill_rect(10 + span * lin / 256, h / 4, 40, 24, 0xffffff);\n    host::display::draw_string(8, h / 2 - 24, \"EASE IN\", 0x808080, 1);\n    host::display::fill_rect(10 + span * ein / 256, h / 2, 40, 24, 0x00c0ff);\n    host::display::draw_string(8, h * 3 / 4 - 24, \"EASE OUT\", 0x808080, 1);\n    host::display::fill_rect(10 + span * eout / 256, h * 3 / 4, 40, 24, 0xffc000);\n    host::display::present();\n}\n",
+  "tags": [
+    "easing",
+    "animation",
+    "display"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "154",
+  "prompt": "Sonified bouncing ball: fixed-point physics in state slots (y and v in 1/8 px, gravity +3 per frame, bounce damped to 4/5), and on each floor impact play a triangle tone whose pitch scales with impact speed (150 + speed * 6 Hz) - but skip the tone once impacts get tiny so the ball comes to rest in silence. Flash the ball white on the impact frame; a tap drops it again from the top.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let floor: i32 = h - 30;\n    let mut y: i32 = host::display::state_get(0);\n    let mut v: i32 = host::display::state_get(1);\n    if host::display::state_get(2) == 0 {\n        host::display::state_set(2, 1);\n        y = 40 * 8;\n        v = 0;\n    }\n    let down: i32 = host::display::pointer_down();\n    if down == 1 && host::display::state_get(3) == 0 {\n        y = 40 * 8;\n        v = 0;\n    }\n    host::display::state_set(3, down);\n    v = v + 3;\n    y = y + v;\n    let mut hit: i32 = 0;\n    if y / 8 >= floor {\n        y = floor * 8;\n        hit = v;\n        v = 0 - v * 4 / 5;\n        if hit <= 8 { v = 0; }\n    }\n    if hit > 8 {\n        host::audio::tone(150 + hit * 6, 90, 3);\n    }\n    host::display::state_set(0, y);\n    host::display::state_set(1, v);\n    host::display::clear(0x0c0c14);\n    host::display::fill_rect(0, floor + 16, w, h - floor - 16, 0x303030);\n    let mut c: i32 = 0xffaa00;\n    if hit > 8 { c = 0xffffff; }\n    host::display::fill_rect(w / 2 - 8, y / 8 - 16, 16, 16, c);\n    host::display::draw_string(8, 8, \"TAP TO DROP\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "state",
+    "physics",
+    "pointer"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "102",
+  "prompt": "A radio-button group: four options (CRIMSON / MINT / AZURE / GOLD) where an edge-detected click on a row selects exactly one - never zero, never two. Row index comes from (pointer_y - list_top) / row_height with the bounds guarded. Fill the selected radio inner dot and paint a tall preview panel on the right in the chosen accent via a match helper mapping index to color.",
+  "solution_rl": "fn accent(s: i32) -> i32 {\n    match s {\n        0 => 0xff4040,\n        1 => 0x40ff70,\n        2 => 0x4080ff,\n        _ => 0xffcc30,\n    }\n}\n\nfn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let mut sel: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 && px >= 40 && px < 220 && py >= 80 && py < 240 {\n        sel = (py - 80) / 40;\n        host::display::state_set(0, sel);\n    }\n    host::display::state_set(1, down);\n    host::display::clear(0x101010);\n    host::display::draw_string(40, 40, \"PICK AN ACCENT\", 0x808080, 1);\n    let mut i: i32 = 0;\n    while i < 4 {\n        let y: i32 = 80 + i * 40;\n        host::display::fill_rect(40, y + 4, 22, 22, 0x404040);\n        host::display::fill_rect(43, y + 7, 16, 16, 0x101010);\n        if i == sel {\n            host::display::fill_rect(46, y + 10, 10, 10, accent(sel));\n        }\n        i = i + 1;\n    }\n    host::display::draw_string(74, 88, \"CRIMSON\", 0xffffff, 1);\n    host::display::draw_string(74, 128, \"MINT\", 0xffffff, 1);\n    host::display::draw_string(74, 168, \"AZURE\", 0xffffff, 1);\n    host::display::draw_string(74, 208, \"GOLD\", 0xffffff, 1);\n    host::display::fill_rect(260, 80, 60, 156, accent(sel));\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "match",
+    "radio"
+  ]
+}

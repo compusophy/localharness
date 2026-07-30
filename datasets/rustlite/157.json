@@ -1,0 +1,10 @@
+{
+  "id": "157",
+  "prompt": "COLOR-math library cartridge (mountable headless via spawn_lib; every rustlite fn is a wasm export): pack(r, g, b) into 0xRRGGBB using integer math only, channel extractors red(c) / green(c) / blue(c), and dim(c, pct) scaling all three channels by a percent. The frame() landing card must demo dim by drawing one hue as a five-swatch brightness ramp.",
+  "solution_rl": "fn pack(r: i32, g: i32, b: i32) -> i32 {\n    (r % 256) * 65536 + (g % 256) * 256 + (b % 256)\n}\n\nfn red(c: i32) -> i32 {\n    (c / 65536) % 256\n}\n\nfn green(c: i32) -> i32 {\n    (c / 256) % 256\n}\n\nfn blue(c: i32) -> i32 {\n    c % 256\n}\n\nfn dim(c: i32, pct: i32) -> i32 {\n    pack(red(c) * pct / 100, green(c) * pct / 100, blue(c) * pct / 100)\n}\n\nfn dims() -> i32 {\n    (256 << 16) | 128\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 8, \"LIB COLOR\", 0xffffff, 2);\n    host::display::draw_string(8, 32, \"PACK RED GREEN BLUE\", 0x00ff66, 1);\n    host::display::draw_string(8, 46, \"DIM(C,PCT)\", 0x00ff66, 1);\n    let base: i32 = pack(255, 96, 32);\n    let mut i: i32 = 0;\n    while i < 5 {\n        host::display::fill_rect(8 + i * 48, 64, 40, 40, dim(base, 100 - i * 20));\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "library",
+    "functions",
+    "display"
+  ]
+}

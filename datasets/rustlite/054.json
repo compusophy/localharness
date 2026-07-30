@@ -1,0 +1,11 @@
+{
+  "id": "054",
+  "prompt": "Fireworks on a loop: every 140 frames a rocket climbs from the bottom (first 50 frames), then bursts into 16 embers that fly outward radially and droop under gravity while cooling from near-white to dark red. No floats — use a 16-entry integer sine table (amplitude 127) for the burst directions and cos = sin shifted 4 entries; each shot picks a new burst x from an LCG hash of the shot number.",
+  "solution_rl": "fn hash(seed: i32) -> i32 {\n    let mut h: i32 = seed * 747796405 + 2891336453;\n    h = (h >> 16) ^ h;\n    if h < 0 { h = 0 - h; }\n    h\n}\n\nfn frame(t: i32) {\n    let tab = [0, 49, 90, 117, 127, 117, 90, 49, 0, -49, -90, -117, -127, -117, -90, -49];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cycle: i32 = 140;\n    let phase: i32 = t % cycle;\n    let shot: i32 = t / cycle;\n    let cx: i32 = w / 4 + hash(shot * 17 + 3) % (w / 2);\n    let cy: i32 = h / 4;\n    host::display::clear(0x000008);\n    if phase < 50 {\n        let y: i32 = h - phase * (h - cy) / 50;\n        host::display::fill_rect(cx - 1, y, 2, 6, 0xffffc0);\n    } else {\n        let age: i32 = phase - 50;\n        let mut k: i32 = 0;\n        while k < 16 {\n            let px: i32 = cx + tab[k] * age / 96;\n            let py: i32 = cy + tab[(k + 4) & 15] * age / 96 + age * age / 40;\n            let c: i32 = if age < 30 { 0xffe060 } else if age < 60 { 0xff6030 } else { 0x502018 };\n            host::display::fill_rect(px, py, 2, 2, c);\n            k = k + 1;\n        }\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "particles",
+    "trig-table",
+    "prng",
+    "animation"
+  ]
+}

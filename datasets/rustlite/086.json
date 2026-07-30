@@ -1,0 +1,12 @@
+{
+  "id": "086",
+  "prompt": "Write a cartridge with a 3-tab bar across the top (HOME / STATS / ABOUT). Clicking a tab makes it active: the active tab connects to the content area and gets a white top stripe, and each tab shows different content and background tint. Hit-test the click by dividing pointer_x by the tab width; remember the active tab in a state slot and pick the background with a helper fn using match on the plain i32 index.",
+  "solution_rl": "fn bg_of(a: i32) -> i32 {\n    match a {\n        0 => 0x102030,\n        1 => 0x103018,\n        _ => 0x2a1030,\n    }\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let tabw: i32 = w / 3;\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let mut active: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 && py < 40 {\n        active = px / tabw;\n        if active > 2 { active = 2; }\n        host::display::state_set(0, active);\n    }\n    host::display::state_set(1, down);\n    let bg: i32 = bg_of(active);\n    host::display::clear(bg);\n    let mut i: i32 = 0;\n    while i < 3 {\n        let c: i32 = if i == active { bg } else { 0x282828 };\n        host::display::fill_rect(i * tabw, 0, tabw - 2, 40, c);\n        if i == active {\n            host::display::fill_rect(i * tabw, 0, tabw - 2, 3, 0xffffff);\n        }\n        i = i + 1;\n    }\n    host::display::draw_string(12, 16, \"HOME\", 0xffffff, 1);\n    host::display::draw_string(tabw + 12, 16, \"STATS\", 0xffffff, 1);\n    host::display::draw_string(tabw * 2 + 12, 16, \"ABOUT\", 0xffffff, 1);\n    match active {\n        0 => {\n            host::display::draw_string(20, 80, \"WELCOME HOME\", 0xffffff, 2);\n        }\n        1 => {\n            host::display::draw_string(20, 80, \"FRAMES SO FAR\", 0x88ff88, 2);\n            host::display::draw_number(20, 110, t, 0xffffff, 2);\n        }\n        _ => {\n            host::display::draw_string(20, 80, \"ABOUT THIS APP\", 0xcc88ff, 2);\n        }\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "match",
+    "tabs"
+  ]
+}

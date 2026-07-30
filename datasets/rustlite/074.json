@@ -1,0 +1,10 @@
+{
+  "id": "074",
+  "prompt": "Radar screen: a sweep line rotates around the center (one revolution every 64 frames via a 32-entry sine table), trailed by two dimmer afterglow lines at the previous two angles, inside a ring of 16 dim tick marks. Green phosphor look on black; blip a dot at a fixed bearing whenever the sweep passes it.",
+  "solution_rl": "fn frame(t: i32) {\n    let tab = [0, 25, 49, 71, 90, 106, 117, 124, 127, 124, 117, 106, 90, 71, 49, 25, 0, -25, -49, -71, -90, -106, -117, -124, -127, -124, -117, -106, -90, -71, -49, -25];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    let r: i32 = if w < h { w / 2 - 10 } else { h / 2 - 10 };\n    host::display::clear(0x000000);\n    let mut k: i32 = 0;\n    while k < 16 {\n        let tx: i32 = cx + tab[k * 2] * r / 127;\n        let ty: i32 = cy + tab[(k * 2 + 8) & 31] * r / 127;\n        host::display::fill_rect(tx - 1, ty - 1, 2, 2, 0x104010);\n        k = k + 1;\n    }\n    let a: i32 = (t / 2) & 31;\n    let mut trail: i32 = 2;\n    while trail >= 0 {\n        let idx: i32 = (a - trail + 32) & 31;\n        let ex: i32 = cx + tab[idx] * r / 127;\n        let ey: i32 = cy + tab[(idx + 8) & 31] * r / 127;\n        let c: i32 = if trail == 0 { 0x40ff40 } else if trail == 1 { 0x208020 } else { 0x104010 };\n        host::display::draw_line(cx, cy, ex, ey, c);\n        trail = trail - 1;\n    }\n    let bearing: i32 = 5;\n    let bx: i32 = cx + tab[bearing] * r * 2 / 3 / 127;\n    let by: i32 = cy + tab[(bearing + 8) & 31] * r * 2 / 3 / 127;\n    if ((a - bearing + 32) & 31) < 6 {\n        host::display::fill_rect(bx - 2, by - 2, 4, 4, 0x80ff80);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "trig-table",
+    "animation",
+    "motion-path"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "142",
+  "prompt": "Make an eight-step drum sequencer that runs itself off t: every 8 frames advance one step (step = (t / 8) % 8), with the kick and hi-hat patterns stored in two 0/1 arrays - fire host::audio::tone(55, 120, 0) / noise(25) only on the frame a step begins, never on every frame of the step. Draw both pattern rows as squares (lit = active) and a yellow playhead marker above the current column.",
+  "solution_rl": "fn frame(t: i32) {\n    let kick = [1, 0, 0, 0, 1, 0, 0, 0];\n    let hat = [1, 1, 0, 1, 1, 0, 1, 1];\n    let step: i32 = (t / 8) % 8;\n    if t % 8 == 0 {\n        if kick[step] == 1 { host::audio::tone(55, 120, 0); }\n        if hat[step] == 1 { host::audio::noise(25); }\n    }\n    host::display::clear(0x0a0a0a);\n    host::display::draw_string(16, 60, \"STEP SEQ\", 0xffffff, 3);\n    let mut i: i32 = 0;\n    while i < 8 {\n        let x: i32 = 16 + i * 60;\n        let mut kc: i32 = 0x202020;\n        if kick[i] == 1 { kc = 0xff4020; }\n        host::display::fill_rect(x, 200, 48, 48, kc);\n        let mut hc: i32 = 0x202020;\n        if hat[i] == 1 { hc = 0x20c0ff; }\n        host::display::fill_rect(x, 280, 48, 48, hc);\n        i = i + 1;\n    }\n    host::display::fill_rect(16 + step * 60, 180, 48, 8, 0xffff00);\n    host::display::draw_string(16, 350, \"RED KICK BLUE HAT\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "arrays",
+    "modulo"
+  ]
+}

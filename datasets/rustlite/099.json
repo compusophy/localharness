@@ -1,0 +1,11 @@
+{
+  "id": "099",
+  "prompt": "A slider with detents: the track is 0..100 but the thumb snaps to the five stops 0/25/50/75/100. While the pointer is down in the track band, compute the raw 0..100 position from pointer_x, then snap with integer math ((raw + 12) / 25 * 25, clamped) and store it in a state slot. Draw tick marks at each detent and the snapped value as a number.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let tx: i32 = 40;\n    let tw: i32 = w - 80;\n    let ty: i32 = 140;\n    let down: i32 = host::display::pointer_down();\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let mut v: i32 = host::display::state_get(0);\n    if down == 1 && py >= ty - 20 && py < ty + 24 {\n        let mut raw: i32 = (px - tx) * 100 / tw;\n        if raw < 0 { raw = 0; }\n        if raw > 100 { raw = 100; }\n        v = (raw + 12) / 25 * 25;\n        if v > 100 { v = 100; }\n        host::display::state_set(0, v);\n    }\n    host::display::clear(0x101010);\n    host::display::fill_rect(tx, ty, tw, 4, 0x404040);\n    let mut i: i32 = 0;\n    while i < 5 {\n        let tkx: i32 = tx + i * 25 * tw / 100;\n        host::display::fill_rect(tkx - 1, ty - 8, 2, 20, 0x606060);\n        i = i + 1;\n    }\n    let hx: i32 = tx + v * tw / 100;\n    host::display::fill_rect(hx - 7, ty - 12, 14, 28, 0x00ccff);\n    host::display::draw_string(tx, 70, \"SNAPPED\", 0x808080, 1);\n    host::display::draw_number(tx, 86, v, 0xffffff, 3);\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "slider"
+  ]
+}

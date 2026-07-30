@@ -1,0 +1,11 @@
+{
+  "id": "165",
+  "prompt": "Graceful degradation: try to mount \"lib-trig\" with spawn_lib (latched - never spawn twice). A dot sweeps the screen; its height uses the library's sin256(deg) export when status(h) == 1 AND call_ok() == 0, but if the mount FAILED (status 2) or a call errors, fall back to a local triangle-wave helper instead of freezing. Label which source is currently steering the dot.",
+  "solution_rl": "fn tri_local(n: i32, span: i32) -> i32 {\n    let m: i32 = n % (span * 2);\n    if m > span { span * 2 - m } else { m }\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x0c0c10);\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, host::compose::spawn_lib(\"lib-trig\"));\n    }\n    let h: i32 = host::display::state_get(1);\n    let st: i32 = host::compose::status(h);\n    let x: i32 = 20 + (t * 3) % 460;\n    let mut y: i32 = 240;\n    if st == 1 {\n        let s: i32 = host::compose::call(h, \"sin256\", t * 4, 0, 0, 0);\n        if host::compose::call_ok() == 0 {\n            y = 240 - s * 120 / 256;\n            host::display::draw_string(8, 8, \"WAVE: LIB-TRIG\", 0x00ff66, 1);\n        } else {\n            y = 180 + tri_local(t * 4, 120);\n            host::display::draw_string(8, 8, \"WAVE: LOCAL FALLBACK\", 0xffff00, 1);\n        }\n    } else {\n        if st == 2 {\n            y = 180 + tri_local(t * 4, 120);\n            host::display::draw_string(8, 8, \"LIB FAILED - LOCAL TRIANGLE\", 0xffff00, 1);\n        } else {\n            host::display::draw_string(8, 8, \"MOUNTING LIB-TRIG...\", 0x808080, 1);\n        }\n    }\n    host::display::fill_rect(x, y - 8, 16, 16, 0x40c0ff);\n    host::display::present();\n}\n",
+  "tags": [
+    "compose",
+    "library",
+    "state",
+    "functions"
+  ]
+}

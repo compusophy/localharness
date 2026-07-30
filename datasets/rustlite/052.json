@@ -1,0 +1,11 @@
+{
+  "id": "052",
+  "prompt": "Snowfall, please. 40 flakes drifting down slowly while swaying side to side. There are no floats or sin() in rustlite, so use a triangle(t, span) fold for the sway and an LCG hash of the flake index for per-flake speed, phase and column. Bigger, brighter flakes for the faster ones; dark slate-blue sky.",
+  "solution_rl": "fn hash(seed: i32) -> i32 {\n    let mut h: i32 = seed * 747796405 + 2891336453;\n    h = (h >> 16) ^ h;\n    if h < 0 { h = 0 - h; }\n    h\n}\n\nfn tri(t: i32, span: i32) -> i32 {\n    let period: i32 = span * 2;\n    let phase: i32 = t % period;\n    if phase < span { phase } else { period - phase }\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x081018);\n    let mut i: i32 = 0;\n    while i < 40 {\n        let speed: i32 = hash(i * 5 + 2) % 2 + 1;\n        let sway: i32 = tri(t + hash(i * 9 + 4) % 32, 16) - 8;\n        let x: i32 = (hash(i * 13 + 1) % w + sway + w) % w;\n        let y: i32 = (hash(i * 11 + 7) + t * speed) % h;\n        let size: i32 = speed + 1;\n        let c: i32 = if speed == 2 { 0xffffff } else { 0xa0a8b0 };\n        host::display::fill_rect(x, y, size, size, c);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "particles",
+    "prng",
+    "animation",
+    "functions"
+  ]
+}

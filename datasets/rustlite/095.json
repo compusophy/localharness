@@ -1,0 +1,12 @@
+{
+  "id": "095",
+  "prompt": "An animated ON/OFF switch like a phone toggle: clicking the 120x56 switch flips the target state, but the white knob must not teleport - each frame it eases toward its goal x by a quarter of the remaining distance (plus a 1px nudge when the integer division rounds to zero, so it actually arrives). Keep the on/off state and the knob position in state slots; tint the track green when on.",
+  "solution_rl": "fn frame(t: i32) {\n    let sx: i32 = 100;\n    let sy: i32 = 110;\n    let sw: i32 = 120;\n    let sh: i32 = 56;\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(2);\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    let mut on: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 && px >= sx && px < sx + sw && py >= sy && py < sy + sh {\n        on = 1 - on;\n        host::display::state_set(0, on);\n    }\n    host::display::state_set(2, down);\n    let goal: i32 = if on == 1 { sw - 52 } else { 4 };\n    let mut k: i32 = host::display::state_get(1);\n    let d: i32 = goal - k;\n    k = k + d / 4;\n    if d > 0 && d / 4 == 0 { k = k + 1; }\n    if d < 0 && d / 4 == 0 { k = k - 1; }\n    host::display::state_set(1, k);\n    host::display::clear(0x101010);\n    let track: i32 = if on == 1 { 0x006644 } else { 0x333333 };\n    host::display::fill_rect(sx, sy, sw, sh, track);\n    host::display::fill_rect(sx + k, sy + 4, 48, sh - 8, 0xf0f0f0);\n    if on == 1 {\n        host::display::draw_string(sx, sy - 24, \"ON\", 0x00ff88, 2);\n    } else {\n        host::display::draw_string(sx, sy - 24, \"OFF\", 0x808080, 2);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "ui",
+    "pointer",
+    "state",
+    "animation",
+    "switch"
+  ]
+}
