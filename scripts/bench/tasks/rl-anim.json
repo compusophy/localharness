@@ -3,6 +3,11 @@
   "kind": "rustlite",
   "points": 10,
   "prompt": "Write a rustlite cartridge whose `fn frame(t: i32)` animates: clear the screen each frame with host::display::clear, then draw one 32x32 filled rectangle with host::display::fill_rect whose x position advances with t (use % to keep it on a 512-wide screen), then host::display::present(). Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+  "prompts": [
+    "Write a rustlite cartridge whose `fn frame(t: i32)` animates: clear the screen each frame with host::display::clear, then draw one 32x32 filled rectangle with host::display::fill_rect whose x position advances with t (use % to keep it on a 512-wide screen), then host::display::present(). Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Create an animated rustlite cartridge: in `fn frame(t: i32)`, clear with host::display::clear each frame, draw a single 32x32 filled rectangle via host::display::fill_rect whose x coordinate moves with t (wrap it with % so it stays on the 512-wide screen), and finish with host::display::present(). Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Rustlite animation task: every frame(t) must clear the screen (host::display::clear), then use host::display::fill_rect to draw one 32x32 filled square whose horizontal position is a function of t wrapped by % to the 512-pixel screen width, then call host::display::present(). Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence."
+  ],
   "solution": "rl-anim.rl",
   "scorer": {
     "required_exports": ["frame"],

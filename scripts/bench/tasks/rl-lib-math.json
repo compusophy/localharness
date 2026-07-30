@@ -2,18 +2,16 @@
   "id": "rl-lib-math",
   "kind": "rustlite",
   "points": 15,
+  "seeded": true,
   "prompt": "Write a LIBRARY cartridge (callable via host::compose::spawn_lib + compose::call): export `fn add(a: i32, b: i32) -> i32`, `fn mul(a: i32, b: i32) -> i32`, and `fn clamp(v: i32, lo: i32, hi: i32) -> i32` (clamp v into [lo, hi]). Also include a `fn frame(t: i32)` landing card that clears the screen and presents (a library is still a cartridge). Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+  "prompts": [
+    "Write a LIBRARY cartridge (callable via host::compose::spawn_lib + compose::call): export `fn add(a: i32, b: i32) -> i32`, `fn mul(a: i32, b: i32) -> i32`, and `fn clamp(v: i32, lo: i32, hi: i32) -> i32` (clamp v into [lo, hi]). Also include a `fn frame(t: i32)` landing card that clears the screen and presents (a library is still a cartridge). Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Write a rustlite LIBRARY cartridge (for host::compose::spawn_lib + compose::call): it must export `fn add(a: i32, b: i32) -> i32`, `fn mul(a: i32, b: i32) -> i32`, and `fn clamp(v: i32, lo: i32, hi: i32) -> i32` clamping v into [lo, hi], plus a `fn frame(t: i32)` landing card that clears the screen and presents (a library is still a cartridge). Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Build a callable math library as a rustlite cartridge: `fn add(a: i32, b: i32) -> i32`, `fn mul(a: i32, b: i32) -> i32`, and `fn clamp(v: i32, lo: i32, hi: i32) -> i32` (restrict v to the range [lo, hi]), and include a `fn frame(t: i32)` that clears the screen and presents so it still mounts as a cartridge (libraries are loaded via host::compose::spawn_lib + compose::call). Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence."
+  ],
   "solution": "rl-lib-math.rl",
   "scorer": {
     "required_exports": ["add", "mul", "clamp", "frame"],
-    "calls": [
-      { "export": "add", "args": [2, 3], "expect": 5 },
-      { "export": "add", "args": [-4, 9], "expect": 5 },
-      { "export": "mul", "args": [6, 7], "expect": 42 },
-      { "export": "clamp", "args": [10, 0, 5], "expect": 5 },
-      { "export": "clamp", "args": [-3, 0, 5], "expect": 0 },
-      { "export": "clamp", "args": [3, 0, 5], "expect": 3 }
-    ],
     "must_run": ["frame"]
   }
 }

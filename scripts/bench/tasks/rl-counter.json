@@ -3,6 +3,11 @@
   "kind": "rustlite",
   "points": 10,
   "prompt": "Write a rustlite cartridge that counts frames PERSISTENTLY using the host state slots (the cartridge itself keeps no state): each frame(t), read slot 0 with host::display::state_get(0), add 1, write it back with host::display::state_set(0, ...), then clear the screen and draw the count with host::display::draw_number, then present. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+  "prompts": [
+    "Write a rustlite cartridge that counts frames PERSISTENTLY using the host state slots (the cartridge itself keeps no state): each frame(t), read slot 0 with host::display::state_get(0), add 1, write it back with host::display::state_set(0, ...), then clear the screen and draw the count with host::display::draw_number, then present. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Write a rustlite cartridge that keeps a persistent frame counter in HOST state (no cartridge-side state): in frame(t), fetch slot 0 via host::display::state_get(0), increment it, store it with host::display::state_set(0, ...), then clear the screen, render the count using host::display::draw_number, and present. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Rustlite task — persistent counting through the host state slots: each frame reads slot 0 (host::display::state_get(0)), adds one, writes it back (host::display::state_set), clears the screen, draws the value with host::display::draw_number, then calls host::display::present(). The cartridge itself must hold no state. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence."
+  ],
   "solution": "rl-counter.rl",
   "scorer": {
     "required_exports": ["frame"],

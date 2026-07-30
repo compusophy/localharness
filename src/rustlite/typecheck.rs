@@ -1141,6 +1141,16 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         // `close(handle)`             close the socket and drop its inbox.
         "net::open" => (vec![String], I32),
         "net::send" => (vec![I32, String], I32),
+        // --- math (CODEGEN DESUGAR — no host import): integer trig for
+        // 3D/geometry cartridges (telemetry #83: hand-rolled linear sine
+        // approximations drew square "circles"). Angle unit = 1/256 of a
+        // turn (any i32 wraps via `& 255`); returns sin/cos SCALED BY 256
+        // (-256..=256). `cos(a)` = `sin(a + 64)`. Codegen bakes a 512-byte
+        // quarter-degree table into the data segment and lowers each call to
+        // an inline load — identical results in every runtime (browser
+        // worker, compose children, native), zero new host imports.
+        "math::sin" => (vec![I32], I32),
+        "math::cos" => (vec![I32], I32),
         "net::poll" => (vec![I32, I32, I32], I32),
         "net::status" => (vec![I32], I32),
         "net::close" => (vec![I32], Void),

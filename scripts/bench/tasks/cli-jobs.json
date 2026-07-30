@@ -3,6 +3,11 @@
   "kind": "artifact",
   "points": 15,
   "prompt": "In your workspace, build a bashlite job suite: `jobs/a.bl` printing `job a done`, `jobs/b.bl` printing `job b done`, and `main.bl` that discovers and runs every script under jobs/ (find + the `run` builtin), then echoes `all jobs complete`.",
+  "prompts": [
+    "In your workspace, build a bashlite job suite: `jobs/a.bl` printing `job a done`, `jobs/b.bl` printing `job b done`, and `main.bl` that discovers and runs every script under jobs/ (find + the `run` builtin), then echoes `all jobs complete`.",
+    "Create a bashlite job suite in your workspace: `jobs/a.bl` echoing `job a done`, `jobs/b.bl` echoing `job b done`, plus a `main.bl` that finds every script under jobs/ and executes each via the `run` builtin, finishing with `all jobs complete`.",
+    "Workspace task: build `jobs/a.bl` (prints `job a done`), `jobs/b.bl` (prints `job b done`), and a discovering `main.bl` that runs all the jobs/ scripts with find + the `run` builtin, then echoes `all jobs complete`."
+  ],
   "solution": "cli-jobs",
   "scorer": {
     "artifacts": ["main.bl", "jobs/a.bl", "jobs/b.bl"],

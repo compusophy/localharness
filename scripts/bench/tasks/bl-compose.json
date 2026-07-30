@@ -2,12 +2,13 @@
   "id": "bl-compose",
   "kind": "bashlite",
   "points": 10,
+  "seeded": true,
   "prompt": "Your working directory contains `child.bl`, a bashlite script that prints one line. Write a bashlite script that composes it: run child.bl twice via the `run` builtin, then echo `parent done`. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+  "prompts": [
+    "Your working directory contains `child.bl`, a bashlite script that prints one line. Write a bashlite script that composes it: run child.bl twice via the `run` builtin, then echo `parent done`. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+    "`child.bl` (a bashlite script printing a single line) sits in your working directory. Write a parent bashlite script that invokes it twice with the `run` builtin and then echoes `parent done`. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+    "Compose scripts in bashlite: execute the provided `child.bl` two times via the `run` builtin, then print the line `parent done`. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence."
+  ],
   "solution": "bl-compose.bl",
-  "scorer": {
-    "setup_files": {
-      "child.bl": "echo \"child says hi\"\n"
-    },
-    "expect_stdout": "child says hi\nchild says hi\nparent done"
-  }
+  "scorer": {}
 }

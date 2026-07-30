@@ -3,6 +3,11 @@
   "kind": "rustlite",
   "points": 10,
   "prompt": "Write a rustlite cartridge with a custom 256x128 canvas: export `fn dims() -> i32` returning the packed value (256 << 16) | 128, plus a `fn frame(t: i32)` that clears the screen and presents. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+  "prompts": [
+    "Write a rustlite cartridge with a custom 256x128 canvas: export `fn dims() -> i32` returning the packed value (256 << 16) | 128, plus a `fn frame(t: i32)` that clears the screen and presents. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Write a rustlite cartridge that requests a 256x128 canvas: export `fn dims() -> i32` returning (256 << 16) | 128, and a `fn frame(t: i32)` that clears the screen and presents. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Rustlite custom-canvas task: provide `fn dims() -> i32` whose return value packs width 256 and height 128 as (256 << 16) | 128, plus a frame(t) doing clear + present. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence."
+  ],
   "solution": "rl-dims.rl",
   "scorer": {
     "required_exports": ["dims", "frame"],

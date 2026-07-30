@@ -3,6 +3,11 @@
   "kind": "bashlite",
   "points": 5,
   "prompt": "Write a bashlite script that prints exactly two lines: first `hello, localharness` then `bench v1`. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+  "prompts": [
+    "Write a bashlite script that prints exactly two lines: first `hello, localharness` then `bench v1`. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+    "Produce a bashlite script whose output is exactly two lines — `hello, localharness` on the first line and `bench v1` on the second. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+    "Using bashlite, print the line `hello, localharness` followed by the line `bench v1` — nothing else. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence."
+  ],
   "solution": "bl-hello.bl",
   "scorer": {
     "expect_stdout": "hello, localharness\nbench v1"

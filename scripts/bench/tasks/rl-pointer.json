@@ -3,6 +3,11 @@
   "kind": "rustlite",
   "points": 10,
   "prompt": "Write an interactive rustlite cartridge: each frame(t), clear the screen, read the pointer with host::display::pointer_x() / host::display::pointer_y(), and draw a filled rectangle at the pointer — 16x16 when host::display::pointer_down() is nonzero, 8x8 otherwise — then present. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+  "prompts": [
+    "Write an interactive rustlite cartridge: each frame(t), clear the screen, read the pointer with host::display::pointer_x() / host::display::pointer_y(), and draw a filled rectangle at the pointer — 16x16 when host::display::pointer_down() is nonzero, 8x8 otherwise — then present. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Build an interactive rustlite cartridge: per frame, clear the screen, fetch the cursor via host::display::pointer_x() and host::display::pointer_y(), and with host::display::fill_rect draw a filled square at that position — 16x16 while host::display::pointer_down() returns nonzero, 8x8 otherwise — then host::display::present(). Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Rustlite pointer-tracking task: frame(t) clears the screen, reads pointer_x/pointer_y from host::display, draws a filled rectangle there via host::display::fill_rect (16x16 when host::display::pointer_down() is nonzero, 8x8 otherwise), then presents. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence."
+  ],
   "solution": "rl-pointer.rl",
   "scorer": {
     "required_exports": ["frame"],

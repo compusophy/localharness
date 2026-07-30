@@ -39,13 +39,16 @@ codes + caps are SSOT in `src/compose.rs`; and a library still needs a
 its landing card and never runs while mounted headless.
 `examples/cartridges/lib_physics.rl` + `uses_lib.rl` are the pair.
 
-## `draw_string` is a desugar, not a host import (the pattern to copy)
+## `draw_string` + `host::math` are desugars, not host imports (the pattern to copy)
 `host::display::draw_string(x,y,"LIT",color,scale)` lowers at the PARSER stage to
 one `draw_char` per glyph (6px stride, matching `raster::draw_number`) — NO new host
 import, integer-only ABI intact. Validated at compile time: literal-only 3rd arg
 (`EXPECTED_EXPRESSION`), printable-ASCII (`UNEXPECTED_BYTE`), ≤256 bytes
 (`OVERSIZE`), arity (`ARITY_MISMATCH`). When you need a "host fn that takes text,"
-do THIS instead of a new import.
+do THIS instead of a new import. `host::math::sin/cos` (telemetry #83) is the
+second desugar: a baked 512-byte sine table in the data segment + an inline
+load16_s — angle = 1/256 turn (wraps via & 255), result x256. No import, no
+worker edit, identical in every runtime including compose children.
 
 ## Error codes: every diagnostic carries an `LH0xxx`
 `CompileError::code` → lexer `LH00xx` · parser `LH01xx` · typecheck `LH02xx` ·

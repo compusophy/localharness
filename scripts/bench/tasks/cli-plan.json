@@ -3,6 +3,11 @@
   "kind": "artifact",
   "points": 10,
   "prompt": "In your workspace, write `plan.md`: a `## Goal` section and a `## Steps` section with at least 3 numbered steps describing how to compile and publish a rustlite cartridge as a subdomain's public face.",
+  "prompts": [
+    "In your workspace, write `plan.md`: a `## Goal` section and a `## Steps` section with at least 3 numbered steps describing how to compile and publish a rustlite cartridge as a subdomain's public face.",
+    "Write `plan.md` in your workspace: it needs a `## Goal` section plus a `## Steps` section containing at least 3 numbered steps that explain compiling a rustlite cartridge and publishing it as a subdomain's public face.",
+    "Produce a `plan.md` in the workspace with two sections — `## Goal` and `## Steps` — where Steps holds 3 or more numbered steps covering how to compile a rustlite cartridge and set it as a subdomain's public face."
+  ],
   "solution": "cli-plan",
   "scorer": {
     "artifacts": ["plan.md"],

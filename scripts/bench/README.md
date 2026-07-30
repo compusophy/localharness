@@ -11,19 +11,53 @@ signals later (see `design/bench.md`).
 
 ```sh
 cargo build                                   # scorer shells out to target/debug/localharness
-node scripts/bench/run.mjs                    # offline (default): score solutions/
+node scripts/bench/run.mjs                    # offline (default): score solutions/, seed 1
+node scripts/bench/run.mjs --seed 7           # re-derive fixtures/args/probes/prompts
 node scripts/bench/run.mjs --solutions <dir>  # score someone else's answers
 node scripts/bench/run.mjs --only rl-clear,bl-hello
-node scripts/bench/run.mjs --json             # machine-readable summary
+node scripts/bench/run.mjs --json             # machine-readable summary (carries the seed)
 node scripts/bench/run.mjs --live --as <me> --target <agent>   # answers via `localharness call`
 ```
 
 Exit 0 iff every scored task passed. Offline mode reads answers from a
-solutions dir (reference answers in `solutions/` score 145/145). Live mode
-sends each task's `prompt` to a real agent (`localharness call`), extracts the
-last fenced code block from the reply, and runs the SAME scorers. Live costs
-real $LH (~1 $LH/message via the meter); artifact tasks are skipped in live
-(they score a workspace, not a chat reply).
+solutions dir (reference answers in `solutions/` score 145/145 at ANY seed).
+Live mode sends each task's selected prompt phrasing to a real agent
+(`localharness call`), extracts the last fenced code block from the reply, and
+runs the SAME scorers. Live costs real $LH (~1 $LH/message via the meter);
+artifact tasks are skipped in live (they score a workspace, not a chat reply).
+
+## Anti-overfit: seeded parameterization
+
+This repo is open — a "holdout" task dir would be public the moment it landed,
+so holdouts are theater here. The real lever is deriving the task INSTANCE at
+score time: tasks marked `"seeded": true` get their fixtures, behavioral call
+args, and content probes generated from `--seed`, and every expected value is
+COMPUTED from the generated material by the runner — nothing memorizable is
+stored. A model (or checked-in answer) that memorized one instance's outputs
+fails every other seed; only a general program passes all of them.
+
+- **Seed 1 (the default) is the frozen v1 instance** — generators emit the
+  original fixture values (through the same compute path) and pick the original
+  prompt phrasing, so historical baseline scores stay comparable.
+- **Any other seed** re-derives fixtures (bashlite file trees / log lines /
+  status words / child scripts), behavioral args (rl-lib-math's add/mul/clamp
+  probes), artifact probe rotation (cli-scaffold), and picks one of the task's
+  2-3 prompt phrasings.
+- **A score without its seed is meaningless** — the runner prints the seed in
+  the header, the TOTAL line, and the `--json` summary. Cite it.
+- Per-task PRNG streams are derived from `fnv1a(task.id) ^ mix(seed)`, so an
+  instance depends only on (seed, id) — stable under `--only` and task order.
+
+Seeded: `bl-count`, `bl-filter`, `bl-branch`, `bl-compose` (fixtures →
+computed stdout), `rl-lib-math` (seeded call args → computed i32 expectations),
+`cli-scaffold` (probe rotation). The rest are inherently structural or
+prompt-pinned: `rl-clear`/`rl-anim`/`rl-counter`/`rl-pointer` check host-call
+structure only (nothing behavioral to vary), `rl-dims` checks a value stated in
+the prompt (a static source can't adapt to a seeded canvas), `bl-hello` is a
+verbatim-echo probe with no fixture a general answer could compute from, and
+`cli-jobs`/`cli-plan` probe only prompt-required strings (their references are
+static workspaces). Every task still carries prompt paraphrases — the live-mode
+lever even where the scorer is structural.
 
 ## Task schema (`tasks/*.json`)
 
@@ -32,11 +66,19 @@ real $LH (~1 $LH/message via the meter); artifact tasks are skipped in live
   "id": "rl-clear",
   "kind": "rustlite | bashlite | artifact",
   "points": 5,
-  "prompt": "what the agent is asked",
+  "seeded": false,
+  "prompt": "what the agent is asked (== prompts[0], kept for back-compat)",
+  "prompts": ["phrasing 1", "phrasing 2", "phrasing 3"],
   "solution": "path under solutions/ (file, or dir for artifact tasks)",
   "scorer": { ... }
 }
 ```
+
+The seed picks the phrasing (seed 1 → `prompts[0]`). For `"seeded": true`
+tasks the seed-varying scorer fields (`setup_files`, `expect_stdout`, `calls`,
+rotated `contains`) live in `run.mjs`'s `SEEDED` generator table, NOT in the
+JSON — the JSON keeps only the structural parts. The flag and the table are
+cross-checked at startup.
 
 Scorer params by kind:
 
@@ -58,10 +100,15 @@ Scorer params by kind:
 
 Drop `tasks/<id>.json` + a reference answer under `solutions/`, then prove
 `node scripts/bench/run.mjs --only <id>` passes. Keep scorers exact — a task a
-machine can't score doesn't belong here. Setup files live in the TASK (both
+machine can't score doesn't belong here. Setup files live with the TASK (both
 offline and live answers get the same fixtures); the answer is only the
-script/source itself.
+script/source itself. If any fixture value or expected output is an arbitrary
+constant, don't hardcode it: mark the task `"seeded": true`, add a generator to
+`SEEDED` in `run.mjs` (pin the seed-1 values, COMPUTE the expectations), write
+a reference answer that computes rather than memorizes, and prove `--only <id>`
+at seeds 1, 7, and 42.
 
 ## Current suite
 
-14 tasks / 145 points: 6 rustlite (60), 5 bashlite (45), 3 artifact (40).
+14 tasks / 145 points: 6 rustlite (60), 5 bashlite (45), 3 artifact (40) — 6 of
+them seeded.

@@ -26,6 +26,30 @@ Three task kinds, one runner (`run.mjs`, offline default / `--live` via
 - **CLI/agentic** — a produced WORKSPACE; scored by artifact presence, content
   probes, compile checks, and executing the produced scripts.
 
+### Anti-overfit: seeded parameterization (SHIPPED)
+
+An open repo cannot have a holdout set — a "holdout" dir is public the moment
+it lands, and fixed fixtures + fixed expected values are a memorization target
+(a model could learn to emit `3 cartridges` instead of counting). The honest
+lever is deriving the task INSTANCE at score time: `run.mjs --seed <n>`
+(default 1) drives a per-task PRNG (mulberry32 over `fnv1a(id) ^ mix(seed)`);
+tasks marked `"seeded": true` generate their fixtures / behavioral call args /
+content probes from it, and the runner COMPUTES every expected value from the
+generated material — expectations are never stored. Each task also carries 2-3
+prompt paraphrases; the seed picks the phrasing sent in `--live`.
+
+Seed 1 is pinned to the frozen v1 instance (original fixtures, original
+phrasing), so pre-seed scores read as seed-1 scores unchanged. Reference
+solutions are GENERAL programs (count/filter/compute, never echo a memorized
+answer) and pass at any seed; a memorizing answer passes seed 1 and fails
+everywhere else — proven by the negative control. Seeded: bl-count, bl-filter,
+bl-branch, bl-compose, rl-lib-math, cli-scaffold. Structurally-scored or
+prompt-pinned tasks (rl-clear/anim/counter/pointer, rl-dims, bl-hello,
+cli-jobs, cli-plan) stay fixed — their scored surface has no arbitrary
+constants a seed could vary without breaking the "reference passes at any
+seed" invariant. **A score must always cite its seed** (the runner prints it
+in the header, TOTAL line, and `--json`).
+
 ### The on-chain reward loop (wiring plan — facets already exist)
 
 The scorer verdict is the oracle; the chain holds the money and the record.
@@ -80,18 +104,19 @@ v1 blocks it.
 
 **Shipped:** `scripts/bench/` — 14 tasks (6 rustlite / 5 bashlite / 3
 artifact), offline + live runner with machine scorers, reference solutions
-passing 145/145, live smoke green (2 tasks vs a real agent over the metered
-call path, 2 $LH). **Deferred:** bounty/validation/attestation wiring (facets
-live, glue not written), scheduler-driven score history, TB agent adapter,
-corpus growth + anti-overfit (holdout tasks, paraphrased prompts, fixture
-randomization — setup_files/expected values are trivially parameterizable),
-multi-model comparison tables.
+passing 145/145 at seeds 1/7/42, live smoke green (2 tasks vs a real agent over
+the metered call path, 2 $LH), seeded parameterization + prompt paraphrases
+(the anti-overfit section above; holdout dirs rejected as theater in an open
+repo). **Deferred:** bounty/validation/attestation wiring (facets live, glue
+not written), scheduler-driven score history, TB agent adapter, corpus growth,
+multi-model comparison tables, multi-seed sweep reporting (one `--json` run per
+seed already works; an aggregator does not exist yet).
 
 ## 4. Baselines (live runs, `--live --as claude --target claude`)
 
-| date | model (agent default) | live-scoreable | tasks | notes |
-|------|----------------------|----------------|-------|-------|
-| 2026-07-30 | gemini-3.6-flash | **75/105** | 8/11 | artifact tasks (40 pts) are chat-unscoreable by design in `--live` |
+| date | model (agent default) | seed | live-scoreable | tasks | notes |
+|------|----------------------|------|----------------|-------|-------|
+| 2026-07-30 | gemini-3.6-flash | 1 | **75/105** | 8/11 | artifact tasks (40 pts) are chat-unscoreable by design in `--live`; run predates `--seed` — seed 1 IS the frozen v1 instance, so it reads as seed 1 |
 
 Failures — all platform-ABI negative space (the exact gap
 `datasets/rustlite/` + a fine-tune target):
@@ -102,5 +127,7 @@ Failures — all platform-ABI negative space (the exact gap
   the host fn takes 5 (`x, y, value, rgb, scale`). Compile-rejected LH0203.
 
 Hill-climb rule: a candidate model (fine-tuned local, new frontier pin) must
-beat the current row on the SAME task set before a pin change; add rows here,
-never overwrite.
+beat the current row on the SAME task set AND the same seed before a pin
+change; add rows here, never overwrite. Seed-1 rows are the comparable series;
+an anti-overfit spot-check runs 2-3 extra seeds and a seed-robust score should
+not collapse vs seed 1.

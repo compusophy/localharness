@@ -3,6 +3,11 @@
   "kind": "rustlite",
   "points": 5,
   "prompt": "Write a minimal rustlite cartridge: a single `fn frame(t: i32)` that clears the screen to solid black with host::display::clear(0) and then calls host::display::present(). Nothing else. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+  "prompts": [
+    "Write a minimal rustlite cartridge: a single `fn frame(t: i32)` that clears the screen to solid black with host::display::clear(0) and then calls host::display::present(). Nothing else. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Produce the smallest rustlite cartridge that does exactly this each frame: `fn frame(t: i32)` calls host::display::clear(0) (solid black) then host::display::present(). No other behavior. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+    "Write a rustlite cartridge exporting only `fn frame(t: i32)`; the body clears the screen to black via host::display::clear(0) and presents via host::display::present(). Nothing more. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence."
+  ],
   "solution": "rl-clear.rl",
   "scorer": {
     "required_exports": ["frame"],

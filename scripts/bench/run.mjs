@@ -8,9 +8,16 @@
 //   node scripts/bench/run.mjs                          # offline (default): score solutions/
 //   node scripts/bench/run.mjs --solutions <dir>        # score someone else's answers
 //   node scripts/bench/run.mjs --only rl-clear,bl-hello # subset
+//   node scripts/bench/run.mjs --seed 7                 # re-derive fixtures/args/prompts
 //   node scripts/bench/run.mjs --live --target claude [--as claude]
 //                                                       # get answers via `localharness call`
 //   node scripts/bench/run.mjs --json                   # machine-readable summary on stdout
+//
+// Anti-overfit: tasks marked `"seeded": true` are PARAMETERIZED — fixtures,
+// behavioral call args, and content probes are derived from --seed (default 1 =
+// the frozen v1 instance, kept for baseline comparability), and every expected
+// value is COMPUTED from the generated material, never hardcoded. Scores are
+// only meaningful WITH their seed; the runner prints it everywhere.
 //
 // Prereq: cargo build (the scorer shells out to target/debug/localharness).
 
@@ -42,6 +49,11 @@ const ONLY = (opt('--only') ?? '').split(',').map((s) => s.trim()).filter(Boolea
 const SOLUTIONS = resolve(opt('--solutions') ?? join(here, 'solutions'));
 const AS_NAME = opt('--as');
 const TARGET = opt('--target');
+const SEED = Number.parseInt(opt('--seed') ?? '1', 10);
+if (!Number.isInteger(SEED)) {
+  console.error('--seed needs an integer');
+  process.exit(2);
+}
 
 if (!BIN) {
   console.error('no target/debug/localharness binary — run `cargo build` first');
@@ -76,6 +88,124 @@ function instantiate(bytes) {
     else if (im.kind === 'global') imports[im.module][im.name] = 0;
   }
   return { mod, inst: new WebAssembly.Instance(mod, imports) };
+}
+
+// ---- seeded parameterization -------------------------------------------------
+// Per-task PRNG stream: mulberry32 over fnv1a(task.id) ^ mix(seed), so an
+// instance depends only on (seed, id) — stable under --only and task ordering.
+function mulberry32(a) {
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function fnv1a(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+  return h >>> 0;
+}
+const taskRng = (id) => mulberry32((fnv1a(id) ^ Math.imul(SEED, 0x9e3779b1)) >>> 0);
+const ri = (rng, lo, hi) => lo + Math.floor(rng() * (hi - lo + 1)); // inclusive
+const pick = (rng, arr) => arr[ri(rng, 0, arr.length - 1)];
+
+// One generator per `"seeded": true` task. Each returns scorer OVERRIDES for a
+// concrete instance: fixtures/args are generated, and every expectation is
+// COMPUTED from the generated material — never hardcoded. Seed 1 emits the
+// frozen v1 fixture values (through the same compute path) so historical
+// baseline scores stay comparable.
+const SEEDED = {
+  'bl-count': (rng) => {
+    const rl = SEED === 1 ? ['a', 'b', 'c']
+      : ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta'].slice(0, ri(rng, 2, 6));
+    const decoys = SEED === 1 ? ['notes.txt']
+      : Array.from({ length: ri(rng, 1, 3) }, (_, i) => `note${i}.${pick(rng, ['txt', 'md', 'json'])}`);
+    const setup_files = {};
+    for (const n of rl) setup_files[`cartridges/${n}.rl`] = `// ${n}\n`;
+    for (const n of decoys) setup_files[`cartridges/${n}`] = 'not a cartridge\n';
+    const count = Object.keys(setup_files).filter((f) => f.endsWith('.rl')).length;
+    return { setup_files, expect_stdout: `${count} cartridges` };
+  },
+  'bl-filter': (rng) => {
+    let lines;
+    if (SEED === 1) {
+      lines = ['INFO boot', 'ERROR disk full', 'INFO tick', 'ERROR net down', 'WARN slow'];
+    } else {
+      const errs = ['disk full', 'net down', 'timeout', 'bad checksum', 'oom kill'];
+      const infos = ['boot', 'tick', 'sync ok', 'idle', 'ready', 'flush'];
+      lines = [
+        ...Array.from({ length: ri(rng, 2, 4) }, () => `ERROR ${pick(rng, errs)}`),
+        ...Array.from({ length: ri(rng, 2, 4) }, () => `${pick(rng, ['INFO', 'WARN'])} ${pick(rng, infos)}`),
+      ];
+      for (let i = lines.length - 1; i > 0; i--) { // deterministic shuffle
+        const j = ri(rng, 0, i);
+        [lines[i], lines[j]] = [lines[j], lines[i]];
+      }
+    }
+    const errLines = lines.filter((l) => l.includes('ERROR')); // computed FROM the fixture
+    return {
+      setup_files: { 'log.txt': lines.join('\n') + '\n' },
+      expect_stdout: [...errLines, `errors: ${errLines.length}`].join('\n'),
+    };
+  },
+  'bl-branch': (rng) => {
+    const status = SEED === 1 ? 'active'
+      : pick(rng, ['active', 'degraded', 'stopped', 'offline', 'active', 'maintenance']);
+    return {
+      setup_files: { 'status.txt': status },
+      expect_stdout: status === 'active' ? 'service up' : 'service down',
+    };
+  },
+  'bl-compose': (rng) => {
+    const line = `child says ${SEED === 1 ? 'hi' : pick(rng, ['hi', 'yo', 'ping', 'pong', 'ready', 'ok'])}`;
+    return {
+      setup_files: { 'child.bl': `echo "${line}"\n` },
+      expect_stdout: `${line}\n${line}\nparent done`,
+    };
+  },
+  'rl-lib-math': (rng) => {
+    let addArgs, mulArgs, lo, hi, probes;
+    if (SEED === 1) {
+      addArgs = [[2, 3], [-4, 9]]; mulArgs = [[6, 7]];
+      [lo, hi] = [0, 5]; probes = [10, -3, 3];
+    } else {
+      addArgs = [[ri(rng, -99, 99), ri(rng, -99, 99)], [ri(rng, -99, 99), ri(rng, -99, 99)]];
+      mulArgs = [[ri(rng, -12, 12), ri(rng, -12, 12)]];
+      lo = ri(rng, -20, 10); hi = lo + ri(rng, 1, 40);
+      probes = [hi + ri(rng, 1, 25), lo - ri(rng, 1, 25), ri(rng, lo, hi)]; // above, below, inside
+    }
+    return {
+      calls: [
+        ...addArgs.map(([a, b]) => ({ export: 'add', args: [a, b], expect: (a + b) | 0 })),
+        ...mulArgs.map(([a, b]) => ({ export: 'mul', args: [a, b], expect: Math.imul(a, b) })),
+        ...probes.map((v) => ({ export: 'clamp', args: [v, lo, hi], expect: Math.min(Math.max(v, lo), hi) })),
+      ],
+    };
+  },
+  'cli-scaffold': (rng) => {
+    if (SEED === 1) return {}; // frozen v1 probe set (README only)
+    // rotate 2 of 3 prompt-guaranteed app.rl markers into the probe set
+    const pool = ['fn frame', 'host::display::clear', 'host::display::present'];
+    const i = ri(rng, 0, 2);
+    return { contains: { 'README.md': ['# ', 'publish'], 'app.rl': [pool[i], pool[(i + 1 + ri(rng, 0, 1)) % 3]] } };
+  },
+};
+
+// Deep-copy a raw task into a concrete seeded instance: pick a prompt phrasing
+// and apply the task's generator (if any). Scorers below stay seed-unaware.
+function materialize(raw) {
+  const task = structuredClone(raw);
+  const rng = taskRng(task.id);
+  const phrasings = task.prompts?.length ? task.prompts : [task.prompt];
+  task.prompt = phrasings[SEED === 1 ? 0 : ri(rng, 0, phrasings.length - 1)];
+  const gen = SEEDED[task.id];
+  if (!!task.seeded !== !!gen) {
+    console.error(`task ${task.id}: "seeded" flag and run.mjs SEEDED generator disagree`);
+    process.exit(2);
+  }
+  if (gen) Object.assign(task.scorer ??= {}, gen(rng));
+  return task;
 }
 
 // ---- scorers (each returns {pass, checks:[{name, pass, detail?}]}) -----------
@@ -213,12 +343,14 @@ const tasks = readdirSync(join(here, 'tasks'))
   .filter((f) => f.endsWith('.json'))
   .sort()
   .map((f) => JSON.parse(readFileSync(join(here, 'tasks', f), 'utf8')))
-  .filter((t) => ONLY.length === 0 || ONLY.includes(t.id));
+  .filter((t) => ONLY.length === 0 || ONLY.includes(t.id))
+  .map(materialize);
 
 if (tasks.length === 0) {
   console.error('no tasks selected');
   process.exit(2);
 }
+if (!JSON_OUT) console.log(`seed ${SEED} · ${tasks.length} tasks`);
 
 const results = [];
 for (const task of tasks) {
@@ -264,9 +396,9 @@ const scored = results.filter((r) => !r.skipped);
 const earned = scored.reduce((a, r) => a + r.earned, 0);
 const total = scored.reduce((a, r) => a + r.points, 0);
 const passed = scored.filter((r) => r.pass).length;
-const summary = { mode: LIVE ? 'live' : 'offline', tasks: results, passed, scored: scored.length, earned, total };
+const summary = { mode: LIVE ? 'live' : 'offline', seed: SEED, tasks: results, passed, scored: scored.length, earned, total };
 
 if (JSON_OUT) console.log(JSON.stringify(summary, null, 2));
-else console.log(`TOTAL ${earned}/${total} points · ${passed}/${scored.length} tasks${results.length !== scored.length ? ` · ${results.length - scored.length} skipped` : ''}`);
+else console.log(`TOTAL ${earned}/${total} points · ${passed}/${scored.length} tasks${results.length !== scored.length ? ` · ${results.length - scored.length} skipped` : ''} · seed ${SEED}`);
 
 process.exit(passed === scored.length ? 0 : 1);

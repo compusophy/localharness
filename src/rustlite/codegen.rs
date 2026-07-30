@@ -54,6 +54,7 @@ const OP_LOCAL_GET: u8 = 0x20;
 const OP_LOCAL_SET: u8 = 0x21;
 const _OP_LOCAL_TEE: u8 = 0x22;
 const OP_I32_LOAD: u8 = 0x28;
+const OP_I32_LOAD16_S: u8 = 0x2E;
 const _OP_I64_LOAD: u8 = 0x29;
 const _OP_F32_LOAD: u8 = 0x2A;
 const _OP_F64_LOAD: u8 = 0x2B;
@@ -148,6 +149,10 @@ struct WasmEmitter {
     // name in `local_map`, so `local_map.len()` stops counting declared locals.
     current_params: u32,
     string_map: std::collections::HashMap<String, (u32, u32)>,
+    // Baked sine table for the `host::math` DESUGAR (telemetry #83): interned
+    // once on first use — 256 i16 LE entries of sin(2*pi*i/256)*256. `None`
+    // until a math call is emitted, so mathless cartridges pay zero bytes.
+    math_table_ptr: Option<u32>,
     // Control frames (if/match) currently open BETWEEN the emit point and the
     // innermost enclosing loop's body. `break`/`continue` add this to their
     // branch depth so they reach the loop's block/loop frame even when nested
@@ -184,6 +189,7 @@ impl WasmEmitter {
             local_types: Vec::new(),
             current_params: 0,
             string_map: std::collections::HashMap::new(),
+            math_table_ptr: None,
             extra_depth: 0,
         }
     }
@@ -274,8 +280,12 @@ impl WasmEmitter {
     fn scan_expr_imports(&mut self, expr: &TypedExpr) {
         match &expr.kind {
             TypedExprKind::HostCall { module, func, args, ret_ty } => {
-                let param_tys: Vec<ResolvedType> = args.iter().map(|a| a.ty.clone()).collect();
-                self.register_import(module, func, &param_tys, ret_ty);
+                // `host::math::*` is a CODEGEN DESUGAR (baked table + inline
+                // load, telemetry #83) — it must never register a wasm import.
+                if module != "math" {
+                    let param_tys: Vec<ResolvedType> = args.iter().map(|a| a.ty.clone()).collect();
+                    self.register_import(module, func, &param_tys, ret_ty);
+                }
                 for a in args {
                     self.scan_expr_imports(a);
                 }
@@ -626,6 +636,35 @@ impl WasmEmitter {
                 leb128_u32(self.import_count + fn_idx, code);
             }
             TypedExprKind::HostCall { module, func, args, .. } => {
+                if module == "math" {
+                    // DESUGAR (telemetry #83): sin/cos as a baked-table load.
+                    // Angle = 1/256 turn (wraps via & 255); result = sin*256.
+                    // cos(a) = sin(a + 64). Stack: [a (+64)] & 255, << 1,
+                    // + table_ptr, i32.load16_s (byte-aligned — string
+                    // interning can leave the table at an odd offset).
+                    let ptr = self.intern_math_table();
+                    for arg in args {
+                        self.emit_expr(arg, code)?;
+                    }
+                    if func == "cos" {
+                        code.push(OP_I32_CONST);
+                        leb128_i32(64, code);
+                        code.push(OP_I32_ADD);
+                    }
+                    code.push(OP_I32_CONST);
+                    leb128_i32(255, code);
+                    code.push(OP_I32_AND);
+                    code.push(OP_I32_CONST);
+                    leb128_i32(1, code);
+                    code.push(OP_I32_SHL);
+                    code.push(OP_I32_CONST);
+                    leb128_i32(ptr as i32, code);
+                    code.push(OP_I32_ADD);
+                    code.push(OP_I32_LOAD16_S);
+                    code.push(0); // alignment (log2) — byte-aligned
+                    code.push(0); // offset
+                    return Ok(());
+                }
                 for arg in args {
                     self.emit_expr(arg, code)?;
                 }
@@ -1068,6 +1107,25 @@ impl WasmEmitter {
         Ok(())
     }
 
+    /// Intern the `host::math` sine table (once): 256 i16 LE entries of
+    /// sin(2*pi*i/256) * 256. 512 bytes, only in cartridges that use math.
+    fn intern_math_table(&mut self) -> u32 {
+        if let Some(ptr) = self.math_table_ptr {
+            return ptr;
+        }
+        let ptr = self.data_offset;
+        let mut data = Vec::with_capacity(512);
+        for i in 0..256u32 {
+            let v = (f64::from(i) * std::f64::consts::TAU / 256.0).sin() * 256.0;
+            let v = v.round() as i16;
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        self.data_offset += 512;
+        self.data_segments.push((ptr, data));
+        self.math_table_ptr = Some(ptr);
+        ptr
+    }
+
     fn intern_string(&mut self, s: &str) -> (u32, u32) {
         if let Some(&cached) = self.string_map.get(s) {
             return cached;
@@ -1383,6 +1441,50 @@ mod tests {
                 std::str::from_utf8(needle).unwrap(),
             );
         }
+    }
+
+    #[test]
+    fn math_desugar_bakes_a_table_and_registers_no_import() {
+        // host::math::sin/cos lower to a baked-table load (telemetry #83) —
+        // the module must appear NOWHERE in the import section, and the data
+        // section must carry the 512-byte table with its known landmarks:
+        // sin(0)=0, sin(64)=256 (90 deg), sin(128)=0, sin(192)=-256,
+        // sin(32)=181 (45 deg — the value linear approximations get wrong).
+        let wasm = compile_to_wasm(
+            r#"
+            fn s(a: i32) -> i32 { host::math::sin(a) }
+            fn c(a: i32) -> i32 { host::math::cos(a) }
+            fn frame(t: i32) {
+                host::display::fill_rect(host::math::cos(t), host::math::sin(t), 4, 4, 255);
+                host::display::present();
+            }
+            "#,
+        );
+        let bytes_of = |v: i16| v.to_le_bytes();
+        let table: Vec<u8> = (0..256u32)
+            .flat_map(|i| {
+                let v = (f64::from(i) * std::f64::consts::TAU / 256.0).sin() * 256.0;
+                bytes_of(v.round() as i16)
+            })
+            .collect();
+        // The full table is embedded verbatim in the emitted module.
+        assert!(
+            wasm.windows(table.len()).any(|w| w == &table[..]),
+            "sine table not found in the data section"
+        );
+        // Landmark values in the table itself.
+        assert_eq!(i16::from_le_bytes([table[0], table[1]]), 0);
+        assert_eq!(i16::from_le_bytes([table[128], table[129]]), 256);
+        assert_eq!(i16::from_le_bytes([table[256], table[257]]), 0);
+        assert_eq!(i16::from_le_bytes([table[384], table[385]]), -256);
+        assert_eq!(i16::from_le_bytes([table[64], table[65]]), 181);
+        // No `math` import module (the string would appear in the import
+        // section as a name if one were registered — `host_math` per the
+        // loader convention).
+        assert!(
+            !wasm.windows(b"math".len()).any(|w| w == b"math"),
+            "math must not be an import"
+        );
     }
 
     #[test]

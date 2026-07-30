@@ -2,12 +2,13 @@
   "id": "bl-branch",
   "kind": "bashlite",
   "points": 10,
+  "seeded": true,
   "prompt": "Your working directory contains `status.txt` holding a single word. Write a bashlite script that reads it and echoes `service up` when the content equals `active`, otherwise `service down` (use command substitution and a [ ] test). Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+  "prompts": [
+    "Your working directory contains `status.txt` holding a single word. Write a bashlite script that reads it and echoes `service up` when the content equals `active`, otherwise `service down` (use command substitution and a [ ] test). Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+    "In your cwd there is a `status.txt` containing one word. Using command substitution and a [ ] test in bashlite, echo `service up` if that word is exactly `active`, and `service down` in every other case. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+    "Write a bashlite script: read the single word stored in `status.txt` (command substitution) and branch on it with a [ ] test — print `service up` when it equals `active`, otherwise print `service down`. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence."
+  ],
   "solution": "bl-branch.bl",
-  "scorer": {
-    "setup_files": {
-      "status.txt": "active"
-    },
-    "expect_stdout": "service up"
-  }
+  "scorer": {}
 }
