@@ -229,6 +229,36 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
 /// `(tx, wasm)`: `tx` is `Some` when the publish went on-chain, `None` when
 /// off-chain; `wasm` is the compiled cartridge so callers can auto-embed the
 /// just-published app inline (close the cartridge loop) without recompiling.
+/// Write the on-chain `public_face` CHOICE after a successful OFF-CHAIN store
+/// publish. THE missing half of the store fast path (user report, krafto):
+/// the bytes landed in the store but `resolve_public_face` can only reach an
+/// HTML face through an EXPLICIT `Some("html")` choice — unset infers
+/// cartridge-or-directory, so the published page was unreachable. Writing the
+/// choice for "app" too makes an app publish robust against a STALE prior
+/// choice ("html"/"directory" left over from an earlier face). Small
+/// sponsored write (~9 bytes); its tx hash is returned so the tool result
+/// carries proof.
+async fn set_face_choice_onchain(
+    token_id: u64,
+    owner: &str,
+    choice: &str,
+) -> Result<String, crate::error::Error> {
+    let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
+        .map_err(crate::error::Error::other)?;
+    let calls = vec![crate::tempo_tx::TempoCall {
+        to: registry_addr,
+        value_wei: 0,
+        input: crate::app::registry::encode_set_public_face(token_id, choice),
+    }];
+    crate::app::events::run_sponsored_tempo_call(owner, calls, 500_000, "set public face")
+        .await
+        .map_err(|e| {
+            crate::error::Error::other(format!(
+                "published to the store, but setting the face choice failed: {e} —                  visitors won't see it until the choice write succeeds (retry publish)"
+            ))
+        })
+}
+
 async fn publish_app_face(
     name: &str,
     token_id: u64,
@@ -267,7 +297,11 @@ async fn publish_app_face(
             crate::app::registry::publish_app_to_store(name, &token, &wasm, source)
                 .await
                 .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-            return Ok((None, wasm));
+            // Unset infers "app", but a STALE prior choice ("html"/
+            // "directory") would still shadow the fresh cartridge — write the
+            // choice explicitly so publishing an app always shows the app.
+            let tx = set_face_choice_onchain(token_id, owner, "app").await?;
+            return Ok((Some(tx), wasm));
         }
     }
     // ON-CHAIN fallback — reached only when the owner ISN'T this device's master
@@ -329,7 +363,11 @@ async fn publish_html_face(
             crate::app::registry::publish_html_to_store(name, &token, &html_str)
                 .await
                 .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-            return Ok(None);
+            // The store holds the bytes; the CHOICE is what routes visitors
+            // to them (see `set_face_choice_onchain` — this line missing was
+            // the "published but visitors still see the directory" bug).
+            let tx = set_face_choice_onchain(token_id, owner, "html").await?;
+            return Ok(Some(tx));
         }
     }
     // ON-CHAIN fallback (TBA-owned name / no local master) — legacy sponsored

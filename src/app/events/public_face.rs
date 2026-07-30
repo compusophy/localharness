@@ -251,6 +251,9 @@ async fn try_publish_app_offchain(name: &str, msg: &str) -> bool {
     );
     match crate::app::registry::publish_app_to_store(name, &token, &wasm, &src).await {
         Ok(()) => {
+            // Explicit choice write: a STALE prior choice ("html"/"directory")
+            // would shadow the fresh cartridge (see set_face_choice_after_store).
+            let _ = set_face_choice_after_store(name, &owner, "app").await;
             dom::swap_inner(
                 msg,
                 &crate::app::templates::publish_share_fragment(name).into_string(),
@@ -260,6 +263,32 @@ async fn try_publish_app_offchain(name: &str, msg: &str) -> bool {
         }
         Err(_) => false, // store hiccup → fall back to the on-chain publish
     }
+}
+
+
+/// Write the on-chain `public_face` CHOICE after an off-chain store publish —
+/// the missing half of the picker's fast path (same bug as the chat tool,
+/// found via krafto: bytes in the store, choice unset, visitors saw the
+/// directory). Best-effort here — the picker surfaces the share fragment
+/// either way, and `refresh_public_face_status` shows the live state.
+async fn set_face_choice_after_store(name: &str, owner: &str, choice: &str) -> bool {
+    let Ok(id) = crate::app::registry::id_of_name(name).await else { return false };
+    if id == 0 {
+        return false;
+    }
+    let Ok(registry_addr) =
+        crate::encoding::parse_address(crate::app::registry::REGISTRY_ADDRESS())
+    else {
+        return false;
+    };
+    let calls = vec![crate::tempo_tx::TempoCall {
+        to: registry_addr,
+        value_wei: 0,
+        input: crate::app::registry::encode_set_public_face(id, choice),
+    }];
+    super::run_sponsored_tempo_call(owner, calls, 500_000, "set public face")
+        .await
+        .is_ok()
 }
 
 /// HTML-face sibling of [`try_publish_app_offchain`]: publish this device's local
@@ -296,6 +325,16 @@ async fn try_publish_html_offchain(name: &str, msg: &str) -> bool {
     );
     match crate::app::registry::publish_html_to_store(name, &token, &html_str).await {
         Ok(()) => {
+            // THE load-bearing half: an HTML face is only reachable through an
+            // explicit on-chain choice — without this write the page sits in
+            // the store while visitors get the directory (the krafto bug).
+            if !set_face_choice_after_store(name, &owner, "html").await {
+                dom::swap_inner(
+                    msg,
+                    "<span style=\"color:var(--muted)\">stored, but the face                      choice write failed — retry publish</span>",
+                );
+                return true; // stored; the retry only needs the choice write
+            }
             dom::swap_inner(
                 msg,
                 &crate::app::templates::publish_share_fragment(name).into_string(),
