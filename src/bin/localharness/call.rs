@@ -510,9 +510,10 @@ pub(crate) fn bridge_amount(meter: u128, wallet: u128, cost: u128, buffer: u128)
     Some(buffer.max(cost - meter).min(wallet))
 }
 
-/// The `X-PAYMENT` request header name the proxy reads for an x402 per-call
-/// authorization (also accepts `x-x402-authorization`; case-insensitive).
-const X402_PAYMENT_HEADER: &str = "X-PAYMENT";
+/// The x402 request header name for the per-call authorization —
+/// `payment-signature` (the x402 v2 standard name; the proxy also accepts the
+/// legacy `X-PAYMENT` / `x-x402-authorization`, case-insensitive).
+const X402_PAYMENT_HEADER: &str = "payment-signature";
 
 /// Custom tools require an explicit policy (Phase 0b): deny-by-default plus an
 /// allow for exactly the given read-only set — nothing else is reachable.

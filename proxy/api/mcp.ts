@@ -144,7 +144,7 @@ function corsHeaders(origin: string | null): Record<string, string> {
   const h: Record<string, string> = {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers':
-      'content-type, x-x402-authorization, mcp-protocol-version, mcp-session-id',
+      'content-type, payment-signature, x-x402-authorization, mcp-protocol-version, mcp-session-id',
     Vary: 'Origin',
   };
   // The MCP endpoint is also called by non-browser clients (Claude Desktop,
@@ -741,7 +741,7 @@ function rpcError(
 const ASK_AGENT_TOOL = {
   name: 'ask_agent',
   description:
-    'Ask a localharness on-chain agent (by subdomain name) a question. The agent answers under its published on-chain persona. Each call requires an x402 payment in $LH to the agent (supply the authorization in the x-x402-authorization header or params._x402).',
+    'Ask a localharness on-chain agent (by subdomain name) a question. The agent answers under its published on-chain persona. Each call requires an x402 payment in $LH to the agent (supply the authorization in the payment-signature header — x402 v2 name; legacy x-x402-authorization accepted — or params._x402).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1085,7 +1085,12 @@ function parseAuth(headerVal: string | null, params: Record<string, unknown>): X
     try {
       raw = JSON.parse(headerVal);
     } catch {
-      throw new Error('x-x402-authorization is not valid JSON');
+      // x402 v2's PAYMENT-SIGNATURE transport encoding is base64(JSON).
+      try {
+        raw = JSON.parse(atob(headerVal.trim()));
+      } catch {
+        throw new Error('x402 authorization is not valid JSON (or base64-encoded JSON)');
+      }
     }
   } else if (params && typeof params._x402 === 'object' && params._x402 !== null) {
     raw = params._x402;
@@ -1189,7 +1194,7 @@ async function handleAskAgent(
     return rpcError(
       id,
       -32602,
-      `payment required: supply an x402 authorization (x-x402-authorization header or params._x402) paying at least ${required} wei $LH to ${name}'s account ${payee}`,
+      `payment required: supply an x402 authorization (payment-signature header or params._x402) paying at least ${required} wei $LH to ${name}'s account ${payee}`,
       402,
       { payTo: payee, scheme: 'x402-exact', asset: '$LH', chainId: CHAIN_ID, minValue: required.toString() },
     );
@@ -1546,7 +1551,7 @@ export default async function handler(req: Request): Promise<Response> {
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
             instructions:
-              'localharness MCP. Tools: discover_agents(query) + list_bounties() are FREE read-only discovery (find agents / open work). ask_agent(name, message) runs an agent under its on-chain persona and requires an x402 $LH payment to the agent (x-x402-authorization header or params._x402).',
+              'localharness MCP. Tools: discover_agents(query) + list_bounties() are FREE read-only discovery (find agents / open work). ask_agent(name, message) runs an agent under its on-chain persona and requires an x402 $LH payment to the agent (payment-signature header or params._x402).',
           }),
           200,
         );
@@ -1589,10 +1594,10 @@ export default async function handler(req: Request): Promise<Response> {
           const err = rpcError(id, -32602, `unknown tool: "${toolName}"`);
           return respond(err.body, err.httpStatus);
         }
-        // Legacy name first; `payment-signature` is the x402 v2 standard
-        // header, accepted so v2-conformant agents can pay this endpoint.
-        const headerAuth = req.headers.get('x-x402-authorization')
-          ?? req.headers.get('payment-signature');
+        // v2 standard name first (`payment-signature`, base64 or JSON payload);
+        // the legacy name stays accepted forever.
+        const headerAuth = req.headers.get('payment-signature')
+          ?? req.headers.get('x-x402-authorization');
         const out = await handleAskAgent(id, args, headerAuth, params);
         return respond(out.body, out.httpStatus);
       }

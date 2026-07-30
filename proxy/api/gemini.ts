@@ -59,7 +59,7 @@ import {
   creditOf,
   InsufficientCreditError,
 } from './_auth';
-import { verifyX402Payment, settleX402NoWait, settleUptoNoWait, type X402Auth } from './_x402';
+import { verifyX402Payment, settleX402NoWait, settleUptoNoWait, paymentRequiredHeader, type X402Auth } from './_x402';
 import { meteredAmountWei } from './_usage';
 import { envGuard } from './_env';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
@@ -280,7 +280,7 @@ const METHOD_RE = /^(generateContent|streamGenerateContent)$/;
 function corsHeaders(origin: string | null): Record<string, string> {
   const h: Record<string, string> = {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'content-type, x-goog-api-key, x-api-key, anthropic-version, authorization',
+    'Access-Control-Allow-Headers': 'content-type, x-goog-api-key, x-api-key, anthropic-version, authorization, payment-signature, x-payment, x-x402-authorization',
     'Vary': 'Origin',
   };
   if (origin && isAllowedOrigin(origin)) {
@@ -289,10 +289,15 @@ function corsHeaders(origin: string | null): Record<string, string> {
   return h;
 }
 
-function json(body: unknown, status: number, origin: string | null): Response {
+function json(
+  body: unknown,
+  status: number,
+  origin: string | null,
+  extraHeaders?: Record<string, string>,
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json', ...corsHeaders(origin) },
+    headers: { 'content-type': 'application/json', ...corsHeaders(origin), ...(extraHeaders ?? {}) },
   });
 }
 
@@ -720,13 +725,13 @@ export default async function handler(req: Request): Promise<Response> {
     // here; SETTLED on-chain only after a 2xx upstream (below) so a failed LLM
     // call costs nothing — the same "don't charge for failures" rule as the
     // meter. Off unless LH_METER_PAYEE is set.
-    // Accept the x402 v2 standard name (`PAYMENT-SIGNATURE`, 2025-12-11 spec)
-    // alongside our legacy names, so a v2-conformant external client can pay
-    // without knowing our history. We keep SENDING X-PAYMENT from the CLI —
-    // renaming the emit side would break deployed callers for zero gain.
-    const x402Header = req.headers.get('x-payment')
-      ?? req.headers.get('x-x402-authorization')
-      ?? req.headers.get('payment-signature');
+    // x402 v2 standard name FIRST (`PAYMENT-SIGNATURE`; the parser also takes
+    // v2's base64 payload encoding), legacy names accepted forever — external
+    // v2 clients pay with zero knowledge of our history, and old deployed
+    // callers keep working. Our own clients emit `payment-signature` now.
+    const x402Header = req.headers.get('payment-signature')
+      ?? req.headers.get('x-payment')
+      ?? req.headers.get('x-x402-authorization');
     let x402Auth: X402Auth | null = null;
     if (x402Header && METER_PAYEE) {
       const verdict = await verifyX402Payment(x402Header, {
@@ -735,12 +740,14 @@ export default async function handler(req: Request): Promise<Response> {
         requiredWei: cost,
       });
       // A PRESENT-but-invalid authorization is a hard, specific 402 — do NOT
-      // silently fall back to credit; the caller meant to pay via x402.
+      // silently fall back to credit; the caller meant to pay via x402. The
+      // re-quote also rides the x402 v2 `PAYMENT-REQUIRED` header (base64).
       if (verdict && !verdict.ok) {
         return json(
           { error: verdict.error, ...(verdict.quote ? { x402: verdict.quote } : {}) },
           verdict.status,
           origin,
+          verdict.quote ? { 'PAYMENT-REQUIRED': paymentRequiredHeader(verdict.quote) } : undefined,
         );
       }
       if (verdict && verdict.ok) x402Auth = verdict.auth;
@@ -763,9 +770,11 @@ export default async function handler(req: Request): Promise<Response> {
         {
           error:
             'no $LH credit for this identity — fund the per-request meter (localharness redeem / send / topup), or pay per-call via x402. See https://localharness.xyz/llms.txt',
-          // x402 challenge (Coinbase 402→attach→retry): an x402-capable client
-          // signs an authorization for `value` $LH to `payTo` and retries with
-          // the X-PAYMENT header. Only advertised when x402 metering is enabled.
+          // x402 challenge (402→attach→retry): an x402-capable client signs an
+          // authorization for `value` $LH to `payTo` and retries with the
+          // payment-signature header (legacy names accepted). Only advertised
+          // when x402 metering is enabled; also emitted as the v2 base64
+          // PAYMENT-REQUIRED response header below.
           ...(METER_PAYEE
             ? {
                 x402: {
@@ -780,6 +789,17 @@ export default async function handler(req: Request): Promise<Response> {
         },
         402,
         origin,
+        METER_PAYEE
+          ? {
+              'PAYMENT-REQUIRED': paymentRequiredHeader({
+                payTo: METER_PAYEE,
+                value: cost.toString(),
+                scheme: 'x402-exact',
+                asset: '$LH',
+                chainId: CHAIN_ID,
+              }),
+            }
+          : undefined,
       );
     }
     // NOTE: the per-request meter DEBIT happens AFTER the upstream call returns

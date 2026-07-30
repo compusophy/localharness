@@ -148,7 +148,7 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
         let resp = reqwest::Client::new()
             .post(registry::mcp_endpoint_url())
             .header("content-type", "application/json")
-            .header("x-x402-authorization", header.to_string())
+            .header("payment-signature", header.to_string())
             .json(&body)
             .send()
             .await

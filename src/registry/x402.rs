@@ -281,8 +281,9 @@ pub fn mcp_endpoint_url() -> String {
     format!("{base}/mcp")
 }
 
-/// Build the JSON the `x-x402-authorization` header carries, matching the
-/// shape `proxy/api/mcp.ts::parseAuth` expects EXACTLY: addresses as 0x-hex,
+/// Build the JSON the `payment-signature` header carries (the x402 v2 name;
+/// legacy `x-x402-authorization`/`X-PAYMENT` stay accepted server-side),
+/// matching the shape `proxy/api/mcp.ts::parseAuth` expects EXACTLY: addresses as 0x-hex,
 /// `value` as a decimal string of `$LH` wei, `nonce` as 0x + 32-byte hex,
 /// `signature` as 0x + 65-byte hex, `validAfter`/`validBefore` as numbers.
 /// Pure — the signature/nonce are passed in so this is deterministic.

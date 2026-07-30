@@ -234,16 +234,23 @@ export function priceLockCeiling(required: bigint): bigint {
   return required + (required * PRICE_LOCK_OVERPAY_TOLERANCE_BPS) / 10_000n;
 }
 
-/** Parse the X-PAYMENT / x-x402-authorization header JSON into an X402Auth.
- * Returns null when no header is present (no x402 attempt). Throws on a present
- * but malformed payload. Mirrors mcp.ts::parseAuth + registry::x402_authorization_json. */
+/** Parse the payment-signature / X-PAYMENT / x-x402-authorization header into
+ * an X402Auth. Accepts the payload as raw JSON (our clients) OR base64-encoded
+ * JSON (the x402 v2 `PAYMENT-SIGNATURE` transport encoding), so a v2-conformant
+ * external client can pay without knowing our history. Returns null when no
+ * header is present (no x402 attempt). Throws on a present but malformed
+ * payload. Mirrors mcp.ts::parseAuth + registry::x402_authorization_json. */
 export function parseX402Header(headerVal: string | null): X402Auth | null {
   if (!headerVal) return null;
   let raw: unknown;
   try {
     raw = JSON.parse(headerVal);
   } catch {
-    throw new Error('x402 authorization is not valid JSON');
+    try {
+      raw = JSON.parse(atob(headerVal.trim()));
+    } catch {
+      throw new Error('x402 authorization is not valid JSON (or base64-encoded JSON)');
+    }
   }
   if (!raw || typeof raw !== 'object') throw new Error('x402 authorization is not an object');
   const o = raw as Record<string, unknown>;
@@ -284,6 +291,13 @@ export function parseX402Header(headerVal: string | null): X402Auth | null {
     signature,
     scheme,
   };
+}
+
+/** Base64-encode a payment quote for the x402 v2 `PAYMENT-REQUIRED` response
+ * header (v2 moved requirements out of the 402 body into this header; we emit
+ * BOTH — header for v2 clients, the JSON body's `x402` field for legacy). */
+export function paymentRequiredHeader(quote: Record<string, unknown>): string {
+  return btoa(JSON.stringify(quote));
 }
 
 export type X402Verdict =

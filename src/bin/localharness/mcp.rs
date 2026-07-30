@@ -398,7 +398,7 @@ pub(crate) async fn mcp_call(rest: &[String]) -> i32 {
     let resp = match client
         .post(&endpoint)
         .header("content-type", "application/json")
-        .header("x-x402-authorization", header_json.to_string())
+        .header("payment-signature", header_json.to_string())
         .json(&body)
         .send()
         .await
