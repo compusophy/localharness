@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 
 import {RedeemFacet} from "../src/facets/RedeemFacet.sol";
 import {CreditMeterFacet} from "../src/facets/CreditMeterFacet.sol";
-import {SessionFacet} from "../src/facets/SessionFacet.sol";
 import {X402Facet} from "../src/facets/X402Facet.sol";
 import {CreditsFacet} from "../src/facets/CreditsFacet.sol";
 
@@ -14,14 +13,13 @@ import {LocalharnessCredits} from "../src/LocalharnessCredits.sol";
 import {LibCreditsStorage} from "../src/libraries/LibCreditsStorage.sol";
 import {LibRedeemStorage} from "../src/libraries/LibRedeemStorage.sol";
 import {LibCreditMeterStorage} from "../src/libraries/LibCreditMeterStorage.sol";
-import {LibSessionStorage} from "../src/libraries/LibSessionStorage.sol";
 import {LibX402Storage} from "../src/libraries/LibX402Storage.sol";
 import {LibRegistryStorage} from "../src/libraries/LibRegistryStorage.sol";
 import {LibDiamond} from "../src/libraries/LibDiamond.sol";
 
 /// @title FinancialAdversarial
 /// @notice Adversarial review of the LIVE `$LH`-handling facets — Redeem,
-///         CreditMeter, Session, X402, Credits — plus the real
+///         CreditMeter, X402, Credits — plus the real
 ///         `LocalharnessCredits` token. These move real value; a latent
 ///         bug means drained / minted / stuck funds. Every test below
 ///         proves a SAFE behavior against an attack: double-redeem blocked,
@@ -66,15 +64,6 @@ contract MeterHarness is CreditMeterFacet {
     }
 }
 
-contract SessionHarness is SessionFacet {
-    function _setCreditsToken(address token) external {
-        LibCreditsStorage.load().creditsToken = token;
-    }
-    function _setDiamondOwner(address ownr) external {
-        LibDiamond.setContractOwner(ownr);
-    }
-}
-
 contract X402Harness is X402Facet {
     function _setCreditsToken(address token) external {
         LibCreditsStorage.load().creditsToken = token;
@@ -99,7 +88,7 @@ contract ReentrantToken {
     mapping(address => mapping(address => uint256)) public allowance;
 
     address public diamond;
-    uint8 public mode; // 0 off, 1 = x402 replay, 2 = depositCredits replay, 3 = openSession replay
+    uint8 public mode; // 0 off, 1 = x402 replay, 2 = depositCredits replay
     bool internal entered;
     bool public reenterReverted;
 
@@ -183,7 +172,6 @@ contract FinancialAdversarialTest is Test {
     // each declares its own `error NotConfigured()` + `IERC20Min`).
     RedeemHarness rdm;
     MeterHarness mtr;
-    SessionHarness ses;
     X402Harness x4;
     CreditsHarness cred;
 
@@ -208,13 +196,11 @@ contract FinancialAdversarialTest is Test {
     function setUp() public {
         rdm = new RedeemHarness();
         mtr = new MeterHarness();
-        ses = new SessionHarness();
         x4 = new X402Harness();
         cred = new CreditsHarness();
 
         rdm._setDiamondOwner(diamondOwner);
         mtr._setDiamondOwner(diamondOwner);
-        ses._setDiamondOwner(diamondOwner);
         x4._setDiamondOwner(diamondOwner);
         cred._setDiamondOwner(diamondOwner);
 
@@ -230,14 +216,12 @@ contract FinancialAdversarialTest is Test {
         vm.startPrank(tokenOwner);
         lh.grantRole(lh.ISSUER_ROLE(), address(rdm));
         lh.grantRole(lh.ISSUER_ROLE(), address(mtr));
-        lh.grantRole(lh.ISSUER_ROLE(), address(ses));
         lh.grantRole(lh.ISSUER_ROLE(), address(x4));
         lh.grantRole(lh.ISSUER_ROLE(), address(cred));
         vm.stopPrank();
 
         rdm._setCreditsToken(address(lh));
         mtr._setCreditsToken(address(lh));
-        ses._setCreditsToken(address(lh));
         x4._setCreditsToken(address(lh));
         // CreditsFacet reads its token from the SAME slot; CreditsHarness
         // doesn't expose a setter, so we drive its claimDaily via a token it
@@ -558,104 +542,6 @@ contract FinancialAdversarialTest is Test {
             assertEq(mtr.creditOf(alice), deposited - debited, "balance == deposits - debits");
             assertLe(mtr.creditOf(alice), deposited, "balance never exceeds deposits");
         }
-    }
-
-    // ====================================================================
-    // ============================ SESSION ===============================
-    // ====================================================================
-
-    function _configSession(uint256 price, uint256 duration) internal {
-        vm.startPrank(diamondOwner);
-        ses.setSessionPrice(price);
-        ses.setSessionDuration(duration);
-        vm.stopPrank();
-    }
-
-    function test_session_disabled_when_duration_zero() public {
-        _configSession(10 ether, 0); // duration 0 = disabled
-        _fundFor(alice, 100 ether, address(ses));
-        vm.prank(alice);
-        vm.expectRevert(SessionFacet.SessionsDisabled.selector);
-        ses.openSession();
-    }
-
-    function test_session_pulls_exact_price_and_sets_expiry() public {
-        _configSession(10 ether, 3600);
-        _fundFor(alice, 100 ether, address(ses));
-        vm.prank(alice);
-        uint256 expiry = ses.openSession();
-        assertEq(expiry, block.timestamp + 3600, "expiry = now + duration");
-        assertEq(lh.balanceOf(alice), 90 ether, "exactly priceWei pulled");
-        assertEq(lh.balanceOf(address(ses)), 10 ether, "diamond holds session fee");
-        assertEq(ses.sessionExpiryOf(alice), expiry, "expiry stored");
-    }
-
-    function test_session_cannot_open_without_payment_when_priced() public {
-        _configSession(10 ether, 3600);
-        // alice funded but no approval -> the transferFrom reverts, and
-        // because the whole tx reverts, the expiry write is rolled back too.
-        _fundFor(alice, 100 ether, address(ses));
-        vm.prank(alice);
-        lh.approve(address(ses), 0);
-        vm.prank(alice);
-        vm.expectRevert(); // InsufficientAllowance
-        ses.openSession();
-        assertEq(ses.sessionExpiryOf(alice), 0, "no session granted without payment");
-    }
-
-    function test_session_insufficient_balance_grants_nothing() public {
-        _configSession(10 ether, 3600);
-        // alice has only 5 $LH but approves max.
-        vm.prank(address(ses));
-        lh.mintWithMemo(alice, 5 ether, "FUND");
-        vm.prank(alice);
-        lh.approve(address(ses), type(uint256).max);
-        vm.prank(alice);
-        vm.expectRevert(); // InsufficientBalance
-        ses.openSession();
-        assertEq(ses.sessionExpiryOf(alice), 0, "no session on underfunded open");
-    }
-
-    function test_session_free_when_price_zero() public {
-        // priceWei 0 = free session (owner can reopen free beta). No token
-        // pull happens, so no approval needed.
-        _configSession(0, 3600);
-        vm.prank(alice);
-        uint256 expiry = ses.openSession();
-        assertEq(expiry, block.timestamp + 3600, "free session granted");
-        assertEq(lh.balanceOf(address(ses)), 0, "no fee taken when free");
-    }
-
-    function test_session_price_and_duration_owner_only() public {
-        vm.prank(stranger);
-        vm.expectRevert("LibDiamond: not owner");
-        ses.setSessionPrice(1);
-        vm.prank(stranger);
-        vm.expectRevert("LibDiamond: not owner");
-        ses.setSessionDuration(1);
-    }
-
-    function test_session_uses_live_price_not_stale() public {
-        // Opening reads s.priceWei at call time; an owner price change takes
-        // effect immediately (no cached/stale price an attacker can exploit).
-        _configSession(10 ether, 3600);
-        _fundFor(alice, 100 ether, address(ses));
-        vm.prank(diamondOwner);
-        ses.setSessionPrice(20 ether); // raise the price
-        vm.prank(alice);
-        ses.openSession();
-        assertEq(lh.balanceOf(alice), 80 ether, "charged the NEW price, not the old");
-    }
-
-    function test_session_renew_charges_again() public {
-        _configSession(10 ether, 3600);
-        _fundFor(alice, 100 ether, address(ses));
-        vm.prank(alice);
-        ses.openSession();
-        vm.warp(block.timestamp + 100);
-        vm.prank(alice);
-        ses.openSession(); // renew -> charged again
-        assertEq(lh.balanceOf(alice), 80 ether, "each open charges the price");
     }
 
     // ====================================================================
