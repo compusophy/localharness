@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.77.0]
+
+### Added
+
+- **ACP `session/load` — sessions survive editor restarts.** Every
+  `session/prompt` persists the conversation bytes to
+  `.localharness/acp/<sessionId>` (ids carry a timestamp, so a restart's
+  fresh counter can never collide with — and overwrite — a prior run's
+  session); `session/load` re-seeds a fresh agent from the saved bytes,
+  REPLAYS the transcript to the client (`user_message_chunk` /
+  `agent_message_chunk` per the v1 schema — tag names verified against the
+  official `agent-client-protocol-schema` crate — plus completed
+  tool_call/tool_call_update pairs), then returns null per the load
+  contract. `loadSession: true` is now declared honestly. Proven live with
+  a two-process restart: a codeword seeded in process 1 was replayed and
+  recalled by process 2 through the same session id, metered on mainnet.
+- **Zero-spend E2E lattice, one command.** `scripts/tab-e2e/run-all.mjs`
+  sweeps the whole suite (7 scripts); new coverage this release: the LIVE
+  tool-success auto-embed (`autoembed-e2e.mjs` — a scripted model turn ends
+  with the cartridge PLAYING in the tool card), the tenant-only studio-slot
+  owner-landing pin (`studioslot-e2e.mjs`), and the #80 stall-recovery
+  wiring (`stall-e2e.mjs` — asserts the hidden nudge turn's request body).
+  The cartridge loop's coverage map is complete; the one residual is named.
+
+### Changed
+
+- **Proxy: `_notifycore.ts`** — the one simple server-side owner-push
+  composition (VAPID env → enrolled subs → best-effort send, never throws);
+  `scheduler.ts`'s private duplicate is now a thin delegate. `notify.ts`
+  deliberately keeps its richer endpoint flow (sender metering, detailed
+  send results for pruning, the pre-prune dead count in its 502). Deployed
+  separately, as always.
+
 ## [0.76.0] - 2026-07-29
 
 ### Added
