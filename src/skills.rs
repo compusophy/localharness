@@ -181,6 +181,33 @@ pub fn skill_dir_name(name: &str) -> String {
     name.replace(' ', "-")
 }
 
+/// Parse a `SKILL.md` document back into a [`Skill`] — the inverse of
+/// [`to_skill_md`], used by the `.agent/` directory import. Reads `name:`
+/// from the YAML frontmatter (quoted or bare; description is derived, so it
+/// is ignored) and everything after the closing `---` fence as the
+/// instructions, re-normalized through the same cores as every other write.
+/// `None` for a document with no fences, no name, or an empty body.
+pub fn from_skill_md(doc: &str) -> Option<Skill> {
+    let rest = doc.trim_start().strip_prefix("---")?;
+    let end = rest.find("\n---")?;
+    let (front, body) = (&rest[..end], &rest[end + 4..]);
+    let mut name = String::new();
+    for line in front.lines() {
+        if let Some(v) = line.trim().strip_prefix("name:") {
+            let v = v.trim().trim_matches('"');
+            name = normalize_name(&v.replace("\\\"", "\"").replace("\\\\", "\\"));
+        }
+    }
+    if name.is_empty() {
+        return None;
+    }
+    let instructions = normalize_instructions(body);
+    if instructions.is_empty() {
+        return None;
+    }
+    Some(Skill { name, instructions })
+}
+
 /// The skill names in a blob, in stored order — for a compact `list_skills`
 /// summary.
 pub fn names(blob: &str) -> Vec<String> {
@@ -208,6 +235,21 @@ pub fn compose_section(blob: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_md_round_trips() {
+        let s = Skill {
+            name: "review \"quoted\" prs".into(),
+            instructions: "Check the diff twice. Then approve.".into(),
+        };
+        let back = from_skill_md(&to_skill_md(&s)).expect("parses");
+        assert_eq!(back.name, s.name);
+        assert_eq!(back.instructions, s.instructions);
+        // Hostile shapes never panic, just decline.
+        assert!(from_skill_md("no fences at all").is_none());
+        assert!(from_skill_md("---\ndescription: \"x\"\n---\n\nbody").is_none());
+        assert!(from_skill_md("---\nname: \"x\"\n---\n\n   \n").is_none());
+    }
 
     #[test]
     fn upsert_adds_to_empty() {

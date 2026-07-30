@@ -290,7 +290,7 @@ IDENTITY & PROFILE
                                          --export them as agentskills.io SKILL.md
                                          folders usable in any skills-compatible
                                          harness (Claude Code, Codex, Cursor, ...)
-  localharness state <name> [--out <file>] [--in <file>]
+  localharness state <name> [--out <file>] [--dir <dir>] [--in <file|dir>]
                                          export/import the PORTABLE agent-state
                                          bundle: persona + lessons + skills as JSON.
                                          No --in prints (or writes) the bundle;

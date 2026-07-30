@@ -86,7 +86,10 @@ per changed slot). And `skills --export <dir>` writes each skill as an
 agentskills.io `<skill>/SKILL.md` folder — loadable unmodified by the ~40
 Agent-Skills harnesses (landscape §4).
 
-**Standard interface — the `.agent/` layout, derived from the bundle:**
+**Standard interface — the `.agent/` layout, derived from the bundle**
+(SHIPPED 2026-07-30: `localharness state <name> --dir <dir>` exports it;
+`--in <dir>` imports it — same version gate + sanitize-diff-write path as the
+file bundle; `skills/*/SKILL.md` round-trips via `skills::from_skill_md`):
 
 ```
 .agent/

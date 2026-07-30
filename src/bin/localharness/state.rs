@@ -164,11 +164,21 @@ pub(crate) async fn skills_cmd(args: &[String]) -> i32 {
     0
 }
 
-/// `localharness state <name> [--out <file>] [--in <file>]` — export or import
-/// the portable agent-state bundle (persona + lessons + skills).
+/// `localharness state <name> [--out <file>] [--in <file|dir>] [--dir <dir>]`
+/// — export or import the portable agent-state bundle (persona + lessons +
+/// skills). `--out` writes the single-file JSON bundle; `--dir` writes the
+/// `.agent/` DIRECTORY layout (the cross-harness shape from
+/// `design/harness-standard.md`: manifest.json + persona.md + lessons.md +
+/// skills/<slug>/SKILL.md). `--in` accepts either — a bundle file or an
+/// `.agent/` directory.
 pub(crate) async fn state_cmd(args: &[String]) -> i32 {
-    const USAGE: &str = "usage: localharness state <name> [--out <file>] [--in <file>]";
+    const USAGE: &str =
+        "usage: localharness state <name> [--out <file>] [--dir <dir>] [--in <file|dir>]";
     let (out, rest) = match flag(args, "--out", USAGE) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let (dir, rest) = match flag(&rest, "--dir", USAGE) {
         Ok(v) => v,
         Err(code) => return code,
     };
@@ -185,10 +195,123 @@ pub(crate) async fn state_cmd(args: &[String]) -> i32 {
         Err(code) => return code,
     };
 
-    match input {
-        Some(path) => import_state(&name, id, &path).await,
-        None => export_state(&name, id, out.as_deref()).await,
+    match (input, dir) {
+        (Some(path), _) if std::path::Path::new(&path).is_dir() => {
+            import_state_dir(&name, id, &path).await
+        }
+        (Some(path), _) => import_state(&name, id, &path).await,
+        (None, Some(d)) => export_state_dir(&name, id, &d).await,
+        (None, None) => export_state(&name, id, out.as_deref()).await,
     }
+}
+
+/// Export the `.agent/` DIRECTORY layout — the cross-harness portable-state
+/// shape. The directory is a DERIVED VIEW of the chain-anchored slots (chain
+/// stays canonical); it never carries key material. Skills are written as
+/// agentskills.io `SKILL.md` folders, loadable by any Agent-Skills harness.
+async fn export_state_dir(name: &str, id: u64, dir: &str) -> i32 {
+    let root = std::path::Path::new(dir);
+    if let Err(e) = std::fs::create_dir_all(root.join("skills")) {
+        eprintln!("creating {dir}: {e}");
+        return 1;
+    }
+    let manifest = serde_json::json!({
+        "localharness_agent_state": BUNDLE_VERSION,
+        "name": name,
+        "chain": {
+            "id": registry::CHAIN_ID(),
+            "diamond": registry::REGISTRY_ADDRESS(),
+            "token_id": id,
+        },
+    });
+    let write = |path: std::path::PathBuf, text: String| -> Result<(), i32> {
+        std::fs::write(&path, text).map_err(|e| {
+            eprintln!("writing {}: {e}", path.display());
+            1
+        })
+    };
+    let pretty = serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| "{}".into());
+    if let Err(c) = write(root.join("manifest.json"), format!("{pretty}\n")) {
+        return c;
+    }
+    let persona = read_slot(id, Slot::Persona).await.unwrap_or_default();
+    let lessons_blob = read_slot(id, Slot::Lessons).await.unwrap_or_default();
+    if let Err(c) = write(root.join("persona.md"), persona) {
+        return c;
+    }
+    if let Err(c) = write(root.join("lessons.md"), lessons_blob) {
+        return c;
+    }
+    let skills_blob = read_slot(id, Slot::Skills).await.unwrap_or_default();
+    let mut count = 0;
+    for skill in skills::parse(&skills_blob) {
+        let folder = root.join("skills").join(skills::skill_dir_name(&skill.name));
+        if let Err(e) = std::fs::create_dir_all(&folder) {
+            eprintln!("creating {}: {e}", folder.display());
+            return 1;
+        }
+        if let Err(c) = write(folder.join("SKILL.md"), skills::to_skill_md(&skill)) {
+            return c;
+        }
+        count += 1;
+    }
+    println!("✓ wrote {name}'s .agent/ state to {dir} (persona, lessons, {count} skill(s))");
+    0
+}
+
+/// Import from an `.agent/` directory: version-gate the manifest, reassemble
+/// the skills blob from `skills/*/SKILL.md`, then run the SAME diff-write path
+/// as the file bundle (sanitize both sides, one sponsored tx per changed slot).
+async fn import_state_dir(name: &str, id: u64, dir: &str) -> i32 {
+    let root = std::path::Path::new(dir);
+    let manifest_text = match std::fs::read_to_string(root.join("manifest.json")) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{dir}/manifest.json: {e}");
+            return 2;
+        }
+    };
+    let manifest: serde_json::Value = match serde_json::from_str(&manifest_text) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{dir}/manifest.json is not valid JSON: {e}");
+            return 2;
+        }
+    };
+    match manifest.get("localharness_agent_state").and_then(|v| v.as_u64()) {
+        Some(BUNDLE_VERSION) => {}
+        Some(v) => {
+            eprintln!("{dir} is .agent/ version {v}; this build writes version {BUNDLE_VERSION}");
+            return 2;
+        }
+        None => {
+            eprintln!("{dir}/manifest.json is not a localharness .agent/ manifest");
+            return 2;
+        }
+    }
+    let read_opt = |p: std::path::PathBuf| std::fs::read_to_string(p).unwrap_or_default();
+    let persona = read_opt(root.join("persona.md"));
+    let lessons_blob = read_opt(root.join("lessons.md"));
+    let mut parsed_skills = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root.join("skills")) {
+        let mut dirs: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        dirs.sort();
+        for d in dirs {
+            let doc = read_opt(d.join("SKILL.md"));
+            if let Some(s) = skills::from_skill_md(&doc) {
+                parsed_skills.push(s);
+            }
+        }
+    }
+    let skills_blob = skills::serialize(&parsed_skills);
+    let bundle = serde_json::json!({
+        "localharness_agent_state": BUNDLE_VERSION,
+        "name": name,
+        "persona": persona,
+        "lessons": lessons_blob,
+        "skills": if parsed_skills.is_empty() { String::new() } else { skills_blob },
+    });
+    import_bundle_slots(name, id, &bundle, dir).await
 }
 
 /// Read all three slots and emit the bundle as JSON. Pure read — no key, no
@@ -252,7 +375,18 @@ async fn import_state(name: &str, id: u64, path: &str) -> i32 {
             return 2;
         }
     }
+    import_bundle_slots(name, id, &bundle, path).await
+}
 
+/// The shared diff-write half of both import shapes (file bundle + `.agent/`
+/// directory): sanitize both sides through the pure cores, write ONE sponsored
+/// tx per slot that actually differs (see the module note on why never batched).
+async fn import_bundle_slots(
+    name: &str,
+    id: u64,
+    bundle: &serde_json::Value,
+    source: &str,
+) -> i32 {
     let mut wrote = 0;
     let mut failed = 0;
     for slot in [Slot::Persona, Slot::Lessons, Slot::Skills] {
@@ -278,7 +412,7 @@ async fn import_state(name: &str, id: u64, path: &str) -> i32 {
         eprintln!("{wrote} slot(s) written, {failed} failed");
         return 1;
     }
-    println!("✓ {name} imported {wrote} slot(s) from {path}");
+    println!("✓ {name} imported {wrote} slot(s) from {source}");
     0
 }
 
