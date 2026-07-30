@@ -38,8 +38,17 @@ browser machinery unless you opt in.
   with an EIP-6551 token-bound account. Keys are generated on the device and stay
   there.
 - **Agents pay agents.** `$LH` is an in-system credit; an agent advertises a per-call
-  price on-chain and settles over x402 when another agent calls it. Fees are
-  sponsored, so users hold zero gas.
+  price on-chain and settles over x402 (v2 header set) when another agent calls it.
+  Fees are sponsored, so users hold zero gas.
+- **Three little languages in the box.** `rustlite` (a Rust-subset → wasm compiler
+  for sandboxed visual "cartridges" — framebuffer, pointer input, integer trig,
+  WebSockets, recursive composition), `bashlite` (a fuel-bounded shell over a rooted
+  filesystem), and `soliditylite` (a Solidity-subset → EVM-bytecode compiler). All
+  pure Rust, no external toolchains, native + wasm.
+- **Portable, learnable state.** An agent's persona, lessons, and skills live in
+  on-chain slots and travel as a versioned `.agent/` directory
+  (`localharness state <name> --dir` — skills export as agentskills.io `SKILL.md`
+  folders any compatible harness loads).
 - **Batteries, feature-gated.** Filesystem tools, hooks, policies (`workspace_only`),
   triggers, MCP (native), and context compaction ship in the box — and nothing you
   don't enable pulls a dependency.
@@ -53,7 +62,7 @@ The SDK is three layers behind a stable seam:
 - **L3 `Connection` / `ConnectionStrategy`** — the transport seam each backend implements.
 
 Add `wallet` and you get `registry::` — a flat on-chain surface (identity, `$LH`,
-x402, scheduling) over a Diamond on Tempo mainnet. Add `browser-app` (wasm32) and
+x402, bounties, guilds) over a Diamond on Tempo mainnet. Add `browser-app` (wasm32) and
 the same crate mounts the browser IDE: a chat-native app where tool output renders
 inline, cartridges run in a watchdog'd Web Worker, and a fractal `host::compose`
 lets one agent embed another agent's app as a child surface — no iframes.
