@@ -719,6 +719,15 @@ impl<'a> Parser<'a> {
                     }
                 }
                 TokenKind::LParen => {
+                    // A block-like expression (if/match/block/loop) can NEVER
+                    // be a callee in rustlite (no function values), so a `(`
+                    // after one is the START OF THE NEXT EXPRESSION, not a
+                    // call — `if c { .. }` followed by a parenthesized tail
+                    // used to mis-parse as calling the if-block (LH0202 with
+                    // a baffling span; dataset wave 2 hit it).
+                    if is_block_expr(&expr) {
+                        break;
+                    }
                     self.advance();
                     let args = self.parse_arg_list()?;
                     self.expect(&TokenKind::RParen)?;

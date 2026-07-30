@@ -32,6 +32,6 @@ Conventions that avoid real traps:
 - Always parenthesize bit tests: `((mask >> i) & 1) == 1` (precedence unprobed).
 - `idx & 31` on a possibly-negative i32 is the safe sin-table index idiom
   (two's-complement AND is non-negative for power-of-two-minus-one masks).
-- LH0202 trap: a fn TAIL expression must not start with `(` right after a
-  block statement — `if .. { .. } (v / f(k)) % 10` parses the paren as a CALL
-  of the if-block. Bind to a `let` first.
+- (FIXED 2026-07-30) the old LH0202 trap — a fn tail starting with `(` after a
+  block statement mis-parsed as a call of the block — is gone; the parser now
+  refuses call-postfix on block-like expressions (they are never callable).

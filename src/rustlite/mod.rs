@@ -216,6 +216,19 @@ mod tests {
     }
 
     #[test]
+    fn block_statement_then_parenthesized_tail_is_not_a_call() {
+        // `if .. { .. }` in statement position followed by a tail that STARTS
+        // with `(` used to mis-parse as CALLING the if-block (LH0202 with a
+        // baffling span — dataset wave 2 hit it). Block-like expressions are
+        // never callable, so the paren must begin the next expression.
+        let src = "fn digit(v: i32) -> i32 {\n    let mut x: i32 = v;\n    if x < 0 { x = 0 - x; }\n    (x / 10) % 10\n}\nfn frame(t: i32) {\n    host::display::draw_number(10, 10, digit(t), 16777215, 2);\n    host::display::present();\n}\n";
+        compile(src).expect("block-statement + paren tail compiles");
+        // A match statement before a paren tail gets the same treatment.
+        let src2 = "fn pick(v: i32) -> i32 {\n    let mut x: i32 = 0;\n    match v { 0 => { x = 1; } _ => { x = 2; } }\n    (x + 1) * 2\n}\nfn frame(t: i32) {\n    host::display::draw_number(0, 0, pick(t), 255, 1);\n    host::display::present();\n}\n";
+        compile(src2).expect("match-statement + paren tail compiles");
+    }
+
+    #[test]
     fn compile_errors_carry_their_lh0xxx_code() {
         // A representative bad snippet per stage → its expected LH0xxx code.
         // type mismatch (typecheck): bool + i32.
