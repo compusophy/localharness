@@ -4,10 +4,14 @@
 //! localharness agent like any other harness on the ACP registry.
 //!
 //! The agent side of ACP is small: `initialize`, `session/new`,
-//! `session/prompt` (streaming `session/update` notifications), and the
-//! `session/cancel` notification. We declare `loadSession: false`, no prompt
-//! capabilities beyond text, no auth methods — capabilities gate everything
-//! else, so this is a compliant v1 agent.
+//! `session/prompt` (streaming `session/update` notifications), the
+//! `session/cancel` notification, and `session/load` (we declare
+//! `loadSession: true`): each prompt persists the conversation to
+//! `.localharness/acp/<sessionId>`, and load re-seeds a fresh agent from
+//! those bytes then REPLAYS the transcript as `user_message_chunk` /
+//! `agent_message_chunk` updates (text + tool pairs) before returning null —
+//! so an editor restart keeps the conversation. No other prompt
+//! capabilities, no auth methods — capabilities gate everything else.
 //!
 //! Sessions ride the SAME headless metered path as `call`
 //! (`start_headless_agent` with `multi_turn: true`): the agent embodies this
@@ -85,7 +89,7 @@ fn initialize_result() -> serde_json::Value {
     serde_json::json!({
         "protocolVersion": PROTOCOL_VERSION,
         "agentCapabilities": {
-            "loadSession": false,
+            "loadSession": true,
             "promptCapabilities": {
                 "image": false,
                 "audio": false,
@@ -175,6 +179,82 @@ fn chunk_update(
         }
         _ => None,
     }
+}
+
+/// Where ACP session histories persist: `.localharness/acp/<sessionId>`,
+/// beside the CLI's `call` thread store (same working-dir convention).
+fn session_path(session_id: &str) -> std::path::PathBuf {
+    std::path::Path::new(".localharness").join("acp").join(session_id)
+}
+
+/// Filesystem-safe session ids, UNIQUE ACROSS RESTARTS (a bare per-process
+/// counter would collide with — and silently overwrite — a prior run's
+/// persisted session after a restart).
+fn new_session_id(name: &str, seq: u32) -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let safe: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    format!("sess_{safe}_{millis}_{seq}")
+}
+
+/// Persist a session's conversation bytes (best-effort — a failed save costs
+/// resumability, never the turn).
+fn persist_session(session_id: &str, agent: &localharness::Agent) {
+    let Ok(Some(bytes)) = agent.history_bytes() else { return };
+    let path = session_path(session_id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        eprintln!("acp: session persist failed ({e}) — load won't resume this session");
+    }
+}
+
+/// Map ONE transcript entry to the `session/update` payloads that REPLAY it
+/// (the `session/load` stream): the text as a user/agent message chunk, plus
+/// completed tool_call/tool_call_update pairs for any recorded tool calls.
+/// Pure — unit-tested below.
+fn replay_updates(
+    entry: &localharness::types::TranscriptEntry,
+    next_id: &mut u32,
+) -> Vec<serde_json::Value> {
+    use localharness::types::TranscriptRole;
+    let mut out = Vec::new();
+    for tc in &entry.tool_calls {
+        *next_id += 1;
+        let id = format!("replay_{next_id}");
+        out.push(serde_json::json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": id,
+            "title": tc.name,
+            "kind": "other",
+            "status": "completed",
+            "rawInput": tc.args
+        }));
+        let (status, raw) = match &tc.error {
+            Some(e) => ("failed", serde_json::Value::String(e.clone())),
+            None => ("completed", tc.result.clone().unwrap_or(serde_json::Value::Null)),
+        };
+        out.push(serde_json::json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": id,
+            "status": status,
+            "rawOutput": raw
+        }));
+    }
+    if !entry.text.trim().is_empty() {
+        let tag = match entry.role {
+            TranscriptRole::User => "user_message_chunk",
+            TranscriptRole::Assistant => "agent_message_chunk",
+        };
+        out.push(serde_json::json!({
+            "sessionUpdate": tag,
+            "content": {"type": "text", "text": entry.text}
+        }));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -291,9 +371,42 @@ pub(crate) async fn acp(rest: &[String]) -> i32 {
                 session_seq += 1;
                 match start_headless_agent(&key_hex, &name, model.as_deref(), None, true).await {
                     Ok(agent) => {
-                        let sid = format!("sess_{}_{session_seq}", &name);
+                        let sid = new_session_id(&name, session_seq);
                         sessions.insert(sid.clone(), agent);
                         emit(&rpc_result(&id, serde_json::json!({"sessionId": sid})));
+                    }
+                    Err(e) => emit(&rpc_error(&id, -32603, &e)),
+                }
+            }
+            ("session/load", Some(id)) => {
+                // Resume a persisted session: re-seed a fresh agent from the
+                // saved conversation bytes, REPLAY the transcript to the
+                // client, then answer null (the spec's load contract).
+                let sid = frame
+                    .params
+                    .get("sessionId")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let Ok(bytes) = std::fs::read(session_path(&sid)) else {
+                    emit(&rpc_error(&id, -32602, "unknown sessionId (no persisted session)"));
+                    continue;
+                };
+                match start_headless_agent(&key_hex, &name, model.as_deref(), Some(bytes), true)
+                    .await
+                {
+                    Ok(agent) => {
+                        let mut replay_id: u32 = 0;
+                        for entry in agent.transcript() {
+                            for update in replay_updates(&entry, &mut replay_id) {
+                                emit(&notification(
+                                    "session/update",
+                                    serde_json::json!({"sessionId": sid, "update": update}),
+                                ));
+                            }
+                        }
+                        sessions.insert(sid.clone(), agent);
+                        emit(&rpc_result(&id, serde_json::Value::Null));
                     }
                     Err(e) => emit(&rpc_error(&id, -32603, &e)),
                 }
@@ -380,6 +493,10 @@ pub(crate) async fn acp(rest: &[String]) -> i32 {
                     }
                 }
                 emit(&rpc_result(&id, serde_json::json!({"stopReason": stop_reason})));
+                // Persist so `session/load` survives a process restart.
+                if let Some(agent) = sessions.get(&sid) {
+                    persist_session(&sid, agent);
+                }
             }
             ("session/cancel", None) => {} // no turn in flight — nothing to cancel
             (_, Some(id)) => emit(&rpc_error(&id, -32601, "method not found")),
@@ -413,14 +530,13 @@ mod tests {
         assert!(parse_frame(r#"{"jsonrpc":"2.0","id":1}"#).is_err()); // no method
     }
 
-    /// The declared capability surface is the MINIMAL compliant one: v1, no
-    /// loadSession, no rich prompt blocks, no auth. Anything widened here must
-    /// actually be implemented in the loop.
+    /// The declared capability surface stays MINIMAL — loadSession is the one
+    /// widened capability, and it is implemented (persist + replay below).
     #[test]
     fn initialize_declares_the_minimal_surface() {
         let r = initialize_result();
         assert_eq!(r["protocolVersion"], 1);
-        assert_eq!(r["agentCapabilities"]["loadSession"], false);
+        assert_eq!(r["agentCapabilities"]["loadSession"], true);
         assert_eq!(r["agentCapabilities"]["promptCapabilities"]["image"], false);
         assert_eq!(r["agentCapabilities"]["promptCapabilities"]["embeddedContext"], false);
         assert_eq!(r["authMethods"], serde_json::json!([]));
@@ -492,6 +608,67 @@ mod tests {
         // Empty text chunks are suppressed (no empty message frames).
         let empty = StreamChunk::Text { step_index: 0, text: String::new() };
         assert!(chunk_update(&empty, &mut pending, &mut next).is_none());
+    }
+
+    /// Replay mapping: user/assistant text becomes the right chunk tag, tool
+    /// calls replay as COMPLETED call/update pairs, empty text is skipped.
+    #[test]
+    fn replay_maps_transcript_entries() {
+        use localharness::types::{TranscriptEntry, TranscriptRole, TranscriptToolCall};
+        let mut n = 0;
+        let user = TranscriptEntry {
+            role: TranscriptRole::User,
+            text: "hello".into(),
+            tool_calls: vec![],
+        };
+        let u = super::replay_updates(&user, &mut n);
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0]["sessionUpdate"], "user_message_chunk");
+        assert_eq!(u[0]["content"]["text"], "hello");
+
+        let asst = TranscriptEntry {
+            role: TranscriptRole::Assistant,
+            text: "done".into(),
+            tool_calls: vec![TranscriptToolCall {
+                name: "list_subdomains".into(),
+                args: serde_json::json!({}),
+                result: Some(serde_json::json!({"names": []})),
+                error: None,
+            }],
+        };
+        let a = super::replay_updates(&asst, &mut n);
+        assert_eq!(a.len(), 3); // tool_call + tool_call_update + the text
+        assert_eq!(a[0]["sessionUpdate"], "tool_call");
+        assert_eq!(a[0]["status"], "completed");
+        assert_eq!(a[1]["sessionUpdate"], "tool_call_update");
+        assert_eq!(a[2]["sessionUpdate"], "agent_message_chunk");
+        // Ids are unique across entries.
+        assert_ne!(a[0]["toolCallId"], serde_json::Value::Null);
+
+        let empty = TranscriptEntry {
+            role: TranscriptRole::Assistant,
+            text: "   ".into(),
+            tool_calls: vec![],
+        };
+        assert!(super::replay_updates(&empty, &mut n).is_empty());
+    }
+
+    /// Session ids are filesystem-safe and unique across process restarts
+    /// (the time component) — a bare counter would overwrite a prior run's
+    /// persisted session.
+    #[test]
+    fn session_ids_are_safe_and_restart_unique() {
+        let a = super::new_session_id("claude", 1);
+        assert!(a.starts_with("sess_claude_"));
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        // A name with path-hostile characters is sanitized.
+        let b = super::new_session_id("../evil name", 2);
+        assert!(!b.contains('/') && !b.contains('.') && !b.contains(' '));
+        // The time component separates RESTARTS (same seq, later clock) —
+        // within a process the seq differs, so intra-millisecond identity
+        // is not a real collision surface.
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        assert_ne!(a, super::new_session_id("claude", 1));
     }
 
     /// Wire lines are single-line JSON-RPC 2.0 frames.

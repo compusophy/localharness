@@ -73,10 +73,14 @@ one-shot nonce cannot survive a second `session/prompt`. ⛔ STDOUT IS THE WIRE:
 one flushed JSON-RPC frame per line, nothing else (stdout is block-buffered when
 piped; an unflushed frame deadlocks the client) — all chatter to stderr. stdin
 EOF mid-turn = "no more requests", NOT cancel: drain the turn, then exit.
-Declared capabilities are the MINIMAL v1 surface (loadSession false, text-only
-prompts, no auth) — widen a capability only WITH its implementation. Proven live:
-multi-turn session continuity on mainnet (metered, streamed
-agent_message_chunks). Pure wire helpers are unit-tested in-module.
+Declared capabilities stay MINIMAL (text-only prompts, no auth) with ONE widened:
+`loadSession: true` — each prompt persists history_bytes to
+`.localharness/acp/<sessionId>` (ids carry a timestamp so restarts can't collide
+and overwrite), and `session/load` re-seeds a fresh agent + REPLAYS the transcript
+(user/agent_message_chunk + completed tool pairs) before returning null. Widen a
+capability only WITH its implementation. Proven live: multi-turn continuity AND a
+two-process restart (codeword recalled through session/load) on mainnet. Pure wire
+helpers unit-tested in-module.
 
 ## `sh` = bashlite (sandboxed shell)
 `sh.rs` runs `.bl` scripts through the bashlite interpreter (fuel-bounded fs +
