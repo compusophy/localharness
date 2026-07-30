@@ -47,7 +47,7 @@ multi-feature apps. New boundaries the corpus now encodes:
   `&&`/`||`/`!`, never `==`/`!=`.
 - Array literals accept computed expressions (`[t + 1, hh / 10]`), not just
   literals; shift-by-zero is legal.
-- host::net params are INTEGER-ONLY — a string literal cannot reach
-  `net::open`/`net::send` at all (LH0204), so rows teach `open(..) == -1` as a
-  first-class OFFLINE state; host-held text paths (`http::draw_line`,
-  `body_lines`) are the intended reading idiom.
+- (FIXED 2026-07-30, telemetry #84) `net::open(url)`/`net::send(h, msg)` now
+  take string LITERALS like `http::get`; rows still teach `open(..) == -1` as
+  a first-class OFFLINE state, and host-held text (`http::draw_line`,
+  `body_lines`) stays the reading idiom.

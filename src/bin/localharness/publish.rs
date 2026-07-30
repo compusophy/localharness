@@ -1300,7 +1300,7 @@ mod tests {
     fn cartridge_host_calls_spans_modules_and_strips_host_prefix() {
         // A second module (net) proves the `host_`-prefix strip is per-import.
         let wasm = localharness::rustlite::compile(
-            "fn frame(t: i32) { host::display::present(); let h: i32 = host::net::open(0); }",
+            "fn frame(t: i32) { host::display::present(); let h: i32 = host::net::open(\"wss://x.example\"); }",
         )
         .unwrap();
         let calls = cartridge_host_calls(&wasm);

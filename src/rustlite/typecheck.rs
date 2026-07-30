@@ -1120,11 +1120,16 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         // --- networking (host_net): WebSocket-backed multiplayer/sync I/O.
         // Strings (URL, message bodies) use the same length-prefixed memory
         // layout as the loader's `read_string`: 4 bytes LE length, then UTF-8
-        // payload, at the given cartridge-memory pointer.
+        // payload, at the given cartridge-memory pointer. `open`'s url and
+        // `send`'s message are typed `String` so a string LITERAL flows
+        // straight in — the only pointer rustlite can produce (telemetry #84:
+        // the old I32 typing made both fns unreachable from rustlite; a
+        // literal lowers to the length-prefixed ptr the worker already reads,
+        // so the wasm import signature is unchanged).
         //
-        // `open(url_ptr) -> handle`   open a WebSocket to the url at `url_ptr`;
+        // `open(url) -> handle`       open a WebSocket to the literal url;
         //                             returns a handle >= 0, or -1 on error.
-        // `send(handle, ptr) -> ok`   send the length-prefixed message at `ptr`;
+        // `send(handle, msg) -> ok`   send the literal message;
         //                             returns 1 if queued, 0 if not (closed/bad).
         // `poll(handle, out_ptr, max) -> len`  copy the next inbound message
         //                             (length-prefixed) into memory at `out_ptr`,
@@ -1134,8 +1139,8 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         // `status(handle) -> i32`     0 connecting, 1 open, 2 closing, 3 closed,
         //                             -1 bad handle.
         // `close(handle)`             close the socket and drop its inbox.
-        "net::open" => (vec![I32], I32),
-        "net::send" => (vec![I32, I32], I32),
+        "net::open" => (vec![String], I32),
+        "net::send" => (vec![I32, String], I32),
         "net::poll" => (vec![I32, I32, I32], I32),
         "net::status" => (vec![I32], I32),
         "net::close" => (vec![I32], Void),

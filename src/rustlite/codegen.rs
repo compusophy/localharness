@@ -1390,13 +1390,15 @@ mod tests {
         // A cartridge that opens a WebSocket, sends a message, and drains
         // its inbox each frame — the multiplayer/sync primitive. Asserts
         // the `host_net` import module + fields the loader provides land
-        // in the wasm import section.
+        // in the wasm import section. `open`/`send` take string LITERALS
+        // (telemetry #84 — they lower to the length-prefixed ptr the worker
+        // reads, so the import signature is unchanged).
         let wasm = compile_to_wasm(
             r#"
             fn frame(t: i32) {
-                let sock: i32 = host::net::open(0);
+                let sock: i32 = host::net::open("wss://relay.example.net/room");
                 if host::net::status(sock) == 1 {
-                    host::net::send(sock, 8);
+                    host::net::send(sock, "hello");
                     let n: i32 = host::net::poll(sock, 64, 256);
                     host::net::close(sock);
                 }
