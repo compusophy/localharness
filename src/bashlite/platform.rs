@@ -320,9 +320,9 @@ pub fn write_reads_source_file(cmd: &str) -> bool {
 /// `lh-publish <name> <source>` — compile a rustlite cartridge and publish (or
 /// UPDATE) it as `<name>`'s public face (off-chain app store), for ANY subdomain the caller
 /// OWNS. `source` is the cartridge SOURCE TEXT (the host reads the file). The
-/// owner's seed holds every subdomain NFT, so it signs `setMetadata` for the
-/// target's tokenId — no re-register, no actor model. Refuses unregistered
-/// names and names owned by someone else. Sponsored (caller pays no gas).
+/// owner's seed holds every subdomain NFT, so it signs the store's ownership-
+/// gated publish token for any owned name — no re-register, no actor model.
+/// Refuses unregistered names and names owned by someone else. Free (no gas).
 /// Rides the dry-run-manifest gate: in `dry_run` it compiles + ownership-checks
 /// and emits a one-line plan, writing NOTHING.
 async fn lh_publish(args: &[String], env: &WriteEnv<'_>, dry_run: bool) -> (Output, String) {

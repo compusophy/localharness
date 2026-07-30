@@ -993,22 +993,23 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     let is_owner_device = owner.is_some() || signer_owner;
     let show_public_face = !is_owner_device || has_view_public_hint();
     if show_public_face {
-        // Resolve the on-chain public-face choice (directory / app / html)
-        // and paint it. Directory is the universal fallback, so this always
-        // takes over.
-        paint_public_face(&host, &name, is_owner_device).await;
         // A seed-bearing owner visiting from a device without the local
         // `.lh_owner` marker (e.g. a second device) lands on the public
         // face like a visitor. Verify in the background and, if the apex
         // signer proves ownership, send them to their studio (`?edit=1`).
         // Skipped when this device already claims ownership (a deliberate
-        // `?view=public` preview must not bounce back).
+        // `?view=public` preview must not bounce back). Spawned BEFORE the
+        // face paint so a hung store/RPC in face resolution can never delay
+        // the owner's door (brick-audit hardening).
         if !is_owner_device {
             let n = name.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 redirect_to_studio_if_owner(n).await;
             });
         }
+        // Resolve the public-face choice (store-first) and paint it.
+        // Directory is the universal fallback, so this always takes over.
+        paint_public_face(&host, &name, is_owner_device).await;
         return;
     }
 
@@ -1751,18 +1752,18 @@ async fn resolve_cartridge(name: &str, prefer_local: bool, id: Option<u64>) -> O
 }
 
 /// HTML content for the public face: owner preview prefers the device's local
-/// `index.html` draft; then the off-chain store; a store miss falls back to
-/// the LEGACY on-chain `public.html` slot (pre-pivot publishes).
+/// `index.html` draft; then the off-chain store (fetched by NAME — no
+/// id→name round-trip); a store miss falls back to the LEGACY on-chain
+/// `public.html` slot (pre-pivot publishes).
 async fn resolve_face_html(name: &str, id: Option<u64>, is_owner_preview: bool) -> Option<String> {
     if is_owner_preview {
         if let Some(h) = local_public_html().await {
             return Some(h);
         }
     }
-    let i = id?;
-    let store = registry::public_html_of(i).await;
+    let store = registry::html_from_store(name).await;
     let bytes = if registry::store_miss_falls_back(&store) {
-        let legacy = registry::public_html_onchain_of(i).await.ok().flatten();
+        let legacy = registry::public_html_onchain_of(id?).await.ok().flatten();
         if legacy.is_some() {
             web_sys::console::log_1(&JsValue::from_str(&format!(
                 "public face: html store miss for '{name}', serving legacy on-chain public.html"
@@ -1788,7 +1789,7 @@ async fn resolve_face_html(name: &str, id: Option<u64>, is_owner_preview: bool) 
 /// stays reachable even with no face record anywhere.
 async fn resolve_public_face(name: &str, is_owner_preview: bool) -> PublicFace {
     let id = registry::id_of_name(name).await.ok().filter(|&i| i != 0);
-    let choice = registry::effective_face_choice(name, id).await;
+    let choice = registry::effective_face_choice(name, id, false).await;
     match choice.as_deref() {
         Some("directory") => PublicFace::Directory,
         Some("html") => match resolve_face_html(name, id, is_owner_preview).await {

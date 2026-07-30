@@ -444,8 +444,7 @@ pub async fn html_from_store(name: &str) -> Result<Option<Vec<u8>>, String> {
 /// Normalize a stored face-choice blob: trimmed, lowercased, and one of
 /// `directory` / `app` / `html` — anything else is `None` (treat as unset).
 pub fn parse_face_choice(bytes: &[u8]) -> Option<String> {
-    let s = String::from_utf8(bytes.to_vec()).ok()?;
-    let s = s.trim().to_lowercase();
+    let s = std::str::from_utf8(bytes).ok()?.trim().to_lowercase();
     matches!(s.as_str(), "directory" | "app" | "html").then_some(s)
 }
 
@@ -453,12 +452,20 @@ pub fn parse_face_choice(bytes: &[u8]) -> Option<String> {
 /// (`GET /api/app?name=<name>&kind=face`). The store is where the choice lives —
 /// `publish.ts` stamps `<name>/face` on every publish (content publishes stamp
 /// their own kind; a face-only POST picks "directory"). `Ok(None)` = no record.
-pub async fn face_from_store(name: &str) -> Result<Option<String>, String> {
+/// `fresh` appends a cache-buster so an owner surface reading its own state
+/// right after a publish skips the 60s browser/edge cache (visitors pass false).
+pub async fn face_from_store(name: &str, fresh: bool) -> Result<Option<String>, String> {
     let n = name.trim();
     if n.is_empty() {
         return Ok(None);
     }
-    let bytes = http_get_bytes(&format!("{CREDIT_PROXY_URL}api/app?name={n}&kind=face")).await?;
+    let bust = if fresh {
+        format!("&v={}", crate::runtime::now_unix_secs())
+    } else {
+        String::new()
+    };
+    let bytes =
+        http_get_bytes(&format!("{CREDIT_PROXY_URL}api/app?name={n}&kind=face{bust}")).await?;
     Ok(bytes.as_deref().and_then(parse_face_choice))
 }
 
@@ -476,8 +483,13 @@ pub async fn publish_face_to_store(name: &str, token: &str, face: &str) -> Resul
 /// publish stamps it), falling back to the LEGACY on-chain
 /// `localharness.public_face` slot only on a store miss (pre-pivot names whose
 /// choice was written via `setMetadata`). New choices never touch the chain.
-pub async fn effective_face_choice(name: &str, token_id: Option<u64>) -> Option<String> {
-    let store = face_from_store(name).await;
+/// `fresh` = bust the store cache (owner status reads right after a publish).
+pub async fn effective_face_choice(
+    name: &str,
+    token_id: Option<u64>,
+    fresh: bool,
+) -> Option<String> {
+    let store = face_from_store(name, fresh).await;
     if !store_miss_falls_back(&store) {
         return store.ok().flatten();
     }

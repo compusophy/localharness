@@ -667,8 +667,10 @@ pub(super) async fn refresh_public_face_status() {
     // Timeout-capped so a dead RPC resolves to the directory-default label
     // instead of leaving the placeholder text up forever.
     let face = match crate::app::net::read(crate::app::registry::id_of_name(&name)).await {
+        // `fresh` busts the 60s store cache — this runs right after a publish,
+        // where a cached read would show the OLD face and call it current.
         Ok(Ok(id)) if id != 0 => crate::app::net::read(
-            crate::app::registry::effective_face_choice(&name, Some(id)),
+            crate::app::registry::effective_face_choice(&name, Some(id), true),
         )
         .await
         .ok()
@@ -681,17 +683,20 @@ pub(super) async fn refresh_public_face_status() {
     let label: String = match face.as_deref() {
         Some("app") => "currently: app · published ✓".into(),
         Some("html") => "currently: html · published ✓".into(),
+        Some("directory") => "currently: directory ✓".into(),
+        // UNSET: visitors get the inferred face (published app, else published
+        // html, else directory) — don't flatly claim "directory".
         _ => {
             let fs = crate::app::shared_opfs();
             let has_app = fs.read("app.rl").await.map(|v| !v.is_empty()).unwrap_or(false);
             let has_html =
                 fs.read("index.html").await.map(|v| !v.is_empty()).unwrap_or(false);
             if has_app {
-                "currently: directory · app.rl local only — publish to share".into()
+                "currently: auto · app.rl local only — publish to share".into()
             } else if has_html {
-                "currently: directory · index.html local only — publish to share".into()
+                "currently: auto · index.html local only — publish to share".into()
             } else {
-                "currently: directory (default)".into()
+                "currently: auto (published app/html if any, else directory)".into()
             }
         }
     };

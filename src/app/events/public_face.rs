@@ -22,9 +22,11 @@ pub(super) async fn run_set_public_face(choice: &str) {
         return;
     };
 
-    // OFF-CHAIN first for every choice. Falls through to the on-chain path on
-    // ANY inability (TBA owner, no local signer, or a store error), so a publish
-    // never regresses from "works (on-chain gas)" to "broken".
+    // OFF-CHAIN first for every choice. Falls through to the on-chain path
+    // only on INELIGIBILITY (TBA owner, no local signer, missing content,
+    // compile error). ⛔ A store ERROR never falls through: reads are
+    // store-first, so an on-chain choice written while a stale store record
+    // exists is INERT — the helpers surface the error and the owner retries.
     if choice == "app" && try_publish_app_offchain(&name, msg).await {
         return;
     }
@@ -263,7 +265,14 @@ async fn try_publish_app_offchain(name: &str, msg: &str) -> bool {
             super::admin::refresh_public_face_status().await;
             true
         }
-        Err(_) => false, // store hiccup → fall back to the on-chain publish
+        // ⛔ A store ERROR must NOT fall through to the on-chain publish: the
+        // store is the face authority, so an on-chain write shadowed by a
+        // stale store record would "succeed" while visitors keep the old
+        // face (the exact bug class this pivot kills). Surface it honestly.
+        Err(e) => {
+            dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("publish failed: {e} — retry")));
+            true
+        }
     }
 }
 
@@ -289,11 +298,11 @@ async fn try_set_directory_offchain(name: &str, msg: &str) -> bool {
         msg,
         "<span style=\"color:var(--muted)\">saving…</span>",
     );
-    if crate::app::registry::publish_face_to_store(name, &token, "directory")
-        .await
-        .is_err()
-    {
-        return false;
+    if let Err(e) = crate::app::registry::publish_face_to_store(name, &token, "directory").await {
+        // Same rule as the content publishes: never fall on-chain past a
+        // store error — a stale store record would shadow the choice.
+        dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("failed: {e} — retry")));
+        return true;
     }
     dom::swap_inner(
         msg,
@@ -356,7 +365,11 @@ async fn try_publish_html_offchain(name: &str, msg: &str) -> bool {
             super::admin::refresh_public_face_status().await;
             true
         }
-        Err(_) => false,
+        // ⛔ Never fall on-chain past a store error (see the app sibling).
+        Err(e) => {
+            dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("publish failed: {e} — retry")));
+            true
+        }
     }
 }
 

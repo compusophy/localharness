@@ -221,10 +221,10 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   // Stamp the face record: a content publish stamps its own kind (last publish
-  // wins), a face-only POST stamps the asked choice. ONE authed write covers
-  // bytes + routing — the "stored but visitors saw the directory" bug (krafto)
-  // is structurally impossible here.
-  const faceChoice = isHtml || hasWasm ? kind : faceRaw;
+  // wins) unless an explicit `face` overrides it; a face-only POST stamps the
+  // asked choice. ONE authed write covers bytes + routing — the "stored but
+  // visitors saw the directory" bug (krafto) is structurally impossible here.
+  const faceChoice = faceRaw || kind;
   commits.push({
     path: `${name}/face`,
     b64: btoa(faceChoice),
@@ -251,9 +251,20 @@ export default async function handler(req: Request): Promise<Response> {
     return json({ error: `"${name}" is owned by ${owner ?? '(none)'}, not ${addr}` }, 403, origin);
   }
 
-  // Commit the asset(s) to the app-store repo.
+  // Commit the asset(s) to the app-store repo. The face stamp is the LAST
+  // commit and is what routes visitors, so a transient GitHub failure there
+  // would strand fresh bytes behind the OLD face — retry it once before
+  // failing, and name the stranded stamp in the error so the client retries
+  // the publish (never falls back to a write the store record would shadow).
   try {
-    for (const c of commits) await ghPut(c.path, c.b64, c.message);
+    for (const c of commits) {
+      try {
+        await ghPut(c.path, c.b64, c.message);
+      } catch (e) {
+        if (!c.path.endsWith('/face')) throw e;
+        await ghPut(c.path, c.b64, c.message); // one retry for the routing stamp
+      }
+    }
   } catch (e) {
     return json({ error: 'github: ' + (e as Error).message }, 502, origin);
   }

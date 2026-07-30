@@ -1787,9 +1787,10 @@ pub(crate) fn admin_x402_price_section() -> Markup {
 }
 
 /// Public-face section — choose what VISITORS see at this subdomain. The
-/// choice (and content) live on-chain via sponsored `setMetadata`, so every
-/// visitor honours it, not just this device. Owner-only; the buttons no-op
-/// to an error if not verified as owner.
+/// choice (and content) live in the OFF-CHAIN app store (`<name>/face`,
+/// stamped by every publish — free, no tx), so every visitor honours it, not
+/// just this device. Owner-only; the buttons no-op to an error if not
+/// verified as owner.
 /// - **directory**: the default profile/directory landing.
 /// - **app**: publishes this device's local `app.rl` (compiled) + selects it.
 /// - **html**: publishes this device's local `index.html` + selects it.

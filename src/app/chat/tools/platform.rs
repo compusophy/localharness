@@ -282,6 +282,9 @@ async fn publish_app_face(
     // off-chain support = a proxy authorized-signer follow-up). Logged so this
     // (sponsor-gas-priced) regression is observable, not silent. The legacy
     // sponsored setMetadata batch; length-scaled gas (~7.6k gas/BYTE).
+    // KNOWN RESIDUAL: if this name was EOA-owned before (a store face record
+    // exists) and was later TBA-consolidated, the store record shadows this
+    // on-chain choice (reads are store-first). Real fix = proxy-side TBA auth.
     crate::app::debuglog::log(&format!(
         "publish_app_face: off-chain unavailable for {name} (owner {owner} is not the \
          local master wallet) — on-chain fallback"
@@ -482,18 +485,21 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
 
             // UPDATE path: the caller already owns `name` → re-publish in place,
             // NO re-register (which would fail), NO persona/prefund (those are
-            // spawn-time actor setup). One sponsored setMetadata batch.
+            // spawn-time actor setup). Off-chain store publish (a tx only on
+            // the TBA-owner fallback — `tx_hash` present only then).
             if let Some((token_id, owner)) = existing {
                 let (tx, wasm) = publish_app_face(&cleaned, token_id, source, &owner).await?;
                 stash_published_app_embed(&cleaned, wasm);
-                let off_chain = tx.is_none();
-                return Ok(serde_json::json!({
+                let mut r = serde_json::json!({
                     "name": cleaned,
                     "url": format!("https://{cleaned}.localharness.xyz/"),
-                    "tx_hash": tx.unwrap_or_else(|| "off-chain".to_string()),
-                    "off_chain": off_chain,
+                    "off_chain": tx.is_none(),
                     "updated": true,
-                }));
+                });
+                if let Some(tx) = tx {
+                    r["tx_hash"] = serde_json::json!(tx);
+                }
+                return Ok(r);
             }
 
             // FRESH path: register the name, then publish. The owner's master
@@ -544,17 +550,18 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
                 )
             };
             let off_chain = app_tx.is_none();
-            // Report the most relevant on-chain tx (app fallback, else setup).
-            let tx_hash = app_tx
-                .or(setup_tx)
-                .unwrap_or_else(|| "off-chain".to_string());
             let mut result = serde_json::json!({
                 "name": cleaned,
                 "url": format!("https://{cleaned}.localharness.xyz/"),
-                "tx_hash": tx_hash,
                 "off_chain": off_chain,
                 "updated": false,
             });
+            // Report the most relevant on-chain tx if one ran (app fallback,
+            // else actor setup) — omitted entirely on the pure-store path so
+            // no model ever relays a fake "hash".
+            if let Some(tx) = app_tx.or(setup_tx) {
+                result["tx_hash"] = serde_json::json!(tx);
+            }
             if setup.persona_set {
                 result["persona_set"] = serde_json::json!(true);
             }
@@ -577,9 +584,11 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
 /// just targeting a chosen owned name. From a MAIN session this updates any
 /// alt's app. The target MUST already be registered AND owned by the caller
 /// (refuses unregistered names — use `create_and_publish_app` to mint a fresh
-/// one — and names owned by someone else). MOVES on-chain state, so it rides
-/// the typed-confirmation gate (`chat::confirm_guard`). NOT granted to
-/// subagents. Returns `{ name, url, tx_hash, updated: true }`.
+/// one — and names owned by someone else). OVERWRITES what that name serves to
+/// every visitor, so it rides the typed-confirmation gate
+/// (`chat::confirm_guard`). NOT granted to subagents. Publishes off-chain (the
+/// store; tx only on the TBA fallback). Returns `{ name, url, off_chain,
+/// updated: true }`.
 pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     // Hoisted table: `crate::tool_params::PublishAppToParams`.
     let schema = crate::tool_params::PublishAppToParams::schema();
@@ -590,10 +599,11 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          NFTs, so from one session you can re-publish any of your alts' apps. The \
          target must ALREADY exist and be owned by you (to mint a NEW subdomain use \
          create_and_publish_app; that tool also updates the CURRENT name in place). \
-         CHANGES on-chain state — the first call does NOT execute: it returns a \
-         single-use confirmation code (also shown to the owner in the UI). Say which \
-         subdomain you'll update, ask the owner to TYPE the code, then retry with \
-         `confirmation` set to it. Returns { name, url, tx_hash, updated: true }.",
+         OVERWRITES that subdomain's published app (off-chain, free) — the first \
+         call does NOT execute: it returns a single-use confirmation code (also \
+         shown to the owner in the UI). Say which subdomain you'll update, ask the \
+         owner to TYPE the code, then retry with `confirmation` set to it. \
+         Returns { name, url, off_chain, updated: true }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let params = crate::tool_params::PublishAppToParams::lenient(&args);
@@ -638,14 +648,16 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // (No auto-embed here: the target is a DIFFERENT subdomain being
             // updated from MAIN; the wasm is dropped.)
             let (tx, _wasm) = publish_app_face(&cleaned, token_id, source, &owner).await?;
-            let off_chain = tx.is_none();
-            Ok(serde_json::json!({
+            let mut r = serde_json::json!({
                 "name": cleaned,
                 "url": format!("https://{cleaned}.localharness.xyz/"),
-                "tx_hash": tx.unwrap_or_else(|| "off-chain".to_string()),
-                "off_chain": off_chain,
+                "off_chain": tx.is_none(),
                 "updated": true,
-            }))
+            });
+            if let Some(tx) = tx {
+                r["tx_hash"] = serde_json::json!(tx);
+            }
+            Ok(r)
         },
     )
 }
@@ -654,7 +666,8 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// render it INLINE in the chat transcript as a live, interactive card (NOT
 /// an iframe — cartridges are framebuffer wasm; an iframe of a subdomain that
 /// itself boots a cartridge hits recursion/partitioning limits). Resolves
-/// `name` → tokenId → on-chain `app.wasm`; if the subdomain has a published
+/// `name` → published `app.wasm` (off-chain store; legacy on-chain slot as
+/// fallback); if the subdomain has a published
 /// cartridge, stashes its bytes for the transcript's `#embed-canvas` card to
 /// launch (via `display::run_in_canvas`) and returns `{ name, url,
 /// embedded: true }`. A subdomain with no published app (directory/html face,

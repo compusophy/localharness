@@ -52,8 +52,9 @@ pub(crate) fn parse_create_args(rest: &[String]) -> Result<ParsedCreate, String>
 const STARTER_CARTRIDGE: &str = r#"// app.rl — your agent's public face (a rustlite cartridge).
 //
 // `localharness publish <name> app.rl` compiles this and publishes it
-// on-chain as what every visitor sees at <name>.localharness.xyz —
-// served 24/7, no tab needed. Edit, publish again to update.
+// to the app store (off-chain, free) as what every visitor sees at
+// <name>.localharness.xyz — served 24/7, no tab needed. Edit, publish
+// again to update.
 //
 // The display is a 512x512 framebuffer by default; export `fn dims() -> i32`
 // (= (width<<16)|height, each 16..1024) for a custom size. Draw via host::display:
@@ -101,8 +102,8 @@ pub(crate) async fn create(name: &str, persona: Option<&str>) -> i32 {
 /// [`create`] with an optional one-command publish (`create --publish`): after a
 /// successful claim, compile + publish the scaffolded `app.rl` as the agent's
 /// public face in the SAME flow so a live URL exists immediately (on-chain
-/// feedback #75). `--publish` is NOT the default — bare `create` stays cheap (a
-/// name-only mint); the publish is an extra opt-in sponsored tx.
+/// feedback #75). `--publish` is NOT the default — bare `create` stays a
+/// name-only mint; the publish is a free off-chain store POST.
 pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish: bool) -> i32 {
     if !name_is_valid(name) {
         eprintln!("invalid name '{name}' — use 1-63 chars of a-z, 0-9, hyphen");
@@ -701,9 +702,9 @@ pub(crate) async fn publish_scaffolded_face(name: &str) -> i32 {
 }
 
 /// Compile a rustlite cartridge and publish it as `<name>`'s public face —
-/// served to every visitor 24/7 with NO browser tab running. The app (cartridge)
-/// face publishes OFF-CHAIN to the app store (`publish_app_offchain`, free, no
-/// gas); the HTML face stays on-chain (`setMetadata`). Ownership stays on-chain.
+/// served to every visitor 24/7 with NO browser tab running. BOTH faces (app
+/// cartridge + HTML page) publish OFF-CHAIN to the app store (free, no gas),
+/// which also stamps the face choice. Only ownership stays on-chain.
 pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
     // One command: if we don't hold this name's key yet (in cwd OR the config
     // home), claim the subdomain first (sponsored), then publish — no separate
@@ -766,10 +767,10 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
     };
 
     // Route by extension: .html/.htm publishes the raw bytes as the HTML face
-    // ON-CHAIN (rasterized to every visitor's framebuffer); anything else
-    // compiles as a rustlite cartridge and publishes OFF-CHAIN to the app store
-    // (free, no gas — the blockchain keeps only the name's ownership, which we
-    // already verified above). HTML publishes the same way.
+    // (rasterized to every visitor's framebuffer); anything else compiles as a
+    // rustlite cartridge. BOTH publish OFF-CHAIN to the app store (free, no
+    // gas — the blockchain keeps only the name's ownership, which we already
+    // verified above).
     if publishes_as_html(source_path) {
         let html = src.as_bytes();
         if html.is_empty() {

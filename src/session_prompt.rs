@@ -105,8 +105,8 @@ pub fn base_system_prompt(
              here (a per-origin sandbox means you can't write another \
              subdomain's files directly). The cartridge publishes OFF-CHAIN \
              (free, no gas); the OPTIONAL actor extras (`persona`, `prefund_lh`) \
-             are set on-chain. Returns {{ name, url, tx_hash, off_chain, \
-             persona_set?, prefunded_lh?, tba? }}.\n\
+             are set on-chain. Returns {{ name, url, off_chain, persona_set?, \
+             prefunded_lh?, tba? }} (tx_hash only if an on-chain step ran).\n\
            • batch_create_subdomains(names) — register MANY subdomains in ONE \
              on-chain transaction. Use THIS instead of calling create_subdomain \
              repeatedly when the user asks for more than one name at once \

@@ -22,9 +22,10 @@
 //!                            compile-check a rustlite cartridge locally (no write;
 //!                            --host-calls dumps its host:: platform-call surface)
 //!   publish <name> <src.rl>  compile a rustlite cartridge + publish it as
-//!                            <name>'s public face on-chain (served to every
-//!                            visitor 24/7, no browser tab required); CLAIMS the
-//!                            name first if you don't already hold its key
+//!                            <name>'s public face to the app store (off-chain,
+//!                            free; served to every visitor 24/7, no browser tab
+//!                            required); CLAIMS the name first if you don't
+//!                            already hold its key
 //!   persona <name> <text>    publish <name>'s public system prompt on-chain so
 //!                            `call` answers AS that agent (inline text, or an
 //!                            existing file's contents)
@@ -252,7 +253,7 @@ IDENTITY & PROFILE
                                          scaffolds a starter ./app.rl (never overwrites);
                                          --publish also compiles + publishes that
                                          app.rl as the public face so a live URL
-                                         exists immediately (one extra sponsored tx);
+                                         exists immediately (off-chain, free);
                                          idempotent: reuses an existing local key and
                                          no-ops if the name is already yours
   localharness onboard --invite <code> [--as <name>]
@@ -341,7 +342,8 @@ CARTRIDGES & PUBLISHING
                                          — one local pass, no agent loop. Value moves
                                          run DRY first (a plan); --confirm executes
   localharness publish <name> [src.rl|page.html]
-                                         publish <name>'s public face on-chain:
+                                         publish <name>'s public face to the app
+                                         store (off-chain, free):
                                          .rl compiles as a rustlite app, .html
                                          publishes as a rasterized page (claims
                                          the name first if you don't hold its
