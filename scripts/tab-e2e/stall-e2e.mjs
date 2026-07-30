@@ -124,6 +124,11 @@ try {
     (document.getElementById("transcript")?.textContent || "").includes("All done — the plan is complete.") ? true : null), 20000);
   check("stall: run closed on the final answer", !!closed);
 
+  // The closing text paints BEFORE the final auto-continue request lands, so
+  // wait on the request COUNT itself, not the paint (turns 3 and 4 script
+  // identical text — the paint can't distinguish them; this raced 2/10 runs).
+  await waitFor(() => (requests.length >= 4 ? true : null), 15000);
+
   // THE WIRING PROOF: request 2's body carries the STALL_NUDGE as a user turn.
   check("stall: 4 model requests fired (stall → nudge → tool result → auto-continue)",
     requests.length === 4, `requests=${requests.length}`);
