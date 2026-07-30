@@ -1,0 +1,10 @@
+{
+  "id": "012",
+  "prompt": "Gravity ball with persistence. rustlite has NO struct literals and locals reset every frame, so model the ball as state slots: slot 1 = y (fixed-point 1/16 px), slot 2 = vy, slot 0 = init latch. Each frame: vy += 3, y += vy, bounce off the floor with 3/4 damping. Draw the ball at y/16.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, 16 * 16);\n        host::display::state_set(2, 0);\n    }\n    let mut y: i32 = host::display::state_get(1);\n    let mut vy: i32 = host::display::state_get(2);\n    vy = vy + 3;\n    y = y + vy;\n    let floor: i32 = (h - 18) * 16;\n    if y > floor {\n        y = floor;\n        vy = (0 - vy) * 3 / 4;\n    }\n    host::display::state_set(1, y);\n    host::display::state_set(2, vy);\n    host::display::clear(0x000000);\n    host::display::fill_rect(0, h - 2, w, 2, 0x404040);\n    host::display::fill_rect(w / 2 - 8, y / 16, 16, 16, 0x00ff66);\n    host::display::present();\n}\n",
+  "tags": [
+    "state",
+    "physics",
+    "no-struct-boundary"
+  ]
+}

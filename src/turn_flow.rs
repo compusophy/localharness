@@ -361,6 +361,11 @@ mod tests {
              full HTML, CSS, main thread JS, and the parallel Web Worker \
              MCMC code."
         ));
+        // The same stall as the issue quotes it — first sentence standalone.
+        assert!(stalls(
+            "I will now write the complete, mathematically rigorous Pack \
+             Semicircles Optimizer into index.html."
+        ));
         assert!(stalls("Let me now assemble the full cartridge and publish it"));
         assert!(stalls("I'll now implement the win screen."));
         // Ordinary answers never trigger.

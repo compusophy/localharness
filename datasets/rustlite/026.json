@@ -1,0 +1,10 @@
+{
+  "id": "026",
+  "prompt": "Patrol square driven by a unit enum Dir { Up, Down, Left, Right }: dir_dx and dir_dy map a Dir to a velocity via match, dir_of(k) picks the Dir from (t/40)%4 so the square walks a rectangle forever. Position is a pure function of t within each leg.",
+  "solution_rl": "enum Dir { Up, Down, Left, Right }\n\nfn dir_of(k: i32) -> Dir {\n    if k == 0 { Dir::Right } else { if k == 1 { Dir::Down } else { if k == 2 { Dir::Left } else { Dir::Up } } }\n}\n\nfn dir_dx(d: Dir) -> i32 {\n    match d {\n        Dir::Left => -2,\n        Dir::Right => 2,\n        _ => 0,\n    }\n}\n\nfn dir_dy(d: Dir) -> i32 {\n    match d {\n        Dir::Up => -2,\n        Dir::Down => 2,\n        _ => 0,\n    }\n}\n\nfn frame(t: i32) {\n    let leg: i32 = (t / 40) % 4;\n    let step: i32 = t % 40;\n    let d: Dir = dir_of(leg);\n    let mut x: i32 = 60;\n    let mut y: i32 = 60;\n    if leg == 1 { x = 140; }\n    if leg == 2 { x = 140; y = 140; }\n    if leg == 3 { y = 140; }\n    x = x + dir_dx(d) * step;\n    y = y + dir_dy(d) * step;\n    host::display::clear(0x000000);\n    host::display::fill_rect(x, y, 20, 20, 0xffcc00);\n    host::display::present();\n}\n",
+  "tags": [
+    "enum",
+    "match",
+    "animation"
+  ]
+}

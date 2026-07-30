@@ -1,0 +1,9 @@
+{
+  "id": "030",
+  "prompt": "Euclid: write gcd(a, b) with a while loop (remainder swap), show gcd(252, 105) and the derived lcm = a / gcd * b, labeled.",
+  "solution_rl": "fn gcd(a: i32, b: i32) -> i32 {\n    let mut x: i32 = a;\n    let mut y: i32 = b;\n    while y != 0 {\n        let r: i32 = x % y;\n        x = y;\n        y = r;\n    }\n    x\n}\n\nfn frame(t: i32) {\n    let g: i32 = gcd(252, 105);\n    let l: i32 = 252 / g * 105;\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 10, \"GCD 252 105\", 0x808080, 1);\n    host::display::draw_number(8, 26, g, 0xffffff, 2);\n    host::display::draw_string(8, 60, \"LCM\", 0x808080, 1);\n    host::display::draw_number(8, 76, l, 0x00ffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "loops",
+    "functions"
+  ]
+}

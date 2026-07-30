@@ -1,0 +1,10 @@
+{
+  "id": "049",
+  "prompt": "Fake loading screen: a percent counter cycles 0..100 (derived from t), a hollow progress bar outline fills proportionally, the number renders beside a \"%\" label, and \"LOADING\" blinks every 15 frames while under 100.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let pct: i32 = t % 101;\n    host::display::clear(0x000000);\n    let bx: i32 = 20;\n    let bw: i32 = w - 40;\n    host::display::fill_rect(bx - 2, h / 2 - 14, bw + 4, 2, 0xffffff);\n    host::display::fill_rect(bx - 2, h / 2 + 12, bw + 4, 2, 0xffffff);\n    host::display::fill_rect(bx - 2, h / 2 - 14, 2, 28, 0xffffff);\n    host::display::fill_rect(bx + bw, h / 2 - 14, 2, 28, 0xffffff);\n    host::display::fill_rect(bx, h / 2 - 10, bw * pct / 100, 20, 0x00ff00);\n    host::display::draw_number(bx, h / 2 + 24, pct, 0xffffff, 2);\n    host::display::draw_string(bx + 40, h / 2 + 24, \"%\", 0xffffff, 2);\n    if pct < 100 && (t / 15) % 2 == 0 {\n        host::display::draw_string(bx, h / 2 - 40, \"LOADING\", 0x808080, 2);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "display",
+    "animation",
+    "ui"
+  ]
+}

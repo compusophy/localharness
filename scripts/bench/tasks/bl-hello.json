@@ -1,0 +1,10 @@
+{
+  "id": "bl-hello",
+  "kind": "bashlite",
+  "points": 5,
+  "prompt": "Write a bashlite script that prints exactly two lines: first `hello, localharness` then `bench v1`. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+  "solution": "bl-hello.bl",
+  "scorer": {
+    "expect_stdout": "hello, localharness\nbench v1"
+  }
+}

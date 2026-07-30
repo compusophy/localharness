@@ -1,0 +1,9 @@
+{
+  "id": "016",
+  "prompt": "A draggable 32x32 magenta square: while the pointer is down it centers on the pointer; when released it stays where it was dropped. Start centered. Persist its position in state slots (locals reset every frame).",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, w / 2 - 16);\n        host::display::state_set(2, h / 2 - 16);\n    }\n    if host::display::pointer_down() == 1 {\n        host::display::state_set(1, host::display::pointer_x() - 16);\n        host::display::state_set(2, host::display::pointer_y() - 16);\n    }\n    host::display::clear(0x000000);\n    host::display::fill_rect(host::display::state_get(1), host::display::state_get(2), 32, 32, 0xff00ff);\n    host::display::present();\n}\n",
+  "tags": [
+    "pointer",
+    "state"
+  ]
+}

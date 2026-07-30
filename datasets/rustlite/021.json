@@ -1,0 +1,9 @@
+{
+  "id": "021",
+  "prompt": "Cycle the background through a 6-color palette held in an array literal, advancing one color every 20 frames. Also draw the palette as a row of swatches along the bottom.",
+  "solution_rl": "fn frame(t: i32) {\n    let palette = [0xff0044, 0xff8800, 0xffee00, 0x00cc44, 0x0066ff, 0x8800cc];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(palette[(t / 20) % 6]);\n    let sw: i32 = w / 6;\n    let mut i: i32 = 0;\n    while i < 6 {\n        host::display::fill_rect(i * sw + 2, h - 22, sw - 4, 18, palette[i]);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "arrays",
+    "animation"
+  ]
+}

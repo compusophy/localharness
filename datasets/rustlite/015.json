@@ -1,0 +1,8 @@
+{
+  "id": "015",
+  "prompt": "Draw a crosshair that follows the pointer: a full-width horizontal line and full-height vertical line through (pointer_x, pointer_y), plus the coordinates printed in the top-left corner.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let px: i32 = host::display::pointer_x();\n    let py: i32 = host::display::pointer_y();\n    host::display::clear(0x000000);\n    host::display::draw_line(0, py, w - 1, py, 0x00ff00);\n    host::display::draw_line(px, 0, px, h - 1, 0x00ff00);\n    host::display::draw_number(4, 4, px, 0xffffff, 1);\n    host::display::draw_number(52, 4, py, 0xffffff, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "pointer"
+  ]
+}

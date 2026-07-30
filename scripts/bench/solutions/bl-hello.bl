@@ -1,0 +1,3 @@
+# bl-hello — exact two-line output.
+echo "hello, localharness"
+echo "bench v1"

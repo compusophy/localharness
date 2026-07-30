@@ -1,0 +1,3 @@
+# bl-count — count *.rl under cartridges/.
+n=$(find cartridges -name '*.rl' | wc -l)
+echo "$n cartridges"

@@ -1,0 +1,10 @@
+{
+  "id": "018",
+  "prompt": "Paddle control by screen halves: while the pointer is held on the left half move a bottom paddle 4px left, on the right half 4px right; clamp to the screen. Persist paddle x in a state slot, start centered.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, w / 2 - 30);\n    }\n    let mut x: i32 = host::display::state_get(1);\n    if host::display::pointer_down() == 1 {\n        if host::display::pointer_x() < w / 2 { x = x - 4; } else { x = x + 4; }\n    }\n    if x < 0 { x = 0; }\n    if x > w - 60 { x = w - 60; }\n    host::display::state_set(1, x);\n    host::display::clear(0x000000);\n    host::display::fill_rect(x, h - 16, 60, 10, 0xffffff);\n    host::display::draw_string(8, 8, \"HOLD LEFT / RIGHT\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "pointer",
+    "game-input",
+    "state"
+  ]
+}

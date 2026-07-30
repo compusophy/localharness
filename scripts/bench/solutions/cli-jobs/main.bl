@@ -1,0 +1,5 @@
+# run every job script, then report.
+for j in $(find jobs -name '*.bl'); do
+  run $j
+done
+echo "all jobs complete"

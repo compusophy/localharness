@@ -1,0 +1,10 @@
+{
+  "id": "038",
+  "prompt": "Metronome: every 30 frames play a triangle-wave tick (880 Hz, 40 ms) and pulse a beat square. While the pointer is held, its y position sets the master volume via host::audio::set_volume (top = 100, bottom = 0); draw the volume percent.",
+  "solution_rl": "fn frame(t: i32) {\n    let h: i32 = host::display::height();\n    if t % 30 == 0 {\n        host::audio::tone(880, 40, 3);\n    }\n    let mut vol: i32 = host::display::state_get(0);\n    if host::display::state_get(1) == 0 {\n        host::display::state_set(1, 1);\n        vol = 80;\n    }\n    if host::display::pointer_down() == 1 {\n        vol = (h - host::display::pointer_y()) * 100 / h;\n        if vol < 0 { vol = 0; }\n        if vol > 100 { vol = 100; }\n        host::audio::set_volume(vol);\n    }\n    host::display::state_set(0, vol);\n    let mut bg: i32 = 0x101010;\n    if t % 30 < 4 { bg = 0x203040; }\n    host::display::clear(bg);\n    host::display::draw_string(8, 10, \"METRONOME\", 0xffffff, 2);\n    host::display::draw_string(8, 40, \"VOL\", 0x808080, 1);\n    host::display::draw_number(40, 40, vol, 0x00ff00, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "state",
+    "pointer"
+  ]
+}

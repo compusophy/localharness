@@ -1,0 +1,10 @@
+{
+  "id": "034",
+  "prompt": "Pulsing filled circle without floats or sqrt: nested dy/dx loops over the bounding box set every pixel where dx*dx + dy*dy <= r*r. Radius breathes between 10 and 50 as a triangle wave of t.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let phase: i32 = t % 80;\n    let mut r: i32 = 10 + phase;\n    if phase > 40 { r = 10 + 80 - phase; }\n    let cx: i32 = w / 2;\n    let cy: i32 = h / 2;\n    host::display::clear(0x000010);\n    let mut dy: i32 = 0 - r;\n    while dy <= r {\n        let mut dx: i32 = 0 - r;\n        while dx <= r {\n            if dx * dx + dy * dy <= r * r {\n                host::display::set_pixel(cx + dx, cy + dy, 0x00ccff);\n            }\n            dx = dx + 1;\n        }\n        dy = dy + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "loops",
+    "math",
+    "animation"
+  ]
+}

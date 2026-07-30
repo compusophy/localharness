@@ -1,0 +1,7 @@
+# bl-branch — branch on file content.
+s=$(cat status.txt)
+if [ "$s" = "active" ]; then
+  echo "service up"
+else
+  echo "service down"
+fi

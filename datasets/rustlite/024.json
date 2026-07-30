@@ -1,0 +1,8 @@
+{
+  "id": "024",
+  "prompt": "Write classify(n) using a match with an inclusive range arm 0..=9 (blue), an exclusive range arm 10..50 (green), the exact literal 100 (white), and a wildcard (red). Paint four horizontal bands proving each arm: classify(5), classify(20), classify(100), classify(999).",
+  "solution_rl": "fn classify(n: i32) -> i32 {\n    match n {\n        100 => 0xffffff,\n        0..=9 => 0x0000ff,\n        10..50 => 0x00ff00,\n        _ => 0xff0000,\n    }\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let band: i32 = h / 4;\n    host::display::fill_rect(0, 0, w, band, classify(5));\n    host::display::fill_rect(0, band, w, band, classify(20));\n    host::display::fill_rect(0, band * 2, w, band, classify(100));\n    host::display::fill_rect(0, band * 3, w, h - band * 3, classify(999));\n    host::display::present();\n}\n",
+  "tags": [
+    "match"
+  ]
+}

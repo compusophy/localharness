@@ -1,0 +1,4 @@
+# bl-filter — ERROR lines then a count.
+cat log.txt | grep ERROR
+n=$(cat log.txt | grep ERROR | wc -l)
+echo "errors: $n"

@@ -1,0 +1,9 @@
+{
+  "id": "007",
+  "prompt": "Show the title \"HELLO WORLD\" at scale 3 near the top-left, with a dimmer subtitle \"FROM RUSTLITE\" at scale 1 under it. draw_string only accepts a string literal.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x101010);\n    host::display::draw_string(8, 12, \"HELLO WORLD\", 0xffffff, 3);\n    host::display::draw_string(8, 44, \"FROM RUSTLITE\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "display",
+    "draw_string"
+  ]
+}

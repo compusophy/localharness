@@ -1,0 +1,13 @@
+{
+  "id": "bl-filter",
+  "kind": "bashlite",
+  "points": 10,
+  "prompt": "Your working directory contains `log.txt`. Write a bashlite script that prints only the lines containing ERROR (in file order), followed by a final line `errors: <count>`. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+  "solution": "bl-filter.bl",
+  "scorer": {
+    "setup_files": {
+      "log.txt": "INFO boot\nERROR disk full\nINFO tick\nERROR net down\nWARN slow\n"
+    },
+    "expect_stdout": "ERROR disk full\nERROR net down\nerrors: 2"
+  }
+}

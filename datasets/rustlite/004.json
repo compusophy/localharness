@@ -1,0 +1,9 @@
+{
+  "id": "004",
+  "prompt": "Draw an 8x8 checkerboard covering the whole screen. Alternate dark gray (0x202020) and light gray (0xd0d0d0) cells; cell size derives from the framebuffer dims.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let cw: i32 = w / 8;\n    let ch: i32 = h / 8;\n    let mut cy: i32 = 0;\n    while cy < 8 {\n        let mut cx: i32 = 0;\n        while cx < 8 {\n            let mut c: i32 = 0x202020;\n            if (cx + cy) % 2 == 0 { c = 0xd0d0d0; }\n            host::display::fill_rect(cx * cw, cy * ch, cw, ch, c);\n            cx = cx + 1;\n        }\n        cy = cy + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "display",
+    "loops"
+  ]
+}

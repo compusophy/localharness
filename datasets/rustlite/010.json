@@ -1,0 +1,9 @@
+{
+  "id": "010",
+  "prompt": "A 24x24 cyan square scrolls left-to-right 2px per frame at mid-height and wraps around to the left edge after fully leaving the right edge. Pure function of t, no state slots.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x000000);\n    let x: i32 = (t * 2) % (w + 24) - 24;\n    host::display::fill_rect(x, h / 2 - 12, 24, 24, 0x00ffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "animation",
+    "modulo"
+  ]
+}

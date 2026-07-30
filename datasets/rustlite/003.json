@@ -1,0 +1,9 @@
+{
+  "id": "003",
+  "prompt": "Split the screen into three equal horizontal bands: red on top, green in the middle, blue at the bottom. Compute band height from host::display::height().",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let band: i32 = h / 3;\n    host::display::fill_rect(0, 0, w, band, 0xff0000);\n    host::display::fill_rect(0, band, w, band, 0x00ff00);\n    host::display::fill_rect(0, band * 2, w, h - band * 2, 0x0000ff);\n    host::display::present();\n}\n",
+  "tags": [
+    "display",
+    "fill_rect"
+  ]
+}

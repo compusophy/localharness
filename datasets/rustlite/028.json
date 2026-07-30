@@ -1,0 +1,9 @@
+{
+  "id": "028",
+  "prompt": "Recursive Fibonacci: write fib(n) recursively, then print fib(0) through fib(12) as a column of numbers.",
+  "solution_rl": "fn fib(n: i32) -> i32 {\n    if n < 2 { n } else { fib(n - 1) + fib(n - 2) }\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 6, \"FIB\", 0x808080, 2);\n    let mut i: i32 = 0;\n    while i < 13 {\n        host::display::draw_number(8, 30 + i * 14, fib(i), 0x00ffcc, 1);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "recursion",
+    "display"
+  ]
+}

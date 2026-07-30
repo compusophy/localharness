@@ -430,7 +430,8 @@ each, gotchas only.
 - **DiamondCut / DiamondLoupe / Ownership** — `diamondCut` + introspection +
   EIP-173 `owner()`/`transferOwnership`. RESERVED selectors (`cut_guard.rs`).
 - **LocalharnessRegistryFacet** — names + NFT mint + `setMetadata`/`metadata`;
-  `register` FREE. `setMetadata` ≈7.6k gas/BYTE — never guess a cap.
+  `register` costs `registrationCost()` (live mainnet: 1 $LH). `setMetadata`
+  ≈7.6k gas/BYTE — never guess a cap.
 - **ERC721Facet** — every name is an NFT; `tokenURI(id)` → `<name>.localharness.xyz`.
 - **TbaFacet** — EIP-6551 `tokenBoundAccount(id)`/`…ByName`; deploy idempotent.
 - **MainIdentityFacet** — `mainOf`/`mainNameOf`/`isMain`; auto-set on first-claim.

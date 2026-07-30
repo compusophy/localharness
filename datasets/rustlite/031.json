@@ -1,0 +1,9 @@
+{
+  "id": "031",
+  "prompt": "Sieve by trial division: is_prime(n) with a while loop (divisor*divisor <= n), count the primes below 100, print the count (25), and draw one tick mark per prime along the bottom at x = prime * 5.",
+  "solution_rl": "fn is_prime(n: i32) -> bool {\n    if n < 2 { return false; }\n    let mut d: i32 = 2;\n    while d * d <= n {\n        if n % d == 0 { return false; }\n        d = d + 1;\n    }\n    true\n}\n\nfn frame(t: i32) {\n    let h: i32 = host::display::height();\n    host::display::clear(0x000000);\n    let mut count: i32 = 0;\n    let mut n: i32 = 2;\n    while n < 100 {\n        if is_prime(n) {\n            count = count + 1;\n            host::display::fill_rect(n * 5, h - 20, 2, 12, 0x00ff00);\n        }\n        n = n + 1;\n    }\n    host::display::draw_string(8, 10, \"PRIMES UNDER 100\", 0x808080, 1);\n    host::display::draw_number(8, 26, count, 0xffffff, 3);\n    host::display::present();\n}\n",
+  "tags": [
+    "loops",
+    "functions"
+  ]
+}

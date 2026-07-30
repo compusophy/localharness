@@ -1,0 +1,10 @@
+{
+  "id": "037",
+  "prompt": "One-tap arpeggio: an edge-detected press schedules C-E-G-C (262, 330, 392, 523 Hz) as sine tones 150 ms apart using host::audio::tone_at with growing delays. Draw four bars that mirror the four notes.",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 {\n        host::audio::tone_at(262, 140, 0, 0);\n        host::audio::tone_at(330, 140, 0, 150);\n        host::audio::tone_at(392, 140, 0, 300);\n        host::audio::tone_at(523, 200, 0, 450);\n    }\n    host::display::state_set(0, down);\n    host::display::clear(0x101010);\n    host::display::draw_string(8, 10, \"TAP = ARPEGGIO\", 0xffffff, 2);\n    let notes = [262, 330, 392, 523];\n    let mut i: i32 = 0;\n    while i < 4 {\n        host::display::fill_rect(20 + i * 40, 200 - notes[i] / 4, 30, notes[i] / 4, 0x00aaff);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "pointer",
+    "state"
+  ]
+}

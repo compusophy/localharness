@@ -1,0 +1,9 @@
+{
+  "id": "001",
+  "prompt": "Write a rustlite cartridge that fills the whole screen with dark teal (0x003340). Nothing else.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x003340);\n    host::display::present();\n}\n",
+  "tags": [
+    "display",
+    "basics"
+  ]
+}

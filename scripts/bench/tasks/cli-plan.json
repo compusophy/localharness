@@ -1,0 +1,13 @@
+{
+  "id": "cli-plan",
+  "kind": "artifact",
+  "points": 10,
+  "prompt": "In your workspace, write `plan.md`: a `## Goal` section and a `## Steps` section with at least 3 numbered steps describing how to compile and publish a rustlite cartridge as a subdomain's public face.",
+  "solution": "cli-plan",
+  "scorer": {
+    "artifacts": ["plan.md"],
+    "contains": {
+      "plan.md": ["## Goal", "## Steps", "1.", "2.", "3."]
+    }
+  }
+}

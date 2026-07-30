@@ -1,0 +1,10 @@
+{
+  "id": "027",
+  "prompt": "Traffic light with a unit enum Light { Red, Amber, Green }: each phase has its own duration via a match (Red 90 frames, Amber 30, Green 90), cycle Red -> Green -> Amber -> Red. Draw three stacked lamps in a housing; only the active lamp is bright.",
+  "solution_rl": "enum Light { Red, Amber, Green }\n\nfn phase_of(m: i32) -> Light {\n    if m < 90 { Light::Red } else { if m < 180 { Light::Green } else { Light::Amber } }\n}\n\nfn lamp(active: bool, on: i32, off: i32) -> i32 {\n    if active { on } else { off }\n}\n\nfn is_red(l: Light) -> bool {\n    match l { Light::Red => true, _ => false }\n}\n\nfn is_amber(l: Light) -> bool {\n    match l { Light::Amber => true, _ => false }\n}\n\nfn is_green(l: Light) -> bool {\n    match l { Light::Green => true, _ => false }\n}\n\nfn frame(t: i32) {\n    let m: i32 = t % 210;\n    let l: Light = phase_of(m);\n    host::display::clear(0x101010);\n    host::display::fill_rect(90, 30, 76, 208, 0x282828);\n    host::display::fill_rect(104, 44, 48, 48, lamp(is_red(l), 0xff2020, 0x401010));\n    host::display::fill_rect(104, 110, 48, 48, lamp(is_amber(l), 0xffb020, 0x403010));\n    host::display::fill_rect(104, 176, 48, 48, lamp(is_green(l), 0x20ff40, 0x104010));\n    host::display::present();\n}\n",
+  "tags": [
+    "enum",
+    "match",
+    "animation"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "019",
+  "prompt": "Make a landscape 320x240 cartridge: export dims() returning the packed (width << 16) | height, draw a 2px border and print the live width and height values so the override is visible. (The default framebuffer is 512x512 when dims() is absent.)",
+  "solution_rl": "fn dims() -> i32 {\n    (320 << 16) | 240\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x102030);\n    host::display::fill_rect(0, 0, w, 2, 0xffffff);\n    host::display::fill_rect(0, h - 2, w, 2, 0xffffff);\n    host::display::fill_rect(0, 0, 2, h, 0xffffff);\n    host::display::fill_rect(w - 2, 0, 2, h, 0xffffff);\n    host::display::draw_string(8, 8, \"DIMS\", 0x808080, 1);\n    host::display::draw_number(8, 24, w, 0xffffff, 2);\n    host::display::draw_number(8, 48, h, 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "dims"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "bl-branch",
+  "kind": "bashlite",
+  "points": 10,
+  "prompt": "Your working directory contains `status.txt` holding a single word. Write a bashlite script that reads it and echoes `service up` when the content equals `active`, otherwise `service down` (use command substitution and a [ ] test). Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+  "solution": "bl-branch.bl",
+  "scorer": {
+    "setup_files": {
+      "status.txt": "active"
+    },
+    "expect_stdout": "service up"
+  }
+}

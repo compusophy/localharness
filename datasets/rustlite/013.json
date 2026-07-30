@@ -1,0 +1,8 @@
+{
+  "id": "013",
+  "prompt": "A counter that survives between frames: read state slot 0, add one, write it back, and show it as a number plus a green bar whose width is count*2 clamped to the screen width.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let count: i32 = host::display::state_get(0) + 1;\n    host::display::state_set(0, count);\n    host::display::clear(0x101010);\n    host::display::draw_string(8, 10, \"COUNT\", 0x808080, 2);\n    host::display::draw_number(84, 10, count, 0x00ff00, 2);\n    let mut bw: i32 = count * 2;\n    if bw > w { bw = w; }\n    host::display::fill_rect(0, 60, bw, 24, 0x00ff00);\n    host::display::present();\n}\n",
+  "tags": [
+    "state"
+  ]
+}

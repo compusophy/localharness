@@ -1,0 +1,9 @@
+{
+  "id": "005",
+  "prompt": "Draw a 2px border rectangle around the screen edge plus both diagonals, all in white on black. Use fill_rect for the border and draw_line for the diagonals.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x000000);\n    host::display::fill_rect(0, 0, w, 2, 0xffffff);\n    host::display::fill_rect(0, h - 2, w, 2, 0xffffff);\n    host::display::fill_rect(0, 0, 2, h, 0xffffff);\n    host::display::fill_rect(w - 2, 0, 2, h, 0xffffff);\n    host::display::draw_line(0, 0, w - 1, h - 1, 0xffffff);\n    host::display::draw_line(w - 1, 0, 0, h - 1, 0xffffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "display",
+    "draw_line"
+  ]
+}

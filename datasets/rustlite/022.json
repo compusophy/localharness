@@ -1,0 +1,9 @@
+{
+  "id": "022",
+  "prompt": "Bar chart from data: values [23, 8, 31, 15, 27] in an array. Draw five vertical bars side by side, height = value * 4, baseline at the bottom, each bar labeled with its value above it.",
+  "solution_rl": "fn frame(t: i32) {\n    let data = [23, 8, 31, 15, 27];\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x101010);\n    let bw: i32 = w / 5;\n    let mut i: i32 = 0;\n    while i < 5 {\n        let v: i32 = data[i];\n        let bh: i32 = v * 4;\n        host::display::fill_rect(i * bw + 4, h - bh - 20, bw - 8, bh, 0x00b0ff);\n        host::display::draw_number(i * bw + 8, h - bh - 34, v, 0xffffff, 1);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "arrays",
+    "display"
+  ]
+}

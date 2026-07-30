@@ -1,0 +1,12 @@
+{
+  "id": "rl-pointer",
+  "kind": "rustlite",
+  "points": 10,
+  "prompt": "Write an interactive rustlite cartridge: each frame(t), clear the screen, read the pointer with host::display::pointer_x() / host::display::pointer_y(), and draw a filled rectangle at the pointer — 16x16 when host::display::pointer_down() is nonzero, 8x8 otherwise — then present. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+  "solution": "rl-pointer.rl",
+  "scorer": {
+    "required_exports": ["frame"],
+    "required_host_calls": ["host::display::pointer_x", "host::display::pointer_y", "host::display::pointer_down", "host::display::fill_rect", "host::display::present"],
+    "must_run": ["frame"]
+  }
+}

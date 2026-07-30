@@ -1,0 +1,12 @@
+{
+  "id": "rl-anim",
+  "kind": "rustlite",
+  "points": 10,
+  "prompt": "Write a rustlite cartridge whose `fn frame(t: i32)` animates: clear the screen each frame with host::display::clear, then draw one 32x32 filled rectangle with host::display::fill_rect whose x position advances with t (use % to keep it on a 512-wide screen), then host::display::present(). Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+  "solution": "rl-anim.rl",
+  "scorer": {
+    "required_exports": ["frame"],
+    "required_host_calls": ["host::display::clear", "host::display::fill_rect", "host::display::present"],
+    "must_run": ["frame"]
+  }
+}

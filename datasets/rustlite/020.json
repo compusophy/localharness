@@ -1,0 +1,9 @@
+{
+  "id": "020",
+  "prompt": "Portrait 240x400 cartridge (dims() packs (w<<16)|h): fill it with a vertical blue gradient made of 16 horizontal bands, each band brighter than the one above (blue channel stepping up).",
+  "solution_rl": "fn dims() -> i32 {\n    (240 << 16) | 400\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let band: i32 = h / 16;\n    let mut i: i32 = 0;\n    while i < 16 {\n        let blue: i32 = 32 + i * 14;\n        host::display::fill_rect(0, i * band, w, band, blue);\n        i = i + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "dims",
+    "loops"
+  ]
+}

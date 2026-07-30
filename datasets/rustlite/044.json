@@ -1,0 +1,9 @@
+{
+  "id": "044",
+  "prompt": "Publish-ready MATH LIBRARY cartridge: every rustlite fn is a wasm export, so expose lo(a,b) (min), hi(a,b) (max), clamp(v,lo,hi), lerp(a,b,n16) (n16 = 0..16 fixed-point mix), and iabs(v) for other cartridges to mount with host::compose::spawn_lib + call. Include dims() and a frame() landing card naming the exports (a headless library is never ticked; the card is its landing page).",
+  "solution_rl": "fn lo(a: i32, b: i32) -> i32 {\n    if a < b { a } else { b }\n}\n\nfn hi(a: i32, b: i32) -> i32 {\n    if a > b { a } else { b }\n}\n\nfn clamp(v: i32, low: i32, high: i32) -> i32 {\n    hi(low, lo(v, high))\n}\n\nfn lerp(a: i32, b: i32, n16: i32) -> i32 {\n    a + (b - a) * n16 / 16\n}\n\nfn iabs(v: i32) -> i32 {\n    if v < 0 { 0 - v } else { v }\n}\n\nfn dims() -> i32 {\n    (256 << 16) | 96\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 8, \"LIB MATH\", 0xffffff, 2);\n    host::display::draw_string(8, 32, \"LO HI CLAMP\", 0x00ff66, 1);\n    host::display::draw_string(8, 46, \"LERP IABS\", 0x00ff66, 1);\n    host::display::draw_string(8, 60, \"SPAWN_LIB + CALL\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "library",
+    "functions"
+  ]
+}

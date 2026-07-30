@@ -1,0 +1,4 @@
+# bl-compose — run a child script twice, then finish.
+run child.bl
+run child.bl
+echo "parent done"

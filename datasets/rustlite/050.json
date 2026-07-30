@@ -1,0 +1,10 @@
+{
+  "id": "050",
+  "prompt": "Stopwatch at 60 fps: a tap toggles run/pause (edge-detected; running flag + elapsed frames in state slots). Show MM : SS derived from elapsed/3600 and (elapsed/60)%60 - draw a leading zero digit when a part is under 10 - plus a status label and a running indicator dot.",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(2);\n    if down == 1 && prev == 0 {\n        host::display::state_set(0, 1 - host::display::state_get(0));\n    }\n    host::display::state_set(2, down);\n    let running: i32 = host::display::state_get(0);\n    let mut e: i32 = host::display::state_get(1);\n    if running == 1 { e = e + 1; }\n    host::display::state_set(1, e);\n    let mins: i32 = e / 3600;\n    let secs: i32 = (e / 60) % 60;\n    host::display::clear(0x101010);\n    host::display::draw_string(8, 10, \"STOPWATCH\", 0x808080, 1);\n    let mut x: i32 = 8;\n    if mins < 10 {\n        host::display::draw_number(x, 40, 0, 0xffffff, 4);\n        x = x + 24;\n    }\n    host::display::draw_number(x, 40, mins, 0xffffff, 4);\n    host::display::draw_string(60, 40, \":\", 0xffffff, 4);\n    let mut sx: i32 = 84;\n    if secs < 10 {\n        host::display::draw_number(sx, 40, 0, 0xffffff, 4);\n        sx = sx + 24;\n    }\n    host::display::draw_number(sx, 40, secs, 0xffffff, 4);\n    if running == 1 {\n        host::display::fill_rect(8, 90, 10, 10, 0x00ff00);\n        host::display::draw_string(24, 90, \"RUNNING - TAP TO PAUSE\", 0x00ff00, 1);\n    } else {\n        host::display::fill_rect(8, 90, 10, 10, 0x804040);\n        host::display::draw_string(24, 90, \"PAUSED - TAP TO START\", 0x808080, 1);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "state",
+    "ui",
+    "pointer"
+  ]
+}

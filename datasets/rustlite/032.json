@@ -1,0 +1,9 @@
+{
+  "id": "032",
+  "prompt": "Collatz visualizer for n=27: count the steps to reach 1 (halve if even, 3n+1 if odd), print the step count, and plot the first 40 values of the trajectory as bars scaled to value/40 pixels tall.",
+  "solution_rl": "fn frame(t: i32) {\n    let h: i32 = host::display::height();\n    host::display::clear(0x000000);\n    let mut n: i32 = 27;\n    let mut steps: i32 = 0;\n    let mut i: i32 = 0;\n    while n != 1 {\n        if i < 40 {\n            let mut bh: i32 = n / 40;\n            if bh < 1 { bh = 1; }\n            host::display::fill_rect(8 + i * 10, h - 16 - bh, 8, bh, 0xff8800);\n        }\n        if n % 2 == 0 { n = n / 2; } else { n = n * 3 + 1; }\n        steps = steps + 1;\n        i = i + 1;\n    }\n    host::display::draw_string(8, 8, \"COLLATZ 27 STEPS\", 0x808080, 1);\n    host::display::draw_number(8, 24, steps, 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "loops",
+    "display"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "rl-counter",
+  "kind": "rustlite",
+  "points": 10,
+  "prompt": "Write a rustlite cartridge that counts frames PERSISTENTLY using the host state slots (the cartridge itself keeps no state): each frame(t), read slot 0 with host::display::state_get(0), add 1, write it back with host::display::state_set(0, ...), then clear the screen and draw the count with host::display::draw_number, then present. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+  "solution": "rl-counter.rl",
+  "scorer": {
+    "required_exports": ["frame"],
+    "required_host_calls": ["host::display::state_get", "host::display::state_set", "host::display::draw_number", "host::display::present"],
+    "must_run": ["frame"]
+  }
+}

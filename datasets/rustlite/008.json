@@ -1,0 +1,10 @@
+{
+  "id": "008",
+  "prompt": "Display the live frame counter: the label \"T=\" followed by the current value of t, both at scale 2. The number must update every frame.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 10, \"T=\", 0x00ff00, 2);\n    host::display::draw_number(34, 10, t, 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "display",
+    "draw_number",
+    "animation"
+  ]
+}

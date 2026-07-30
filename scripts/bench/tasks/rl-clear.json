@@ -1,0 +1,12 @@
+{
+  "id": "rl-clear",
+  "kind": "rustlite",
+  "points": 5,
+  "prompt": "Write a minimal rustlite cartridge: a single `fn frame(t: i32)` that clears the screen to solid black with host::display::clear(0) and then calls host::display::present(). Nothing else. Reply with ONLY one fenced code block containing the complete rustlite source. No prose outside the fence.",
+  "solution": "rl-clear.rl",
+  "scorer": {
+    "required_exports": ["frame"],
+    "required_host_calls": ["host::display::clear", "host::display::present"],
+    "must_run": ["frame"]
+  }
+}

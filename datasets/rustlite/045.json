@@ -1,0 +1,10 @@
+{
+  "id": "045",
+  "prompt": "Fixed-point physics LIBRARY (1 px = 8 units): export scale() -> 8, fall(v) (gravity +2 per frame), step(p, v) (Euler integrate), and floor_bounce(p, v, floor) (reflect with half damping at/below the floor, else unchanged). Plus dims() and a frame() landing card. Callable ABI is i32-only.",
+  "solution_rl": "fn scale() -> i32 {\n    8\n}\n\nfn fall(v: i32) -> i32 {\n    v + 2\n}\n\nfn step(p: i32, v: i32) -> i32 {\n    p + v\n}\n\nfn floor_bounce(p: i32, v: i32, floor: i32) -> i32 {\n    if p >= floor {\n        if v > 0 { (0 - v) / 2 } else { v }\n    } else {\n        v\n    }\n}\n\nfn dims() -> i32 {\n    (256 << 16) | 96\n}\n\nfn frame(t: i32) {\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 8, \"LIB PHYS8\", 0xffffff, 2);\n    host::display::draw_string(8, 32, \"SCALE FALL STEP\", 0x00ff66, 1);\n    host::display::draw_string(8, 46, \"FLOOR_BOUNCE\", 0x00ff66, 1);\n    host::display::draw_string(8, 60, \"1 PX = 8 UNITS\", 0x808080, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "library",
+    "physics",
+    "functions"
+  ]
+}

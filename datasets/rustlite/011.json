@@ -1,0 +1,9 @@
+{
+  "id": "011",
+  "prompt": "Bouncing ball as a pure function of t (no state slots): write a triangle(t, span) helper that folds t into 0..span and back, then drive a 16x16 white ball diagonally so it bounces off all four walls. Draw a gray border.",
+  "solution_rl": "fn triangle(t: i32, span: i32) -> i32 {\n    let period: i32 = span * 2;\n    let phase: i32 = t % period;\n    if phase < span { phase } else { period - phase }\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x000000);\n    host::display::fill_rect(0, 0, w, 2, 0x404040);\n    host::display::fill_rect(0, h - 2, w, 2, 0x404040);\n    host::display::fill_rect(0, 0, 2, h, 0x404040);\n    host::display::fill_rect(w - 2, 0, 2, h, 0x404040);\n    let bx: i32 = 2 + triangle(t * 3, w - 20);\n    let by: i32 = 2 + triangle(t * 2, h - 20);\n    host::display::fill_rect(bx, by, 16, 16, 0xffffff);\n    host::display::present();\n}\n",
+  "tags": [
+    "animation",
+    "functions"
+  ]
+}

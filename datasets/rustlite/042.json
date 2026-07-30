@@ -1,0 +1,11 @@
+{
+  "id": "042",
+  "prompt": "Whack-a-square: a 40x40 target sits at a position derived from an LCG hash of the round number. A click inside it scores and advances the round; 120 frames without a hit also advances the round (round timer in a slot). Edge-detect clicks; show the score.",
+  "solution_rl": "fn hash(seed: i32) -> i32 {\n    let mut h: i32 = seed * 747796405 + 2891336453;\n    h = (h >> 16) ^ h;\n    if h < 0 { h = 0 - h; }\n    h\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    let round: i32 = host::display::state_get(0);\n    let tx: i32 = hash(round * 2 + 1) % (w - 40);\n    let ty: i32 = 30 + hash(round * 2 + 2) % (h - 70);\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let mut timer: i32 = host::display::state_get(2) + 1;\n    if down == 1 && prev == 0 {\n        let px: i32 = host::display::pointer_x();\n        let py: i32 = host::display::pointer_y();\n        if px >= tx && px < tx + 40 && py >= ty && py < ty + 40 {\n            host::display::state_set(3, host::display::state_get(3) + 1);\n            host::display::state_set(0, round + 1);\n            timer = 0;\n        }\n    }\n    if timer > 120 {\n        host::display::state_set(0, round + 1);\n        timer = 0;\n    }\n    host::display::state_set(1, down);\n    host::display::state_set(2, timer);\n    host::display::clear(0x101010);\n    host::display::fill_rect(tx, ty, 40, 40, 0xff3060);\n    host::display::draw_string(8, 8, \"WHACK\", 0x808080, 1);\n    host::display::draw_number(60, 8, host::display::state_get(3), 0xffffff, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "game",
+    "pointer",
+    "prng",
+    "state"
+  ]
+}

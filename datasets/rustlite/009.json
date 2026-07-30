@@ -1,0 +1,9 @@
+{
+  "id": "009",
+  "prompt": "Make a 40x40 orange square in the middle of the screen blink: visible for 30 frames, hidden for 30 frames, forever. Derive visibility purely from t.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    host::display::clear(0x101018);\n    if (t / 30) % 2 == 0 {\n        host::display::fill_rect(w / 2 - 20, h / 2 - 20, 40, 40, 0xff8800);\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "animation",
+    "modulo"
+  ]
+}

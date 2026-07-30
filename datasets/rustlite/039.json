@@ -1,0 +1,11 @@
+{
+  "id": "039",
+  "prompt": "Single-player pong: paddle at the bottom follows pointer_x; the ball (state slots for x, y, vx, vy - rustlite has no struct literals, entities live in slots) bounces off walls and the paddle; a miss resets the ball and bumps a MISSES counter, a paddle hit bumps HITS. Show both counters.",
+  "solution_rl": "fn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, w / 2);\n        host::display::state_set(2, h / 2);\n        host::display::state_set(3, 3);\n        host::display::state_set(4, 2);\n    }\n    let mut bx: i32 = host::display::state_get(1);\n    let mut by: i32 = host::display::state_get(2);\n    let mut vx: i32 = host::display::state_get(3);\n    let mut vy: i32 = host::display::state_get(4);\n    let mut px: i32 = host::display::pointer_x() - 30;\n    if px < 0 { px = 0; }\n    if px > w - 60 { px = w - 60; }\n    bx = bx + vx;\n    by = by + vy;\n    if bx < 0 { bx = 0; vx = 0 - vx; }\n    if bx > w - 10 { bx = w - 10; vx = 0 - vx; }\n    if by < 0 { by = 0; vy = 0 - vy; }\n    if by > h - 26 && by < h - 14 && vy > 0 {\n        if bx + 10 > px && bx < px + 60 {\n            by = h - 26;\n            vy = 0 - vy;\n            host::display::state_set(5, host::display::state_get(5) + 1);\n        }\n    }\n    if by > h {\n        bx = w / 2;\n        by = h / 3;\n        vy = 2;\n        host::display::state_set(6, host::display::state_get(6) + 1);\n    }\n    host::display::state_set(1, bx);\n    host::display::state_set(2, by);\n    host::display::state_set(3, vx);\n    host::display::state_set(4, vy);\n    host::display::clear(0x000000);\n    host::display::fill_rect(px, h - 16, 60, 8, 0xffffff);\n    host::display::fill_rect(bx, by, 10, 10, 0x00ff88);\n    host::display::draw_string(8, 8, \"HITS\", 0x808080, 1);\n    host::display::draw_number(44, 8, host::display::state_get(5), 0x00ff00, 1);\n    host::display::draw_string(90, 8, \"MISS\", 0x808080, 1);\n    host::display::draw_number(126, 8, host::display::state_get(6), 0xff4040, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "game",
+    "state",
+    "pointer",
+    "no-struct-boundary"
+  ]
+}

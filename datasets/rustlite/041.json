@@ -1,0 +1,10 @@
+{
+  "id": "041",
+  "prompt": "Catch game: a block falls from the top at a column chosen by an LCG hash of the round number (state slot 10); the player moves a basket with the pointer. Catching it (overlap at the bottom) bumps SCORE, missing bumps DROP; either way the round advances and the block respawns at the top.",
+  "solution_rl": "fn hash(seed: i32) -> i32 {\n    let mut h: i32 = seed * 747796405 + 2891336453;\n    h = (h >> 16) ^ h;\n    if h < 0 { h = 0 - h; }\n    h\n}\n\nfn frame(t: i32) {\n    let w: i32 = host::display::width();\n    let h: i32 = host::display::height();\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, 0);\n    }\n    let round: i32 = host::display::state_get(10);\n    let fx: i32 = hash(round + 1) % (w - 20);\n    let mut fy: i32 = host::display::state_get(1);\n    fy = fy + 4;\n    let mut px: i32 = host::display::pointer_x() - 30;\n    if px < 0 { px = 0; }\n    if px > w - 60 { px = w - 60; }\n    if fy > h - 28 {\n        if fx + 20 > px && fx < px + 60 {\n            host::display::state_set(11, host::display::state_get(11) + 1);\n        } else {\n            host::display::state_set(12, host::display::state_get(12) + 1);\n        }\n        host::display::state_set(10, round + 1);\n        fy = 0;\n    }\n    host::display::state_set(1, fy);\n    host::display::clear(0x000010);\n    host::display::fill_rect(fx, fy, 20, 20, 0xffdd00);\n    host::display::fill_rect(px, h - 12, 60, 10, 0xffffff);\n    host::display::draw_string(8, 8, \"SCORE\", 0x808080, 1);\n    host::display::draw_number(52, 8, host::display::state_get(11), 0x00ff00, 1);\n    host::display::draw_string(100, 8, \"DROP\", 0x808080, 1);\n    host::display::draw_number(140, 8, host::display::state_get(12), 0xff4040, 1);\n    host::display::present();\n}\n",
+  "tags": [
+    "game",
+    "state",
+    "prng"
+  ]
+}

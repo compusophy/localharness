@@ -1,0 +1,9 @@
+{
+  "id": "006",
+  "prompt": "Draw a yellow pennant flag: a vertical brown pole on the left and a yellow triangle pointing right from its top. Sky-blue background.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x87ceeb);\n    host::display::fill_rect(60, 40, 6, 300, 0x6b4a2b);\n    host::display::fill_triangle(66, 40, 66, 120, 220, 80, 0xffdd00);\n    host::display::present();\n}\n",
+  "tags": [
+    "display",
+    "fill_triangle"
+  ]
+}

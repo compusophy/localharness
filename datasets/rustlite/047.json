@@ -1,0 +1,10 @@
+{
+  "id": "047",
+  "prompt": "Consume a published library: mount \"lib-physics\" HEADLESS once via host::compose::spawn_lib (latch + handle in state slots), poll status(h) (0 loading / 2 failed - show both), and when ready drive a falling box each frame with call(h, \"gravity\", ...) and call(h, \"integrate\", ...), CHECKING call_ok() == 0 before trusting results (call returns the export's own i32, so 0 is ambiguous). Pad unused call args with 0.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x000000);\n    if host::display::state_get(0) == 0 {\n        host::display::state_set(0, 1);\n        host::display::state_set(1, host::compose::spawn_lib(\"lib-physics\"));\n        host::display::state_set(2, 0);\n        host::display::state_set(3, 0);\n    }\n    let h: i32 = host::display::state_get(1);\n    let st: i32 = host::compose::status(h);\n    if st == 0 {\n        host::display::draw_string(8, 8, \"LOADING LIB\", 0xffff00, 1);\n    }\n    if st == 2 {\n        host::display::draw_string(8, 8, \"LIB FAILED\", 0xff0000, 1);\n    }\n    if st == 1 {\n        let v0: i32 = host::display::state_get(3);\n        let y0: i32 = host::display::state_get(2);\n        let v1: i32 = host::compose::call(h, \"gravity\", v0, 0, 0, 0);\n        if host::compose::call_ok() == 0 {\n            let mut y1: i32 = host::compose::call(h, \"integrate\", y0, v1, 0, 0);\n            let mut v2: i32 = v1;\n            if y1 > 400 * 16 {\n                y1 = 0;\n                v2 = 0;\n            }\n            host::display::state_set(2, y1);\n            host::display::state_set(3, v2);\n            host::display::fill_rect(240, y1 / 16, 24, 24, 0x00ff66);\n            host::display::draw_string(8, 8, \"LIB OK\", 0x00ff66, 1);\n        } else {\n            host::display::draw_string(8, 8, \"CALL FAILED\", 0xff0000, 1);\n            host::display::draw_number(8, 22, host::compose::call_ok(), 0xff0000, 1);\n        }\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "compose",
+    "library",
+    "state"
+  ]
+}

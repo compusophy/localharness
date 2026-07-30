@@ -1,0 +1,14 @@
+{
+  "id": "cli-scaffold",
+  "kind": "artifact",
+  "points": 15,
+  "prompt": "In your workspace, scaffold a publishable cartridge project: `app.rl` (a valid rustlite cartridge whose frame(t) clears the screen, draws something, and presents) and `README.md` whose first line is a `# ` title and which mentions how to publish it (the word `publish` must appear).",
+  "solution": "cli-scaffold",
+  "scorer": {
+    "artifacts": ["app.rl", "README.md"],
+    "compile": ["app.rl"],
+    "contains": {
+      "README.md": ["# ", "publish"]
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "025",
+  "prompt": "Three-screen state machine using a unit enum Phase { Menu, Playing, Over }: a click advances Menu -> Playing -> Over -> Menu (edge-detected, phase index in a state slot). Write cur(s)->Phase and tint(Phase)->i32 (match) for the background, and draw a different label per phase. rustlite enums are unit-only: no payloads.",
+  "solution_rl": "enum Phase { Menu, Playing, Over }\n\nfn cur(s: i32) -> Phase {\n    if s == 0 { Phase::Menu } else { if s == 1 { Phase::Playing } else { Phase::Over } }\n}\n\nfn tint(p: Phase) -> i32 {\n    match p {\n        Phase::Menu => 0x102040,\n        Phase::Playing => 0x0a300a,\n        Phase::Over => 0x300a0a,\n    }\n}\n\nfn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let mut s: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 {\n        s = (s + 1) % 3;\n        host::display::state_set(0, s);\n    }\n    host::display::state_set(1, down);\n    host::display::clear(tint(cur(s)));\n    match s {\n        0 => {\n            host::display::draw_string(8, 10, \"MENU - TAP TO START\", 0xffffff, 2);\n        }\n        1 => {\n            host::display::draw_string(8, 10, \"PLAYING...\", 0x00ff00, 2);\n        }\n        _ => {\n            host::display::draw_string(8, 10, \"GAME OVER\", 0xff4040, 2);\n        }\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "enum",
+    "match",
+    "state",
+    "pointer"
+  ]
+}

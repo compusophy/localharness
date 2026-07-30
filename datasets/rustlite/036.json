@@ -1,0 +1,10 @@
+{
+  "id": "036",
+  "prompt": "Beep on click: an edge-detected press (previous pointer_down in a state slot) plays host::audio::tone(660, 120, 1) (square wave) and flashes the screen white for 4 frames (flash timer in another slot). Label the screen \"TAP = BEEP\".",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(0);\n    let mut flash: i32 = host::display::state_get(1);\n    if down == 1 && prev == 0 {\n        host::audio::tone(660, 120, 1);\n        flash = 4;\n    }\n    if flash > 0 { flash = flash - 1; }\n    host::display::state_set(0, down);\n    host::display::state_set(1, flash);\n    let mut bg: i32 = 0x101020;\n    if flash > 0 { bg = 0xffffff; }\n    host::display::clear(bg);\n    host::display::draw_string(8, 10, \"TAP = BEEP\", 0x00ff00, 2);\n    host::display::present();\n}\n",
+  "tags": [
+    "audio",
+    "pointer",
+    "state"
+  ]
+}

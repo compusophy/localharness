@@ -1,0 +1,9 @@
+{
+  "id": "014",
+  "prompt": "Count CLICKS, not held frames: keep the previous pointer_down value in state slot 1 and only increment the counter (slot 0) on a 0->1 edge. Show the click total.",
+  "solution_rl": "fn frame(t: i32) {\n    let down: i32 = host::display::pointer_down();\n    let prev: i32 = host::display::state_get(1);\n    let mut clicks: i32 = host::display::state_get(0);\n    if down == 1 && prev == 0 {\n        clicks = clicks + 1;\n        host::display::state_set(0, clicks);\n    }\n    host::display::state_set(1, down);\n    host::display::clear(0x000000);\n    host::display::draw_string(8, 10, \"CLICKS\", 0xffffff, 2);\n    host::display::draw_number(8, 40, clicks, 0x00ffff, 4);\n    host::display::present();\n}\n",
+  "tags": [
+    "state",
+    "pointer"
+  ]
+}

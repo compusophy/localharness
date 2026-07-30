@@ -1,0 +1,16 @@
+{
+  "id": "bl-count",
+  "kind": "bashlite",
+  "points": 10,
+  "prompt": "Your working directory contains a `cartridges/` folder holding .rl files plus other files. Write a bashlite script that counts the files matching *.rl under cartridges/ (use find and wc) and echoes exactly `<N> cartridges`, e.g. `3 cartridges`. Reply with ONLY one fenced code block containing the complete bashlite script. No prose outside the fence.",
+  "solution": "bl-count.bl",
+  "scorer": {
+    "setup_files": {
+      "cartridges/a.rl": "// a\n",
+      "cartridges/b.rl": "// b\n",
+      "cartridges/c.rl": "// c\n",
+      "cartridges/notes.txt": "not a cartridge\n"
+    },
+    "expect_stdout": "3 cartridges"
+  }
+}

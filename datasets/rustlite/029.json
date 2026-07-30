@@ -1,0 +1,9 @@
+{
+  "id": "029",
+  "prompt": "Iterative factorials: compute 1! through 7! with a running product in a while loop and print each on its own line as \"n\" and \"n!\" columns.",
+  "solution_rl": "fn frame(t: i32) {\n    host::display::clear(0x101010);\n    host::display::draw_string(8, 6, \"N\", 0x808080, 1);\n    host::display::draw_string(60, 6, \"N FACT\", 0x808080, 1);\n    let mut acc: i32 = 1;\n    let mut n: i32 = 1;\n    while n <= 7 {\n        acc = acc * n;\n        host::display::draw_number(8, 10 + n * 16, n, 0xffffff, 1);\n        host::display::draw_number(60, 10 + n * 16, acc, 0x00ff00, 1);\n        n = n + 1;\n    }\n    host::display::present();\n}\n",
+  "tags": [
+    "loops",
+    "display"
+  ]
+}
