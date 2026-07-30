@@ -86,3 +86,21 @@ live, glue not written), scheduler-driven score history, TB agent adapter,
 corpus growth + anti-overfit (holdout tasks, paraphrased prompts, fixture
 randomization — setup_files/expected values are trivially parameterizable),
 multi-model comparison tables.
+
+## 4. Baselines (live runs, `--live --as claude --target claude`)
+
+| date | model (agent default) | live-scoreable | tasks | notes |
+|------|----------------------|----------------|-------|-------|
+| 2026-07-30 | gemini-3.6-flash | **75/105** | 8/11 | artifact tasks (40 pts) are chat-unscoreable by design in `--live` |
+
+Failures — all platform-ABI negative space (the exact gap
+`datasets/rustlite/` + a fine-tune target):
+- `bl-count`, `bl-filter`: bashlite command-substitution misuse — the script
+  printed the label with an EMPTY count (`" cartridges"`, `"errors:"`); the
+  `n=$(... | wc -l)` pipeline shape wasn't produced correctly.
+- `rl-counter`: called `host::display::draw_number(x, y, value)` with 3 args —
+  the host fn takes 5 (`x, y, value, rgb, scale`). Compile-rejected LH0203.
+
+Hill-climb rule: a candidate model (fine-tuned local, new frontier pin) must
+beat the current row on the SAME task set before a pin change; add rows here,
+never overwrite.
