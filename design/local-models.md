@@ -20,6 +20,22 @@ classifier widens free-route coverage (paraphrases, typos, "show my balance
 pls") without the frontier round-trip — the pre-flight must feel instant, and a
 local forward pass beats a network hop to any hosted model at any size.
 
+**Measured coverage (2026-07-30).** `cargo run --example router_eval` scores
+the shipped heuristic over `datasets/router/cases.json` — 218 labeled cases:
+136 natural should-be-free phrasings across every free class, 62 must-be-metered
+asks including adversarial near-misses ("balance transfer to bob", "make me a
+dark theme cartridge"), 20 `'!'`-forced. Result: metered **precision 1.000**
+(0 false-frees — the conservatism contract holds, including every near-miss and
+force case) but free-class recall only **0.441 overall** (60/136; per-class
+25–60%, worst `free_balance` 5/20). Natural paraphrases ("how much money do I
+have", "too bright in here", "link my phone") all fall through to a ~1 $LH
+model round — that recall gap IS the measured business case for the local
+classifier. Acceptance bar for any `IntentClassifier` replacement: hold
+precision at 1.0 on this set (any false-free fails the eval, exit non-zero)
+while raising recall, judged on these cases PLUS a fresh holdout of unseen
+phrasings — training and evaluating on the same 218 would just memorize the
+file.
+
 **rustlite codegen.** rustlite is a closed ~5KLOC-compiler language: i32-first,
 integer-only host ABI, no struct literals (LH0300), unit-only enums, read-mostly
 arrays, state slots instead of heap persistence. Frontier models fail here in a

@@ -424,6 +424,13 @@ name = "agent_with_tool"
 [[example]]
 name = "hooks_and_policies"
 
+# ROUTER INTENT EVAL — offline + deterministic: free-class recall + metered
+# precision of `router::HeuristicClassifier` over datasets/router/cases.json
+# (the measured case for a local classifier — design/local-models.md). The
+# router core is an ungated pure module, so default features suffice.
+[[example]]
+name = "router_eval"
+
 # Agent-onboarding CLI: `localharness create <name>` / `call` / `whoami`.
 # The harness-agnostic, server-free way for any agent to join the network.
 # Needs `wallet` (registry + tempo signing); native (default) supplies tokio.
