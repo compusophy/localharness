@@ -12,9 +12,13 @@ on:
         description: "space-separated TB task ids"
         default: "hello-world"
         required: true
-      dataset:
-        description: "TB dataset name (blank = harness default)"
+      dataset_name:
+        description: "TB dataset name"
         default: "terminal-bench-core"
+        required: false
+      dataset_version:
+        description: "TB dataset version"
+        default: "0.1.1"
         required: false
 
 jobs:
@@ -40,15 +44,10 @@ jobs:
           overall=0
           for t in ${{ inputs.task_ids }}; do
             echo "::group::task $t"
-            if [ -n "${{ inputs.dataset }}" ]; then
-              tb run --agent-import-path localharness_agent:LocalharnessAgent \
-                     --dataset "${{ inputs.dataset }}" --task-id "$t" \
-              || tb run --agent-import-path localharness_agent:LocalharnessAgent \
-                        --task-id "$t"
-            else
-              tb run --agent-import-path localharness_agent:LocalharnessAgent \
-                     --task-id "$t"
-            fi
+            tb run --agent-import-path localharness_agent:LocalharnessAgent \
+                   --dataset-name "${{ inputs.dataset_name }}" \
+                   --dataset-version "${{ inputs.dataset_version }}" \
+                   --task-id "$t" --n-concurrent 1
             rc=$?
             echo "task $t exit: $rc"
             [ $rc -ne 0 ] && overall=$rc

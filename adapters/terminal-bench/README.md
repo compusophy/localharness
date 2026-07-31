@@ -18,7 +18,7 @@ uv tool install terminal-bench     # the tb harness — REQUIRES DOCKER
 export LOCALHARNESS_KEY=0x…        # a THROWAWAY funded identity's private key
 cd adapters/terminal-bench
 tb run --agent-import-path localharness_agent:LocalharnessAgent \
-       --dataset terminal-bench-core --task-id hello-world
+       --dataset-name terminal-bench-core --dataset-version 0.1.1 --task-id hello-world
 ```
 
 ## Honest costs + caveats
