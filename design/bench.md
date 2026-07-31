@@ -97,8 +97,11 @@ commands) + the ~40-command CLI. Honest gaps for (a): TB shims are Python +
 Docker (external harness dep), interactive multi-step terminal sessions need
 streaming keystroke relay (our `call` is request/response — the ACP surface is
 the better fit), and TB scoring assumes container-side state we don't control.
-Ship (a) as a separate small adapter repo/script when prioritized; nothing in
-v1 blocks it.
+SHIPPED 2026-07-31: `adapters/terminal-bench/` — an AbstractInstalledAgent
+adapter (interface-validated against the published package) driving the new
+`localharness work` local coding-agent loop (native tools + run_command,
+workspace-confined, meter-billed). Remaining to an actual scored run: Docker
+on the host + a funded throwaway identity; runbook in the adapter README.
 
 ## 3. v1 shipped vs deferred
 

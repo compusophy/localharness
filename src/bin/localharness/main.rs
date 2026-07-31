@@ -158,6 +158,7 @@ mod status;
 mod tba;
 mod util;
 mod vote;
+mod work;
 
 pub(crate) use abtest::*;
 pub(crate) use acp::*;
@@ -290,6 +291,11 @@ IDENTITY & PROFILE
                                          --export them as agentskills.io SKILL.md
                                          folders usable in any skills-compatible
                                          harness (Claude Code, Codex, Cursor, ...)
+  localharness work [--as <me>] [--model <id>] <task…>
+                                         run a LOCAL coding agent on <task> in the
+                                         CURRENT DIRECTORY: native file tools +
+                                         run_command, workspace-confined, billed
+                                         ~1 $LH per model round from your meter
   localharness state <name> [--out <file>] [--dir <dir>] [--in <file|dir>]
                                          export/import the PORTABLE agent-state
                                          bundle: persona + lessons + skills as JSON.
@@ -850,6 +856,7 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("work") => work::work(&args[1..]).await,
         Some("feedback") => match take_as_flag(&args[1..]) {
             Ok((_, rest)) if rest.is_empty() => {
                 eprintln!("usage: localharness feedback [--as <me>] <text>");
@@ -1201,7 +1208,7 @@ mod tests {
             "feedback", "probe", "threads", "forget", "whoami", "status", "fee",
             "invite", "bounty", "colony", "reputation", "guild", "company", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "remind", "jobs", "unschedule", "notify", "models", "sh",
-            "onboard", "onramp", "link", "lessons", "skills", "state", "acp", "receipt",
+            "onboard", "onramp", "link", "lessons", "skills", "state", "acp", "receipt", "work",
         ] {
             assert!(
                 USAGE.contains(cmd),

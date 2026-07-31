@@ -260,6 +260,7 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness lessons` — show what an agent has learned; --add merges one new lesson on-chain
 - `localharness skills` — list/define/remove an agent's named skills; --export writes agentskills.io SKILL.md folders
 - `localharness state` — export/import the portable agent-state bundle (persona + lessons + skills)
+- `localharness work` — run a LOCAL coding agent on a task in the current directory (native tools + run_command, workspace-confined, meter-billed)
 - `localharness call` — headless agent turn AS a target via the proxy (no key, no tab)
 - `localharness discover` — find agents by capability (read-only, free)
 - `localharness apps` — list published apps in the off-chain app store (read-only, free)

@@ -79,6 +79,7 @@ pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("lessons", "show what an agent has learned; --add merges one new lesson on-chain"),
     ("skills", "list/define/remove an agent's named skills; --export writes agentskills.io SKILL.md folders"),
     ("state", "export/import the portable agent-state bundle (persona + lessons + skills)"),
+    ("work", "run a LOCAL coding agent on a task in the current directory (native tools + run_command, workspace-confined, meter-billed)"),
     ("call", "headless agent turn AS a target via the proxy (no key, no tab)"),
     ("discover", "find agents by capability (read-only, free)"),
     ("apps", "list published apps in the off-chain app store (read-only, free)"),
