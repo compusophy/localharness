@@ -807,6 +807,13 @@ pub(crate) fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool>
 /// challenge (`chat::confirm_guard`) — ONE single-use code for the whole
 /// batch, typed by the owner. Refuses the MAIN. Withheld from subagents
 /// (only registered on the main agent).
+/// The mainnet sponsor relay refuses a sponsored tx with more than this many
+/// calls (`proxy/api/sponsor.ts`: `body.calls.length > 8`). Every client tool
+/// that bundles N calls into ONE sponsored tx must respect it. A paid claim
+/// (approve) or a meter bridge adds ONE aux call, so those reserve a slot
+/// (`- 1`). Mirrored cross-language — keep in sync with the relay. (telemetry #88)
+const RELAY_MAX_CALLS_PER_TX: usize = 8;
+
 pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
         "type": "object",
@@ -893,6 +900,18 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                     "note": "no non-MAIN subdomains to release"
                 }));
             }
+            // Each release is one call in ONE sponsored tx; the relay caps a
+            // sponsored tx at RELAY_MAX_CALLS_PER_TX calls. Over that, refuse
+            // client-side with a CLEAR message instead of an opaque relay
+            // reject (esp. the no-`names` "release everything" path when the
+            // owner holds many). (telemetry #88 sibling)
+            if targets.len() > RELAY_MAX_CALLS_PER_TX {
+                return Err(crate::error::Error::bad_args("bulk_release_subdomains", format!(
+                    "too many to release in one tx: {} (max {RELAY_MAX_CALLS_PER_TX}) — \
+                     pass a `names` subset of at most {RELAY_MAX_CALLS_PER_TX}",
+                    targets.len()
+                )));
+            }
 
             match crate::app::events::run_bulk_release(&targets).await {
                 Ok((released, tx)) => Ok(serde_json::json!({
@@ -928,14 +947,11 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
          count, tx_hash, urls }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            // The mainnet sponsor relay refuses a sponsored tx with more than 8
-            // calls (`proxy/api/sponsor.ts`: `body.calls.length > 8`). A PAID
-            // claim (mainnet registrationCost > 0) inserts ONE cumulative
+            // A PAID claim (mainnet registrationCost > 0) inserts ONE cumulative
             // `approve` at the head of the batch (events/subdomains.rs), so
-            // N names = N+1 calls — the real ceiling is 7 names. The doc said 20;
-            // a 9-name batch failed "too many calls (max 8)" (telemetry #88).
-            const RELAY_MAX_CALLS_PER_TX: usize = 8;
-            const MAX_BATCH_CREATE: usize = RELAY_MAX_CALLS_PER_TX - 1; // reserve the approve slot
+            // N names = N+1 calls — reserve a slot under the relay's per-tx cap.
+            // (telemetry #88: the doc said 20; a 9-name batch failed "max 8".)
+            const MAX_BATCH_CREATE: usize = RELAY_MAX_CALLS_PER_TX - 1;
             let requested: Vec<String> = crate::tool_params::BatchCreateSubdomainsParams::lenient(&args)
                 .names
                 .iter()
@@ -1200,7 +1216,7 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "properties": {
             "transfers": {
                 "type": "array",
-                "description": "Up to 20 transfers, executed atomically in one \
+                "description": "Up to 7 transfers, executed atomically in one \
                     on-chain transaction.",
                 "items": {
                     "type": "object",
@@ -1232,7 +1248,7 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     ClosureTool::new(
         "batch_send_lh",
         "Transfer $LH to MULTIPLE recipients in ONE on-chain transaction (up \
-         to 20). Each transfer names a 0x… address or a subdomain (paid to its \
+         to 7). Each transfer names a 0x… address or a subdomain (paid to its \
          on-chain owner). Far cheaper than repeated send_lh calls. MOVES VALUE \
          — the first call does NOT execute: it returns a single-use confirmation \
          code (also shown to the owner in the UI). Show the full list, ask the \
@@ -1254,10 +1270,14 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     "batch_send_lh: transfers must be a non-empty array",
                 ));
             }
-            if items.len() > 20 {
+            // A short wallet inserts ONE meter-bridge call ahead of the N
+            // transfers (below), so N+1 must fit the relay's per-tx call cap —
+            // reserve a slot. Reject over-limit client-side with a clear message
+            // instead of an opaque relay reject. (telemetry #88 sibling)
+            if items.len() > RELAY_MAX_CALLS_PER_TX - 1 {
                 return Err(crate::error::Error::bad_args(
                     "batch_send_lh",
-                    "batch_send_lh: at most 20 transfers per batch",
+                    format!("at most {} transfers per batch", RELAY_MAX_CALLS_PER_TX - 1),
                 ));
             }
             // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
