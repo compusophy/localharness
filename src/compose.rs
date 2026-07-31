@@ -315,11 +315,15 @@ pub struct ComposeBudget {
 impl ComposeBudget {
     /// v1 caps. Composition is RECURSIVE (the fractal): a child gets its own
     /// table and may spawn grandchildren, bounded by depth + global node/byte
-    /// caps. 8 children/node, 16 KB each, 256 KB total, depth 5, 24 nodes total,
+    /// caps. 16 children/node, 16 KB each, 256 KB total, depth 5, 24 nodes total,
     /// 1 MB framebuffer per child, 8 MB framebuffer across the whole tree.
+    /// (16, not 8: a common 3×3 or 4×4 grid needs 9–16 immediate children — the
+    /// old 8-cap silently refused the 9th, so a 9-cell grid's last cell never
+    /// spawned, read as "the bottom-right cartridge doesn't work", telemetry #87.
+    /// The tree is still bounded by max_total_nodes + the total-FB cap.)
     pub fn v1() -> Self {
         Self {
-            max_children: 8,
+            max_children: 16,
             max_bytes_per_child: 16 * 1024,
             max_total_bytes: 256 * 1024,
             max_depth: 5,
@@ -618,9 +622,9 @@ mod tests {
         let b = ComposeBudget::v1();
         // Within all caps.
         assert!(b.admit(0, 0, 1024).is_ok());
-        assert!(b.admit(7, 1024, 1024).is_ok()); // last allowed child
+        assert!(b.admit(15, 1024, 1024).is_ok()); // last allowed child (16-cap)
         // Too many children.
-        assert!(b.admit(8, 0, 1).is_err());
+        assert!(b.admit(16, 0, 1).is_err());
         // Child too big.
         assert!(b.admit(0, 0, 16 * 1024 + 1).is_err());
         // Total would overflow the aggregate cap (256 KB).

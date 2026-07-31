@@ -249,14 +249,14 @@ const childWasm = compileSource(childSrc, 'child');
   })());
 }
 
-// ---- 4. ComposeBudget child-count cap (v1 = 8) refuses a 9th mount ----------
+// ---- 4. ComposeBudget child-count cap (v1 = 16) refuses a 17th mount --------
 {
   worker.composeReset();
   const handles = [];
-  for (let i = 0; i < 8; i++) handles.push(worker.composeMountForTest('child', 0, 0, 16, 16));
-  check('4a 8 children admitted', handles.every((h) => h >= 0), `handles=${handles.join(',')}`);
-  const ninth = worker.composeMountForTest('child', 0, 0, 16, 16);
-  check('4b 9th child refused (count cap)', ninth === -1, `ninth=${ninth}`);
+  for (let i = 0; i < 16; i++) handles.push(worker.composeMountForTest('child', 0, 0, 16, 16));
+  check('4a 16 children admitted', handles.every((h) => h >= 0), `handles=${handles.join(',')}`);
+  const seventeenth = worker.composeMountForTest('child', 0, 0, 16, 16);
+  check('4b 17th child refused (count cap)', seventeenth === -1, `seventeenth=${seventeenth}`);
   worker.composeReset();
 }
 

@@ -420,11 +420,12 @@ function mapPointerIntoChild(px, py, x, y, viewW, viewH, childW, childH) {
 // RECURSION is real now: a child gets its OWN compose table and can spawn
 // grandchildren (the fractal). The fork-bomb backstop is three GLOBAL caps that
 // hold across the WHOLE tree (not per-parent):
-//   • per-node child count (8) — one node's immediate children
+//   • per-node child count (16) — one node's immediate children (raised from 8
+//     so a 3×3 / 4×4 grid's 9–16 cells all spawn; telemetry #87)
 //   • depth (5) — root=0; a node at the cap gets an INERT compose api so its
 //     spawn_module returns -1 (the ABI-level recursion stop)
 //   • total live nodes (24) and total wasm bytes (256 KB) across every level
-const COMPOSE_MAX_CHILDREN = 8;
+const COMPOSE_MAX_CHILDREN = 16;
 const COMPOSE_MAX_BYTES_PER_CHILD = 16 * 1024;
 const COMPOSE_MAX_TOTAL_BYTES = 256 * 1024;
 const COMPOSE_MAX_DEPTH = 5;
