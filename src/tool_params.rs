@@ -1018,7 +1018,7 @@ crate::tool_params! {
                     [\"alice\",\"bob\"] -> alice.localharness.xyz, \
                     bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
                     digits, hyphens. Already-taken or invalid names are skipped \
-                    and reported back. Max 20 per call.",
+                    and reported back. Max 7 per call.",
     }
 }
 
@@ -2701,7 +2701,7 @@ mod tests {
                             [\"alice\",\"bob\"] -> alice.localharness.xyz, \
                             bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
                             digits, hyphens. Already-taken or invalid names are skipped \
-                            and reported back. Max 20 per call."
+                            and reported back. Max 7 per call."
                     }
                 },
                 "required": ["names"]

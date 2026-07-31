@@ -924,11 +924,18 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
          loop when registering more than one name — it is one tx, not N. The \
          owner's master wallet ends up holding every resulting ERC-721 NFT. \
          Taken or invalid names are skipped (not an error) and listed in \
-         `skipped`. Max 20 names per call. Returns { registered, skipped, \
+         `skipped`. Max 7 names per call. Returns { registered, skipped, \
          count, tx_hash, urls }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            const MAX_BATCH_CREATE: usize = 20;
+            // The mainnet sponsor relay refuses a sponsored tx with more than 8
+            // calls (`proxy/api/sponsor.ts`: `body.calls.length > 8`). A PAID
+            // claim (mainnet registrationCost > 0) inserts ONE cumulative
+            // `approve` at the head of the batch (events/subdomains.rs), so
+            // N names = N+1 calls — the real ceiling is 7 names. The doc said 20;
+            // a 9-name batch failed "too many calls (max 8)" (telemetry #88).
+            const RELAY_MAX_CALLS_PER_TX: usize = 8;
+            const MAX_BATCH_CREATE: usize = RELAY_MAX_CALLS_PER_TX - 1; // reserve the approve slot
             let requested: Vec<String> = crate::tool_params::BatchCreateSubdomainsParams::lenient(&args)
                 .names
                 .iter()
