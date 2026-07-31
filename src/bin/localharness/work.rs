@@ -99,7 +99,15 @@ pub(crate) async fn work(args: &[String]) -> i32 {
     // The DEFAULT capability set is read-only safety mode — a work agent needs
     // the write half (create/edit/delete/rename + run_command); containment
     // comes from the workspace policy, not tool absence.
-    let caps = localharness::types::CapabilitiesConfig::unrestricted();
+    let mut caps = localharness::types::CapabilitiesConfig::unrestricted();
+    // ENABLE auto-compaction (unrestricted() leaves it None = OFF). A `work` run
+    // is a long autonomous loop that accumulates file contents + tool output
+    // every round; without compaction a deep task grows the context UNBOUNDED
+    // until it overflows the model window and the turn returns empty — a FALSE
+    // failure — and every round re-sends the whole history (cost). Same 128K
+    // ceiling as the browser session. NOT a fix for thinking-latency 504s (those
+    // hit at small context); a cost + deep-task-robustness measure.
+    caps.compaction_threshold = Some(localharness::types::DEFAULT_COMPACTION_THRESHOLD);
     // Every fs path is pinned inside the workspace, and a wildcard allow sits
     // BEHIND the denies: `evaluate` is default-deny once any policy exists, and
     // workspace_only only contributes deny-when-outside rules — without the

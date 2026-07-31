@@ -222,6 +222,13 @@ impl BuiltinTool {
     }
 }
 
+/// Default auto-compaction ceiling: when the LIVE prompt token count exceeds
+/// this, the oldest history is folded into a rolling summary before the next
+/// turn (`backends::compaction`). 128K sits well under every current model
+/// window so it trips before an overflow. Shared by the browser session and the
+/// CLI `work` loop so both long-running agents compact identically.
+pub const DEFAULT_COMPACTION_THRESHOLD: u32 = 128_000;
+
 /// Controls which built-in tools are exposed to the model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilitiesConfig {
@@ -233,7 +240,10 @@ pub struct CapabilitiesConfig {
     /// Explicit denylist (mutually exclusive with `enabled_tools`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<BuiltinTool>>,
-    /// History-entry count that triggers auto-compaction.
+    /// Auto-compaction ceiling: the LIVE prompt TOKEN count (NOT an entry count)
+    /// above which older history is folded into a summary before the next turn
+    /// (`should_compact` compares it to `usage.prompt_token_count`). `None`
+    /// disables compaction. See [`DEFAULT_COMPACTION_THRESHOLD`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction_threshold: Option<u32>,
     /// Short behavioral note appended to every compaction summary turn

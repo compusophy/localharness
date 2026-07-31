@@ -1247,7 +1247,8 @@ fn fail_pending_turn(turn_id: u32, text: &str) {
 
 /// The in-tab auto-compaction ceiling — shared by the session config and the
 /// context-fullness bar so the bar's "full" always means "compaction next".
-pub(crate) const COMPACTION_THRESHOLD: u32 = 128_000;
+/// One value, defined in the library so the CLI `work` loop compacts identically.
+pub(crate) const COMPACTION_THRESHOLD: u32 = crate::types::DEFAULT_COMPACTION_THRESHOLD;
 
 fn mark_turn_done(turn_id: u32) {
     // The pipeline line is a PENDING-turn affordance — it disappears the
