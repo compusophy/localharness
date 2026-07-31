@@ -93,21 +93,25 @@ jobs:
         run: |
           python - <<'PY'
           import json, glob, os
+          # Harbor 2.x per-trial result.json: task_name is the clean string id
+          # (task_id is a DICT — don't key on it), the verdict is
+          # verifier_result.rewards.reward (>=1.0 = resolved), exception_info
+          # non-null = an infra error (counts as unresolved but flagged). Dedup
+          # by the trial's own uuid `id`.
           rows, seen = [], set()
-          for f in glob.glob("**/results.json", recursive=True) + glob.glob("**/result.json", recursive=True):
+          for f in glob.glob("**/result.json", recursive=True):
               try: d = json.load(open(f))
               except Exception: continue
-              trials = d.get("results")
-              trials = trials if isinstance(trials, list) else [d]
-              for r in trials:
-                  if not isinstance(r, dict): continue
-                  tid = r.get("task_id") or r.get("task_name") or r.get("id")
-                  if tid is None: continue
-                  key = (tid, r.get("trial_name") or r.get("id"))
-                  if key in seen: continue
-                  seen.add(key)
-                  ok = bool(r.get("is_resolved", r.get("resolved", r.get("passed", False))))
-                  rows.append((tid, ok))
+              if not isinstance(d, dict) or "verifier_result" not in d:
+                  continue  # skip the job-level roll-up; only per-trial files
+              tid = d.get("task_name") or "?"
+              uid = d.get("id")
+              if uid in seen: continue
+              seen.add(uid)
+              reward = ((d.get("verifier_result") or {}).get("rewards") or {}).get("reward", 0)
+              errored = d.get("exception_info") is not None
+              ok = (not errored) and (reward is not None) and reward >= 1.0
+              rows.append((tid, ok))
           total = len(rows); resolved = sum(1 for _, ok in rows if ok)
           acc = 100.0 * resolved / total if total else 0.0
           out = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")

@@ -97,6 +97,19 @@ commands) + the ~40-command CLI. Honest gaps for (a): TB shims are Python +
 Docker (external harness dep), interactive multi-step terminal sessions need
 streaming keystroke relay (our `call` is request/response — the ACP surface is
 the better fit), and TB scoring assumes container-side state we don't control.
+RUN ON TB 2.1 (2026-07-31): Terminal-Bench 2.x moved to the HARBOR harness
+(`harbor run -d terminal-bench/terminal-bench-2-1`), so a second adapter —
+`adapters/terminal-bench/harbor_agent.py` (Harbor `BaseInstalledAgent`) — and
+`.github/workflows/tbench2.yml` drive `localharness work` against the current
+benchmark. Proven end-to-end: on the old `tb` core-0.1.1 set, hello-world
+resolved 1/1; on TB 2.1, the agent genuinely attempts hard tasks (on
+`write-compressor` it explored the env, probed toolchains, and wrote/compiled
+multiple C arithmetic-coder implementations with verification passes) —
+first 2-task sample scored 0/2, honest for single-shot gemini-3.6-flash on
+hard tasks. A leaderboard-relevant number needs a larger sample + a stronger
+driving model; the infra is a one-line dispatch (`gh workflow run tbench2.yml
+-f n_tasks=N`). 
+
 SHIPPED 2026-07-31: `adapters/terminal-bench/` — an AbstractInstalledAgent
 adapter (interface-validated against the published package) driving the new
 `localharness work` local coding-agent loop (native tools + run_command,
