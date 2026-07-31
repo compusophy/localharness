@@ -472,10 +472,22 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                         tx_hashes["role_setup"] = serde_json::json!(tx);
                     }
                     Err(e) => {
-                        // Personas didn't land; the roles still exist as bare
-                        // subdomains. Surface it, mark them unset.
+                        // The WHOLE setup tx (personas + every createTBA + every
+                        // prefund transfer) was rejected as one unit, so NOTHING
+                        // landed — the roles still exist only as bare subdomains.
+                        // Clear the optimistic fields set at 437-441 BEFORE the tx,
+                        // not just persona_set: leaving prefunded_lh/tba made the
+                        // manifest report prefunds + TBAs that never happened (a
+                        // false "staffed + funded" the model would act on). The
+                        // default 7-roles+prefund_each = 21 calls always trips the
+                        // relay's 8-call cap, so this path fires on the DEFAULT
+                        // config — until STEP 4 is chunked (design/relay-allowlist-gaps.md).
                         for entry in role_entries.iter_mut() {
                             entry["persona_set"] = serde_json::json!(false);
+                            if let Some(obj) = entry.as_object_mut() {
+                                obj.remove("prefunded_lh");
+                                obj.remove("tba");
+                            }
                         }
                         tx_hashes["role_setup_error"] = serde_json::json!(e.to_string());
                     }
