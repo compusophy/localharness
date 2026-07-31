@@ -24,12 +24,36 @@ tb run --agent-import-path localharness_agent:LocalharnessAgent \
 ## Honest costs + caveats
 
 - **Docker is required** (every TB task is a container). Not bundled here.
-- **Money**: each model round bills ~1 $LH from the key's meter; a hard task
-  can take dozens of rounds. Use a throwaway identity funded for the run
-  (`localharness create tbench && localharness send … && localharness topup`),
-  never a personal key.
-- **Install speed**: the install script compiles the crate in-container
-  (~5-10 min cold). A prebuilt `x86_64-unknown-linux-musl` release binary
-  would replace that block — planned.
+- **Money**: each model round bills from the key's meter — ~1 $LH for the default
+  (gemini flash) tier, but **5 $LH for claude-sonnet-5** and 20 $LH for opus (no
+  partial spend-down on premium tiers). A hard task can take dozens of rounds, so
+  fund a throwaway identity generously (`localharness create tbench && localharness
+  send … && localharness topup`) — never a personal key.
+- **Install speed**: the CI workflows build a prebuilt static
+  `x86_64-unknown-linux-musl` binary (the `binary` job → the rolling
+  `tbench-binary` release) that the container curls (~seconds) — an in-container
+  cargo compile overran the task timeout. The source-compile fallback stays in
+  `install-localharness.sh`.
 - **Scores**: report the dataset + version + task ids + model; `work` uses the
   platform default model unless `--model` is added to the run command.
+
+## Terminal-Bench 2.1 (Harbor) + the harness comparison
+
+TB moved to the **Harbor** harness. `harbor_agent.py` is the Harbor adapter
+(`--agent-import-path harbor_agent:LocalharnessHarborAgent`), driven by
+`.github/workflows/tbench2.yml`; `localharness_agent.py` is the older tb-CLI
+(core 0.1.1) adapter, driven by `tbench.yml`.
+
+**"How do we compare to other harnesses?"** `.github/workflows/tbench-compare.yml`
+runs a SAME-MODEL head-to-head: our adapter vs harbor's own reference agent
+(`terminus-2`), same dataset + same task subset + same underlying model, so the
+delta is HARNESS scaffolding, not model capability. Our arm reaches the model
+through the credit proxy (`gemini-3.6-flash`); the terminus arm reaches the SAME
+Google model via litellm direct (`gemini/gemini-3.6-flash`).
+
+⚠️ The terminus arm needs a **`GEMINI_API_KEY`** GH secret (a Google AI Studio
+key; litellm bills it directly — tiny for flash). Without it, that arm self-skips
+and only our arm runs. For a claude comparison: `model_lh=claude-sonnet-5`,
+`model_terminus=anthropic/claude-sonnet-5`, add `ANTHROPIC_API_KEY`, and land the
+proxy 504 fix first (`design/proxy-504-fix.md`). Defaults to flash — cheap and it
+dodges the 504, so it runs today once the key is set.

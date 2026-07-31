@@ -1,0 +1,179 @@
+# Terminal-Bench 2.1 — SAME-MODEL harness comparison: localharness vs the harbor
+# reference agent (terminus-2), holding the model constant so the delta is
+# HARNESS scaffolding, not model capability. This is the experiment that answers
+# "how do we compare to other harnesses."
+#
+# Two arms, SAME dataset + SAME task subset + SAME underlying model:
+#   • localharness — our Harbor adapter (harbor_agent.py) driving `localharness
+#     work`, model via OUR credit proxy (auth = LOCALHARNESS_KEY). Proxy id form,
+#     e.g. `gemini-3.6-flash`.
+#   • terminus-2   — harbor's built-in reference agent, model via litellm DIRECT
+#     to the provider (auth = GEMINI_API_KEY / ANTHROPIC_API_KEY). litellm id
+#     form, e.g. `gemini/gemini-3.6-flash` → the SAME Google model our proxy
+#     forwards to.
+#
+# Defaults to gemini-flash: cheap, and it does NOT hit the claude proxy-504, so
+# this runs TODAY (once GEMINI_API_KEY is set) without waiting on the 504 fix.
+# For a claude comparison: model_lh=claude-sonnet-5,
+# model_terminus=anthropic/claude-sonnet-5, add ANTHROPIC_API_KEY, and land the
+# proxy 504 fix first (design/proxy-504-fix.md).
+#
+# ⚠️ REQUIRES a new GH secret GEMINI_API_KEY (a Google AI Studio key) for the
+# terminus-2 arm — litellm bills it directly (tiny for flash). Without it, the
+# terminus arm SELF-SKIPS and only the localharness arm runs.
+name: terminal-bench-compare
+
+concurrency:
+  group: tbench-binary
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Harbor dataset id"
+        default: "terminal-bench/terminal-bench-2-1"
+        required: false
+      n_tasks:
+        description: "first N tasks of the dataset — SAME subset for both arms"
+        default: "5"
+        required: false
+      attempts:
+        description: "attempts per task (pass@k)"
+        default: "1"
+        required: false
+      model_lh:
+        description: "localharness arm model (our proxy id form)"
+        default: "gemini-3.6-flash"
+        required: false
+      model_terminus:
+        description: "terminus-2 arm model (litellm id form — SAME underlying model)"
+        default: "gemini/gemini-3.6-flash"
+        required: false
+
+jobs:
+  binary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: build static musl binary
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --features wallet,native,anthropic \
+                --target x86_64-unknown-linux-musl --bin localharness
+          cp target/x86_64-unknown-linux-musl/release/localharness localharness-x86_64-linux
+      - name: publish to the tbench-binary rolling tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete tbench-binary -y --cleanup-tag 2>/dev/null || true
+          gh release create tbench-binary --title "tbench prebuilt binary" \
+             --notes "Static x86_64 linux localharness for the Terminal-Bench adapters (rolling)." \
+             localharness-x86_64-linux
+
+  compare:
+    needs: binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install harbor
+        run: pip install --quiet 'harbor==0.20.0'
+      - name: "arm A — localharness (our proxy)"
+        env:
+          LOCALHARNESS_KEY: ${{ secrets.LOCALHARNESS_KEY }}
+          PYTHONPATH: ${{ github.workspace }}/adapters/terminal-bench
+        run: |
+          set +e
+          mkdir -p arms/localharness && cd arms/localharness
+          echo "== localharness arm: -d ${{ inputs.dataset }} -m ${{ inputs.model_lh }} -l ${{ inputs.n_tasks }} =="
+          harbor run \
+            -d "${{ inputs.dataset }}" \
+            --agent-import-path harbor_agent:LocalharnessHarborAgent \
+            -m "${{ inputs.model_lh }}" \
+            -k "${{ inputs.attempts }}" -n 1 --n-concurrent-agents 1 \
+            -l "${{ inputs.n_tasks }}"
+          echo "localharness arm exit: $?"
+      - name: "arm B — terminus-2 (harbor reference, litellm direct)"
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set +e
+          if [ -z "$GEMINI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then
+            echo "::warning::No provider key secret (GEMINI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY) set — SKIPPING the terminus-2 arm. Add one to enable the head-to-head."
+            exit 0
+          fi
+          mkdir -p arms/terminus && cd arms/terminus
+          echo "== terminus-2 arm: -d ${{ inputs.dataset }} -m ${{ inputs.model_terminus }} -l ${{ inputs.n_tasks }} =="
+          harbor run \
+            -d "${{ inputs.dataset }}" \
+            --agent terminus-2 \
+            -m "${{ inputs.model_terminus }}" \
+            -k "${{ inputs.attempts }}" -n 1 \
+            -l "${{ inputs.n_tasks }}"
+          echo "terminus-2 arm exit: $?"
+      - name: scoreline (side-by-side)
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, glob, os
+          # Score one arm's dir into {task: state}, state in ok/fail/err. Infra
+          # errors (exception_info) are EXCLUDED from the capability denominator.
+          def score(arm_dir):
+              out, seen = {}, set()
+              for f in glob.glob(f"{arm_dir}/**/result.json", recursive=True):
+                  try: d = json.load(open(f, encoding="utf-8"))
+                  except Exception: continue
+                  if not isinstance(d, dict) or "verifier_result" not in d: continue
+                  uid = d.get("id")
+                  if uid in seen: continue
+                  seen.add(uid)
+                  tid = d.get("task_name") or "?"
+                  err = d.get("exception_info") is not None
+                  rew = ((d.get("verifier_result") or {}).get("rewards") or {}).get("reward", 0)
+                  out[tid] = "err" if err else ("ok" if (rew is not None and rew >= 1.0) else "fail")
+              return out
+          lh, tm = score("arms/localharness"), score("arms/terminus")
+          def tally(d):
+              resolved = sum(1 for s in d.values() if s == "ok")
+              errored  = sum(1 for s in d.values() if s == "err")
+              scored   = len(d) - errored
+              acc = 100.0 * resolved / scored if scored else 0.0
+              return resolved, scored, errored, acc
+          lr, ls, le, la = tally(lh)
+          tr, ts, te, ta = tally(tm)
+          mark = {"ok": "✅", "fail": "❌", "err": "⚠️"}
+          tasks = sorted(set(lh) | set(tm))
+          out = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
+          with open(out, "a") as fh:
+              fh.write("## Harness comparison — Terminal-Bench 2.1 (same model)\n\n")
+              fh.write(f"- **localharness**: {lr}/{ls} resolved ({la:.1f}%)"
+                       + (f", ⚠️{le} infra-errored\n" if le else "\n"))
+              if tm:
+                  fh.write(f"- **terminus-2 (harbor ref)**: {tr}/{ts} resolved ({ta:.1f}%)"
+                           + (f", ⚠️{te} infra-errored\n\n" if te else "\n\n"))
+                  delta = la - ta
+                  fh.write(f"**Δ (localharness − terminus-2): {delta:+.1f} pts** "
+                           "— same model, same tasks, so this is the harness delta.\n\n")
+              else:
+                  fh.write("- **terminus-2 (harbor ref)**: _skipped — no provider key secret set_\n\n")
+              fh.write("| task | localharness | terminus-2 |\n|---|---|---|\n")
+              for t in tasks:
+                  fh.write(f"| `{t}` | {mark.get(lh.get(t),'—')} | {mark.get(tm.get(t),'—')} |\n")
+          print(f"COMPARE localharness={lr}/{ls} ({la:.1f}%) vs terminus-2={tr}/{ts} ({ta:.1f}%)")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tb-compare-runs
+          path: arms/**/result.json
+          if-no-files-found: warn
