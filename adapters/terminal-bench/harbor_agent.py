@@ -80,10 +80,16 @@ class LocalharnessHarborAgent(BaseInstalledAgent):
         context: AgentContext,
     ) -> None:
         escaped = shlex.quote(instruction)
+        # Harbor's `-m/--model` arrives as self.model_name. localharness routes
+        # by id prefix through the credit proxy (claude-* → Anthropic backend,
+        # else Gemini), so pass it straight to `work --model`; no model = the
+        # platform default (gemini-3.6-flash).
+        model = (self.model_name or "").strip()
+        model_flag = f"--model {shlex.quote(model)} " if model else ""
         await self.exec_as_agent(
             environment,
             command=(
-                f"localharness work --as tbench {escaped} "
+                f"localharness work --as tbench {model_flag}{escaped} "
                 "2>&1 | stdbuf -oL tee /logs/agent/localharness.txt"
             ),
         )

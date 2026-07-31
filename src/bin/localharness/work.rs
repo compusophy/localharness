@@ -87,35 +87,66 @@ pub(crate) async fn work(args: &[String]) -> i32 {
 
     let fs: localharness::filesystem::SharedFilesystem =
         std::sync::Arc::new(localharness::filesystem::NativeFilesystem::new());
-    let mut cfg = localharness::GeminiAgentConfig::new(token)
-        .with_base_url(base)
-        .with_system_instructions(WORK_PROMPT.to_string())
-        .with_filesystem(fs)
-        // The DEFAULT capability set is read-only safety mode — a work agent
-        // needs the write half (create/edit/delete/rename + run_command);
-        // containment comes from the workspace policy below, not tool absence.
-        .with_capabilities(localharness::types::CapabilitiesConfig::unrestricted())
-        // Every fs path is pinned inside the workspace, and a wildcard allow
-        // sits BEHIND the denies: `evaluate` is default-deny once any policy
-        // exists, and workspace_only only contributes deny-when-outside rules
-        // — without the trailing allow, every in-workspace call died with
-        // "no matching policy" (found live). Deny buckets evaluate first, so
-        // containment still wins.
-        .with_policies(
-            localharness::policy::workspace_only(vec![cwd.clone()])
-                .into_iter()
-                .chain(std::iter::once(localharness::policy::Policy::allow("*")))
-                .collect::<Vec<_>>(),
-        );
-    if let Some(m) = &model {
-        cfg = cfg.with_model(m.clone());
-    }
+    // The DEFAULT capability set is read-only safety mode — a work agent needs
+    // the write half (create/edit/delete/rename + run_command); containment
+    // comes from the workspace policy, not tool absence.
+    let caps = localharness::types::CapabilitiesConfig::unrestricted();
+    // Every fs path is pinned inside the workspace, and a wildcard allow sits
+    // BEHIND the denies: `evaluate` is default-deny once any policy exists, and
+    // workspace_only only contributes deny-when-outside rules — without the
+    // trailing allow, every in-workspace call died "no matching policy" (found
+    // live). Deny buckets evaluate first, so containment still wins.
+    let policies: Vec<localharness::policy::Policy> =
+        localharness::policy::workspace_only(vec![cwd.clone()])
+            .into_iter()
+            .chain(std::iter::once(localharness::policy::Policy::allow("*")))
+            .collect();
 
-    let agent = match localharness::Agent::start_gemini(cfg).await {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("start failed: {e}");
+    // Route by model id: `claude-*` uses the Anthropic backend (needs the
+    // anthropic feature), anything else Gemini. Both reach the model through
+    // the credit proxy with the same signed token, so a subsidized identity
+    // drives either provider with no provider key. Mirrors `call`'s routing.
+    let is_claude = model.as_deref().map(|m| m.starts_with("claude")).unwrap_or(false);
+    let agent = if is_claude {
+        #[cfg(feature = "anthropic")]
+        {
+            let mut cfg = localharness::AnthropicAgentConfig::new(token)
+                .with_base_url(base)
+                .with_model(model.clone().unwrap())
+                .with_system_instructions(WORK_PROMPT.to_string())
+                .with_filesystem(fs)
+                .with_capabilities(caps)
+                .with_policies(policies);
+            let _ = &mut cfg;
+            match localharness::Agent::start_anthropic(cfg).await {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("start failed: {e}");
+                    return 1;
+                }
+            }
+        }
+        #[cfg(not(feature = "anthropic"))]
+        {
+            eprintln!("claude models need a build with `--features anthropic`");
             return 1;
+        }
+    } else {
+        let mut cfg = localharness::GeminiAgentConfig::new(token)
+            .with_base_url(base)
+            .with_system_instructions(WORK_PROMPT.to_string())
+            .with_filesystem(fs)
+            .with_capabilities(caps)
+            .with_policies(policies);
+        if let Some(m) = &model {
+            cfg = cfg.with_model(m.clone());
+        }
+        match localharness::Agent::start_gemini(cfg).await {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("start failed: {e}");
+                return 1;
+            }
         }
     };
 
