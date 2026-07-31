@@ -1,0 +1,124 @@
+# Terminal-Bench 2.1 (the CURRENT benchmark) — runs on the HARBOR harness, not
+# the old `tb` CLI. localharness is the agent under test via the Harbor adapter
+# (adapters/terminal-bench/harbor_agent.py) driving `localharness work`.
+# Manual dispatch; every model round spends real $LH from the throwaway
+# identity behind LOCALHARNESS_KEY. ubuntu runners have the Docker Harbor needs.
+name: terminal-bench-2.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Harbor dataset id"
+        default: "terminal-bench/terminal-bench-2-1"
+        required: false
+      n_tasks:
+        description: "run the first N tasks (cost control; blank = all)"
+        default: "2"
+        required: false
+      task:
+        description: "specific task id (overrides n_tasks when set)"
+        default: ""
+        required: false
+      attempts:
+        description: "attempts per task (pass@k)"
+        default: "1"
+        required: false
+
+jobs:
+  binary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: build static musl binary
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --features wallet,native \
+                --target x86_64-unknown-linux-musl --bin localharness
+          cp target/x86_64-unknown-linux-musl/release/localharness localharness-x86_64-linux
+      - name: publish to the tbench-binary rolling tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete tbench-binary -y --cleanup-tag 2>/dev/null || true
+          gh release create tbench-binary --title "tbench prebuilt binary" \
+             --notes "Static x86_64 linux localharness for the Terminal-Bench adapters (rolling)." \
+             localharness-x86_64-linux
+
+  tbench2:
+    needs: binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install harbor
+        run: |
+          pip install --quiet harbor
+          harbor --version || true
+      - name: run terminal-bench 2.1
+        working-directory: adapters/terminal-bench
+        env:
+          LOCALHARNESS_KEY: ${{ secrets.LOCALHARNESS_KEY }}
+        run: |
+          set +e
+          if [ -n "${{ inputs.task }}" ]; then
+            SEL="--task ${{ inputs.task }}"
+          elif [ -n "${{ inputs.n_tasks }}" ]; then
+            SEL="--n-tasks ${{ inputs.n_tasks }}"
+          else
+            SEL=""
+          fi
+          harbor run \
+            -d "${{ inputs.dataset }}" \
+            --agent-import-path harbor_agent:LocalharnessHarborAgent \
+            -k "${{ inputs.attempts }}" \
+            --n-concurrent-agents 1 \
+            $SEL
+          echo "harbor exit: $?"
+      - name: scoreline
+        if: always()
+        working-directory: adapters/terminal-bench
+        run: |
+          python - <<'PY'
+          import json, glob, os
+          rows, seen = [], set()
+          for f in glob.glob("**/results.json", recursive=True) + glob.glob("**/result.json", recursive=True):
+              try: d = json.load(open(f))
+              except Exception: continue
+              trials = d.get("results")
+              trials = trials if isinstance(trials, list) else [d]
+              for r in trials:
+                  if not isinstance(r, dict): continue
+                  tid = r.get("task_id") or r.get("task_name") or r.get("id")
+                  if tid is None: continue
+                  key = (tid, r.get("trial_name") or r.get("id"))
+                  if key in seen: continue
+                  seen.add(key)
+                  ok = bool(r.get("is_resolved", r.get("resolved", r.get("passed", False))))
+                  rows.append((tid, ok))
+          total = len(rows); resolved = sum(1 for _, ok in rows if ok)
+          acc = 100.0 * resolved / total if total else 0.0
+          out = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
+          with open(out, "a") as fh:
+              fh.write(f"## Terminal-Bench 2.1: {resolved}/{total} resolved ({acc:.1f}%)\n\n")
+              fh.write("| task | verdict |\n|---|---|\n")
+              for n, ok in rows:
+                  fh.write(f"| `{n}` | {'✅' if ok else '❌'} |\n")
+          print(f"SCORELINE 2.1: {resolved}/{total} ({acc:.1f}%)")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tb2-runs
+          path: |
+            adapters/terminal-bench/runs
+            adapters/terminal-bench/jobs
+            adapters/terminal-bench/**/results.json
+          if-no-files-found: warn
