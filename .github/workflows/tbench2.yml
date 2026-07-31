@@ -66,6 +66,11 @@ jobs:
         working-directory: adapters/terminal-bench
         env:
           LOCALHARNESS_KEY: ${{ secrets.LOCALHARNESS_KEY }}
+          # Harbor's import_symbol() does a plain importlib.import_module on the
+          # module part of --agent-import-path — it does NOT add CWD to sys.path
+          # (the old tb CLI did). Put the adapter dir on PYTHONPATH so
+          # `harbor_agent:LocalharnessHarborAgent` resolves.
+          PYTHONPATH: ${{ github.workspace }}/adapters/terminal-bench
         run: |
           set +e
           if [ -n "${{ inputs.task }}" ]; then
