@@ -333,8 +333,8 @@ the chat column (feedback #62).
 in a sub-rect. THE reuse primitive — the prompt tells agents to compose an
 existing published cartridge before rewriting an engine (telemetry #70). Pixel
 math = `src/compose.rs` (`blit_child`, `map_pointer_into_child`,
-`ComposeBudget::v1` 8/node · 16K · 256K · depth 5 · 24 nodes · FB-area
-1M/child·8M, #78). Worker (`cartridge-worker.js`) is a TREE: every node owns a
+`ComposeBudget::v1` 16/node · 16K · 256K · depth 5 · 24 nodes · FB-area
+1M/child·16M, #78/#87). Worker (`cartridge-worker.js`) is a TREE: every node owns a
 `children`/`focus` table via `makeComposeApi(node)`, so a child spawns
 grandchildren — `compositeChildren` recurses. Node AT depth cap →
 `INERT_COMPOSE` (spawn -1). Handles per-node; `compose_spawn`/`compose_bytes`

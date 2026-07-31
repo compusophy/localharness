@@ -112,7 +112,7 @@ pub fn base_system_prompt(
              repeatedly when the user asks for more than one name at once \
              (\"register a, b and c\", \"make me 5 subdomains\", \"spin up \
              a-b-c-d\"). Taken/invalid names are skipped and reported in \
-             `skipped`. Max 20 per call. Returns {{ registered, skipped, count, \
+             `skipped`. Max 7 per call. Returns {{ registered, skipped, count, \
              tx_hash, urls }}.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT and frees the name. The \
@@ -150,7 +150,7 @@ pub fn base_system_prompt(
              If the wallet is short, unspent chat-meter credits auto-bridge \
              into the same transaction. Returns {{ amount, recipient, \
              resolved_recipient, bridged_from_meter, tx_hash }}.\n\
-           • batch_send_lh(transfers, confirmation) — pay UP TO 20 recipients \
+           • batch_send_lh(transfers, confirmation) — pay UP TO 7 recipients \
              in ONE on-chain transaction (each {{recipient, amount}} like \
              send_lh). Use this instead of repeated send_lh calls when \
              distributing funds. MOVES VALUE — same challenge flow as send_lh, \
@@ -790,7 +790,7 @@ pub fn lean_system_prompt(
              subdomain's fullscreen public face. THE way to make a subdomain \
              that IS an app (\"make me a <app> subdomain\").\n\
            • batch_create_subdomains(names) — register MANY names in ONE tx \
-             (max 20; taken/invalid reported in `skipped`) — use instead of \
+             (max 7; taken/invalid reported in `skipped`) — use instead of \
              a create_subdomain loop.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT. Confirm-gated: the first \
@@ -813,7 +813,7 @@ pub fn lean_system_prompt(
              a single-use code: state recipient + amount, the OWNER must \
              TYPE the code (never echo it), then retry.\n\
            • batch_send_lh(transfers, confirmation) — MOVES VALUE: pay up \
-             to 20 recipients ({{recipient, amount}}) in ONE tx; same flow, \
+             to 7 recipients ({{recipient, amount}}) in ONE tx; same flow, \
              ONE code for the whole batch — show the full list first.\n\
            • check_balances() — read-only: owner wallet / chat meter / TBA \
              $LH. Use before value moves.\n\
