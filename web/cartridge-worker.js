@@ -436,7 +436,8 @@ const COMPOSE_MAX_NODES = 24;
 // of worker memory while passing every byte/node cap (issue #78). Each child's
 // surface is w*h*4 bytes; cap it per-child AND tree-wide.
 const COMPOSE_MAX_FB_BYTES_PER_CHILD = 1024 * 1024; // 1 MB (≈512x512)
-const COMPOSE_MAX_TOTAL_FB_BYTES = 8 * 1024 * 1024; // 8 MB across the whole tree
+const COMPOSE_MAX_TOTAL_FB_BYTES = 16 * 1024 * 1024; // 16 MB (was 8): a 3×3 grid of
+// default 512×512 (1 MB) cartridges = 9 MB; the old 8 MB refused the 9th's fb (#87)
 
 // Child module states (mirror the host::compose status() ABI).
 const MOD_LOADING = 0;

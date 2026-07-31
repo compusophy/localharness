@@ -316,7 +316,7 @@ impl ComposeBudget {
     /// v1 caps. Composition is RECURSIVE (the fractal): a child gets its own
     /// table and may spawn grandchildren, bounded by depth + global node/byte
     /// caps. 16 children/node, 16 KB each, 256 KB total, depth 5, 24 nodes total,
-    /// 1 MB framebuffer per child, 8 MB framebuffer across the whole tree.
+    /// 1 MB framebuffer per child, 16 MB framebuffer across the whole tree.
     /// (16, not 8: a common 3×3 or 4×4 grid needs 9–16 immediate children — the
     /// old 8-cap silently refused the 9th, so a 9-cell grid's last cell never
     /// spawned, read as "the bottom-right cartridge doesn't work", telemetry #87.
@@ -329,7 +329,12 @@ impl ComposeBudget {
             max_depth: 5,
             max_total_nodes: 24,
             max_fb_bytes_per_child: 1024 * 1024,
-            max_total_fb_bytes: 8 * 1024 * 1024,
+            // 16 MB (was 8): paired with the 16-child cap so a 3×3 grid of
+            // default 512×512 (1 MB) cartridges fits (9 MB) — at 8 MB the 9th's
+            // framebuffer was refused, blanking the bottom-right cell (#87). The
+            // per-child 1 MB cap still bounds any single cartridge, so worst case
+            // = 16 × 1 MB = 16 MB.
+            max_total_fb_bytes: 16 * 1024 * 1024,
         }
     }
 
@@ -646,10 +651,12 @@ mod tests {
         // even though the cartridge declaring it is tiny (passes admit()).
         assert!(b.admit_fb(0, 1024 * 1024 + 1).is_err());
         assert!(b.admit_fb(0, 1024 * 1024 * 4).is_err());
-        // The tree-wide aggregate: 8 MB total. Seven 1 MB children fit (7 MB);
-        // the eighth would push to 8 MB (== cap, still ok); a ninth busts it.
-        assert!(b.admit_fb(7 * 1024 * 1024, 1024 * 1024).is_ok()); // → 8 MB, at the cap
-        assert!(b.admit_fb(8 * 1024 * 1024, 1).is_err()); // already at the cap
+        // The tree-wide aggregate: 16 MB total. Fifteen 1 MB children fit (15 MB);
+        // the sixteenth pushes to 16 MB (== cap, still ok); a seventeenth busts it.
+        assert!(b.admit_fb(15 * 1024 * 1024, 1024 * 1024).is_ok()); // → 16 MB, at the cap
+        assert!(b.admit_fb(16 * 1024 * 1024, 1).is_err()); // already at the cap
+        // A 3×3 grid of default 512×512 (1 MB) cartridges now fits (was the #87 bug).
+        assert!(b.admit_fb(8 * 1024 * 1024, 1024 * 1024).is_ok()); // the 9th child
         // saturating_add can't wrap past the total cap.
         assert!(b.admit_fb(usize::MAX, 1).is_err());
     }
