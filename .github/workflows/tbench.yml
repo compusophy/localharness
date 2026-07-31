@@ -22,7 +22,35 @@ on:
         required: false
 
 jobs:
+  # Build a static x86_64 Linux binary ONCE on the runner and publish it to a
+  # release tag the container downloads (curl, ~seconds) — the in-container
+  # cargo compile blew hello-world's 360s agent timeout. Fast install = the
+  # task fits its own clock.
+  binary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: build static musl binary
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --features wallet,native \
+                --target x86_64-unknown-linux-musl --bin localharness
+          cp target/x86_64-unknown-linux-musl/release/localharness localharness-x86_64-linux
+      - name: publish to the tbench-binary rolling tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete tbench-binary -y --cleanup-tag 2>/dev/null || true
+          gh release create tbench-binary --title "tbench prebuilt binary" \
+             --notes "Static x86_64 linux localharness for the Terminal-Bench adapter (rolling)." \
+             localharness-x86_64-linux
+
   tbench:
+    needs: binary
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -34,7 +62,6 @@ jobs:
         run: |
           pip install --quiet terminal-bench
           tb --version || true
-          tb run --help | head -40 || true
       - name: run tasks
         working-directory: adapters/terminal-bench
         env:
