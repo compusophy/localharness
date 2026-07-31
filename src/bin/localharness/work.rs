@@ -14,7 +14,8 @@ use crate::{ensure_meter_funded, load_signer, print_err, registry, take_as_flag,
 pub(crate) const WORK_USAGE: &str = "usage: localharness work [--as <me>] [--model <id>] <task…>\n  \
      run a LOCAL agent on <task> in the CURRENT DIRECTORY: native tools (read/\n  \
      write/edit/search files + run_command), workspace-confined, billed per\n  \
-     model round from your meter (~1 $LH each). e.g.\n  \
+     model round from your meter (~1 $LH default; premium models like claude\n  \
+     bill 5-20 $LH/round — fund accordingly). e.g.\n  \
      localharness work --as claude \"add a --version flag to this CLI and test it\"";
 
 /// The lean task-mode system prompt. Deliberately persona-free: `work` is a
@@ -80,8 +81,16 @@ pub(crate) async fn work(args: &[String]) -> i32 {
             return 1;
         }
     };
+    // Coarse per-round cost hint so a meter is funded for the RIGHT model (the
+    // exact table is proxy-side in _prices.ts; premium tiers are 5/20 $LH). The
+    // default flash tier is 1 $LH — a flat "~1 $LH" line underfunded claude ~5x.
+    let round_cost = match model.as_deref() {
+        Some(m) if m.contains("opus") => "~20 $LH (premium)",
+        Some(m) if m.starts_with("claude") && !m.contains("haiku") => "~5 $LH (premium)",
+        _ => "~1 $LH",
+    };
     eprintln!(
-        "work: native agent in {} (billed ~1 $LH per model round; Ctrl-C aborts)",
+        "work: native agent in {} (billed {round_cost} per model round; Ctrl-C aborts)",
         cwd.display()
     );
 

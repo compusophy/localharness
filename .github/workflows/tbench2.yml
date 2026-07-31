@@ -5,6 +5,13 @@
 # identity behind LOCALHARNESS_KEY. ubuntu runners have the Docker Harbor needs.
 name: terminal-bench-2.1
 
+# Serialize any run that mutates the shared rolling `tbench-binary` release tag
+# (this workflow AND tbench.yml share this group) so an overlapping run's delete
+# window can't 404 a concurrent install curl mid-run.
+concurrency:
+  group: tbench-binary
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:
@@ -17,7 +24,7 @@ on:
         default: "2"
         required: false
       task:
-        description: "specific task id (overrides n_tasks when set)"
+        description: "specific task NAME within the dataset (overrides n_tasks when set)"
         default: ""
         required: false
       attempts:
@@ -25,7 +32,7 @@ on:
         default: "1"
         required: false
       model:
-        description: "driving model id (blank = platform default gemini-3.6-flash; e.g. claude-sonnet-5)"
+        description: "driving model id (blank = platform default gemini-3.6-flash; e.g. claude-sonnet-5 — a PREMIUM model billed 5 $LH/round, fund accordingly)"
         default: ""
         required: false
 
@@ -64,7 +71,11 @@ jobs:
           python-version: "3.12"
       - name: install harbor
         run: |
-          pip install --quiet harbor
+          # PINNED: the adapter (harbor_agent.py) is validated against 0.20.0's
+          # BaseInstalledAgent contract + the (deprecated-but-working)
+          # --agent-import-path flag. An unpinned install risks a future release
+          # relocating modules or dropping the flag mid-expensive-run.
+          pip install --quiet 'harbor==0.20.0'
           harbor --version || true
       - name: run terminal-bench 2.1
         working-directory: adapters/terminal-bench
@@ -78,7 +89,9 @@ jobs:
         run: |
           set +e
           if [ -n "${{ inputs.task }}" ]; then
-            SEL="--task ${{ inputs.task }}"
+            # --task means a registry package ref (org/name[@ref]); selecting ONE
+            # task from WITHIN the -d dataset is --include-task-name.
+            SEL="--include-task-name ${{ inputs.task }}"
           elif [ -n "${{ inputs.n_tasks }}" ]; then
             SEL="--n-tasks ${{ inputs.n_tasks }}"
           else
@@ -89,10 +102,15 @@ jobs:
           MODEL_FLAG=""
           [ -n "${{ inputs.model }}" ] && MODEL_FLAG="-m ${{ inputs.model }}"
           echo "harbor invocation: -d ${{ inputs.dataset }} $MODEL_FLAG $SEL"
+          # -n 1 = ONE trial at a time. harbor's --n-concurrent (trial-level cap)
+          # defaults to 4, which would fire 4 agents at the 504-prone proxy at
+          # once — 4x peak cost + the exact overload that yields infra errors.
+          # --n-concurrent-agents is only a PER-AGENT sub-cap, not the trial cap.
           harbor run \
             -d "${{ inputs.dataset }}" \
             --agent-import-path harbor_agent:LocalharnessHarborAgent \
             -k "${{ inputs.attempts }}" \
+            -n 1 \
             --n-concurrent-agents 1 \
             $MODEL_FLAG $SEL
           echo "harbor exit: $?"
@@ -104,32 +122,53 @@ jobs:
           import json, glob, os
           # Harbor 2.x per-trial result.json: task_name is the clean string id
           # (task_id is a DICT — don't key on it), the verdict is
-          # verifier_result.rewards.reward (>=1.0 = resolved), exception_info
-          # non-null = an infra error (counts as unresolved but flagged). Dedup
-          # by the trial's own uuid `id`.
+          # verifier_result.rewards.reward (>=1.0 = resolved). CRITICAL:
+          # exception_info non-null = an INFRA error (e.g. a proxy 504), NOT a
+          # model failure — it must be reported SEPARATELY and excluded from the
+          # capability denominator, else a flaky proxy silently deflates the
+          # score. Three states: ok / fail / err. Dedup by the trial uuid `id`.
           rows, seen = [], set()
           for f in glob.glob("**/result.json", recursive=True):
               try: d = json.load(open(f))
               except Exception: continue
               if not isinstance(d, dict) or "verifier_result" not in d:
                   continue  # skip the job-level roll-up; only per-trial files
-              tid = d.get("task_name") or "?"
               uid = d.get("id")
               if uid in seen: continue
               seen.add(uid)
-              reward = ((d.get("verifier_result") or {}).get("rewards") or {}).get("reward", 0)
+              tid = d.get("task_name") or "?"
               errored = d.get("exception_info") is not None
-              ok = (not errored) and (reward is not None) and reward >= 1.0
-              rows.append((tid, ok))
-          total = len(rows); resolved = sum(1 for _, ok in rows if ok)
-          acc = 100.0 * resolved / total if total else 0.0
+              reward = ((d.get("verifier_result") or {}).get("rewards") or {}).get("reward", 0)
+              if errored:
+                  state = "err"
+              elif reward is not None and reward >= 1.0:
+                  state = "ok"
+              else:
+                  state = "fail"
+              rows.append((tid, state))
+          total = len(rows)
+          resolved = sum(1 for _, s in rows if s == "ok")
+          errored_ct = sum(1 for _, s in rows if s == "err")
+          scored = total - errored_ct  # trustworthy denominator = completed trials
+          acc = 100.0 * resolved / scored if scored else 0.0
+          mark = {"ok": "✅", "fail": "❌", "err": "⚠️ infra-error (excluded)"}
           out = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
           with open(out, "a") as fh:
-              fh.write(f"## Terminal-Bench 2.1: {resolved}/{total} resolved ({acc:.1f}%)\n\n")
+              fh.write(
+                  f"## Terminal-Bench 2.1: {resolved}/{scored} resolved on completed "
+                  f"trials ({acc:.1f}%)"
+                  + (f" — ⚠️ {errored_ct}/{total} trials errored (infra, NOT counted)\n\n"
+                     if errored_ct else f" — {total} trials, 0 infra errors\n\n")
+              )
+              if errored_ct:
+                  fh.write("> ⚠️ Infra errors (e.g. proxy 504s) are EXCLUDED from the "
+                           "denominator — the score reflects capability, not proxy health. "
+                           "Re-run the errored trials for a clean number.\n\n")
               fh.write("| task | verdict |\n|---|---|\n")
-              for n, ok in rows:
-                  fh.write(f"| `{n}` | {'✅' if ok else '❌'} |\n")
-          print(f"SCORELINE 2.1: {resolved}/{total} ({acc:.1f}%)")
+              for n, s in rows:
+                  fh.write(f"| `{n}` | {mark[s]} |\n")
+          print(f"SCORELINE 2.1: {resolved}/{scored} capability ({acc:.1f}%); "
+                f"{errored_ct} infra-errored of {total} total")
           PY
       - uses: actions/upload-artifact@v4
         if: always()
@@ -138,5 +177,5 @@ jobs:
           path: |
             adapters/terminal-bench/runs
             adapters/terminal-bench/jobs
-            adapters/terminal-bench/**/results.json
+            adapters/terminal-bench/**/result.json
           if-no-files-found: warn

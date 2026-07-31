@@ -26,8 +26,12 @@ stderr (the footgun fix — testnet/mainnet mismatch caused "39 agents on CLI vs
 in browser"). The PUBLISHED binary embeds NO mainnet money key.
 
 ## Keys live in $HOME, never the working dir
-`util.rs::load_signer*` reads `~/.lh_<name>_mainnet.key` / per-name testnet keys.
-Writing keys into the CWD was a git-leak hazard (fixed) — never reintroduce it.
+`util.rs::load_signer*` → `identity::resolve_caller_key`: reads
+`<home>/.localharness/keys/<name>.localharness.key` (`$LOCALHARNESS_HOME` overrides
+`<home>` = `%USERPROFILE%`/`$HOME`; a cwd `<name>.localharness.key` wins for
+back-compat). This is the path the Terminal-Bench adapter provisions.
+Writing NEW keys into the CWD was a git-leak hazard (`key_write_path` defaults to
+$HOME now) — never reintroduce it.
 Names are sanitized (no path traversal) before any key write / on-chain register.
 
 ## `call` = HEADLESS turn via the proxy (NOT the browser `?rpc=1` path)

@@ -28,6 +28,10 @@ export const COST_PER_REQUEST_WEI = envWei('COST_PER_REQUEST_WEI', 1_000_000_000
 const PRICE_ANTHROPIC: Record<string, bigint> = {
   'claude-haiku-4-5-20251001': envWei('PRICE_ANTHROPIC_HAIKU_WEI', 1_000_000_000_000_000_000n), // 1 $LH
   'claude-sonnet-4-6': envWei('PRICE_ANTHROPIC_SONNET_WEI', 5_000_000_000_000_000_000n), // 5 $LH
+  // Same SONNET tier — pinned EXPLICITLY (not left to the `*` default) so it's
+  // advertised on GET /prices and a caller/operator isn't surprised by the
+  // premium 5 $LH/round (this is the Terminal-Bench frontier driver).
+  'claude-sonnet-5': envWei('PRICE_ANTHROPIC_SONNET_WEI', 5_000_000_000_000_000_000n), // 5 $LH
   'claude-opus-4-8': envWei('PRICE_ANTHROPIC_OPUS_WEI', 20_000_000_000_000_000_000n), // 20 $LH
 };
 const PRICE_ANTHROPIC_DEFAULT = envWei('PRICE_ANTHROPIC_DEFAULT_WEI', 5_000_000_000_000_000_000n); // 5 $LH

@@ -5,6 +5,12 @@
 # TB requires and dev machines may lack.
 name: terminal-bench
 
+# Shares the `tbench-binary` release tag with tbench2.yml — same concurrency
+# group so neither run's delete+recreate window can 404 the other's install curl.
+concurrency:
+  group: tbench-binary
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:

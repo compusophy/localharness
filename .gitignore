@@ -60,3 +60,7 @@ rawfeedback.txt
 # node tooling (proxy deps + any local npm)
 node_modules/
 package-lock.json
+
+# python bytecode (TB adapter introspection)
+__pycache__/
+*.pyc
