@@ -175,5 +175,9 @@ jobs:
         if: always()
         with:
           name: tb-compare-runs
-          path: arms/**/result.json
+          # The WHOLE arms tree (both jobs/ dirs incl. per-trial agent logs +
+          # verifier output), not just result.json — a comparison is only useful
+          # if you can read WHY each arm lost a task, and the transcripts live in
+          # the trial dirs (harbor collects the adapter's /logs/agent output).
+          path: arms
           if-no-files-found: warn
