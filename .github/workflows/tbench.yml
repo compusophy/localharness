@@ -1,0 +1,65 @@
+# Terminal-Bench: run localharness as the agent under test on real TB tasks.
+# Manual-dispatch only — every model round spends real $LH from the throwaway
+# identity behind the LOCALHARNESS_KEY secret (provision + fund it first; see
+# adapters/terminal-bench/README.md). ubuntu runners ship with Docker, which
+# TB requires and dev machines may lack.
+name: terminal-bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_ids:
+        description: "space-separated TB task ids"
+        default: "hello-world"
+        required: true
+      dataset:
+        description: "TB dataset name (blank = harness default)"
+        default: "terminal-bench-core"
+        required: false
+
+jobs:
+  tbench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install terminal-bench
+        run: |
+          pip install --quiet terminal-bench
+          tb --version || true
+          tb run --help | head -40 || true
+      - name: run tasks
+        working-directory: adapters/terminal-bench
+        env:
+          LOCALHARNESS_KEY: ${{ secrets.LOCALHARNESS_KEY }}
+        run: |
+          set +e
+          overall=0
+          for t in ${{ inputs.task_ids }}; do
+            echo "::group::task $t"
+            if [ -n "${{ inputs.dataset }}" ]; then
+              tb run --agent-import-path localharness_agent:LocalharnessAgent \
+                     --dataset "${{ inputs.dataset }}" --task-id "$t" \
+              || tb run --agent-import-path localharness_agent:LocalharnessAgent \
+                        --task-id "$t"
+            else
+              tb run --agent-import-path localharness_agent:LocalharnessAgent \
+                     --task-id "$t"
+            fi
+            rc=$?
+            echo "task $t exit: $rc"
+            [ $rc -ne 0 ] && overall=$rc
+            echo "::endgroup::"
+          done
+          # The harness exit code reflects harness health; task resolution
+          # verdicts live in the uploaded runs/ artifact.
+          exit $overall
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tb-runs
+          path: adapters/terminal-bench/runs
+          if-no-files-found: warn
