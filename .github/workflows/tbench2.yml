@@ -84,12 +84,17 @@ jobs:
           else
             SEL=""
           fi
+          # Pass the driving model through harbor's -m → the agent's
+          # self.model_name → `work --model` (blank = platform default Flash).
+          MODEL_FLAG=""
+          [ -n "${{ inputs.model }}" ] && MODEL_FLAG="-m ${{ inputs.model }}"
+          echo "harbor invocation: -d ${{ inputs.dataset }} $MODEL_FLAG $SEL"
           harbor run \
             -d "${{ inputs.dataset }}" \
             --agent-import-path harbor_agent:LocalharnessHarborAgent \
             -k "${{ inputs.attempts }}" \
             --n-concurrent-agents 1 \
-            $SEL
+            $MODEL_FLAG $SEL
           echo "harbor exit: $?"
       - name: scoreline
         if: always()
