@@ -83,6 +83,48 @@ jobs:
           # The harness exit code reflects harness health; task resolution
           # verdicts live in the uploaded runs/ artifact.
           exit $overall
+      - name: scoreline
+        if: always()
+        working-directory: adapters/terminal-bench
+        run: |
+          # Aggregate every run's results.json into a GitHub Step Summary table
+          # + fail the job if ANY task went unresolved (so a red X = a real
+          # regression, not just harness health). Verdicts otherwise hide in
+          # the artifact.
+          python - <<'PY'
+          import json, glob, os
+          # Prefer each run's top-level results.json (one per `tb run` — it has
+          # the full trial list); fall back to per-trial files. Dedup by
+          # (task_id, trial_name) so overlapping globs don't double-count.
+          rows, seen = [], set()
+          for f in sorted(glob.glob("runs/**/results.json", recursive=True)):
+              try:
+                  d = json.load(open(f))
+              except Exception:
+                  continue
+              trials = d.get("results")
+              trials = trials if isinstance(trials, list) else [d]
+              for r in trials:
+                  if not isinstance(r, dict) or "task_id" not in r:
+                      continue
+                  key = (r.get("task_id"), r.get("trial_name"))
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  rows.append((r["task_id"], bool(r.get("is_resolved", False))))
+          total = len(rows)
+          resolved = sum(1 for _, ok in rows if ok)
+          acc = (100.0 * resolved / total) if total else 0.0
+          rows = [(n, "✅ resolved" if ok else "❌ unresolved") for n, ok in rows]
+          out = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
+          with open(out, "a") as fh:
+              fh.write(f"## Terminal-Bench: {resolved}/{total} resolved ({acc:.1f}%)\n\n")
+              fh.write("| task | verdict |\n|---|---|\n")
+              for n, v in rows:
+                  fh.write(f"| `{n}` | {v} |\n")
+          print(f"SCORELINE {resolved}/{total} ({acc:.1f}%)")
+          raise SystemExit(0 if total and resolved == total else 1)
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
