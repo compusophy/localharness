@@ -102,7 +102,7 @@ async function lhSeedExportFastBounce() {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "f3743003ecfc";
+const LH_BUILD = "b983566358c8";
 
 // Hard capability gate: the whole app persists to OPFS, so a browser without
 // `navigator.storage.getDirectory` (iOS/Safari < 15.2, exotic embedded views)
