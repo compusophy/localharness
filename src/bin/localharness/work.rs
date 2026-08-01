@@ -110,7 +110,17 @@ pub(crate) async fn work(args: &[String]) -> i32 {
     // failure — and every round re-sends the whole history (cost). Same 128K
     // ceiling as the browser session. NOT a fix for thinking-latency 504s (those
     // hit at small context); a cost + deep-task-robustness measure.
-    caps.compaction_threshold = Some(localharness::types::DEFAULT_COMPACTION_THRESHOLD);
+    // AGGRESSIVE threshold (not the shared 128K default): the edge credit-proxy
+    // 504s on a slow FIRST BYTE, which grows with context size — even on flash, a
+    // deep task (TB-2.1 schemelike/torch needed 65-119 rounds) builds a big enough
+    // context to trip the ~25s edge cap and kill the run (FUNCTION_INVOCATION_TIMEOUT).
+    // Compacting at ~48K keeps the live context small enough that first-byte stays
+    // under the cap, so a long task can run to completion. The solved TB tasks
+    // finished under 22 rounds (well under 48K) so they're unaffected; this only
+    // bites the deep tasks that were 504ing. (Proper fix = the proxy handler port,
+    // design/proxy-504-fix.md; this is the work-side stopgap.)
+    const WORK_COMPACTION_THRESHOLD: u32 = 48_000;
+    caps.compaction_threshold = Some(WORK_COMPACTION_THRESHOLD);
     // Every fs path is pinned inside the workspace, and a wildcard allow sits
     // BEHIND the denies: `evaluate` is default-deny once any policy exists, and
     // workspace_only only contributes deny-when-outside rules — without the
