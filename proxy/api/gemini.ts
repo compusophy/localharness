@@ -1,4 +1,4 @@
-// localharness credit proxy — multi-provider LLM passthrough (Edge).
+// localharness credit proxy — multi-provider LLM passthrough (Node runtime).
 //
 // Routes by path: /v1beta/models/<model>:<method> -> Gemini (the original,
 // byte-identical path), /v1/messages -> Anthropic, /v1/chat/completions ->
@@ -32,7 +32,6 @@
 // output cap → bounded, non-amplified loss (an x402 authorization, which the
 // proxy can't over-debit, is the trustless path).
 
-import { secp256k1 } from '@noble/curves/secp256k1';
 import {
   createPublicClient,
   createWalletClient,
@@ -42,19 +41,32 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
-// ⚠️ REVERTED to edge: dropping to the Node runtime (`maxDuration` only) made the
-// function 500 with FUNCTION_INVOCATION_FAILED on EVERY request — Vercel's Node
-// runtime does not accept this file's web-standard `(req: Request) => Response`
-// handler shape without adaptation, so it's NOT a one-line config change (proved by
-// a live flash smoke right after deploy). The 504 fix needs a real handler port or
-// the keepalive-stream-first approach — see design/proxy-504-fix.md. Edge's ~25s
-// first-byte cap (the slow-claude 504) is the KNOWN, tolerated state until then.
-export const config = { runtime: 'edge' };
+// NODE runtime (the 504 fix, design/proxy-504-fix.md). Edge's ~25s first-byte
+// cap killed any request whose upstream was slow to FIRST token (big contexts /
+// slow claude) with FUNCTION_INVOCATION_TIMEOUT — non-configurable on any plan,
+// and Vercel now recommends migrating edge→Node outright. Node has NO first-byte
+// cap; the whole budget is `maxDuration` — 800 (Pro GA max) because unlike Edge
+// it counts the WHOLE invocation including stream time, and Edge streamed up to
+// 300s AFTER first byte, so 300 total would be a tighter envelope than Edge's.
+// Streaming a `new Response(ReadableStream)` is native on Node — no flag; the
+// invocation stays alive until the streamed body closes (Fluid is ON for this
+// project, so instances still serve concurrent requests like Edge isolates did).
+// ⚠️ TWO past footguns, both fatal-on-every-request, neither a runtime limit:
+//   1. EXPORT SHAPE (the 2026-07-31 revert): a default-exported bare function
+//      gets the legacy `(req, res)` invocation, so `req.headers.get` exploded.
+//      Web-standard on Node = the NAMED method exports at the bottom.
+//   2. ESM IMPORTS: `"type": "module"` output keeps relative specifiers, and
+//      Node's ESM resolver needs EXPLICIT extensions — `./_chain` is
+//      ERR_MODULE_NOT_FOUND at Lambda load (edge bundled, Node doesn't). Every
+//      relative import in this file's graph carries `.js`; keep it that way.
+// Node caveat: the platform caps request bodies at 4.5 MB (below our 16 MB
+// MAX_BODY_BYTES — real LLM turns are well under).
+export const config = { maxDuration: 800 };
 
 // ---- constants -------------------------------------------------------------
 
-import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
-import { COST_PER_REQUEST_WEI, priceOf, type Provider } from './_prices';
+import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain.js';
+import { COST_PER_REQUEST_WEI, priceOf, type Provider } from './_prices.js';
 // Auth + metering primitives (CORS allow-check, personal-sign recovery +
 // freshness, the creditOf read, the InsufficientCreditError thrown by the
 // meter debit) are SHARED in `_auth.ts` (§5 dedup) — byte-for-byte the logic
@@ -65,10 +77,10 @@ import {
   verifyAuthToken,
   creditOf,
   InsufficientCreditError,
-} from './_auth';
-import { verifyX402Payment, settleX402NoWait, settleUptoNoWait, paymentRequiredHeader, type X402Auth } from './_x402';
-import { meteredAmountWei } from './_usage';
-import { envGuard } from './_env';
+} from './_auth.js';
+import { verifyX402Payment, settleX402NoWait, settleUptoNoWait, paymentRequiredHeader, type X402Auth } from './_x402.js';
+import { meteredAmountWei } from './_usage.js';
+import { envGuard } from './_env.js';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const ANTHROPIC_BASE = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -269,7 +281,7 @@ const MAX_CREDITS_BODY_BYTES = Number(process.env.LH_MAX_CREDITS_BODY_BYTES ?? '
 const TOKEN_METERING = (process.env.LH_TOKEN_METERING ?? '') === '1';
 const MARGIN_BPS = (() => {
   // Parse defensively: a malformed env (e.g. a typo) must NOT throw at module
-  // load — `BigInt(NaN)` would, bricking the whole Edge function (all chat down),
+  // load — `BigInt(NaN)` would, bricking the whole function (all chat down),
   // not just disabling metering. Fall back to the 1.3× default on any bad value.
   const n = Math.trunc(Number(process.env.LH_MARGIN_BPS ?? '13000'));
   return Number.isFinite(n) && n > 0 ? BigInt(n) : 13000n; // never zero/neg → never free
@@ -320,13 +332,15 @@ function json(
 // caller is out of `$LH`) is shared in `_auth.ts` and imported above; the
 // handler maps it to 402, distinct from an ambiguous RPC failure (502).
 
-// In-isolate per-address in-flight RESERVATION. `creditOf` is a lock-free RPC
+// In-instance per-address in-flight RESERVATION. `creditOf` is a lock-free RPC
 // read, and `meter()` has NO on-chain CAS — so N concurrent requests from one
-// address in this isolate would all read the same balance, all pass the gate,
+// address in this instance would all read the same balance, all pass the gate,
 // and only ~1 debit would land (the rest revert silently → N-1 free calls).
 // We subtract the sum of this address's still-pending charges from its `creditOf`
-// snapshot, so a burst within one isolate serializes against the live balance.
-// CAVEAT: per-isolate only — it does NOT de-dupe across Edge isolates/regions, so
+// snapshot, so a burst within one instance serializes against the live balance.
+// (Node + Fluid: an instance serves concurrent requests, so the map still has
+// the same protective semantics it had per-Edge-isolate — Fluid verified ON.)
+// CAVEAT: per-instance only — it does NOT de-dupe across instances/regions, so
 // a distributed burst still races to a BOUNDED degree (closed further by the
 // up-front floor debit advancing the account nonce + the output cap).
 const inflightCharges = new Map<string, bigint>();
@@ -454,7 +468,9 @@ async function meterDebit(user: string, amount: bigint, confirm = true): Promise
  * `flush()` runs on stream close, NOT on a reader-abort, so an early client
  * disconnect can't yield a fully un-debited METER call (the floor is already
  * taken); only the usage remainder is at risk on a disconnect, which the
- * platform eats. The broadcast is awaited in flush (keeps the Edge fn alive) but,
+ * platform eats. The broadcast is awaited in flush — safely inside the
+ * invocation, since Node keeps the function alive until the streamed response
+ * body closes and the readable end can't close before flush resolves — but,
  * like the flat meter, does NOT await the receipt.
  */
 function meteredBody(
@@ -487,7 +503,7 @@ function meteredBody(
       if (remainderWei <= 0n && totalWei <= 0n) return;
       try {
         // meter path → meterDebit(remainderWei); x402 "Upto" → settleUpto(totalWei).
-        // Broadcast awaited (keeps the Edge fn alive); the receipt is not.
+        // Broadcast awaited (inside the invocation, which outlives the stream); receipt is not.
         await onMetered({ remainderWei, totalWei });
       } catch {
         /* broadcast failed — floor already taken; platform eats the remainder */
@@ -506,7 +522,7 @@ class BodyTooLargeError extends Error {}
  * Read a request body to a string, ABORTING past `MAX_BODY_BYTES`. The
  * up-front `Content-Length` check is advisory only — a chunked request (no
  * declared length) bypasses it, so without this a caller could stream an
- * unbounded body into the Edge function's memory BEFORE we ever reach the auth
+ * unbounded body into the function's memory BEFORE we ever reach the auth
  * gate (especially on the Anthropic path, which must read the body to learn the
  * model). This streams the reader and throws the moment the running total
  * crosses the cap, so the buffer can never exceed it regardless of headers.
@@ -540,7 +556,7 @@ async function readTextCapped(req: Request): Promise<string> {
 
 // ---- handler ---------------------------------------------------------------
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
   const origin = req.headers.get('origin');
 
   if (req.method === 'OPTIONS') {
@@ -976,3 +992,12 @@ export default async function handler(req: Request): Promise<Response> {
     if (reservedAddr) release(reservedAddr, reservedWei);
   }
 }
+
+// Node web-handler exports: NAMED HTTP-method functions get the web-standard
+// `(Request) => Response` invocation on the Node runtime. A default-exported
+// bare function gets the legacy `(req, res)` shape instead — the 2026-07-31
+// FUNCTION_INVOCATION_FAILED footgun — and the `{ fetch: handler }` object
+// shape crashes `vercel dev`'s local invoker, so named exports it is.
+// OPTIONS keeps CORS preflight on the in-handler path.
+export const POST = handler;
+export const OPTIONS = handler;

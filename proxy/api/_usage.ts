@@ -31,7 +31,7 @@
 // margin). Model IDs + prices drift (see CLAUDE.md) — re-verify against live
 // provider pricing pages periodically.
 
-import type { Provider } from './_prices';
+import type { Provider } from './_prices.js';
 
 /** Token counts pulled from a provider's response/SSE. `cachedInput` is the
  * subset of `input` served from cache (billed at the cheaper cached rate). */

@@ -21,7 +21,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import { createWalletClient, defineChain, encodeFunctionData, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { TEMPO_RPC, REGISTRY, LH_TOKEN, CHAIN_ID } from './_chain';
+import { TEMPO_RPC, REGISTRY, LH_TOKEN, CHAIN_ID } from './_chain.js';
 
 const TEMPO_CHAIN = defineChain({
   id: CHAIN_ID,

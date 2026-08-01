@@ -1,8 +1,23 @@
 # Proxy 504 on slow claude requests — root cause + staged fix
 
-**Status: DIAGNOSED, fix STAGED, NOT deployed.** Hold the deploy for an attended
-smoke — this is the live inference path for every user and the fix's correctness
-depends on the Vercel plan (below). This note is the greenlight-ready hand-off.
+**Status: SHIPPED 2026-08-01 (attended).** `api/gemini.ts` runs on the NODE
+runtime, `maxDuration: 800` (plan verified Pro via the Vercel API; Fluid ON).
+The 2026-07-31 config-flip failure is fully explained — it was never the
+runtime, it was TWO port bugs, both fatal-on-every-request:
+1. **Export shape**: a default-exported bare `(req: Request) => Response` gets
+   Vercel's LEGACY `(req, res)` Node invocation (`req.headers.get` explodes).
+   Web-standard on Node = NAMED method exports (`export const POST/OPTIONS`).
+2. **ESM extensionless imports**: with `"type": "module"`, the compiled output
+   keeps `./_chain`-style specifiers, and Node's ESM resolver requires explicit
+   extensions → `ERR_MODULE_NOT_FOUND` at Lambda load (edge bundled with
+   esbuild, Node compiles per-file). All relative imports in the gemini graph
+   now carry `.js`.
+Diagnosed by running the `vercel build` output directly under Node (the exact
+Lambda repro); a minimal named-export probe worked on a real preview while
+gemini.ts failed, isolating the import graph. NOTE: `vercel dev` (CLI 48) could
+NOT run web handlers at all (crashed on a 10-line probe) — do not use it to
+validate this file; use `vercel build` + direct Node import, or a preview
+deploy. The historical staged plan below is kept for the reasoning record.
 
 ## Evidence from a real frontier run (GH Actions run 30610629205, 2026-07-31)
 Dispatched `terminal-bench-2.1` with `model=claude-sonnet-5 --n-tasks 1`. Task =

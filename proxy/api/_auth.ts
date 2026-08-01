@@ -17,7 +17,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex } from '@noble/hashes/utils';
 
-import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
+import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain.js';
 
 // Re-export the shared auth/origin/hex primitives so existing importers
 // (gemini / schedule / notify / broadcast / chat / signal / fetch / mcp) keep
@@ -32,7 +32,7 @@ import {
   FRESHNESS_WINDOW_SECS,
   verifyAuthToken,
   verifyAuthTokenOrThrow,
-} from './_authcore';
+} from './_authcore.js';
 export {
   isAllowedOrigin,
   ALLOWED_ORIGIN_SUFFIX,
