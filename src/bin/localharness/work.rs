@@ -27,11 +27,20 @@ const WORK_PROMPT: &str = "You are localharness running as a local coding agent 
     edit_file, delete_file, rename_file, and run_command (a real shell in this \
     directory — use it to build, test, and verify). Work autonomously: inspect \
     first, act, then VERIFY by RUNNING the result. Keep file edits minimal and \
-    idiomatic. KEEP WORKING until the task is FULLY complete and verified — a hard \
-    task takes MANY rounds of write → run → read the error → fix → re-run; do NOT \
-    stop, summarize, or hand back until it actually works. When (and only when) it \
-    is done AND you have run it to confirm, call the `finish` tool with a one-line \
-    summary. Never call finish on an unverified or partial solution.";
+    idiomatic. Never emit file contents as chat text — write files ONLY with \
+    create_file/edit_file. Assume your deliverable is RE-EXECUTED by a grader in \
+    a fresh environment, possibly with different inputs, sizes, seeds, or library \
+    versions: never hardcode a value, shape, or count you observed; if the task \
+    says something is unknown to you, solve the general case even when you could \
+    peek at it; before finishing, test your artifact on a variant you construct \
+    yourself. If you installed the runtime or libraries yourself, the grader may \
+    pin different versions — prefer public APIs, wrap library internals in \
+    try/except fallbacks, or hand-roll simple equivalents. KEEP WORKING until the \
+    task is FULLY complete and verified — a hard task takes MANY rounds of write \
+    → run → read the error → fix → re-run; do NOT stop, summarize, or hand back \
+    until it actually works. When (and only when) it is done AND you have run it \
+    to confirm, call the `finish` tool with a one-line summary. Never call finish \
+    on an unverified or partial solution.";
 
 /// `localharness work [--as <me>] [--model <id>] <task…>`
 pub(crate) async fn work(args: &[String]) -> i32 {
@@ -175,6 +184,13 @@ pub(crate) async fn work(args: &[String]) -> i32 {
         let mut cfg = localharness::GeminiAgentConfig::new(token)
             .with_base_url(base)
             .with_auth_provider(auth_provider)
+            // Ask for a high output cap: an unset/low cap lets 3.x dynamic
+            // thinking starve the answer mid-token (TB-15 regex-chess/
+            // schemelike died this way). The credit proxy clamps this to its
+            // LH_MAX_OUTPUT_TOKENS env server-side (raised 8192→16384
+            // 2026-08-01), so the effective cap is min(this, proxy) — and the
+            // truncation NUDGE in the loop is the recovery when it still hits.
+            .with_max_output_tokens(65_536)
             .with_system_instructions(WORK_PROMPT.to_string())
             .with_filesystem(fs)
             .with_capabilities(caps)
@@ -201,10 +217,27 @@ pub(crate) async fn work(args: &[String]) -> i32 {
     // mid-work). Bounded so a stuck agent can't loop forever; compaction (set above)
     // keeps context bounded across the continuations.
     const MAX_WORK_CONTINUATIONS: u32 = 12;
+    // Transcript truncation caps: big enough that a failed run is diagnosable
+    // from its OWN log (TB-15 postmortem: args were cut at 160 chars and tool
+    // RESULTS never logged at all — two diagnoses had to reconstruct the code
+    // this agent wrote by simulation), small enough to keep logs bounded.
+    const LOG_ARGS_CHARS: usize = 2048;
+    const LOG_RESULT_CHARS: usize = 2048;
     use futures_util::StreamExt;
     use std::io::Write;
+    // Ctrl-C: run_command children live in their OWN process groups (the
+    // tree-kill fix), so the terminal's SIGINT no longer reaches them — do
+    // what the terminal used to, then exit with the conventional 130.
+    tokio::spawn(async {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            localharness::builtins::kill_live_process_groups().await;
+            std::process::exit(130);
+        }
+    });
+    let started = std::time::Instant::now();
     let mut input: std::borrow::Cow<str> = std::borrow::Cow::Borrowed(task.as_str());
     let mut continuations: u32 = 0;
+    let mut consecutive_toolless: u32 = 0;
     let mut failed = false;
     'run: loop {
         let reply = match agent.chat(input.as_ref()).await {
@@ -215,35 +248,35 @@ pub(crate) async fn work(args: &[String]) -> i32 {
                 break;
             }
         };
-        // Stream the turn LIVE (text → stdout; tools/errors → stderr) and track HOW it
-        // ended so we can tell "cut off mid-work" from "actually done".
+        // Stream the turn LIVE (text → stdout; tools/results → stderr).
         let mut cursor = reply.chunks();
-        let mut saw_finish = false;
-        let mut saw_goal_tool = false;
-        let mut ended_on_tool = false;
+        let mut tool_calls_this_turn: u32 = 0;
+        let mut saw_text = false;
+        let mut saw_thinking = false;
         while let Some(res) = cursor.next().await {
             match res {
                 Ok(localharness::types::StreamChunk::Text { text, .. }) => {
                     print!("{text}");
                     let _ = std::io::stdout().flush();
-                    ended_on_tool = false;
+                    saw_text = true;
+                }
+                Ok(localharness::types::StreamChunk::Thought { .. }) => {
+                    saw_thinking = true;
                 }
                 Ok(localharness::types::StreamChunk::ToolCall(tc)) => {
                     let args = serde_json::to_string(&tc.args).unwrap_or_default();
-                    let args: String = args.chars().take(160).collect();
+                    let args: String = args.chars().take(LOG_ARGS_CHARS).collect();
                     eprintln!("→ {}({args})", tc.name);
-                    ended_on_tool = true;
-                    if tc.name == "finish" {
-                        saw_finish = true;
-                    } else {
-                        saw_goal_tool = true;
-                    }
+                    tool_calls_this_turn += 1;
                 }
                 Ok(localharness::types::StreamChunk::ToolResult(tr)) => {
                     if let Some(err) = &tr.error {
                         eprintln!("  ✗ {}: {err}", tr.name);
+                    } else if let Some(out) = &tr.result {
+                        let s = serde_json::to_string(out).unwrap_or_default();
+                        let s: String = s.chars().take(LOG_RESULT_CHARS).collect();
+                        eprintln!("  ← {s}");
                     }
-                    ended_on_tool = true;
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -253,62 +286,159 @@ pub(crate) async fn work(args: &[String]) -> i32 {
                 }
             }
         }
+        // Turn postmortem comes from the RESPONSE, not the chunk stream:
+        // backends intercept `finish` and never emit it as a ToolCall chunk
+        // (conversation.rs::finished doc) — the old chunk-sniffed `saw_finish`
+        // was dead code, so finish-after-tool-work turns got NUDGED and
+        // text-tail turns mid-work silently ENDED the run (TB-15: 3 of 6
+        // losses were exactly that, the CLI replay of #75/#69/#67).
+        let finished = reply.finished();
+        // Truncation detection is turn_flow's (blocked-note precedence, the
+        // "max token" wording, thinking-ate-the-budget) — the thinking arm
+        // only applies when the turn produced nothing VISIBLE, else every
+        // ordinary reasoning turn would read as cut off.
+        let visibly_empty = tool_calls_this_turn == 0 && !saw_text;
+        let truncated = matches!(
+            localharness::turn_flow::classify_empty(
+                reply.finish_note().as_deref(),
+                saw_thinking && visibly_empty,
+            ),
+            localharness::turn_flow::EmptyKind::Truncated
+        );
+        eprintln!(
+            "· turn: finished={finished} tools={tool_calls_this_turn} truncated={truncated} run_elapsed={}s",
+            started.elapsed().as_secs()
+        );
+        let (next_toolless, nudge) =
+            turn_signals(consecutive_toolless, tool_calls_this_turn, truncated, saw_text);
+        consecutive_toolless = next_toolless;
         if !work_should_continue(
-            saw_finish,
-            ended_on_tool,
-            saw_goal_tool,
+            finished,
+            consecutive_toolless,
             continuations,
             MAX_WORK_CONTINUATIONS,
         ) {
+            if let Some(summary) = reply.finish_summary() {
+                eprintln!("· finish: {summary}");
+            }
             break;
         }
         continuations += 1;
-        eprintln!("… auto-continue {continuations}/{MAX_WORK_CONTINUATIONS} (turn hit the 16-round cap mid-work)");
-        input = std::borrow::Cow::Owned(WORK_CONTINUE_NUDGE.to_string());
+        eprintln!("… auto-continue {continuations}/{MAX_WORK_CONTINUATIONS}");
+        input = std::borrow::Cow::Owned(
+            match nudge {
+                Nudge::Truncation => WORK_TRUNCATION_NUDGE,
+                Nudge::TextTail => WORK_TEXT_TAIL_NUDGE,
+                Nudge::ToolTail => WORK_CONTINUE_NUDGE,
+            }
+            .to_string(),
+        );
     }
     println!();
     let _ = agent.shutdown().await;
     if failed { 1 } else { 0 }
 }
 
-/// The continue-hint fed to the agent when a turn was cut off at the round cap.
+/// Continue-hint when the turn ended mid-tool-work (hit the 16-round cap).
 const WORK_CONTINUE_NUDGE: &str = "(continue — your last turn hit the tool-round cap \
     before finishing. Review what you've done, then take the NEXT concrete step: run \
     the result, read any error, fix it, re-run. Call `finish` only once it is actually \
     complete and verified.)";
 
-/// Pure continue-decision (native-tested): keep going ONLY when the turn was cut off
-/// mid-tool-work — its last streamed event was a tool call/result (the 16-round cap
-/// guillotined an in-progress task) AND a goal tool ran AND `finish` was NOT called AND
-/// we're under the continuation cap. A turn that ended on a TEXT answer, or that called
-/// `finish`, is treated as done (a real conclusion or a conversational stop) — so the
-/// loop never spams continuations on a completed or purely-conversational turn.
+/// Continue-hint when the turn ended on TEXT without calling `finish` — the
+/// model narrated instead of acting (the #75/#69/#67 stall class).
+const WORK_TEXT_TAIL_NUDGE: &str = "(you ended with analysis/summary text but did NOT \
+    call `finish`. Take the next CONCRETE step with tools now — write the file, run \
+    the check, read the error. If the task is genuinely complete AND you have verified \
+    it by running it, call `finish` with a one-line summary instead.)";
+
+/// Continue-hint when the turn was cut off at the output-token cap.
+const WORK_TRUNCATION_NUDGE: &str = "(your last turn was TRUNCATED mid-output at the \
+    token cap. Resume exactly where you were cut off. Write file contents ONLY via \
+    create_file/edit_file — never as chat text — and split large files across several \
+    calls.)";
+
+/// Which continue-hint the next turn gets.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Nudge {
+    /// Cut off mid-tool-work (the 16-round cap).
+    ToolTail,
+    /// Ended on prose without `finish` (the #75/#69/#67 stall class).
+    TextTail,
+    /// Output-token truncation.
+    Truncation,
+}
+
+/// Pure per-turn bookkeeping (native-tested): the toolless-strike counter and
+/// the nudge pick. A truncated turn is CUT OFF, not a choice to stop talking —
+/// it never counts as a strike. A toolless, textless, untruncated turn (empty
+/// reply / all calls failed arg-parse — those emit no ToolCall chunk) gets the
+/// generic continue nudge, not the "you ended with analysis" one.
+fn turn_signals(prev_toolless: u32, tool_calls: u32, truncated: bool, saw_text: bool) -> (u32, Nudge) {
+    let toolless = if tool_calls > 0 || truncated { 0 } else { prev_toolless + 1 };
+    let nudge = if truncated {
+        Nudge::Truncation
+    } else if tool_calls == 0 && saw_text {
+        Nudge::TextTail
+    } else {
+        Nudge::ToolTail
+    };
+    (toolless, nudge)
+}
+
+/// Pure continue-decision (native-tested). `finish` — read from the RESPONSE
+/// (`reply.finished()`), never the chunk stream — is the one true stop signal;
+/// the run also stops after 2 consecutive toolless turns (a model that keeps
+/// narrating isn't converging — don't burn the cap; this also bounds a purely
+/// conversational invocation at two rounds) or at the continuation cap.
 fn work_should_continue(
-    saw_finish: bool,
-    ended_on_tool: bool,
-    saw_goal_tool: bool,
+    finished: bool,
+    consecutive_toolless: u32,
     continuations: u32,
     max: u32,
 ) -> bool {
-    !saw_finish && ended_on_tool && saw_goal_tool && continuations < max
+    !finished && consecutive_toolless < 2 && continuations < max
 }
 
 #[cfg(test)]
 mod tests {
-    use super::work_should_continue;
+    use super::{turn_signals, work_should_continue, Nudge};
 
     #[test]
-    fn continues_only_when_cut_off_mid_tool_work() {
-        // Cut off mid-tool-work, finish not called, under cap → continue.
-        assert!(work_should_continue(false, true, true, 0, 12));
-        assert!(work_should_continue(false, true, true, 11, 12));
-        // finish called → stop (done).
-        assert!(!work_should_continue(true, true, true, 0, 12));
-        // Ended on a TEXT answer (last event not a tool) → stop (done/conversational).
-        assert!(!work_should_continue(false, false, true, 0, 12));
-        // No goal tool ran (pure chat / ask_question only) → stop.
-        assert!(!work_should_continue(false, true, false, 0, 12));
-        // At the cap → stop (never loop forever).
-        assert!(!work_should_continue(false, true, true, 12, 12));
+    fn finish_is_the_only_done_signal_mid_work() {
+        // Mid-work (strikes clear, under cap) → continue.
+        assert!(work_should_continue(false, 0, 0, 12));
+        assert!(work_should_continue(false, 0, 11, 12));
+        // finish called → stop, regardless of anything else.
+        assert!(!work_should_continue(true, 0, 0, 12));
+        assert!(!work_should_continue(true, 1, 3, 12));
+    }
+
+    #[test]
+    fn strikes_and_caps_stop() {
+        // ONE toolless turn → still continues (the TB-15 killer: prose design
+        // turns used to END the run silently).
+        assert!(work_should_continue(false, 1, 1, 12));
+        // TWO consecutive toolless turns → stop (not converging; also bounds
+        // a conversational `work "what is 2+2"` at two rounds).
+        assert!(!work_should_continue(false, 2, 2, 12));
+        // At the continuation cap → stop (never loop forever).
+        assert!(!work_should_continue(false, 0, 12, 12));
+    }
+
+    #[test]
+    fn turn_signals_strikes_and_nudges() {
+        // Tool work resets strikes, generic nudge.
+        assert_eq!(turn_signals(1, 3, false, true), (0, Nudge::ToolTail));
+        // Prose-only turn: strike + the text-tail nudge.
+        assert_eq!(turn_signals(0, 0, false, true), (1, Nudge::TextTail));
+        assert_eq!(turn_signals(1, 0, false, true), (2, Nudge::TextTail));
+        // Truncation: never a strike, always the truncation nudge — even when
+        // text flowed before the cut.
+        assert_eq!(turn_signals(1, 0, true, true), (0, Nudge::Truncation));
+        assert_eq!(turn_signals(0, 2, true, false), (0, Nudge::Truncation));
+        // Empty/parse-error turn (no tools, no text): strike + generic nudge,
+        // NOT the "you ended with analysis" text (it would be a lie).
+        assert_eq!(turn_signals(0, 0, false, false), (1, Nudge::ToolTail));
     }
 }

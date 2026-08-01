@@ -52,6 +52,7 @@ native = [
     "tokio/fs",
     "tokio/io-util",
     "tokio/io-std",
+    "tokio/signal",
 ]
 # `browser-app` compiles the in-tab HTMX-style web IDE into the crate
 # as a wasm cdylib. Off by default so library consumers don't pay for

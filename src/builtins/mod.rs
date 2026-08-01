@@ -59,6 +59,8 @@ pub use list_directory::ListDirectory;
 pub use rename_file::RenameFile;
 #[cfg(feature = "native")]
 pub use run_command::RunCommand;
+#[cfg(feature = "native")]
+pub use run_command::kill_live_process_groups;
 pub use search_directory::SearchDirectory;
 pub use start_subagent::StartSubagent;
 pub use view_file::ViewFile;
