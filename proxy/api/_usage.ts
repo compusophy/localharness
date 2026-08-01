@@ -63,6 +63,7 @@ const RATE_USD: Record<string, [number, number, number]> = {
   // Anthropic (live-verified); cache-read ~0.1x input
   'claude-haiku-4-5-20251001': [1.0, 5.0, 0.1],
   'claude-sonnet-4-6': [3.0, 15.0, 0.3],
+  'claude-sonnet-5': [3.0, 15.0, 0.3],
   'claude-opus-4-8': [5.0, 25.0, 0.5],
   // OpenAI GPT-5 family (ESTIMATED — verify before relying on a GPT margin)
   'gpt-5-nano': [0.2, 1.25, 0.02],

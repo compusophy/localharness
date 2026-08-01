@@ -21,6 +21,7 @@ pub(crate) const MODELS: &[(&str, &str, &str)] = &[
     (localharness::types::DEFAULT_MODEL, "Gemini (default)", "the platform default"),
     ("claude-haiku-4-5-20251001", "Claude Haiku", "needs the anthropic-feature build"),
     ("claude-sonnet-4-6", "Claude Sonnet", "needs the anthropic-feature build"),
+    ("claude-sonnet-5", "Claude Sonnet 5", "needs the anthropic-feature build"),
     ("claude-opus-4-8", "Claude Opus", "needs the anthropic-feature build"),
     ("gpt-5-nano", "GPT-5 nano", "needs the openai-feature build"),
     ("gpt-5-mini", "GPT-5 mini", "needs the openai-feature build"),
