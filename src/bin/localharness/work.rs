@@ -69,6 +69,18 @@ pub(crate) async fn work(args: &[String]) -> i32 {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let token = registry::proxy_auth_token(&signer, now, "gemini");
+    // The proxy rejects signed tokens older than 5 min (FRESHNESS_WINDOW_SECS) —
+    // a deep work run outlives that and every later round 401s "stale or future
+    // timestamp" (TB-2.1 write-compressor died this way hours in). Re-sign per
+    // request; the startup token above stays the fallback.
+    let auth_signer = signer.clone();
+    let auth_provider: localharness::backends::KeyProvider = std::sync::Arc::new(move || {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        registry::proxy_auth_token(&auth_signer, now, "gemini")
+    });
     let base = match url::Url::parse(registry::CREDIT_PROXY_URL) {
         Ok(u) => u,
         Err(e) => {
@@ -110,16 +122,13 @@ pub(crate) async fn work(args: &[String]) -> i32 {
     // failure — and every round re-sends the whole history (cost). Same 128K
     // ceiling as the browser session. NOT a fix for thinking-latency 504s (those
     // hit at small context); a cost + deep-task-robustness measure.
-    // AGGRESSIVE threshold (not the shared 128K default): the edge credit-proxy
-    // 504s on a slow FIRST BYTE, which grows with context size — even on flash, a
-    // deep task (TB-2.1 schemelike/torch needed 65-119 rounds) builds a big enough
-    // context to trip the ~25s edge cap and kill the run (FUNCTION_INVOCATION_TIMEOUT).
-    // Compacting at ~48K keeps the live context small enough that first-byte stays
-    // under the cap, so a long task can run to completion. The solved TB tasks
-    // finished under 22 rounds (well under 48K) so they're unaffected; this only
-    // bites the deep tasks that were 504ing. (Proper fix = the proxy handler port,
-    // design/proxy-504-fix.md; this is the work-side stopgap.)
-    const WORK_COMPACTION_THRESHOLD: u32 = 48_000;
+    // Same 128K threshold as the browser session. (History: this was briefly an
+    // aggressive 48K stopgap because the EDGE credit proxy 504'd on slow first
+    // byte, which grows with context — the proxy's Node-runtime port removed
+    // that cap entirely (design/proxy-504-fix.md, 2026-08-01), and a 489KB
+    // ~130K-token request now round-trips in ~3s, so deep tasks keep the full
+    // context quality again.)
+    const WORK_COMPACTION_THRESHOLD: u32 = 128_000;
     caps.compaction_threshold = Some(WORK_COMPACTION_THRESHOLD);
     // Every fs path is pinned inside the workspace, and a wildcard allow sits
     // BEHIND the denies: `evaluate` is default-deny once any policy exists, and
@@ -142,6 +151,7 @@ pub(crate) async fn work(args: &[String]) -> i32 {
         {
             let mut cfg = localharness::AnthropicAgentConfig::new(token)
                 .with_base_url(base)
+                .with_auth_provider(auth_provider)
                 .with_model(model.clone().unwrap())
                 .with_system_instructions(WORK_PROMPT.to_string())
                 .with_filesystem(fs)
@@ -164,6 +174,7 @@ pub(crate) async fn work(args: &[String]) -> i32 {
     } else {
         let mut cfg = localharness::GeminiAgentConfig::new(token)
             .with_base_url(base)
+            .with_auth_provider(auth_provider)
             .with_system_instructions(WORK_PROMPT.to_string())
             .with_filesystem(fs)
             .with_capabilities(caps)

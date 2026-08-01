@@ -774,6 +774,17 @@ pub(crate) async fn start_headless_agent(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let token = registry::proxy_auth_token(&caller, now, "gemini");
+    // Re-sign the proxy token per request: the proxy's 5-min freshness window
+    // outlives a long turn (and every multi-turn/ACP session), 401ing
+    // "stale or future timestamp" mid-conversation. Startup token = fallback.
+    let auth_signer = caller.clone();
+    let auth_provider: localharness::backends::KeyProvider = std::sync::Arc::new(move || {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        registry::proxy_auth_token(&auth_signer, now, "gemini")
+    });
     let base = url::Url::parse(registry::CREDIT_PROXY_URL)
         .map_err(|e| format!("internal: bad proxy url: {e}"))?;
 
@@ -800,6 +811,7 @@ pub(crate) async fn start_headless_agent(
             let build = |history: Option<Vec<u8>>| {
                 let mut cfg = localharness::AnthropicAgentConfig::new(token.clone())
                     .with_base_url(base.clone())
+                    .with_auth_provider(auth_provider.clone())
                     .with_model(model.clone())
                     .with_system_instructions(system.clone())
                     .with_capabilities(caps.clone());
@@ -831,6 +843,7 @@ pub(crate) async fn start_headless_agent(
     let build = |history: Option<Vec<u8>>| {
         let mut cfg = localharness::GeminiAgentConfig::new(token.clone())
             .with_base_url(base.clone())
+            .with_auth_provider(auth_provider.clone())
             .with_system_instructions(system.clone())
             .with_capabilities(caps.clone());
         if !evm_tools.is_empty() {
