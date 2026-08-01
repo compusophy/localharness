@@ -51,8 +51,8 @@ on:
         default: "1"
         required: false
       arms:
-        description: "which base arms to run: both | localharness | terminus"
-        default: "both"
+        description: "which base arms to run: localharness | terminus | both. ⛔ DEFAULT IS OUR ARM ONLY — reference arms bill the raw provider key (litellm direct) and their numbers are KNOWN; re-running one is real money for zero information (the 2026-08-01 $25-day). Pass 'both' only for a deliberately-approved head-to-head."
+        default: "localharness"
         required: false
       arm_c:
         description: "optional third arm (harbor agent id): none | gemini-cli | antigravity-sdk | antigravity-cli"
