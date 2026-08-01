@@ -234,20 +234,40 @@ pub(crate) async fn work(args: &[String]) -> i32 {
             std::process::exit(130);
         }
     });
+    // Upstream 429s (provider RPM/TPM quota) are TRANSIENT congestion to an
+    // autonomous loop. The SDK's fail-fast on rate-limit is right for an
+    // interactive turn and stays; here it killed 66 of 89 full-set TB tasks
+    // when 3-way concurrency blew one key's per-minute quota — litellm-based
+    // agents back off and live. Ladder 15/30/45/60/60/60s ≈ ≤4.5min per
+    // incident, inside harbor's 900s task budget; quota windows reset in 60s.
+    const MAX_RATE_LIMIT_RETRIES: u32 = 6;
     let started = std::time::Instant::now();
     let mut input: std::borrow::Cow<str> = std::borrow::Cow::Borrowed(task.as_str());
     let mut continuations: u32 = 0;
     let mut consecutive_toolless: u32 = 0;
+    let mut rate_limit_retries: u32 = 0;
     let mut failed = false;
     'run: loop {
         let reply = match agent.chat(input.as_ref()).await {
             Ok(r) => r,
+            Err(e) if e.code() == localharness::error_codes::BACKEND_RATE_LIMIT
+                && rate_limit_retries < MAX_RATE_LIMIT_RETRIES =>
+            {
+                rate_limit_retries += 1;
+                let wait = 15 * rate_limit_retries.min(4) as u64;
+                eprintln!(
+                    "… upstream rate limit — backing off {wait}s (retry {rate_limit_retries}/{MAX_RATE_LIMIT_RETRIES})"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                continue; // re-issue the SAME input; the failed open billed nothing
+            }
             Err(e) => {
                 eprintln!("\nwork failed: {e}");
                 failed = true;
                 break;
             }
         };
+        rate_limit_retries = 0;
         // Stream the turn LIVE (text → stdout; tools/results → stderr).
         let mut cursor = reply.chunks();
         let mut tool_calls_this_turn: u32 = 0;
