@@ -934,11 +934,13 @@ pub(crate) fn inline_result_card(
             }
             Some(cartridge_card())
         }
-        "create_and_publish_app" => {
-            // Close the cartridge loop: a successful build/publish ends with
-            // the cartridge PLAYING inline (the tool stashed the compiled
-            // wasm; `chat::stream_turn` launches it into this card), not
-            // prose + a URL. Same predicate/launch plumbing as run_cartridge.
+        "create_subdomain" => {
+            // Close the cartridge loop: create_subdomain WITH a `source` ends
+            // with the just-published cartridge PLAYING inline (the tool stashed
+            // the compiled wasm; `chat::stream_turn` launches it into this card),
+            // not prose + a URL. The shared predicate gates on `published: true`,
+            // so a name-only mint falls through to the default JSON card. Same
+            // predicate/launch plumbing as run_cartridge.
             if !crate::turn_flow::tool_result_embeds_cartridge(name, Some(value), false) {
                 return None;
             }
@@ -1146,9 +1148,9 @@ fn cartridge_card() -> Markup {
     }
 }
 
-/// Live inline card for a `create_and_publish_app` result: the just-published
-/// cartridge PLAYS right here (close-the-loop feedback — a successful build
-/// must end embedded in the feed, not as prose + a URL). Name header links to
+/// Live inline card for a `create_subdomain` app-publish result: the
+/// just-published cartridge PLAYS right here (close-the-loop feedback — a
+/// successful build must end embedded in the feed, not as prose + a URL). Name header links to
 /// the live subdomain; [fullscreen] relaunches the same bytes into the overlay
 /// (the tool stashed them via `run_wasm_inline`). Replay paints the same card
 /// (dead canvas) and `history.rs` re-derives the wasm from the recorded

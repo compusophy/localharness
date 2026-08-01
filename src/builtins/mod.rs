@@ -223,7 +223,7 @@ fn instantiate_run_command() -> Option<Arc<dyn Tool>> {
 
 /// The ONE structured compile-failure report every rustlite-compiling tool
 /// returns (`compile_rustlite`, `run_cartridge` — and the shape
-/// `create_and_publish_app` folds into its error string). Fields:
+/// `create_subdomain` (with a source) folds into its error string). Fields:
 ///
 /// * `error`    — always `"compilation failed"` (the dispatch discriminant).
 /// * `code`     — the stable `LHxxxx` label (`null` for an uncoded internal error).

@@ -43,7 +43,7 @@ use super::tools::misc::{
     submit_feedback_tool, web_fetch_tool,
 };
 use super::tools::platform::{
-    batch_create_subdomains_tool, bulk_release_subdomains_tool, create_and_publish_app_tool,
+    batch_create_subdomains_tool, bulk_release_subdomains_tool,
     create_subdomain_tool, discover_agents_tool, embed_app_tool, list_subdomains_tool,
     publish_app_to_tool, publish_public_face_tool, query_balance_tool, release_subdomain_tool,
     batch_send_lh_tool, check_balances_tool, send_lh_tool,
@@ -74,7 +74,6 @@ fn chat_toolset(
 ) -> Vec<std::sync::Arc<dyn crate::tools::Tool>> {
     let mut tools = vec![
         create_subdomain_tool(),
-        create_and_publish_app_tool(),
         publish_app_to_tool(),
         batch_create_subdomains_tool(),
         release_subdomain_tool(),

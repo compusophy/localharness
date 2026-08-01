@@ -378,9 +378,10 @@ fn render_tool_run(seg_id: u32, run: &[&crate::types::TranscriptToolCall]) -> St
     // paint) re-derives the wasm from the transcript input and relaunches it.
     if tc.error.is_none() && tc.result.is_some() {
         let card_id = format!("tool-{seg_id}-card");
-        // create_and_publish_app replays like run_cartridge: its card auto-
-        // embeds the built cartridge and the durable input is the SOURCE arg.
-        if tc.name == "run_cartridge" || tc.name == "create_and_publish_app" {
+        // create_subdomain WITH a source replays like run_cartridge: its card
+        // auto-embeds the built cartridge and the durable input is the SOURCE
+        // arg (a name-only mint has no `source`, so this simply skips it).
+        if tc.name == "run_cartridge" || tc.name == "create_subdomain" {
             if let Some(src) = tc.args.get("source").and_then(|v| v.as_str()) {
                 if !src.trim().is_empty() {
                     REPLAY_RESUME.with(|c| {
@@ -774,23 +775,24 @@ mod tests {
         .is_none());
     }
 
-    /// Close the cartridge loop: a successful create_and_publish_app cards a
-    /// playable embed (canvas + [fullscreen] + the live-subdomain link) — the
-    /// deterministic auto-embed under the tool result.
+    /// Close the cartridge loop: a successful create_subdomain WITH a source
+    /// cards a playable embed (canvas + [fullscreen] + the live-subdomain link)
+    /// — the deterministic auto-embed under the tool result. A name-only mint
+    /// (no `published` flag) does NOT card.
     #[test]
-    fn create_and_publish_app_card_carries_a_live_canvas() {
+    fn create_subdomain_app_card_carries_a_live_canvas() {
         let ok = ok_result(
-            "create_and_publish_app",
+            "create_subdomain",
             serde_json::json!({
                 "name": "pong",
                 "url": "https://pong.localharness.xyz/",
-                "tx_hash": "off-chain",
+                "published": true,
                 "off_chain": true,
                 "updated": false
             }),
         );
         let card = super::templates::inline_result_card(
-            "create_and_publish_app",
+            "create_subdomain",
             &serde_json::json!({"name": "pong", "source": "fn render() {}"}),
             &ok,
             None,
@@ -802,14 +804,32 @@ mod tests {
         assert!(card.contains("data-action=\"run-in-display\""), "no fullscreen: {card}");
         assert!(card.contains("https://pong.localharness.xyz/"), "no live link: {card}");
 
+        // A name-only mint (no `published`) must NOT render the playable card.
+        let name_only = ok_result(
+            "create_subdomain",
+            serde_json::json!({
+                "name": "alice",
+                "url": "https://alice.localharness.xyz/",
+                "owner": "0x0",
+                "tx_hash": "0x1"
+            }),
+        );
+        assert!(super::templates::inline_result_card(
+            "create_subdomain",
+            &serde_json::json!({"name": "alice"}),
+            &name_only,
+            None
+        )
+        .is_none());
+
         // The tool fails as Err (ToolResult.error) — an errored result never cards.
         let failed = crate::types::ToolResult::err(
-            "create_and_publish_app",
+            "create_subdomain",
             None,
             "compile failed",
         );
         assert!(super::templates::inline_result_card(
-            "create_and_publish_app",
+            "create_subdomain",
             &serde_json::json!({"name": "pong", "source": "fn x("}),
             &failed,
             None

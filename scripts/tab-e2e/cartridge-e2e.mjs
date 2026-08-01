@@ -6,7 +6,7 @@
 //       with the repo CLI (`localharness compile`, local only); skipped when
 //       no target/release binary exists.
 //   (B) FEED EMBED via the history-replay seam: a synthetic SUCCESSFUL
-//       `create_and_publish_app` tool result pre-written into the OPFS
+//       `create_subdomain` (with a source) tool result pre-written into the OPFS
 //       history (`.lh_history.json`, plaintext on a seedless origin) replays
 //       as the playable `embed-app-card` — and `history::resume_last_cartridge`
 //       recompiles the recorded SOURCE in-browser and boots the cartridge
@@ -30,7 +30,7 @@
 // `autoembed-e2e.mjs` (the LIVE tool-success auto-embed, via the scripted
 // fake model) and `studioslot-e2e.mjs` (the tenant-only `#studio-app-slot`
 // owner-landing pin, via tenant-sim + a LOCAL app.rl draft). The one
-// remaining residual, stated honestly: `create_and_publish_app`'s live
+// remaining residual, stated honestly: `create_subdomain`'s live app-publish
 // variant needs real chain writes — live-dogfood-only.
 // Zero network spend: every non-local request is aborted; no metered model
 // call ever fires (asserted).
@@ -66,14 +66,14 @@ if (existsSync(CLI)) {
   console.log("(fixture CLI gate skipped — no target/release/localharness binary; browser compile still covers it)");
 }
 
-// The synthetic history: one SUCCESSFUL create_and_publish_app turn in the
-// Gemini wire shape `history_bytes` persists (a JSON array of Contents; the
-// functionResponse carries `url` + no `error`, so the shared auto-embed
+// The synthetic history: one SUCCESSFUL create_subdomain (with a source) turn
+// in the Gemini wire shape `history_bytes` persists (a JSON array of Contents;
+// the functionResponse carries `published: true` + no `error`, so the shared auto-embed
 // predicate `turn_flow::tool_result_embeds_cartridge` gates it IN).
 const HISTORY = JSON.stringify([
   { role: "user", parts: [{ text: "build and publish the bouncing ball" }] },
-  { role: "model", parts: [{ functionCall: { name: "create_and_publish_app", args: { name: "e2eball", source: FIXTURE } } }] },
-  { role: "user", parts: [{ functionResponse: { name: "create_and_publish_app", response: { name: "e2eball", url: "https://e2eball.localharness.xyz/", tx_hash: "off-chain", off_chain: true, updated: false } } }] },
+  { role: "model", parts: [{ functionCall: { name: "create_subdomain", args: { name: "e2eball", source: FIXTURE } } }] },
+  { role: "user", parts: [{ functionResponse: { name: "create_subdomain", response: { name: "e2eball", url: "https://e2eball.localharness.xyz/", published: true, off_chain: true, updated: false } } }] },
   { role: "model", parts: [{ text: "Published e2eball — it plays inline above." }] },
 ]);
 
@@ -141,7 +141,7 @@ try {
 
   const card = await waitFor(() => page.evaluate(() =>
     !!document.querySelector("#transcript .embed-app-card canvas.embed-app-canvas") || null), 15000);
-  check("embed: replayed create_and_publish_app renders the playable embed-app-card (canvas inside the tool card)", !!card);
+  check("embed: replayed create_subdomain (with source) renders the playable embed-app-card (canvas inside the tool card)", !!card);
   check("embed: card header links the live subdomain", await page.evaluate(() =>
     !!document.querySelector('#transcript .embed-app-card a[href="https://e2eball.localharness.xyz/"]')));
   check("embed: card carries the [fullscreen] relaunch", await page.evaluate(() =>

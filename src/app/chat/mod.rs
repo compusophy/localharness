@@ -856,8 +856,8 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                             &card.into_string(),
                         );
                         // embed_app, run_cartridge (#52a) AND
-                        // create_and_publish_app (close the cartridge loop)
-                        // paint a canvas card and stashed cartridge bytes; now
+                        // create_subdomain-with-a-source (close the cartridge
+                        // loop) paint a canvas card and stashed cartridge bytes; now
                         // that the canvas is in the DOM, launch the cartridge
                         // into THIS card's canvas (scoped — older/replayed
                         // cards have their own canvases). No-op for every other

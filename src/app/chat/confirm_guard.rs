@@ -70,8 +70,8 @@ const CONFIRM_GATED: &[&str] = &[
     "found_company",
     // Updates a DIFFERENT owned subdomain's public face (cross-subdomain
     // on-chain write); gate it so a model can't silently overwrite an alt's
-    // app from a MAIN session. (`create_and_publish_app` self-publish stays
-    // ungated — it only ever touches the current name or mints a fresh one.)
+    // app from a MAIN session. (`create_subdomain` self-publish stays ungated
+    // — it only ever touches the current name or mints a fresh one.)
     "publish_app_to",
 ];
 

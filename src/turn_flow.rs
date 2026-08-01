@@ -124,8 +124,9 @@ pub fn empty_message(kind: EmptyKind) -> &'static str {
 /// - `run_cartridge` — Ok payload with `status` and no `error` key (compile
 ///   failures come back as Ok-with-`error`).
 /// - `embed_app` — `embedded: true` (failures are Err, but defend the gate).
-/// - `create_and_publish_app` — Ok payload with `url` and no `error` key
-///   (failures are Err; the tool stashes the compiled wasm on success).
+/// - `create_subdomain` — Ok payload with `published: true` and no `error` key
+///   (only the WITH-`source` path stashes the compiled wasm; a name-only mint
+///   omits `published`, so it never embeds).
 pub fn tool_result_embeds_cartridge(
     name: &str,
     result: Option<&serde_json::Value>,
@@ -138,8 +139,11 @@ pub fn tool_result_embeds_cartridge(
     match name {
         "run_cartridge" => value.get("error").is_none() && value.get("status").is_some(),
         "embed_app" => value.get("embedded").and_then(|v| v.as_bool()) == Some(true),
-        "create_and_publish_app" => {
-            value.get("error").is_none() && value.get("url").is_some()
+        // Only the app-publishing path of create_subdomain stashes a cartridge;
+        // it stamps `published: true`, which a name-only mint never sets.
+        "create_subdomain" => {
+            value.get("error").is_none()
+                && value.get("published").and_then(|v| v.as_bool()) == Some(true)
         }
         _ => false,
     }
@@ -328,7 +332,7 @@ mod tests {
             "spend_treasury",
             "found_company",
             "attest",
-            "create_and_publish_app",
+            "create_subdomain",
             "run_cartridge",
             "embed_app",
             "create_file",
@@ -451,11 +455,22 @@ mod tests {
             Some(&j(r#"{"name":"pong"}"#)),
             false
         ));
-        // create_and_publish_app: the Ok shape (has `url`) embeds — fresh AND
-        // update (the update payload differs only in `updated: true`).
+        // create_subdomain: the WITH-app shape (`published: true`) embeds —
+        // fresh AND update (the update payload differs only in `updated: true`).
         assert!(tool_result_embeds_cartridge(
-            "create_and_publish_app",
-            Some(&j(r#"{"name":"pong","url":"https://pong.localharness.xyz/","updated":true}"#)),
+            "create_subdomain",
+            Some(&j(
+                r#"{"name":"pong","url":"https://pong.localharness.xyz/","published":true,"updated":true}"#
+            )),
+            false
+        ));
+        // A name-only create_subdomain mint has a `url` but no `published` flag,
+        // so it must NOT auto-embed (there is no stashed cartridge).
+        assert!(!tool_result_embeds_cartridge(
+            "create_subdomain",
+            Some(&j(
+                r#"{"name":"alice","url":"https://alice.localharness.xyz/","owner":"0x0","tx_hash":"0x1"}"#
+            )),
             false
         ));
     }

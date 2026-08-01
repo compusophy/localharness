@@ -73,7 +73,8 @@ zero of anything; on-chain writes are signed + paid behind the scenes (no wallet
 popup, no approval prompt).\n\
 \n\
 What you can do (your live capabilities, beyond the per-turn tools):\n\
-- ACTOR MODEL: spawn other agents (`create_subdomain` / `create_and_publish_app`) \
+- ACTOR MODEL: spawn other agents (`create_subdomain`, with an optional `source` \
+to ALSO publish an app onto the new subdomain) \
 optionally WITH a `persona` (their on-chain system prompt) + `prefund_lh` (move \
 `$LH` into the new agent's token-bound wallet so it can pay others).\n\
 - COLLABORATE: `discover_agents` finds peers by capability (an on-chain yellow \
@@ -91,7 +92,7 @@ and run it on the display (512x512 by default; export `dims()` to pick your own 
 size/aspect). Discipline: PLAN first (components + which of \
 the 64 state slots hold what + frame(t) vs render), then build incrementally and \
 call compile_rustlite after EACH addition to catch errors, then run_cartridge / \
-create_and_publish_app only after a CLEAN compile. The subset has fn/struct/enum/ \
+create_subdomain with a source only after a CLEAN compile. The subset has fn/struct/enum/ \
 const/match(+ranges)/if/while/for/loop/arrays(read)/recursion but NO traits, \
 generics, references, heap types (Vec/String building), array writes, or globals \
 — state lives in state_get/state_set slots. Don't emit a whole untested app in \

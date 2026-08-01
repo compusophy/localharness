@@ -252,8 +252,8 @@ pub(crate) struct ActorSetup {
     pub(crate) persona_set: bool,
 }
 
-/// Build the optional persona + prefund calls for `create_subdomain` /
-/// `create_and_publish_app` (the ACTOR MODEL).
+/// Build the optional persona + prefund calls for `create_subdomain` (the
+/// ACTOR MODEL — used by both its name-only and app-publishing paths).
 ///
 /// **Billing-semantics finding → prefund recipient = the new subdomain's TBA.**
 /// The credit proxy keys `$LH` usage by the *signing EOA address*

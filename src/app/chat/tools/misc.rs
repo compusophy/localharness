@@ -12,7 +12,7 @@ use crate::tools::ClosureTool;
 use crate::{Agent, CapabilitiesConfig, GeminiAgentConfig, StreamChunk};
 
 use super::guild::own_token_id;
-use super::platform::{create_and_publish_app_tool, create_subdomain_tool};
+use super::platform::create_subdomain_tool;
 
 /// `set_persona(text)` — the SELF-EDIT tool: the agent rewrites its OWN system
 /// instruction. Publishes `text` as the on-chain persona (the existing
@@ -1031,9 +1031,9 @@ pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 
 /// `spawn_recursive_subagent(system_instructions, prompt)` — tool-bearing
 /// subagent with a REDUCED surface: the builtins (filesystem over the same
-/// OPFS, start_subagent, generate_image), create_subdomain,
-/// create_and_publish_app, and itself. No payment/release/bounty/guild tools,
-/// no call_agent. Runs the supplied prompt as a single conversation, drives it
+/// OPFS, start_subagent, generate_image), create_subdomain (name-only OR with a
+/// `source` to also publish an app), and itself. No payment/release/bounty/guild
+/// tools, no call_agent. Runs the supplied prompt as a single conversation, drives it
 /// to completion via streaming chunks, returns the assistant's final text.
 ///
 /// Implementation: builds a fresh `Agent::start_gemini` with the SAME
@@ -1050,8 +1050,9 @@ pub(crate) fn spawn_recursive_subagent_tool(
     ClosureTool::new(
         "spawn_recursive_subagent",
         "Spawn a tool-bearing subagent with a REDUCED tool surface: the builtin \
-         filesystem tools over the same OPFS, start_subagent, create_subdomain, \
-         create_and_publish_app, and spawn_recursive_subagent itself. It does \
+         filesystem tools over the same OPFS, start_subagent, create_subdomain \
+         (name-only or with a `source` to also publish an app), and \
+         spawn_recursive_subagent itself. It does \
          NOT get payment/release/bounty/guild tools or call_agent. The subagent \
          has its own conversation context — it cannot see your history. Drives \
          the subagent through one full conversation turn (which may itself \
@@ -1077,7 +1078,6 @@ pub(crate) fn spawn_recursive_subagent_tool(
                     .with_filesystem(crate::app::shared_opfs())
                     .with_system_instructions(system.to_string())
                     .with_tool(create_subdomain_tool())
-                    .with_tool(create_and_publish_app_tool())
                     .with_tool(spawn_recursive_subagent_tool(api_key.clone(), base_url.clone()));
                 // Credits mode: subagents reach Gemini through the same proxy —
                 // and mint their own fresh per-request tokens, because the

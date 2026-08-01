@@ -384,12 +384,21 @@ crate::tool_params! {
 
 crate::tool_params! {
     /// Args for the browser `create_subdomain` tool
-    /// (`src/app/chat/tools/platform.rs`) — sponsored name mint + optional
-    /// actor-model persona/prefund. Body keeps its own validate/trim logic.
+    /// (`src/app/chat/tools/platform.rs`) — sponsored name mint, OPTIONALLY
+    /// publishing an app (`source`) in the same call (telemetry #86 folded in
+    /// the old `create_and_publish_app`), plus optional actor-model
+    /// persona/prefund. Body keeps its own validate/trim logic.
     pub struct CreateSubdomainParams: lenient {
         name: req_str = "Subdomain to register, e.g. \"alice\" becomes \
                     alice.localharness.xyz. 3-32 chars; lowercase letters, digits, \
                     and hyphens only.",
+        source: opt_str = "OPTIONAL rustlite cartridge source — the SAME dialect as \
+                    run_cartridge (exports `fn frame(t: i32)` (animated) or \
+                    `fn render()` and draws via `use host::display;`). Given → the \
+                    subdomain is PUBLISHED with this compiled cartridge as its \
+                    fullscreen public face (compile + register + publish in one \
+                    call), and if you already own `name` its app is UPDATED in \
+                    place. Omit for a bare name-only subdomain.",
         persona: opt_str = "OPTIONAL system instruction / persona for the new \
                     agent — published on-chain as its system prompt (the persona \
                     that headless `call`s and the public face read). Omit to leave \
@@ -403,37 +412,15 @@ crate::tool_params! {
 }
 
 crate::tool_params! {
-    /// Args for the browser `create_and_publish_app` tool
-    /// (`src/app/chat/tools/platform.rs`) — one-shot compile + register + publish.
-    pub struct CreateAndPublishAppParams: lenient {
-        name: req_str = "Subdomain to register, e.g. \"clock\" becomes \
-                    clock.localharness.xyz. 3-32 chars; lowercase letters, digits, \
-                    and hyphens only.",
-        source: req_str = "rustlite cartridge source — the SAME dialect as \
-                    run_cartridge. Exports `fn frame(t: i32)` (animated) or \
-                    `fn render()` and draws via `use host::display;`. This becomes \
-                    the subdomain's fullscreen public face.",
-        persona: opt_str = "OPTIONAL system instruction / persona for the new \
-                    agent — published on-chain as its system prompt (read by \
-                    headless `call`s). Omit to leave the default.",
-        prefund_lh: opt_str = "OPTIONAL amount of $LH to prefund the new agent with, \
-                    as a decimal string (\"5\", \"1.5\"). Transferred from YOUR \
-                    wallet to the new subdomain's token-bound account (its own \
-                    spendable wallet). Omit, or pass \"0\", to skip. Must not exceed \
-                    your $LH balance.",
-    }
-}
-
-crate::tool_params! {
     /// Args for the browser `publish_app_to` tool
     /// (`src/app/chat/tools/platform.rs`) — update-from-MAIN publish, confirm-gated.
     pub struct PublishAppToParams: lenient {
         name: req_str = "The subdomain to publish to — MUST be one you already \
                     own (e.g. \"clock\" → clock.localharness.xyz). Can be different from \
                     the subdomain you are currently on. To create a NEW subdomain, use \
-                    create_and_publish_app instead.",
+                    create_subdomain with a `source` instead.",
         source: req_str = "rustlite cartridge source — the SAME dialect as \
-                    run_cartridge / create_and_publish_app. Exports `fn frame(t: i32)` \
+                    run_cartridge / create_subdomain. Exports `fn frame(t: i32)` \
                     (animated) or `fn render()` and draws via `use host::display;`. \
                     Becomes the target subdomain's fullscreen public face.",
         confirmation: opt_str = "Single-use confirmation code. OMIT (or pass \"\") on the \
@@ -1132,7 +1119,6 @@ mod tests {
             ("AllKindsLenient", AllKindsLenient::schema()),
             ("SendLhParams", SendLhParams::schema()),
             ("CreateSubdomainParams", CreateSubdomainParams::schema()),
-            ("CreateAndPublishAppParams", CreateAndPublishAppParams::schema()),
             ("PublishAppToParams", PublishAppToParams::schema()),
             ("EmbedAppParams", EmbedAppParams::schema()),
             ("PublishPublicFaceParams", PublishPublicFaceParams::schema()),
@@ -1471,7 +1457,7 @@ mod tests {
     /// the same migration contract as `send_lh` above.
     #[test]
     fn chat_tool_schemas_are_byte_identical_to_the_frozen_originals() {
-        let cases: [(&str, Value, Value); 12] = [
+        let cases: [(&str, Value, Value); 11] = [
             ("create_subdomain", CreateSubdomainParams::schema(), json!({
                 "type": "object",
                 "properties": {
@@ -1480,6 +1466,16 @@ mod tests {
                         "description": "Subdomain to register, e.g. \"alice\" \
                             becomes alice.localharness.xyz. 3-32 chars; lowercase \
                             letters, digits, and hyphens only."
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "OPTIONAL rustlite cartridge source — the SAME dialect as \
+                            run_cartridge (exports `fn frame(t: i32)` (animated) or \
+                            `fn render()` and draws via `use host::display;`). Given → the \
+                            subdomain is PUBLISHED with this compiled cartridge as its \
+                            fullscreen public face (compile + register + publish in one \
+                            call), and if you already own `name` its app is UPDATED in \
+                            place. Omit for a bare name-only subdomain."
                     },
                     "persona": {
                         "type": "string",
@@ -1499,39 +1495,6 @@ mod tests {
                 },
                 "required": ["name"]
             })),
-            ("create_and_publish_app", CreateAndPublishAppParams::schema(), json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Subdomain to register, e.g. \"clock\" \
-                            becomes clock.localharness.xyz. 3-32 chars; lowercase \
-                            letters, digits, and hyphens only."
-                    },
-                    "source": {
-                        "type": "string",
-                        "description": "rustlite cartridge source — the SAME dialect as \
-                            run_cartridge. Exports `fn frame(t: i32)` (animated) or \
-                            `fn render()` and draws via `use host::display;`. This becomes \
-                            the subdomain's fullscreen public face."
-                    },
-                    "persona": {
-                        "type": "string",
-                        "description": "OPTIONAL system instruction / persona for the new \
-                            agent — published on-chain as its system prompt (read by \
-                            headless `call`s). Omit to leave the default."
-                    },
-                    "prefund_lh": {
-                        "type": "string",
-                        "description": "OPTIONAL amount of $LH to prefund the new agent with, \
-                            as a decimal string (\"5\", \"1.5\"). Transferred from YOUR \
-                            wallet to the new subdomain's token-bound account (its own \
-                            spendable wallet). Omit, or pass \"0\", to skip. Must not exceed \
-                            your $LH balance."
-                    }
-                },
-                "required": ["name", "source"]
-            })),
             ("publish_app_to", PublishAppToParams::schema(), json!({
                 "type": "object",
                 "properties": {
@@ -1540,12 +1503,12 @@ mod tests {
                         "description": "The subdomain to publish to — MUST be one you already \
                             own (e.g. \"clock\" → clock.localharness.xyz). Can be different from \
                             the subdomain you are currently on. To create a NEW subdomain, use \
-                            create_and_publish_app instead."
+                            create_subdomain with a `source` instead."
                     },
                     "source": {
                         "type": "string",
                         "description": "rustlite cartridge source — the SAME dialect as \
-                            run_cartridge / create_and_publish_app. Exports `fn frame(t: i32)` \
+                            run_cartridge / create_subdomain. Exports `fn frame(t: i32)` \
                             (animated) or `fn render()` and draws via `use host::display;`. \
                             Becomes the target subdomain's fullscreen public face."
                     },
@@ -1729,10 +1692,10 @@ mod tests {
         let t = p.prefund_lh.as_deref().unwrap().trim();
         assert!(t.is_empty() || t == "0");
 
-        // create_and_publish_app / publish_app_to: req_str "" default keeps the
-        // body's empty-source error path reachable exactly as before.
-        let p = CreateAndPublishAppParams::lenient(&json!({"name": "x"}));
-        assert_eq!(p.source, "");
+        // create_subdomain source: opt_str absent → None (a name-only mint);
+        // publish_app_to source: req_str "" default keeps the body's
+        // empty-source error path reachable exactly as before.
+        assert_eq!(CreateSubdomainParams::lenient(&json!({"name": "x"})).source, None);
         let p = PublishAppToParams::lenient(&json!({"name": "x", "source": "s"}));
         assert!(!p.confirmation.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false));
         let p = PublishAppToParams::lenient(&json!({"confirmation": "c0de"}));

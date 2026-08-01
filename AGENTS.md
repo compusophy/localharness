@@ -495,9 +495,11 @@ surface.
 ## Agent tools + destructive-action convention
 
 Subdomain tools (declared in `chat.rs::start_session`):
-- **`create_subdomain(name)`** — register a name-only subdomain (sponsored mint).
-- **`create_and_publish_app(name, source)`** — ONE-SHOT: compile rustlite, register
-  (sponsored), publish to the app store (face stamped, free). Compiles FIRST.
+- **`create_subdomain(name, source?, persona?, prefund_lh?)`** — register a subdomain
+  (sponsored mint). With a `source` it ALSO compiles rustlite + publishes it to the app
+  store as the subdomain's app (face stamped, free — compiles FIRST; owns-name → updates
+  in place). Telemetry #86 merged the old `create_and_publish_app` in — one tool, `source`
+  makes it an app.
 - **`list_subdomains()`** — read-only.
 - **`release_subdomain(name, confirmation)`** — DESTRUCTIVE, challenge-gated
   (below). Burns the name; refuses MAIN, NOT granted to subagents.

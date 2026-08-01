@@ -38,21 +38,21 @@ const TASKS: &[Task] = &[
         name: "multi-step build plans first",
         message: "make me a snake game as its own subdomain called snakeplay",
         // Plan-first (#75/#69/#67) or straight into the compile loop /
-        // one-shot publish — all defensible first actions.
-        pass: &["update_plan", "compile_rustlite", "create_and_publish_app"],
-        known_bad: &["run_cartridge", "create_subdomain"],
+        // create_subdomain-with-a-source publish — all defensible first actions.
+        pass: &["update_plan", "compile_rustlite", "create_subdomain"],
+        known_bad: &["run_cartridge"],
     },
     Task {
         name: "subdomain routing",
         message: "spin up a subdomain called mercury",
         pass: &["create_subdomain", "update_plan"],
-        known_bad: &["run_cartridge", "create_and_publish_app"],
+        known_bad: &["run_cartridge"],
     },
     Task {
         name: "simple visual goes through the compile loop",
         message: "draw a red circle on the display right now",
         pass: &["compile_rustlite", "run_cartridge", "update_plan"],
-        known_bad: &["create_and_publish_app", "create_subdomain"],
+        known_bad: &["create_subdomain"],
     },
     Task {
         name: "read-only routing",
@@ -129,18 +129,17 @@ fn toolset(sink: &Arc<Mutex<Vec<FirstAction>>>) -> Vec<Arc<ClosureTool>> {
             sink.clone(),
         ),
         stub(
-            "create_and_publish_app",
-            "ONE-SHOT: register <name>.localharness.xyz AND publish the compiled cartridge as its public face.",
-            obj(
-                serde_json::json!({"name": s("subdomain name"), "source": s("rustlite source")}),
-                &["name", "source"],
-            ),
-            sink.clone(),
-        ),
-        stub(
             "create_subdomain",
-            "Register a NEW name-only subdomain on-chain (no app).",
-            obj(serde_json::json!({"name": s("subdomain name")}), &["name"]),
+            "Register a NEW <name>.localharness.xyz subdomain on-chain. Name only = a bare \
+             subdomain; add `source` (a rustlite cartridge) to ALSO publish it as the \
+             subdomain's fullscreen public face.",
+            obj(
+                serde_json::json!({
+                    "name": s("subdomain name"),
+                    "source": s("OPTIONAL rustlite source — publishes an app onto the subdomain")
+                }),
+                &["name"],
+            ),
             sink.clone(),
         ),
         stub(

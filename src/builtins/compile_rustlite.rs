@@ -37,7 +37,7 @@ impl Tool for CompileRustlite {
         "Compile-check rustlite (Rust-subset) source to wasm WITHOUT touching the \
          display — your compile-in-the-loop tool. Use it after each addition while \
          building a cartridge: it returns either a clean compile (then run_cartridge \
-         / create_and_publish_app) or, on failure, `{ error: \"compilation failed\", \
+         / create_subdomain with a source) or, on failure, `{ error: \"compilation failed\", \
          code: \"LHxxxx\", detail, location: \"line N, col M\", snippet: \"<the \
          offending source line with a ^ caret under the error>\", hint }` — READ \
          the location + snippet, fix that exact spot, and recompile before adding \

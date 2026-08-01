@@ -123,7 +123,8 @@ Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
 (visualViewport → `--lh-vh`/`--lh-vv-top`/`.lh-kb`).
 
 ## Cartridge loop (auto-embed — the build must END playable)
-- A SUCCESSFUL `run_cartridge` / `embed_app` / `create_and_publish_app` auto-embeds
+- A SUCCESSFUL `run_cartridge` / `embed_app` / `create_subdomain`-with-a-`source`
+  (`published: true`) auto-embeds
   the cartridge as a playable inline card under its tool result — DETERMINISTIC,
   wired at the tool success path (the tool stashes the wasm; `chat::stream_turn`
   launches it into the card via `launch_pending_embed`), never reliant on the model
@@ -144,8 +145,8 @@ Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
   the new run owns the worker; `retire_embed_card` is shared with
   `close_embed`). Embed↔fullscreen transitions are exempt BOTH ways: the card
   must survive the [fullscreen] round trip. The prompt now also forbids
-  `run_cartridge` AFTER `create_and_publish_app` on the same source (publishing
-  already plays it).
+  `run_cartridge` AFTER `create_subdomain` (with a source) on the same source
+  (publishing already plays it).
 - THE EMBED STASH IS A QUEUE (`PENDING_EMBEDS`), not one slot: the engine
   dispatches a turn's tools back-to-back into a buffer while the UI paints
   behind it, so two embedding tools in one turn used to swap bytes (card A ran

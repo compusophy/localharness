@@ -34,7 +34,7 @@ fake-Gemini SSE endpoint), and the tenant-sim aborts all RPC/proxy/apex requests
     the repo CLI (`localharness compile`; set `LH_CLI` to the binary, else it
     probes `target/release/` and skips honestly)
   - feed embed via the history-replay seam: a synthetic successful
-    `create_and_publish_app` result planted in OPFS `.lh_history.json`
+    `create_subdomain` (with a source) result planted in OPFS `.lh_history.json`
     replays as the playable `embed-app-card`, and the resume path recompiles
     the recorded source and BOOTS the cartridge worker into the card's canvas
     (`__lhEmbedTrace` + live `page.workers()` + two-frame animation diff)

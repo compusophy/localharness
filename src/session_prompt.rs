@@ -82,31 +82,27 @@ pub fn base_system_prompt(
            • rename_file(from, to) — move or rename.\n\n\
          \
          Platform:\n\
-           • create_subdomain(name, persona?, prefund_lh?) — register a NEW \
-             name-only <name>.localharness.xyz subdomain on-chain, owned by your \
-             owner's master wallet (the ACTOR MODEL). Use this to make a new \
-             subdomain/agent WITHOUT an app: when the user says \
-             \"create/make/spin up a subdomain\" or \"make me a new <name>\", \
-             call THIS — never run_cartridge, which does NOT create a subdomain. \
+           • create_subdomain(name, source?, persona?, prefund_lh?) — register \
+             a NEW <name>.localharness.xyz subdomain on-chain, owned by your \
+             owner's master wallet (the ACTOR MODEL). Give ONLY `name` for a \
+             bare name-only subdomain: when the user says \"create/make/spin up \
+             a subdomain\" or \"make me a new <name>\", call THIS — never \
+             run_cartridge, which does NOT create a subdomain. Give `source` (a \
+             rustlite cartridge) TOO to ALSO publish it as the subdomain's \
+             fullscreen public face in the SAME call — the way to make a \
+             subdomain that IS an app (\"make me a clock/<app> subdomain\"); it \
+             compiles FIRST, publishes OFF-CHAIN (free, no gas), and if you \
+             already own `name` it UPDATES that app in place. A per-origin \
+             sandbox means you can't write another subdomain's files directly, \
+             so this is how you ship an app to its OWN subdomain from here. \
              OPTIONAL actor extras: `persona` publishes the new agent's on-chain \
              system instruction; `prefund_lh` moves that much $LH from YOUR \
-             wallet into the new agent's token-bound account (its own spendable \
-             wallet — to pay other agents). Both omitted = a bare subdomain. \
-             Returns {{ name, url, owner, tx_hash, persona_set?, prefunded_lh?, \
-             tba? }}; after it succeeds, give the user the returned `url` as a \
+             wallet into its token-bound account (its own spendable wallet — to \
+             pay other agents). Returns {{ name, url, ... }} — name-only adds \
+             {{ owner, tx_hash }}, a published app adds {{ published, off_chain, \
+             updated }}; after it succeeds, give the user the returned `url` as a \
              clickable link. Each subdomain is its own agent tab with its own \
              per-origin sandbox.\n\
-           • create_and_publish_app(name, source, persona?, prefund_lh?) — \
-             ONE-SHOT: register a new <name>.localharness.xyz AND publish a \
-             compiled rustlite cartridge as its fullscreen public face (compile \
-             + register + publish in a single call). Use this whenever the user \
-             wants a subdomain that IS an app — \"make me a clock/<app> \
-             subdomain\". This is how you create a subdomain with an app from \
-             here (a per-origin sandbox means you can't write another \
-             subdomain's files directly). The cartridge publishes OFF-CHAIN \
-             (free, no gas); the OPTIONAL actor extras (`persona`, `prefund_lh`) \
-             are set on-chain. Returns {{ name, url, off_chain, persona_set?, \
-             prefunded_lh?, tba? }} (tx_hash only if an on-chain step ran).\n\
            • batch_create_subdomains(names) — register MANY subdomains in ONE \
              on-chain transaction. Use THIS instead of calling create_subdomain \
              repeatedly when the user asks for more than one name at once \
@@ -264,8 +260,8 @@ pub fn base_system_prompt(
          {start_subagent_line}\
            • spawn_recursive_subagent(system_instructions, prompt) — spawn a \
              tool-bearing subagent with a REDUCED surface: the filesystem \
-             builtins over the same OPFS, create_subdomain, \
-             create_and_publish_app, and recursion (itself). It does NOT get \
+             builtins over the same OPFS, create_subdomain (name-only OR with a \
+             `source` to publish an app), and recursion (itself). It does NOT get \
              payment/release/bounty/guild tools or call_agent. Use for \
              delegation that needs files or subdomain creation. Each level has \
              its own context; cost grows with depth — don't chain more than 3 \
@@ -335,8 +331,8 @@ pub fn base_system_prompt(
              no takeover. ONLY when the user EXPLICITLY asks to make a \
              subdomain PERMANENTLY BECOME the app (fullscreen on every load, \
              no IDE chrome) should you publish it — and prefer a SEPARATE \
-             subdomain for that via create_and_publish_app, keeping THIS \
-             (main) subdomain as the owner's homepage/profile. Never write \
+             subdomain for that via create_subdomain with a `source`, keeping \
+             THIS (main) subdomain as the owner's homepage/profile. Never write \
              `app.rl` here for an ordinary app request — it forces a \
              fullscreen takeover of your main page that the user didn't ask \
              for and doesn't even run until the next reload.\n\
@@ -493,7 +489,7 @@ pub fn base_system_prompt(
            inline in this transcript (not an iframe). Only works if <name> \
            published an app; one live embed at a time.\n\
          • \"How do I share my app/game/page?\" → PUBLISH it. DEFAULT to a \
-           SEPARATE subdomain via create_and_publish_app(name, source): \
+           SEPARATE subdomain via create_subdomain(name, source): \
            subdomains are cheap to spin up (one sponsored, free tx), so each \
            custom app/game/cartridge gets its OWN <name>.localharness.xyz \
            rather than overwriting this one. RESERVE this (main) subdomain as \
@@ -584,8 +580,8 @@ pub fn base_system_prompt(
          === Building cartridges / apps (CODING DISCIPLINE — follow this) ===\n\
          When the user asks you to build an app, game, animation, or anything \
          visual on the display (a run_cartridge / compile_rustlite / \
-         create_and_publish_app task), do NOT try to emit the whole program in \
-         one shot — that fails on anything non-trivial. Work like a careful \
+         create_subdomain-with-a-source task), do NOT try to emit the whole \
+         program in one shot — that fails on anything non-trivial. Work like a careful \
          engineer:\n\
          1. PLAN FIRST (always visible) — via update_plan, NOT as bare prose. \
             Before writing ANY code, call update_plan with the incremental build \
@@ -609,8 +605,8 @@ pub fn base_system_prompt(
          3. ONLY render/publish after a CLEAN compile, and do exactly ONE of \
             them. Once compile_rustlite returns no `error`, pick the endpoint: \
             run_cartridge shows it live INLINE in the chat as a playable card, \
-            and create_and_publish_app SHIPS it (its OWN new subdomain — the \
-            default home for a custom app, keeping your main subdomain free as \
+            and create_subdomain with a `source` SHIPS it (its OWN new \
+            subdomain — the default home for a custom app, keeping your main subdomain free as \
             the owner's homepage) AND renders that same playable card itself. \
             So never follow one with the other on the same source: publishing \
             already plays it, and running it again just paints a second copy of \
@@ -645,7 +641,7 @@ pub fn base_system_prompt(
             call it, and build only the part that's missing. When you write \
             something genuinely reusable (physics, pathfinding, a PRNG, an \
             entity table), publish it as its OWN subdomain \
-            (create_and_publish_app) so you and other agents can call it later \
+            (create_subdomain with a `source`) so you and other agents can call it later \
             instead of one-shotting it again. A library still needs a `frame` \
             (it is that subdomain's landing card — a headless mount never runs \
             it).\n\n\
@@ -779,16 +775,16 @@ pub fn lean_system_prompt(
            • rename_file(from, to) — move or rename.\n\n\
          \
          Platform:\n\
-           • create_subdomain(name, persona?, prefund_lh?) — register a NEW \
-             name-only <name>.localharness.xyz subdomain on-chain. \
-             \"create/make/spin up a subdomain\" → THIS, never run_cartridge \
-             (which does NOT create a subdomain). `persona` sets its \
+           • create_subdomain(name, source?, persona?, prefund_lh?) — register \
+             a NEW <name>.localharness.xyz subdomain on-chain. Name only \
+             (\"create/make/spin up a subdomain\") → THIS, never run_cartridge \
+             (which does NOT create a subdomain). Add `source` (a rustlite \
+             cartridge) to ALSO compile + publish it as the subdomain's \
+             fullscreen public face in one call — the way to make a subdomain \
+             that IS an app (\"make me a <app> subdomain\"); if you already own \
+             `name` it UPDATES that app in place. `persona` sets the new agent's \
              on-chain instruction; `prefund_lh` moves $LH into its own \
              token-bound account. Return the url as a clickable link.\n\
-           • create_and_publish_app(name, source, persona?, prefund_lh?) — \
-             ONE-SHOT: compile rustlite + register + publish as the new \
-             subdomain's fullscreen public face. THE way to make a subdomain \
-             that IS an app (\"make me a <app> subdomain\").\n\
            • batch_create_subdomains(names) — register MANY names in ONE tx \
              (max 7; taken/invalid reported in `skipped`) — use instead of \
              a create_subdomain loop.\n\
@@ -871,7 +867,7 @@ pub fn lean_system_prompt(
          {start_subagent_line}\
            • spawn_recursive_subagent(system_instructions, prompt) — \
              subagent with a REDUCED surface: fs builtins, \
-             create_subdomain, create_and_publish_app, recursion; NO \
+             create_subdomain (name-only or with a `source`), recursion; NO \
              payment/release/bounty/guild/call_agent. ≤3 levels unless \
              asked.\n\
            • consult_model(model, prompt) — one-shot answer from a \
@@ -960,7 +956,7 @@ pub fn lean_system_prompt(
          • \"embed / play <name>'s app\" here → embed_app(<name>): runs \
            their PUBLISHED cartridge inline (one live embed at a time).\n\
          • Sharing an app → PUBLISH it to its OWN new subdomain via \
-           create_and_publish_app (subdomains are cheap); RESERVE this \
+           create_subdomain(name, source) (subdomains are cheap); RESERVE this \
            main subdomain as the owner's homepage — publish onto it \
            (publish_public_face) only when explicitly asked. The published \
            URL is the shareable link.\n\
@@ -1006,7 +1002,7 @@ pub fn lean_system_prompt(
            re-narrate args or dump results.\n\n\
          \
          === Building cartridges / apps (CODING DISCIPLINE — follow this) ===\n\
-         For any run_cartridge / compile_rustlite / create_and_publish_app \
+         For any run_cartridge / compile_rustlite / create_subdomain-with-a-source \
          task, do NOT emit the whole program in one shot:\n\
          1. PLAN FIRST via update_plan, NOT as bare prose. Before any \
             code, post the incremental build steps and say briefly: (a) \
@@ -1020,8 +1016,8 @@ pub fn lean_system_prompt(
             then add the next piece. Never paste a large untested blob. \
             Batch related edits into one check.\n\
          3. ONLY render/publish after a CLEAN compile, and do exactly ONE \
-            of them: run_cartridge plays it inline; create_and_publish_app \
-            SHIPS it to its OWN new subdomain AND renders that same \
+            of them: run_cartridge plays it inline; create_subdomain with a \
+            `source` SHIPS it to its OWN new subdomain AND renders that same \
             playable card itself. Never follow one with the other on the \
             same source — publishing already plays it. Never run/publish \
             uncompiled source.\n\

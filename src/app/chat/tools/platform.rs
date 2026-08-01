@@ -114,26 +114,55 @@ async fn meter_bridge_call(
     }))
 }
 
-/// `create_subdomain(name)` — register `<name>.localharness.xyz` on the
-/// LocalharnessRegistry diamond, signed by the owner's apex wallet via
-/// the iframe signer. Returns the tx hash. Sanitises the input the same
-/// way `tenant::sanitize` does for the apex claim form.
+/// `create_subdomain(name, source?, persona?, prefund_lh?)` — register
+/// `<name>.localharness.xyz` on the LocalharnessRegistry diamond (the ACTOR
+/// MODEL), signed by the owner's apex wallet via the iframe signer, and
+/// OPTIONALLY publish an app onto it in the SAME call (telemetry #86 merged the
+/// old `create_and_publish_app` in here — one tool, `source` is what makes it
+/// an app):
+/// - `name` only → a bare name-only sponsored mint.
+/// - `name` + `source` → compile the rustlite `source` FIRST (a bad cartridge
+///   fails before any on-chain write), then publish it as the subdomain's
+///   fullscreen public face (OFF-CHAIN, free). OWNERSHIP-AWARE when a source is
+///   given: an UNREGISTERED name is registered first; a name YOU already own is
+///   UPDATED in place (no re-register, no duplicate); a name owned by SOMEONE
+///   ELSE is refused. Auto-embeds the just-published cartridge inline.
+/// - OPTIONAL `persona` (on-chain system instruction) + `prefund_lh` (move $LH
+///   into the new agent's token-bound account) configure the spawned actor on
+///   the FRESH-mint paths.
+///
+/// Returns a superset reporting what happened: name-only →
+/// `{ name, url, owner, tx_hash, persona_set?, prefunded_lh?, tba? }`; with a
+/// published app → `{ name, url, published: true, off_chain: true, updated,
+/// tx_hash?, persona_set?, prefunded_lh?, tba? }`.
 pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     // Schema + lenient extraction from ONE hoisted table
     // (`crate::tool_params::CreateSubdomainParams`), byte-identity-tested natively.
     let schema = crate::tool_params::CreateSubdomainParams::schema();
     ClosureTool::new(
         "create_subdomain",
-        "Register a new <name>.localharness.xyz subdomain on-chain (the ACTOR MODEL). \
-         The owner's master wallet pays gas and ends up holding the resulting ERC-721 \
-         NFT. OPTIONALLY spawn the actor WITH behavior + funds in one call: `persona` \
-         publishes its on-chain system instruction; `prefund_lh` moves that much $LH \
-         from your wallet into the new agent's token-bound account (its own wallet). \
-         Returns { name, url, owner, tx_hash, persona_set?, prefunded_lh?, tba? }.",
+        "Register a new <name>.localharness.xyz subdomain on-chain (the ACTOR MODEL) — \
+         the owner's master wallet pays gas and ends up holding the resulting ERC-721 \
+         NFT. Give ONLY `name` for a bare name-only subdomain (\"create/make/spin up a \
+         subdomain\"); NEVER run_cartridge, which does not create a subdomain. Give \
+         `source` too (a rustlite cartridge, the SAME dialect as run_cartridge) to ALSO \
+         publish it as the subdomain's fullscreen public face in one call — the way to \
+         make a subdomain that IS an app (\"make me a clock/<app> subdomain\"). Compiles \
+         FIRST, so a bad cartridge fails before any write; publishes OFF-CHAIN (free, no \
+         gas). OWNERSHIP-AWARE with a source: an UNREGISTERED name is registered first, a \
+         name YOU already own is UPDATED in place (no re-register, no duplicate), a name \
+         owned by someone ELSE is refused. OPTIONAL actor extras: `persona` publishes the \
+         new agent's on-chain system instruction; `prefund_lh` moves that much $LH from \
+         your wallet into its token-bound account (its own spendable wallet). Returns \
+         { name, url, ... }: name-only adds { owner, tx_hash }; a published app adds \
+         { published: true, off_chain: true, updated }. Give the user the returned url as \
+         a clickable link.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let params = crate::tool_params::CreateSubdomainParams::lenient(&args);
             let name = params.name.trim();
+            // A blank/whitespace `source` means "no app" — a name-only mint.
+            let source = params.source.as_deref().map(str::trim).filter(|s| !s.is_empty());
             let persona = params.persona.as_deref();
             let prefund_lh = params.prefund_lh.as_deref();
             // Validate (don't silently mangle) — an invalid name returns a clear
@@ -141,78 +170,224 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
             let cleaned = crate::subdomain::validate(name).map_err(|why| {
                 crate::error::Error::bad_args("create_subdomain", format!("invalid subdomain name: {why}"))
             })?;
-            // Register the name first (master wallet ends up holding the new id).
-            let (owner, claim_tx) = crate::app::verify::claim_name_via_iframe(&cleaned)
-                .await
-                .map_err(|e| crate::error::Error::other(format!("claim failed: {e}")))?;
-            // Proactively push this device's Gemini key to the MAIN slot so the
-            // new subdomain inherits it (no re-save).
-            {
-                let n = cleaned.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    crate::app::events::sync_local_key_to_main(&n).await;
-                });
+            match source {
+                // name + source → compile + register + publish (ownership-aware).
+                Some(src) => create_subdomain_with_app(&cleaned, src, persona, prefund_lh).await,
+                // name only → the sponsored mint (+ optional actor setup).
+                None => create_subdomain_name_only(&cleaned, persona, prefund_lh).await,
             }
-
-            // Optional ACTOR-MODEL extras: persona + prefund. Only if asked.
-            let want_persona = persona.map(|p| !p.trim().is_empty()).unwrap_or(false);
-            let want_prefund = prefund_lh
-                .map(|p| {
-                    let t = p.trim();
-                    !t.is_empty() && t != "0"
-                })
-                .unwrap_or(false);
-            let mut result = serde_json::json!({
-                "name": cleaned,
-                "url": format!("https://{cleaned}.localharness.xyz/"),
-                "owner": owner,
-                "tx_hash": claim_tx,
-            });
-            if want_persona || want_prefund {
-                // Resolve the freshly-minted tokenId for the metadata/TBA ops.
-                let token_id = match crate::app::registry::id_of_name(&cleaned).await {
-                    Ok(id) if id != 0 => id,
-                    Ok(_) => {
-                        return Err(crate::error::Error::other(
-                            "registered but tokenId not yet visible on-chain — retry \
-                             persona/prefund shortly",
-                        ))
-                    }
-                    Err(e) => return Err(crate::error::Error::other(format!("id_of_name: {e}"))),
-                };
-                let setup = build_actor_setup(
-                    "create_subdomain",
-                    &owner,
-                    token_id,
-                    &cleaned,
-                    persona,
-                    prefund_lh,
-                )
-                .await?;
-                if !setup.calls.is_empty() {
-                    let tx_hash = crate::app::events::run_sponsored_tempo_call(
-                        &owner,
-                        setup.calls,
-                        setup.extra_gas,
-                        "spawn actor (persona + prefund)",
-                    )
-                    .await
-                    .map_err(|e| {
-                        crate::error::Error::other(format!("actor setup failed: {e}"))
-                    })?;
-                    result["setup_tx_hash"] = serde_json::json!(tx_hash);
-                    result["persona_set"] = serde_json::json!(setup.persona_set);
-                    if let Some(amt) = setup.prefunded_lh {
-                        result["prefunded_lh"] = serde_json::json!(amt);
-                    }
-                    if let Some(tba) = setup.tba {
-                        result["tba"] = serde_json::json!(tba);
-                    }
-                }
-            }
-            Ok(result)
         },
     )
+}
+
+/// The name-only `create_subdomain` path (no `source`): a sponsored mint plus
+/// optional actor-model persona/prefund. The master wallet ends up holding the
+/// new id.
+async fn create_subdomain_name_only(
+    cleaned: &str,
+    persona: Option<&str>,
+    prefund_lh: Option<&str>,
+) -> Result<serde_json::Value, crate::error::Error> {
+    // Register the name first (master wallet ends up holding the new id).
+    let (owner, claim_tx) = crate::app::verify::claim_name_via_iframe(cleaned)
+        .await
+        .map_err(|e| crate::error::Error::other(format!("claim failed: {e}")))?;
+    // Proactively push this device's Gemini key to the MAIN slot so the new
+    // subdomain inherits it (no re-save).
+    {
+        let n = cleaned.to_string();
+        wasm_bindgen_futures::spawn_local(async move {
+            crate::app::events::sync_local_key_to_main(&n).await;
+        });
+    }
+
+    // Optional ACTOR-MODEL extras: persona + prefund. Only if asked.
+    let want_persona = persona.map(|p| !p.trim().is_empty()).unwrap_or(false);
+    let want_prefund = prefund_lh
+        .map(|p| {
+            let t = p.trim();
+            !t.is_empty() && t != "0"
+        })
+        .unwrap_or(false);
+    let mut result = serde_json::json!({
+        "name": cleaned,
+        "url": format!("https://{cleaned}.localharness.xyz/"),
+        "owner": owner,
+        "tx_hash": claim_tx,
+    });
+    if want_persona || want_prefund {
+        // Resolve the freshly-minted tokenId for the metadata/TBA ops.
+        let token_id = match crate::app::registry::id_of_name(cleaned).await {
+            Ok(id) if id != 0 => id,
+            Ok(_) => {
+                return Err(crate::error::Error::other(
+                    "registered but tokenId not yet visible on-chain — retry \
+                     persona/prefund shortly",
+                ))
+            }
+            Err(e) => return Err(crate::error::Error::other(format!("id_of_name: {e}"))),
+        };
+        let setup = build_actor_setup(
+            "create_subdomain",
+            &owner,
+            token_id,
+            cleaned,
+            persona,
+            prefund_lh,
+        )
+        .await?;
+        if !setup.calls.is_empty() {
+            let tx_hash = crate::app::events::run_sponsored_tempo_call(
+                &owner,
+                setup.calls,
+                setup.extra_gas,
+                "spawn actor (persona + prefund)",
+            )
+            .await
+            .map_err(|e| crate::error::Error::other(format!("actor setup failed: {e}")))?;
+            result["setup_tx_hash"] = serde_json::json!(tx_hash);
+            result["persona_set"] = serde_json::json!(setup.persona_set);
+            if let Some(amt) = setup.prefunded_lh {
+                result["prefunded_lh"] = serde_json::json!(amt);
+            }
+            if let Some(tba) = setup.tba {
+                result["tba"] = serde_json::json!(tba);
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// The `create_subdomain` WITH-app path (a non-empty `source`) — OWNERSHIP-AWARE
+/// one-shot publish (was `create_and_publish_app`):
+/// - `cleaned` UNREGISTERED → register `<name>.localharness.xyz` + publish the
+///   compiled cartridge as its public face (a fresh subdomain for the app).
+/// - `cleaned` already owned by THE CALLER → UPDATE in place: re-publish the
+///   cartridge OFF-CHAIN, NO re-register, no duplicate.
+/// - `cleaned` owned by SOMEONE ELSE → refuse with a clear error.
+///
+/// Compiles inside `publish_app_face` FIRST (a bad cartridge fails before any
+/// write), then publishes OFF-CHAIN to the app store (free, no gas — the chain
+/// keeps only ownership). For a FRESH name the optional persona + prefund are set
+/// on-chain separately (small, sponsored). A brand-new app never silently
+/// overwrites the owner's MAIN. Stashes the compiled wasm so the cartridge loop
+/// auto-embeds it inline.
+async fn create_subdomain_with_app(
+    cleaned: &str,
+    source: &str,
+    persona: Option<&str>,
+    prefund_lh: Option<&str>,
+) -> Result<serde_json::Value, crate::error::Error> {
+    // Who would sign? The owner of the current host subdomain — the master
+    // wallet that holds ALL this identity's names. Used to decide OWN vs
+    // SOMEONE-ELSE for an already-registered target.
+    let signer_owner = crate::app::tenant::current_tenant_owner()
+        .await
+        .map(|(_, o)| o)
+        .ok();
+
+    // Branch on the target's on-chain ownership.
+    let existing = match &signer_owner {
+        Some(o) => owned_token_for_publish(cleaned, o).await?,
+        // Off a tenant host (preview/localhost) we can't prove the signer's
+        // identity; fall back to "register if free", and a taken name will be
+        // refused by the claim path.
+        None => match crate::app::registry::owner_of_name(cleaned).await {
+            Ok(Some(_)) => {
+                return Err(crate::error::Error::other(format!(
+                    "\"{cleaned}\" is already registered — run this on your own \
+                     subdomain so ownership can be verified before updating it"
+                )))
+            }
+            Ok(None) => None,
+            Err(e) => return Err(crate::error::Error::other(format!("owner_of_name: {e}"))),
+        },
+    };
+
+    // UPDATE path: the caller already owns `name` → re-publish in place, NO
+    // re-register (which would fail), NO persona/prefund (those are spawn-time
+    // actor setup). Store-only publish, no tx.
+    if let Some((_token_id, owner)) = existing {
+        let wasm = publish_app_face(cleaned, source, &owner).await?;
+        stash_published_app_embed(cleaned, wasm);
+        return Ok(serde_json::json!({
+            "name": cleaned,
+            "url": format!("https://{cleaned}.localharness.xyz/"),
+            "published": true,
+            "off_chain": true,
+            "updated": true,
+        }));
+    }
+
+    // FRESH path: register the name, then publish. The owner's master wallet
+    // ends up holding the new tokenId, so it's authorized to setMetadata below.
+    let (owner, _claim_tx) = crate::app::verify::claim_name_via_iframe(cleaned)
+        .await
+        .map_err(|e| crate::error::Error::other(format!("claim failed: {e}")))?;
+    // Inherit this device's Gemini key onto the new subdomain.
+    {
+        let n = cleaned.to_string();
+        wasm_bindgen_futures::spawn_local(async move {
+            crate::app::events::sync_local_key_to_main(&n).await;
+        });
+    }
+    // Resolve the freshly-minted tokenId.
+    let token_id = match crate::app::registry::id_of_name(cleaned).await {
+        Ok(id) if id != 0 => id,
+        Ok(_) => {
+            return Err(crate::error::Error::other(
+                "registered but tokenId not yet visible on-chain — retry publish shortly",
+            ))
+        }
+        Err(e) => return Err(crate::error::Error::other(format!("id_of_name: {e}"))),
+    };
+    // Publish the app OFF-CHAIN (free) to the app store — the owner's master
+    // wallet (just minted the name) signs the proxy auth token.
+    let wasm = publish_app_face(cleaned, source, &owner).await?;
+    stash_published_app_embed(cleaned, wasm);
+    // ACTOR MODEL: persona + prefund stay ON-CHAIN (identity / economy
+    // primitives, small/cheap unlike the app bytes). Submit them as their own
+    // sponsored batch only if either was requested.
+    let setup =
+        build_actor_setup("create_subdomain", &owner, token_id, cleaned, persona, prefund_lh)
+            .await?;
+    let setup_tx = if setup.calls.is_empty() {
+        None
+    } else {
+        Some(
+            crate::app::events::run_sponsored_tempo_call(
+                &owner,
+                setup.calls,
+                setup.extra_gas,
+                "actor setup (persona/prefund)",
+            )
+            .await
+            .map_err(|e| crate::error::Error::other(format!("actor setup failed: {e}")))?,
+        )
+    };
+    let mut result = serde_json::json!({
+        "name": cleaned,
+        "url": format!("https://{cleaned}.localharness.xyz/"),
+        "published": true,
+        "off_chain": true,
+        "updated": false,
+    });
+    // The publish itself is store-only; the only tx that can exist is the actor
+    // setup (persona/prefund). Omitted otherwise so no model ever relays a fake
+    // "hash".
+    if let Some(tx) = setup_tx {
+        result["tx_hash"] = serde_json::json!(tx);
+    }
+    if setup.persona_set {
+        result["persona_set"] = serde_json::json!(true);
+    }
+    if let Some(amt) = setup.prefunded_lh {
+        result["prefunded_lh"] = serde_json::json!(amt);
+    }
+    if let Some(tba) = setup.tba {
+        result["tba"] = serde_json::json!(tba);
+    }
+    Ok(result)
 }
 
 /// The device's MASTER-wallet signer, asserted to be `owner`. Publishing is
@@ -243,8 +418,8 @@ fn owner_master_signer(
 }
 
 /// Publish a compiled rustlite cartridge as `name`'s app face — the ONE
-/// publish-app shape shared by `create_and_publish_app` (fresh + update),
-/// `publish_app_to` (cross-subdomain), and `publish_public_face` ("app").
+/// publish-app shape shared by `create_subdomain` (fresh mint + in-place
+/// update), `publish_app_to` (cross-subdomain), and `publish_public_face` ("app").
 ///
 /// STORE-ONLY (free, no gas, no tx): the compiled wasm goes to the app store
 /// (`registry::publish_app_to_store`), which the proxy authorizes via on-chain
@@ -339,8 +514,8 @@ async fn owned_token_for_publish(
     Ok(Some((token_id, owner)))
 }
 
-/// AUTO-EMBED on a successful `create_and_publish_app` (close the cartridge
-/// loop): stash the just-published cartridge for the transcript card
+/// AUTO-EMBED on a successful app publish via `create_subdomain` (close the
+/// cartridge loop): stash the just-published cartridge for the transcript card
 /// `chat::stream_turn` paints for THIS tool result — the SAME
 /// stash-then-`launch_pending_embed` path embed_app/run_cartridge use, so the
 /// build ends with the cartridge PLAYING inline, deterministically (never
@@ -353,163 +528,6 @@ fn stash_published_app_embed(name: &str, wasm: Vec<u8>) {
     crate::app::display::run_wasm_inline(&wasm);
 }
 
-/// `create_and_publish_app(name, source)` — OWNERSHIP-AWARE one-shot publish:
-/// - `name` UNREGISTERED → register `<name>.localharness.xyz` + publish the
-///   compiled cartridge as its public face (a fresh subdomain for the app).
-/// - `name` already owned by THE CALLER → UPDATE in place: re-publish the
-///   cartridge OFF-CHAIN, NO re-register, no duplicate.
-/// - `name` owned by SOMEONE ELSE → refuse with a clear error.
-///
-/// Compiles `source` first (a bad cartridge fails before any write), then
-/// publishes the cartridge OFF-CHAIN to the app store (free, no gas — the chain
-/// keeps only ownership). For a FRESH name the optional persona + prefund are set
-/// on-chain separately (small, sponsored). A brand-new app never silently
-/// overwrites the owner's MAIN. Returns `{ name, url, tx_hash, off_chain, updated }`.
-pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    // Hoisted table: `crate::tool_params::CreateAndPublishAppParams`.
-    let schema = crate::tool_params::CreateAndPublishAppParams::schema();
-    ClosureTool::new(
-        "create_and_publish_app",
-        "Publish a compiled rustlite cartridge as <name>.localharness.xyz's fullscreen \
-         public face (compile + OFF-CHAIN publish — free, no gas). OWNERSHIP-AWARE: if \
-         `name` is UNREGISTERED it registers a NEW subdomain first; if YOU already own \
-         `name` it UPDATES that app in place (no re-register, no duplicate); if someone \
-         ELSE owns `name` it refuses. Use this for \"make me a clock subdomain\" AND \
-         \"update my <name> app\". The ACTOR MODEL (fresh names only): optionally also \
-         set the new agent's `persona` (on-chain system instruction) and `prefund_lh` it \
-         with $LH (into its token-bound account), set on-chain after the app publishes. \
-         create_subdomain remains for registering a name-only subdomain. Returns \
-         { name, url, tx_hash, off_chain, updated, persona_set?, prefunded_lh?, tba? }.",
-        schema,
-        |args: serde_json::Value, _ctx| async move {
-            let params = crate::tool_params::CreateAndPublishAppParams::lenient(&args);
-            let name = params.name.trim();
-            let source = params.source.as_str();
-            let persona = params.persona.as_deref();
-            let prefund_lh = params.prefund_lh.as_deref();
-            let cleaned = crate::subdomain::validate(name).map_err(|why| {
-                crate::error::Error::bad_args("create_and_publish_app", format!("invalid subdomain name: {why}"))
-            })?;
-            // Compile FIRST (also bounds-checks size) so a bad cartridge fails
-            // before any register/setMetadata write. This is the SAME shape the
-            // update path uses; resolve the tokenId after we know it compiles.
-            // (token_id is patched in once known — encode below.)
-            if source.trim().is_empty() {
-                return Err(crate::error::Error::bad_args("create_and_publish_app", "source cannot be empty"));
-            }
-            // Who would sign? The owner of the current host subdomain — the
-            // master wallet that holds ALL this identity's names. Used to decide
-            // OWN vs SOMEONE-ELSE for an already-registered target.
-            let signer_owner = crate::app::tenant::current_tenant_owner()
-                .await
-                .map(|(_, o)| o)
-                .ok();
-
-            // Branch on the target's on-chain ownership.
-            let existing = match &signer_owner {
-                Some(o) => owned_token_for_publish(&cleaned, o).await?,
-                // Off a tenant host (preview/localhost) we can't prove the
-                // signer's identity; fall back to "register if free", and a
-                // taken name will be refused by the claim path.
-                None => match crate::app::registry::owner_of_name(&cleaned).await {
-                    Ok(Some(_)) => {
-                        return Err(crate::error::Error::other(format!(
-                            "\"{cleaned}\" is already registered — run this on your own \
-                             subdomain so ownership can be verified before updating it"
-                        )))
-                    }
-                    Ok(None) => None,
-                    Err(e) => return Err(crate::error::Error::other(format!("owner_of_name: {e}"))),
-                },
-            };
-
-            // UPDATE path: the caller already owns `name` → re-publish in place,
-            // NO re-register (which would fail), NO persona/prefund (those are
-            // spawn-time actor setup). Store-only publish, no tx.
-            if let Some((_token_id, owner)) = existing {
-                let wasm = publish_app_face(&cleaned, source, &owner).await?;
-                stash_published_app_embed(&cleaned, wasm);
-                return Ok(serde_json::json!({
-                    "name": cleaned,
-                    "url": format!("https://{cleaned}.localharness.xyz/"),
-                    "off_chain": true,
-                    "updated": true,
-                }));
-            }
-
-            // FRESH path: register the name, then publish. The owner's master
-            // wallet ends up holding the new tokenId, so it's authorized to
-            // setMetadata below.
-            let (owner, _claim_tx) = crate::app::verify::claim_name_via_iframe(&cleaned)
-                .await
-                .map_err(|e| crate::error::Error::other(format!("claim failed: {e}")))?;
-            // Inherit this device's Gemini key onto the new subdomain.
-            {
-                let n = cleaned.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    crate::app::events::sync_local_key_to_main(&n).await;
-                });
-            }
-            // Resolve the freshly-minted tokenId.
-            let token_id = match crate::app::registry::id_of_name(&cleaned).await {
-                Ok(id) if id != 0 => id,
-                Ok(_) => {
-                    return Err(crate::error::Error::other(
-                        "registered but tokenId not yet visible on-chain — retry publish shortly",
-                    ))
-                }
-                Err(e) => return Err(crate::error::Error::other(format!("id_of_name: {e}"))),
-            };
-            // Publish the app OFF-CHAIN (free) to the app store — the owner's
-            // master wallet (just minted the name) signs the proxy auth token.
-            let wasm = publish_app_face(&cleaned, source, &owner).await?;
-            stash_published_app_embed(&cleaned, wasm);
-            // ACTOR MODEL: persona + prefund stay ON-CHAIN (they're identity /
-            // economy primitives, and small/cheap unlike the app bytes). Submit
-            // them as their own sponsored batch only if either was requested.
-            let setup =
-                build_actor_setup("create_and_publish_app", &owner, token_id, &cleaned, persona, prefund_lh)
-                    .await?;
-            let setup_tx = if setup.calls.is_empty() {
-                None
-            } else {
-                Some(
-                    crate::app::events::run_sponsored_tempo_call(
-                        &owner,
-                        setup.calls,
-                        setup.extra_gas,
-                        "actor setup (persona/prefund)",
-                    )
-                    .await
-                    .map_err(|e| crate::error::Error::other(format!("actor setup failed: {e}")))?,
-                )
-            };
-            let mut result = serde_json::json!({
-                "name": cleaned,
-                "url": format!("https://{cleaned}.localharness.xyz/"),
-                "off_chain": true,
-                "updated": false,
-            });
-            // The publish itself is store-only; the only tx that can exist is
-            // the actor setup (persona/prefund). Omitted otherwise so no model
-            // ever relays a fake "hash".
-            if let Some(tx) = setup_tx {
-                result["tx_hash"] = serde_json::json!(tx);
-            }
-            if setup.persona_set {
-                result["persona_set"] = serde_json::json!(true);
-            }
-            if let Some(amt) = setup.prefunded_lh {
-                result["prefunded_lh"] = serde_json::json!(amt);
-            }
-            if let Some(tba) = setup.tba {
-                result["tba"] = serde_json::json!(tba);
-            }
-            Ok(result)
-        },
-    )
-}
-
 /// `publish_app_to(name, source, confirmation)` — UPDATE-FROM-MAIN: publish a
 /// compiled cartridge to ANY subdomain the caller OWNS, even one DIFFERENT from
 /// the current host. The owner's master wallet (the one that signs the current
@@ -517,8 +535,8 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
 /// `setMetadata` for any owned tokenId — no new ownership/actor model needed,
 /// just targeting a chosen owned name. From a MAIN session this updates any
 /// alt's app. The target MUST already be registered AND owned by the caller
-/// (refuses unregistered names — use `create_and_publish_app` to mint a fresh
-/// one — and names owned by someone else). OVERWRITES what that name serves to
+/// (refuses unregistered names — use `create_subdomain` with a `source` to mint
+/// a fresh one — and names owned by someone else). OVERWRITES what that name serves to
 /// every visitor, so it rides the typed-confirmation gate
 /// (`chat::confirm_guard`). NOT granted to subagents. Publishes off-chain (the
 /// store; tx only on the TBA fallback). Returns `{ name, url, off_chain,
@@ -532,7 +550,7 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          update-from-MAIN path. The owner's master wallet holds all their subdomain \
          NFTs, so from one session you can re-publish any of your alts' apps. The \
          target must ALREADY exist and be owned by you (to mint a NEW subdomain use \
-         create_and_publish_app; that tool also updates the CURRENT name in place). \
+         create_subdomain with a `source`; that also updates the CURRENT name in place). \
          OVERWRITES that subdomain's published app (off-chain, free) — the first \
          call does NOT execute: it returns a single-use confirmation code (also \
          shown to the owner in the UI). Say which subdomain you'll update, ask the \
@@ -575,8 +593,8 @@ pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .await?
                 .ok_or_else(|| {
                     crate::error::Error::other(format!(
-                        "\"{cleaned}\" is not registered — use create_and_publish_app to \
-                         mint and publish a new subdomain"
+                        "\"{cleaned}\" is not registered — use create_subdomain with a \
+                         `source` to mint and publish a new subdomain"
                     ))
                 })?;
             // (No auto-embed here: the target is a DIFFERENT subdomain being

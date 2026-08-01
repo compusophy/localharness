@@ -54,7 +54,6 @@ const GUARDED: &[&str] = &[
     "post_bounty",
     "submit_feedback",
     "create_subdomain",
-    "create_and_publish_app",
     "claim_bounty",
     "submit_result",
     "accept_result",

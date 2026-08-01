@@ -30,7 +30,6 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
         &[
             "create_subdomain",
             "batch_create_subdomains",
-            "create_and_publish_app",
             "publish_app_to",
             "publish_public_face",
             "list_subdomains",
