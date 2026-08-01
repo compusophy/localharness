@@ -123,8 +123,19 @@ work). Both fixed 2026-08-01: gemini.ts ported to the Node runtime
 config-flip killers) and work/call re-sign the token per request; work's 48K
 compaction stopgap restored to the shared 128K. The transcripts show real
 capability (write-compressor: multiple compiling C arithmetic coders with
-verification passes before the 401 killed it) — record the post-fix
-scoreline as a baseline row below when the rerun lands.
+verification passes before the 401 killed it).
+
+**POST-FIX RERUN (run 30695536254, 2026-08-01 10:20 UTC): PARITY — 5/5 vs
+5/5, zero infra errors, Δ = 0.0.** Same subset, same model. Every task that
+ever died on our side resolved, including the deep ones (schemelike, torch).
+Step efficiency (our tool calls vs terminus-2 trajectory steps): kv-store
+24/13, pypi 21/11, schemelike 51/96, torch 37/32, write-compressor 19/32 —
+totals **152 vs 184** (~17% fewer): terminus is leaner on shallow tasks, we
+are markedly leaner on the deep ones. "Beat it" candidates, in order of
+signal: (a) a wider subset (n_tasks 15-20 — 5 tasks can't separate equal
+harnesses), (b) shallow-task round overhead (our recon rounds on easy
+tasks), (c) pass@1 variance replication. Every arm of the 3-run progression
+above + this one used the SAME first-5 subset — directly comparable.
 
 SHIPPED 2026-07-31: `adapters/terminal-bench/` — an AbstractInstalledAgent
 adapter (interface-validated against the published package) driving the new
