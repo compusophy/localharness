@@ -128,7 +128,7 @@ jobs:
             -d "${{ inputs.dataset }}" \
             --agent-import-path harbor_agent:LocalharnessHarborAgent \
             -m "${{ inputs.model_lh }}" \
-            -k "${{ inputs.attempts }}" -n 1 --n-concurrent-agents "${{ inputs.n_concurrent }}" \
+            -k "${{ inputs.attempts }}" -n "${{ inputs.n_concurrent }}" --n-concurrent-agents "${{ inputs.n_concurrent }}" \
             $L_FLAG
           echo "localharness arm exit: $?"
       - name: "arm B — terminus-2 (harbor reference, litellm direct)"
@@ -149,7 +149,7 @@ jobs:
             -d "${{ inputs.dataset }}" \
             --agent terminus-2 \
             -m "${{ inputs.model_terminus }}" \
-            -k "${{ inputs.attempts }}" -n 1 --n-concurrent-agents "${{ inputs.n_concurrent }}" \
+            -k "${{ inputs.attempts }}" -n "${{ inputs.n_concurrent }}" --n-concurrent-agents "${{ inputs.n_concurrent }}" \
             $L_FLAG
           echo "terminus-2 arm exit: $?"
       # Arm C: any harbor-registry agent by id (gemini-cli in 0.20.0; the
@@ -181,7 +181,7 @@ jobs:
             -d "${{ inputs.dataset }}" \
             --agent "${{ inputs.arm_c }}" \
             -m "${{ inputs.model_c }}" \
-            -k "${{ inputs.attempts }}" -n 1 --n-concurrent-agents "${{ inputs.n_concurrent }}" \
+            -k "${{ inputs.attempts }}" -n "${{ inputs.n_concurrent }}" --n-concurrent-agents "${{ inputs.n_concurrent }}" \
             $L_FLAG
           echo "arm C exit: $?"
       - name: scoreline (side-by-side)
