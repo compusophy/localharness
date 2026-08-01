@@ -26,9 +26,12 @@ const WORK_PROMPT: &str = "You are localharness running as a local coding agent 
     tools: list_directory, view_file, find_file, search_directory, create_file, \
     edit_file, delete_file, rename_file, and run_command (a real shell in this \
     directory — use it to build, test, and verify). Work autonomously: inspect \
-    first, act, VERIFY by running the result, and only then answer. Keep file \
-    edits minimal and idiomatic. When the task is done, reply with a short \
-    summary of what you changed and how you verified it.";
+    first, act, then VERIFY by RUNNING the result. Keep file edits minimal and \
+    idiomatic. KEEP WORKING until the task is FULLY complete and verified — a hard \
+    task takes MANY rounds of write → run → read the error → fix → re-run; do NOT \
+    stop, summarize, or hand back until it actually works. When (and only when) it \
+    is done AND you have run it to confirm, call the `finish` tool with a one-line \
+    summary. Never call finish on an unverified or partial solution.";
 
 /// `localharness work [--as <me>] [--model <id>] <task…>`
 pub(crate) async fn work(args: &[String]) -> i32 {
@@ -167,46 +170,124 @@ pub(crate) async fn work(args: &[String]) -> i32 {
         }
     };
 
-    let reply = match agent.chat(task.as_str()).await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("work failed: {e}");
-            let _ = agent.shutdown().await;
-            return 1;
-        }
-    };
-    // Stream the run LIVE: final text to stdout; tool activity + errors to
-    // stderr so the terminal shows what the agent is doing (and a failing
-    // tool is visible instead of silently burning meter rounds).
+    // The SDK caps ONE `agent.chat()` turn at MAX_TOOL_ROUNDS (16, turn_engine.rs)
+    // then FORCES the turn to end. A hard coding task needs far more (write → run →
+    // read error → fix → re-run, dozens of times), so wrap chat() in an auto-continue
+    // loop: a turn cut off mid-tool-work (its last event was a tool call/result, not a
+    // final answer) that did NOT call `finish` gets nudged to keep going. Mirrors the
+    // browser run_send loop; without it the CLI agent was guillotined at 16 rounds and
+    // never finished hard tasks (TB-2.1: every funded run stopped at ~16 calls
+    // mid-work). Bounded so a stuck agent can't loop forever; compaction (set above)
+    // keeps context bounded across the continuations.
+    const MAX_WORK_CONTINUATIONS: u32 = 12;
     use futures_util::StreamExt;
-    let mut cursor = reply.chunks();
+    use std::io::Write;
+    let mut input: std::borrow::Cow<str> = std::borrow::Cow::Borrowed(task.as_str());
+    let mut continuations: u32 = 0;
     let mut failed = false;
-    while let Some(res) = cursor.next().await {
-        match res {
-            Ok(localharness::types::StreamChunk::Text { text, .. }) => {
-                print!("{text}");
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-            }
-            Ok(localharness::types::StreamChunk::ToolCall(tc)) => {
-                let args = serde_json::to_string(&tc.args).unwrap_or_default();
-                let args: String = args.chars().take(160).collect();
-                eprintln!("→ {}({args})", tc.name);
-            }
-            Ok(localharness::types::StreamChunk::ToolResult(tr)) => {
-                if let Some(err) = &tr.error {
-                    eprintln!("  ✗ {}: {err}", tr.name);
-                }
-            }
-            Ok(_) => {}
+    'run: loop {
+        let reply = match agent.chat(input.as_ref()).await {
+            Ok(r) => r,
             Err(e) => {
                 eprintln!("\nwork failed: {e}");
                 failed = true;
                 break;
             }
+        };
+        // Stream the turn LIVE (text → stdout; tools/errors → stderr) and track HOW it
+        // ended so we can tell "cut off mid-work" from "actually done".
+        let mut cursor = reply.chunks();
+        let mut saw_finish = false;
+        let mut saw_goal_tool = false;
+        let mut ended_on_tool = false;
+        while let Some(res) = cursor.next().await {
+            match res {
+                Ok(localharness::types::StreamChunk::Text { text, .. }) => {
+                    print!("{text}");
+                    let _ = std::io::stdout().flush();
+                    ended_on_tool = false;
+                }
+                Ok(localharness::types::StreamChunk::ToolCall(tc)) => {
+                    let args = serde_json::to_string(&tc.args).unwrap_or_default();
+                    let args: String = args.chars().take(160).collect();
+                    eprintln!("→ {}({args})", tc.name);
+                    ended_on_tool = true;
+                    if tc.name == "finish" {
+                        saw_finish = true;
+                    } else {
+                        saw_goal_tool = true;
+                    }
+                }
+                Ok(localharness::types::StreamChunk::ToolResult(tr)) => {
+                    if let Some(err) = &tr.error {
+                        eprintln!("  ✗ {}: {err}", tr.name);
+                    }
+                    ended_on_tool = true;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("\nwork failed: {e}");
+                    failed = true;
+                    break 'run;
+                }
+            }
         }
+        if !work_should_continue(
+            saw_finish,
+            ended_on_tool,
+            saw_goal_tool,
+            continuations,
+            MAX_WORK_CONTINUATIONS,
+        ) {
+            break;
+        }
+        continuations += 1;
+        eprintln!("… auto-continue {continuations}/{MAX_WORK_CONTINUATIONS} (turn hit the 16-round cap mid-work)");
+        input = std::borrow::Cow::Owned(WORK_CONTINUE_NUDGE.to_string());
     }
     println!();
     let _ = agent.shutdown().await;
     if failed { 1 } else { 0 }
+}
+
+/// The continue-hint fed to the agent when a turn was cut off at the round cap.
+const WORK_CONTINUE_NUDGE: &str = "(continue — your last turn hit the tool-round cap \
+    before finishing. Review what you've done, then take the NEXT concrete step: run \
+    the result, read any error, fix it, re-run. Call `finish` only once it is actually \
+    complete and verified.)";
+
+/// Pure continue-decision (native-tested): keep going ONLY when the turn was cut off
+/// mid-tool-work — its last streamed event was a tool call/result (the 16-round cap
+/// guillotined an in-progress task) AND a goal tool ran AND `finish` was NOT called AND
+/// we're under the continuation cap. A turn that ended on a TEXT answer, or that called
+/// `finish`, is treated as done (a real conclusion or a conversational stop) — so the
+/// loop never spams continuations on a completed or purely-conversational turn.
+fn work_should_continue(
+    saw_finish: bool,
+    ended_on_tool: bool,
+    saw_goal_tool: bool,
+    continuations: u32,
+    max: u32,
+) -> bool {
+    !saw_finish && ended_on_tool && saw_goal_tool && continuations < max
+}
+
+#[cfg(test)]
+mod tests {
+    use super::work_should_continue;
+
+    #[test]
+    fn continues_only_when_cut_off_mid_tool_work() {
+        // Cut off mid-tool-work, finish not called, under cap → continue.
+        assert!(work_should_continue(false, true, true, 0, 12));
+        assert!(work_should_continue(false, true, true, 11, 12));
+        // finish called → stop (done).
+        assert!(!work_should_continue(true, true, true, 0, 12));
+        // Ended on a TEXT answer (last event not a tool) → stop (done/conversational).
+        assert!(!work_should_continue(false, false, true, 0, 12));
+        // No goal tool ran (pure chat / ask_question only) → stop.
+        assert!(!work_should_continue(false, true, false, 0, 12));
+        // At the cap → stop (never loop forever).
+        assert!(!work_should_continue(false, true, true, 12, 12));
+    }
 }
