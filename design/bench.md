@@ -108,7 +108,23 @@ multiple C arithmetic-coder implementations with verification passes) —
 first 2-task sample scored 0/2, honest for single-shot gemini-3.6-flash on
 hard tasks. A leaderboard-relevant number needs a larger sample + a stronger
 driving model; the infra is a one-line dispatch (`gh workflow run tbench2.yml
--f n_tasks=N`). 
+-f n_tasks=N`).
+
+HEAD-TO-HEAD vs terminus-2 (`tbench-compare.yml`, same model both arms —
+2026-08-01 progression, first-5-task subset, gemini-3.6-flash): 02:33 run
+0/3 (16-round-cap guillotine) → 06:10 run, after the auto-continue fix, 3/3
+resolved but 2 infra-errored → 07:15 run 1 resolved, 4 infra-errored.
+terminus-2: 5/5 in all three. EVERY loss was OUR INFRA, not the agent: 3×
+proxy edge 504 (FUNCTION_INVOCATION_TIMEOUT — ~25s first-byte cap × big
+contexts) + 1× auth-token 401 ("stale or future timestamp" — one token
+signed at startup vs the proxy's 5-min freshness window, hours into honest
+work). Both fixed 2026-08-01: gemini.ts ported to the Node runtime
+(design/proxy-504-fix.md — export shape + ESM `.js` imports were the real
+config-flip killers) and work/call re-sign the token per request; work's 48K
+compaction stopgap restored to the shared 128K. The transcripts show real
+capability (write-compressor: multiple compiling C arithmetic coders with
+verification passes before the 401 killed it) — record the post-fix
+scoreline as a baseline row below when the rerun lands.
 
 SHIPPED 2026-07-31: `adapters/terminal-bench/` — an AbstractInstalledAgent
 adapter (interface-validated against the published package) driving the new

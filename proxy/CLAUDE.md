@@ -2,7 +2,8 @@
 
 > Module-owned context (auto-loaded when an agent works in `proxy/`). This is a
 > SEPARATE Vercel project ("proxy") — the ONE deliberate off-chain component
-> (everything else is Tempo + browser). TypeScript on Vercel Edge. Full prose:
+> (everything else is Tempo + browser). TypeScript on Vercel — `gemini.ts` runs
+> the NODE runtime (no first-byte cap; the 504 fix), everything else Edge. Full prose:
 > `proxy/README.md`.
 
 ## ⛔ SEPARATE DEPLOY — the gotcha that bites every time
@@ -13,9 +14,17 @@ INERT until the proxy is redeployed. Secrets are env-only (`LH_MAINNET_SPONSOR_K
 Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
 
 ## Endpoints (`api/`; `_`-prefixed = shared helpers, not routes)
-- `gemini.ts` — multi-provider passthrough (Gemini/Claude/OpenAI). Auth = Ethereum
+- `gemini.ts` — multi-provider passthrough (Gemini/Claude/OpenAI). ⛔ NODE
+  runtime (the 504 fix, 2026-08-01): NAMED `POST`/`OPTIONS` exports (a default-
+  exported bare fn gets the legacy `(req,res)` invocation) AND `.js` on every
+  relative import (`"type":"module"` + Node ESM resolver; extensionless =
+  ERR_MODULE_NOT_FOUND at Lambda load) — violate either and EVERY request 500s
+  FUNCTION_INVOCATION_FAILED. Validate with `vercel build` + a direct Node
+  import of the output, NEVER `vercel dev` (its launcher can't run web
+  handlers). Auth = Ethereum
   personal-sign `address:timestamp:signature` in the `x-goog-api-key` header (5-min
-  freshness window — a skewed device clock = stale-auth, not a bad key). Gates on
+  freshness window — a skewed device clock = stale-auth, not a bad key; long
+  agent runs re-sign per request via the SDK's AuthTokenProvider). Gates on
   `creditOf` (the SessionFacet session gate was purged 2026-07-30), debits the
   meter BEFORE streaming, charges
   `min(cost,balance)` (a positive balance spends to zero). 1 `$LH`/message; fiat
