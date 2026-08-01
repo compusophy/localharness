@@ -21,6 +21,14 @@
 # ⚠️ REQUIRES a new GH secret GEMINI_API_KEY (a Google AI Studio key) for the
 # terminus-2 arm — litellm bills it directly (tiny for flash). Without it, the
 # terminus arm SELF-SKIPS and only the localharness arm runs.
+#
+# Extras (2026-08-01, the beat-78% campaign): `arms` picks which base arms run
+# (a full-set localharness-only baseline doesn't need to re-pay for terminus —
+# published numbers exist); `n_tasks: all` runs the whole dataset (needs
+# `n_concurrent` 3-4 to fit the 6h job cap; watch runner disk/RAM); `arm_c`
+# adds a third harbor-registry agent (gemini-cli / antigravity-sdk — the
+# Antigravity comparison; antigravity-* installs a pinned harbor dev build in
+# an isolated venv, arms A/B stay on 0.20.0).
 name: terminal-bench-compare
 
 concurrency:
@@ -35,11 +43,23 @@ on:
         default: "terminal-bench/terminal-bench-2-1"
         required: false
       n_tasks:
-        description: "first N tasks of the dataset — SAME subset for both arms"
+        description: "first N tasks of the dataset (SAME subset for all arms) — or 'all' for the whole set"
         default: "5"
         required: false
       attempts:
         description: "attempts per task (pass@k)"
+        default: "1"
+        required: false
+      arms:
+        description: "which base arms to run: both | localharness | terminus"
+        default: "both"
+        required: false
+      arm_c:
+        description: "optional third arm (harbor agent id): none | gemini-cli | antigravity-sdk | antigravity-cli"
+        default: "none"
+        required: false
+      n_concurrent:
+        description: "concurrent agents per arm (raise for full-set runs; watch runner disk/RAM)"
         default: "1"
         required: false
       model_lh:
@@ -48,6 +68,10 @@ on:
         required: false
       model_terminus:
         description: "terminus-2 arm model (litellm id form — SAME underlying model)"
+        default: "gemini/gemini-3.6-flash"
+        required: false
+      model_c:
+        description: "arm C model id (litellm form; antigravity-sdk may want google/... prefix)"
         default: "gemini/gemini-3.6-flash"
         required: false
 
@@ -78,7 +102,7 @@ jobs:
   compare:
     needs: binary
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -86,22 +110,29 @@ jobs:
           python-version: "3.12"
       - name: install harbor
         run: pip install --quiet 'harbor==0.20.0'
+      # 'all' → no -l cap (whole dataset). Shared by every arm step below.
+      - name: task-limit flag
+        run: |
+          if [ "${{ inputs.n_tasks }}" = "all" ]; then echo "L_FLAG=" >> "$GITHUB_ENV";
+          else echo "L_FLAG=-l ${{ inputs.n_tasks }}" >> "$GITHUB_ENV"; fi
       - name: "arm A — localharness (our proxy)"
+        if: ${{ inputs.arms == 'both' || inputs.arms == 'localharness' }}
         env:
           LOCALHARNESS_KEY: ${{ secrets.LOCALHARNESS_KEY }}
           PYTHONPATH: ${{ github.workspace }}/adapters/terminal-bench
         run: |
           set +e
           mkdir -p arms/localharness && cd arms/localharness
-          echo "== localharness arm: -d ${{ inputs.dataset }} -m ${{ inputs.model_lh }} -l ${{ inputs.n_tasks }} =="
+          echo "== localharness arm: -d ${{ inputs.dataset }} -m ${{ inputs.model_lh }} $L_FLAG x${{ inputs.n_concurrent }} =="
           harbor run \
             -d "${{ inputs.dataset }}" \
             --agent-import-path harbor_agent:LocalharnessHarborAgent \
             -m "${{ inputs.model_lh }}" \
-            -k "${{ inputs.attempts }}" -n 1 --n-concurrent-agents 1 \
-            -l "${{ inputs.n_tasks }}"
+            -k "${{ inputs.attempts }}" -n 1 --n-concurrent-agents "${{ inputs.n_concurrent }}" \
+            $L_FLAG
           echo "localharness arm exit: $?"
       - name: "arm B — terminus-2 (harbor reference, litellm direct)"
+        if: ${{ inputs.arms == 'both' || inputs.arms == 'terminus' }}
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -113,14 +144,46 @@ jobs:
             exit 0
           fi
           mkdir -p arms/terminus && cd arms/terminus
-          echo "== terminus-2 arm: -d ${{ inputs.dataset }} -m ${{ inputs.model_terminus }} -l ${{ inputs.n_tasks }} =="
+          echo "== terminus-2 arm: -d ${{ inputs.dataset }} -m ${{ inputs.model_terminus }} $L_FLAG x${{ inputs.n_concurrent }} =="
           harbor run \
             -d "${{ inputs.dataset }}" \
             --agent terminus-2 \
             -m "${{ inputs.model_terminus }}" \
-            -k "${{ inputs.attempts }}" -n 1 \
-            -l "${{ inputs.n_tasks }}"
+            -k "${{ inputs.attempts }}" -n 1 --n-concurrent-agents "${{ inputs.n_concurrent }}" \
+            $L_FLAG
           echo "terminus-2 arm exit: $?"
+      # Arm C: any harbor-registry agent by id (gemini-cli in 0.20.0; the
+      # antigravity-sdk/-cli agents postdate 0.20.0 → installed from a pinned
+      # dev build in an isolated venv so arms A/B stay on the pinned harbor).
+      # antigravity-cli additionally needs a pre-provisioned OAuth token
+      # (AGY_AUTH_JSON_PATH) — without it, expect the arm to fail honestly.
+      - name: "arm C — ${{ inputs.arm_c }} (harbor agent, litellm direct)"
+        if: ${{ inputs.arm_c != 'none' && inputs.arm_c != '' }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set +e
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::warning::No GEMINI_API_KEY secret — SKIPPING arm C (${{ inputs.arm_c }})."
+            exit 0
+          fi
+          HARBOR=harbor
+          case "${{ inputs.arm_c }}" in
+            antigravity-*)
+              python -m venv /tmp/agy-venv
+              /tmp/agy-venv/bin/pip install --quiet 'harbor==0.20.1.dev202608010130'
+              HARBOR=/tmp/agy-venv/bin/harbor
+              ;;
+          esac
+          mkdir -p "arms/${{ inputs.arm_c }}" && cd "arms/${{ inputs.arm_c }}"
+          echo "== arm C ${{ inputs.arm_c }}: -d ${{ inputs.dataset }} -m ${{ inputs.model_c }} $L_FLAG x${{ inputs.n_concurrent }} =="
+          "$HARBOR" run \
+            -d "${{ inputs.dataset }}" \
+            --agent "${{ inputs.arm_c }}" \
+            -m "${{ inputs.model_c }}" \
+            -k "${{ inputs.attempts }}" -n 1 --n-concurrent-agents "${{ inputs.n_concurrent }}" \
+            $L_FLAG
+          echo "arm C exit: $?"
       - name: scoreline (side-by-side)
         if: always()
         run: |
@@ -142,34 +205,35 @@ jobs:
                   rew = ((d.get("verifier_result") or {}).get("rewards") or {}).get("reward", 0)
                   out[tid] = "err" if err else ("ok" if (rew is not None and rew >= 1.0) else "fail")
               return out
-          lh, tm = score("arms/localharness"), score("arms/terminus")
+          arms = {}
+          if os.path.isdir("arms"):
+              for name in sorted(os.listdir("arms")):
+                  if os.path.isdir(os.path.join("arms", name)):
+                      arms[name] = score(os.path.join("arms", name))
           def tally(d):
               resolved = sum(1 for s in d.values() if s == "ok")
               errored  = sum(1 for s in d.values() if s == "err")
               scored   = len(d) - errored
               acc = 100.0 * resolved / scored if scored else 0.0
               return resolved, scored, errored, acc
-          lr, ls, le, la = tally(lh)
-          tr, ts, te, ta = tally(tm)
           mark = {"ok": "✅", "fail": "❌", "err": "⚠️"}
-          tasks = sorted(set(lh) | set(tm))
+          tasks = sorted(set().union(*arms.values())) if arms else []
           out = os.environ.get("GITHUB_STEP_SUMMARY", "/dev/stdout")
           with open(out, "a") as fh:
               fh.write("## Harness comparison — Terminal-Bench 2.1 (same model)\n\n")
-              fh.write(f"- **localharness**: {lr}/{ls} resolved ({la:.1f}%)"
-                       + (f", ⚠️{le} infra-errored\n" if le else "\n"))
-              if tm:
-                  fh.write(f"- **terminus-2 (harbor ref)**: {tr}/{ts} resolved ({ta:.1f}%)"
-                           + (f", ⚠️{te} infra-errored\n\n" if te else "\n\n"))
-                  delta = la - ta
-                  fh.write(f"**Δ (localharness − terminus-2): {delta:+.1f} pts** "
-                           "— same model, same tasks, so this is the harness delta.\n\n")
-              else:
-                  fh.write("- **terminus-2 (harbor ref)**: _skipped — no provider key secret set_\n\n")
-              fh.write("| task | localharness | terminus-2 |\n|---|---|---|\n")
+              for name, d in arms.items():
+                  r, s, e, a = tally(d)
+                  fh.write(f"- **{name}**: {r}/{s} resolved ({a:.1f}%)"
+                           + (f", ⚠️{e} infra-errored\n" if e else "\n"))
+              if "localharness" in arms and arms.get("terminus"):
+                  delta = tally(arms["localharness"])[3] - tally(arms["terminus"])[3]
+                  fh.write(f"\n**Δ (localharness − terminus-2): {delta:+.1f} pts** "
+                           "— same model, same tasks, so this is the harness delta.\n")
+              fh.write("\n| task | " + " | ".join(arms) + " |\n|---|" + "---|" * len(arms) + "\n")
               for t in tasks:
-                  fh.write(f"| `{t}` | {mark.get(lh.get(t),'—')} | {mark.get(tm.get(t),'—')} |\n")
-          print(f"COMPARE localharness={lr}/{ls} ({la:.1f}%) vs terminus-2={tr}/{ts} ({ta:.1f}%)")
+                  fh.write(f"| `{t}` | " + " | ".join(mark.get(d.get(t), "—") for d in arms.values()) + " |\n")
+          line = " vs ".join(f"{n}={tally(d)[0]}/{tally(d)[1]} ({tally(d)[3]:.1f}%)" for n, d in arms.items())
+          print("COMPARE " + (line or "no arms ran"))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
