@@ -144,8 +144,18 @@ const DIAMOND_WRITE_SIGS = [
   'leaveGuild(uint256)',
   'formParty(uint256[],uint16[],uint64)',
   'fundParty(uint256,uint128)',
+  // Party lifecycle after form/fund — were MISSING, so join_party/complete_party/
+  // disband_party 403'd LH_RELAY_SELECTOR on mainnet and escrow got stranded
+  // (own-text-lies audit; verified vs PartyFacet.sol:237/335/399).
+  'joinParty(uint256)',
+  'completeParty(uint256)',
+  'disbandParty(uint256)',
   'propose(uint256,address,uint256,bytes,uint64)',
   'vote(uint256,bool)',
+  // execute the PASSED VotingFacet proposal (rung-4 treasury payout) — was
+  // MISSING while propose/vote were listed, so the final step 403'd and the
+  // payout could never fire (verified vs VotingFacet.sol:260).
+  'execute(uint256)',
   'proposeWeighted(uint256,address,uint256,uint256,string)',
   'voteWeighted(uint256,bool)',
   'executeWeighted(uint256)',
@@ -156,6 +166,13 @@ const DIAMOND_WRITE_SIGS = [
   'clearRoom(uint256)',
   'stakeValidation(bytes32,uint256,bool,uint256)',
   'resolveValidation(uint256,bool)',
+  // Validation challenge/reclaim — were MISSING while stake/resolve were listed,
+  // so challenge_validation/reclaim_stake/reclaim_unresolved 403'd: the Challenged
+  // state was unreachable (so resolveValidation could never fire either) and
+  // stakes were stranded (verified vs ValidationFacet.sol:232/329/362).
+  'challengeValidation(uint256)',
+  'reclaimStake(uint256)',
+  'reclaimUnresolved(uint256)',
   'setTithe(uint256,uint256)',
   'revokeTithe()',
   'collectTithe(address)',
@@ -614,7 +631,13 @@ export default async function handler(req: Request): Promise<Response> {
       if (bal > BALANCE_CEILING_WEI) {
         return json(
           {
-            error: 'caller is funded — sponsorship is onboarding-only; self-pay your fees',
+            // NOT "self-pay your fees" — on mainnet an agent holds only $LH, never
+            // the fee token, so it CANNOT self-pay gas (the prior message
+            // prescribed the impossible). The usual trigger for a funded caller is
+            // an oversized self-edit: a setMetadata ≤4096B relays fine, a larger one
+            // falls here — shorten it. Otherwise fund a fresh onboarding identity.
+            error:
+              'caller is funded — relay sponsorship is onboarding-only. A setMetadata self-edit over 4096B is the usual trigger (≤4096B relays fine — shorten it); a funded agent cannot self-pay gas on mainnet (holds no fee token).',
             code: 'LH_RELAY_FUNDED',
           },
           403,

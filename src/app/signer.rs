@@ -759,8 +759,16 @@ fn diamond_signable_selectors() -> Vec<[u8; 4]> {
         "leaveGuild(uint256)",
         "formParty(uint256[],uint16[],uint64)",
         "fundParty(uint256,uint128)",
+        // Party lifecycle + governance execute + validation challenge/reclaim —
+        // must mirror proxy/api/sponsor.ts DIAMOND_WRITE_SIGS or the browser
+        // refuses to sign a call the relay would (or vice-versa). Were missing on
+        // BOTH sides → stranded escrow / dead payout (own-text-lies audit).
+        "joinParty(uint256)",
+        "completeParty(uint256)",
+        "disbandParty(uint256)",
         "propose(uint256,address,uint256,bytes,uint64)",
         "vote(uint256,bool)",
+        "execute(uint256)",
         "proposeWeighted(uint256,address,uint256,uint256,string)",
         "voteWeighted(uint256,bool)",
         "executeWeighted(uint256)",
@@ -771,6 +779,9 @@ fn diamond_signable_selectors() -> Vec<[u8; 4]> {
         "clearRoom(uint256)",
         "stakeValidation(bytes32,uint256,bool,uint256)",
         "resolveValidation(uint256,bool)",
+        "challengeValidation(uint256)",
+        "reclaimStake(uint256)",
+        "reclaimUnresolved(uint256)",
         "setTithe(uint256,uint256)",
         "revokeTithe()",
         "collectTithe(address)",
