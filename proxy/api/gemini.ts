@@ -42,14 +42,14 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
-// Node.js runtime (NOT edge): the edge runtime enforces a ~25s wall-clock cap that
-// killed slow claude requests (thinking + big context) during `await fetch` before
-// any Response existed → 504 FUNCTION_INVOCATION_TIMEOUT (design/proxy-504-fix.md).
-// Removing `runtime:'edge'` reverts to the default Node runtime, which has no ~25s
-// cap — only total `maxDuration`. `nodejsNN.x` is a vercel.json value, NOT an inline
-// config value, so we set ONLY maxDuration here. The handler uses only standard Web
-// APIs (fetch/Response/TransformStream) so the billing flow is unchanged.
-export const config = { maxDuration: 300 };
+// ⚠️ REVERTED to edge: dropping to the Node runtime (`maxDuration` only) made the
+// function 500 with FUNCTION_INVOCATION_FAILED on EVERY request — Vercel's Node
+// runtime does not accept this file's web-standard `(req: Request) => Response`
+// handler shape without adaptation, so it's NOT a one-line config change (proved by
+// a live flash smoke right after deploy). The 504 fix needs a real handler port or
+// the keepalive-stream-first approach — see design/proxy-504-fix.md. Edge's ~25s
+// first-byte cap (the slow-claude 504) is the KNOWN, tolerated state until then.
+export const config = { runtime: 'edge' };
 
 // ---- constants -------------------------------------------------------------
 

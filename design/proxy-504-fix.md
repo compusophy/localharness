@@ -44,6 +44,18 @@ preview smoke (step 3) tells us which it was, only to decide the Hobby-plan
 fallback. A keepalive on the response body can't help path (a) — there is no body
 until the upstream headers arrive.
 
+## ⛔ TRIED 2026-07-31: the Node config-flip FAILS — DO NOT re-attempt as-is
+Deployed `export const config = { maxDuration: 300 }` (dropping `runtime:'edge'`) to
+prod. Result: EVERY request 500'd with `FUNCTION_INVOCATION_FAILED` (proved by a
+live flash smoke immediately after deploy — inference was down for ~2 min until I
+reverted to edge). Vercel's Node runtime does NOT accept this file's web-standard
+`export default (req: Request) => Response` handler shape without adaptation — the
+runtime change alone is a hard break, not a config tweak. A real fix must EITHER
+port the handler to the Node signature (`(req, res)` + manual stream piping) OR use
+the edge keepalive-stream-first approach below. Either way: deploy to a PREVIEW
+(not `--prod`) and smoke a flash round FIRST. The relay-selector + price-row + msg
+changes in the same session shipped fine (they don't touch this runtime).
+
 ## Fix (recommended): move this ONE function to the Node runtime
 The whole handler uses only standard Web APIs (`fetch`, `Response`,
 `TransformStream`/`ReadableStream` in `meteredBody`, `upstream.body`) plus viem +
