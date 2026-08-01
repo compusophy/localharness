@@ -1,4 +1,20 @@
-# Relay allowlist gaps + found_company overrun — STAGED for the attended proxy session
+# Relay allowlist gaps + found_company overrun
+
+**UPDATE 2026-07-31 (user greenlit "do all"): #1 + #3 SHIPPED LIVE. #2 is the
+chunking follow-up (in progress).**
+- **#1 (7 relay selectors): DONE + LIVE** — added to `sponsor.ts DIAMOND_WRITE_SIGS`
+  (proxy deployed) + `signer.rs` (web bundle `34134d8f0dd5` live). Party/validation/
+  governance tools no longer 403. Residual: an on-chain E2E smoke (form a party →
+  join → complete) not yet run — needs live setup.
+- **#3 (funded-gate setMetadata message): DONE + LIVE** (same proxy deploy).
+- **The 504 fix bundled in the same session BROKE inference** (edge→node = 500 on
+  every request) and was reverted — see `design/proxy-504-fix.md`. It is NOT a
+  config flip. The relay/price/msg changes were unaffected.
+- **#2 (found_company chunking + the batch-tool chunking, #85): still the follow-up.**
+  The stale-prefund-field lie was fixed separately (commit b86c4288, live).
+
+---
+Original staging note below (kept for the verified detail).
 
 **Status: VERIFIED, staged, NOT applied.** These fixes touch the security-sensitive
 sponsor-relay allowlist and/or need a `cd proxy && vercel --prod`, so they ride the
