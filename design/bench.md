@@ -137,6 +137,19 @@ harnesses), (b) shallow-task round overhead (our recon rounds on easy
 tasks), (c) pass@1 variance replication. Every arm of the 3-run progression
 above + this one used the SAME first-5 subset — directly comparable.
 
+15-TASK RUN (30697327161, 2026-08-01): localharness **9/14 (64.3%)** + 1
+infra-err vs terminus-2 **11/13 (84.6%)** + 2 err — Δ −20.3. We uniquely
+solved dna-assembly + path-tracing; terminus uniquely solved
+model-extraction-relu-logits / schemelike / torch-tensor / qemu-alpine-ssh
+(our err); both failed regex-chess. ⚠️ schemelike + torch-tensor PASSED at
+n=5 and FAILED here (same binary) — pass@1 variance on deep tasks is large;
+the 5/5 parity row carried luck. Per-task diagnosis + fix plan: the
+beat-78% campaign (target = Google's claimed 78.0% for gemini-3.6-flash,
+harness unspecified; best VERIFIED Gemini leaderboard row = Terminus2 +
+3-Pro at 73.9%, best flash row = Gemini CLI + 3-Flash 56.9%; Antigravity
+itself has NO published TB scores — harbor can run antigravity-sdk/-cli as
+an arm_c for a direct comparison).
+
 SHIPPED 2026-07-31: `adapters/terminal-bench/` — an AbstractInstalledAgent
 adapter (interface-validated against the published package) driving the new
 `localharness work` local coding-agent loop (native tools + run_command,

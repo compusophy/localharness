@@ -7,6 +7,7 @@
 import puppeteer from "puppeteer-core";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { serve } from "./serve.mjs";
 import { findBrowser, requireBundle, webRoot, sleep, waitFor } from "./lib.mjs";
@@ -21,7 +22,7 @@ const clog = (line) => { try { appendFileSync(LOG, line + "\n"); } catch {} };
 const say = (line) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${line}`);
 
 const GPU_ARGS = ["--no-first-run", "--disable-extensions", "--enable-unsafe-webgpu", "--enable-features=Vulkan"];
-const PROFILE = process.env.LH_E2E_PROFILE || "C:/Users/kyle/AppData/Local/Temp/claude/gemma-e2e-profile";
+const PROFILE = process.env.LH_E2E_PROFILE || join(tmpdir(), "gemma-e2e-profile");
 
 // [lh-local] token telemetry, per generation. A "generate:" line opens a gen.
 const gens = [];
