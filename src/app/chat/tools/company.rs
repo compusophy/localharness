@@ -538,7 +538,16 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // From here on, N registrations are PAID on-chain state: every
             // failure path returns the partial manifest (registered names + tx
             // hashes + which step failed), never a bare Err that discards them.
-            let signer = bounty_signer().await?;
+            let signer = match bounty_signer().await {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(partial_manifest(
+                        "signer",
+                        &e.to_string(),
+                        &name, &mission, &registered, &reg_fold, None, None,
+                    ))
+                }
+            };
             let create_tx = match crate::app::registry::create_guild_sponsored(&signer, &name).await
             {
                 Ok(tx) => tx,
