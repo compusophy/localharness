@@ -27,14 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # PINNED, not @stable, for two proven reasons: (1) -D warnings + a
+      # PINNED, not @stable (matches the dev machine): -D warnings + a
       # floating clippy means every 6-week release lands new lints and reds
-      # main with no code change (the Jul 27 break). (2) 1.97's codegen
-      # FREEZES the whole runner VM ~40s into compiling this crate's
-      # default-config lib-test binary on linux (diagnosed via a push-based
-      # flight recorder, 2026-08-03 — rustc at 97% CPU mid-explosion was the
-      # machine's last breath; 1.96.0 compiles it fine). Bump deliberately and
-      # re-verify BOTH failure modes.
+      # main with no code change (the Jul 27 break). Bump deliberately.
       - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy
@@ -65,19 +60,34 @@ jobs:
       - name: clippy (browser-app + mainnet, wasm32)
         run: cargo clippy --no-default-features --features browser-app,mainnet --target wasm32-unknown-unknown -- -D warnings
 
-      # Step timeouts: a hung test killed BY the runner uploads logs naming the
-      # stuck binary; without them the hang starved the runner itself, which
-      # died with zero logs (3 consecutive runs, 2026-08-03). Superset finishes
-      # in ~2 min — 15 is generous headroom, not an expected duration.
       - name: test (wallet + anthropic + openai — superset)
         timeout-minutes: 15
         run: cargo test --features "wallet anthropic openai"
-      - name: test (default)
-        timeout-minutes: 15
-        run: cargo test
 
       - name: wasm guard (SDK-only)
         run: cargo check --no-default-features --target wasm32-unknown-unknown
+
+  # test (default) gets its OWN VM. As a second step after the superset test it
+  # froze the whole runner (agent dead, zero logs, step timeout unenforceable —
+  # 5 runs, both 1.96 and 1.97, 2026-08-03): the second multi-GB parallel
+  # rustc+lld burst on an already-hot Azure dynamic-memory VM stalls the
+  # machine. As the FIRST heavy compile on a fresh VM (exactly how the superset
+  # step always survived) it fits. Distinct coverage vs the superset run: the
+  # cfg(not(feature))-gated paths.
+  rust-default:
+    name: rust — test (default features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - name: free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/.ghcup /usr/share/dotnet
+          df -h /
+      - uses: Swatinem/rust-cache@v2
+      - name: test (default)
+        timeout-minutes: 20
+        run: cargo test
 
   cartridges:
     name: cartridges — corpus + codegen + host parity
