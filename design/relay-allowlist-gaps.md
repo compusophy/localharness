@@ -1,7 +1,6 @@
 # Relay allowlist gaps + found_company overrun
 
-**UPDATE 2026-07-31 (user greenlit "do all"): #1 + #3 SHIPPED LIVE. #2 is the
-chunking follow-up (in progress).**
+**UPDATE 2026-08-03: #1 + #2 + #3 all SHIPPED LIVE.**
 - **#1 (7 relay selectors): DONE + LIVE** — added to `sponsor.ts DIAMOND_WRITE_SIGS`
   (proxy deployed) + `signer.rs` (web bundle `34134d8f0dd5` live). Party/validation/
   governance tools no longer 403. Residual: an on-chain E2E smoke (form a party →
@@ -17,14 +16,16 @@ chunking follow-up (in progress).**
 - **The 504 fix bundled in the same session BROKE inference** (edge→node = 500 on
   every request) and was reverted — see `design/proxy-504-fix.md`. It is NOT a
   config flip. The relay/price/msg changes were unaffected.
-- **#2 (found_company chunking + the batch-tool chunking, #85): CODE SHIPPED
-  (pending web deploy).** `src/relay_chunk.rs` (pure ≤8-call partition + honest
-  fold, native-tested) now backs `batch_create_subdomains` / `batch_send_lh` /
+- **#2 (found_company chunking + the batch-tool chunking, #85): SHIPPED —
+  chunking LIVE in the v0.80.0 bundle (`cc1008c3829e`/`6a3eb6863118`).**
+  `src/relay_chunk.rs` (pure ≤8-call partition + honest
+  fold, native-tested) backs `batch_create_subdomains` / `batch_send_lh` /
   `bulk_release_subdomains` (hard caps → auto-chunking, per-chunk results) and
   `found_company` (role registration chunked BEFORE the guild is created; STEP-4
   persona+prefund chunked without splitting a role's calls; manifest fields
-  stamped only after a chunk LANDS). Residual: a live on-chain smoke of a >7-item
-  batch + a default-config found_company.
+  stamped only after a chunk LANDS). Residual: the live >7-item on-chain smoke
+  is pending inference restoration, and the `{name,source}` array-batch
+  (create MANY app-bearing subdomains in one call) is tracked in telemetry #85.
   The stale-prefund-field lie was fixed separately (commit b86c4288, live).
 
 ---
