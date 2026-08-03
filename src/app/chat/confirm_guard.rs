@@ -54,6 +54,11 @@ const CONFIRM_GATED: &[&str] = &[
     "bulk_release_subdomains",
     "send_lh",
     "batch_send_lh",
+    // Mints up to MAX_BATCH_ITEMS names in one call — on mainnet each
+    // registration costs registrationCost() (live: 1 $LH) pulled from the
+    // owner's wallet, so this is a VALUE-MOVING batch, not merely "additive"
+    // (that rationale died with the removal of the old hard cap).
+    "batch_create_subdomains",
     "spend_treasury",
     // Changes guild AUTHORITY (officer/admin can move the treasury), so a role
     // grant is a privilege escalation the owner must approve — gated like a value

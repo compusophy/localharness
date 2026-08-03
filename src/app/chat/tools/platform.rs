@@ -835,7 +835,9 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 "type": "array",
                 "items": { "type": "string" },
                 "description": "OPTIONAL subset of subdomain names to release in one \
-                    batch. Omit to target EVERY non-MAIN subdomain the owner holds."
+                    batch. Omit to target EVERY non-MAIN subdomain the owner holds. \
+                    At most 28 names per call — for more, pass explicit subsets in \
+                    separate calls."
             },
             "confirmation": {
                 "type": "string",
@@ -852,13 +854,18 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
         "bulk_release_subdomains",
         "DESTRUCTIVE + IRREVERSIBLE: burn MANY subdomain NFTs and free their names in \
          ONE batch. With no `names`, releases EVERY non-MAIN subdomain the owner holds; \
-         with `names`, only that subset. The first call does NOT execute: it returns a \
-         single-use confirmation code (also shown to the owner in the UI). Show the owner \
-         the exact list that will be burned (use list_subdomains), ask them to TYPE the \
-         code, then retry with `confirmation` set to it. ONE code for the whole batch; \
-         more than 8 names are split across multiple sponsored txs automatically (each \
-         tx burns at most 8). Returns { released, count, tx_hashes, failed } — `failed` \
-         lists any chunk whose tx failed (those names were NOT burned).",
+         with `names`, only that subset. At most 28 names per call — for more, pass \
+         explicit `names` subsets in separate calls. The first call does NOT execute: it \
+         returns a single-use confirmation code (also shown to the owner in the UI). Show \
+         the owner the exact list that will be burned (use list_subdomains), ask them to \
+         TYPE the code, then retry with `confirmation` set to it. ONE code for the whole \
+         batch; more than 8 names are split across multiple sponsored txs automatically \
+         (each tx burns at most 8). Returns { released, count, tx_hashes, failed, \
+         unconfirmed, unattempted } — `failed` lists chunks whose tx FAILED (those names \
+         were NOT burned); `unconfirmed` lists chunks whose receipt TIMED OUT (the tx MAY \
+         still land — check its tx_hash before retrying; the batch stops there); \
+         `unattempted` lists names never tried (the batch stops early after 2 \
+         consecutive failed chunks, an unconfirmed chunk, or a user Stop).",
         schema,
         |args: serde_json::Value, _ctx| async move {
             // The typed-confirmation gate (confirm_guard) runs BEFORE this
@@ -915,27 +922,48 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                     "note": "no non-MAIN subdomains to release"
                 }));
             }
+            // Hard total bound (relay_chunk::MAX_BATCH_ITEMS): the spend/burn
+            // ceiling one confirmed call may carry.
+            if let Some(msg) =
+                crate::relay_chunk::over_batch_limit("bulk_release_subdomains", targets.len())
+            {
+                return Err(crate::error::Error::bad_args(
+                    "bulk_release_subdomains",
+                    format!("{msg} Pass explicit `names` subsets."),
+                ));
+            }
             // Each release is one call; the relay caps a sponsored tx at 8
             // calls, so >8 targets auto-chunk into sequential sponsored txs
             // (crate::relay_chunk; telemetry #85/#88 — the old client-side
-            // reject). Chunks are independent burns: a failed chunk is
-            // reported and the rest continue, so the result names exactly
-            // what burned and what didn't.
+            // reject). A failed chunk is reported and the rest continue —
+            // UNLESS the breaker trips (2 consecutive failures), a chunk's
+            // receipt times out (chain state unknown — stop immediately), or
+            // the user pressed Stop (the dwell idiom): then the remaining
+            // chunks report `unattempted`.
             let ranges = crate::relay_chunk::chunk_ranges(targets.len(), false);
             let mut outcomes: Vec<crate::relay_chunk::ChunkOutcome> =
                 Vec::with_capacity(ranges.len());
             let mut released_all: Vec<String> = Vec::new();
             for r in &ranges {
+                if crate::app::chat::turn_cancelled()
+                    || crate::relay_chunk::should_stop(&outcomes)
+                {
+                    break;
+                }
                 match crate::app::events::run_bulk_release(&targets[r.clone()]).await {
                     Ok((released, tx)) => {
                         released_all.extend(released);
                         outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(tx));
                     }
-                    Err(e) => outcomes.push(crate::relay_chunk::ChunkOutcome::Failed(e)),
+                    Err(e) => outcomes.push(crate::relay_chunk::classify_failure(e)),
                 }
             }
             let fold = crate::relay_chunk::fold_outcomes(&ranges, &outcomes);
-            if released_all.is_empty() {
+            // Total loss (nothing burned, nothing pending) keeps the plain
+            // error contract; any landed OR unconfirmed outcome must return
+            // the structured breakdown instead (an Err would falsely claim
+            // nothing happened).
+            if released_all.is_empty() && fold.unconfirmed.is_empty() {
                 if let Some((_, e)) = fold.chunk_errors.first() {
                     return Err(crate::error::Error::other(format!("bulk release failed: {e}")));
                 }
@@ -948,24 +976,43 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                     "error": err,
                 }))
                 .collect();
+            // Receipt TIMEOUT ≠ revert: these txs MAY still land. Surface the
+            // hash and never claim the names were (or were not) burned.
+            let unconfirmed: Vec<serde_json::Value> = fold
+                .unconfirmed_txs
+                .iter()
+                .map(|(ci, tx)| serde_json::json!({
+                    "names": targets[ranges[*ci].clone()],
+                    "tx_hash": tx,
+                    "note": "receipt timed out — the tx may still land; check the \
+                             tx hash before retrying these names",
+                }))
+                .collect();
+            let unattempted: Vec<&String> =
+                fold.unattempted.iter().map(|&i| &targets[i]).collect();
             Ok(serde_json::json!({
                 "released": released_all,
                 "count": released_all.len(),
                 "tx_hashes": fold.tx_hashes,
                 "failed": failed,
+                "unconfirmed": unconfirmed,
+                "unattempted": unattempted,
             }))
         },
     )
 }
 
-/// `batch_create_subdomains(names)` — register MANY subdomains in batched
-/// sponsored multi-call txs (the mirror of `bulk_release_subdomains`, but
-/// ADDITIVE: NO destructive confirmation). The sanctioned mass-registration
-/// path — a few txs instead of an N-deep `create_subdomain` loop. Names are
-/// sanitised + availability-checked; taken/invalid names are skipped and
-/// reported. >7 names auto-chunk (`crate::relay_chunk`; the paid-claim
-/// approve reserves one slot per chunk — telemetry #85/#88). Not granted to
-/// subagents (same restraint as bulk_release).
+/// `batch_create_subdomains(names, confirmation)` — register MANY subdomains
+/// in batched sponsored multi-call txs (the mirror of `bulk_release_subdomains`).
+/// VALUE-MOVING on mainnet (each registration pulls `registrationCost()` — live:
+/// 1 $LH — from the owner's wallet), so it rides the typed-confirmation gate
+/// (`chat::confirm_guard`); the old "additive, no confirmation" rationale died
+/// with the hard cap. The sanctioned mass-registration path — a few txs instead
+/// of an N-deep `create_subdomain` loop. Names are sanitised +
+/// availability-checked; taken/invalid names are skipped and reported. >7 names
+/// auto-chunk (`crate::relay_chunk`; the paid-claim approve reserves one slot
+/// per chunk — telemetry #85/#88); at most `MAX_BATCH_ITEMS` per call. Not
+/// granted to subagents (same restraint as bulk_release).
 pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     // Hoisted table: `crate::tool_params::BatchCreateSubdomainsParams`,
     // byte-identity-tested natively.
@@ -975,15 +1022,25 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
         "Register MANY <name>.localharness.xyz subdomains on-chain in batched \
          sponsored transactions. PREFER THIS over calling create_subdomain in \
          a loop when registering more than one name. The owner's master wallet \
-         ends up holding every resulting ERC-721 NFT. Taken or invalid names \
-         are skipped (not an error) and listed in `skipped`. More than 7 names \
-         are split across multiple sponsored txs automatically (each tx \
-         carries at most 8 calls); a failed chunk is reported in `failed` and \
-         the remaining chunks still run. Returns { registered, skipped, count, \
-         tx_hashes, failed, urls }.",
+         ends up holding every resulting ERC-721 NFT. SPENDS $LH (each \
+         registration costs the on-chain registration fee — 1 $LH on mainnet), \
+         so the first call does NOT execute: it returns a single-use \
+         confirmation code (also shown to the owner in the UI). List the names, \
+         ask the owner to TYPE the code, then retry with `confirmation` set to \
+         it. At most 28 names per call — split a bigger request into separate \
+         calls. Taken or invalid names are skipped (not an error) and listed in \
+         `skipped`. More than 7 names are split across multiple sponsored txs \
+         automatically (each tx carries at most 8 calls). `failed` lists chunks \
+         whose tx FAILED (those names were NOT registered); `unconfirmed` lists \
+         chunks whose receipt TIMED OUT (the tx MAY still land — check its \
+         tx_hash before retrying; the batch stops there); `unattempted` lists \
+         names never tried (the batch stops early after 2 consecutive failed \
+         chunks, an unconfirmed chunk, or a user Stop). Returns { registered, \
+         skipped, count, tx_hashes, failed, unconfirmed, unattempted, urls }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let requested: Vec<String> = crate::tool_params::BatchCreateSubdomainsParams::lenient(&args)
+            let params = crate::tool_params::BatchCreateSubdomainsParams::lenient(&args);
+            let requested: Vec<String> = params
                 .names
                 .iter()
                 .map(|s| s.trim().to_string())
@@ -992,18 +1049,49 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             if requested.is_empty() {
                 return Err(crate::error::Error::bad_args("batch_create_subdomains", "names cannot be empty"));
             }
+            // Hard total bound (relay_chunk::MAX_BATCH_ITEMS): the mint/spend
+            // ceiling one confirmed call may carry.
+            if let Some(msg) =
+                crate::relay_chunk::over_batch_limit("batch_create_subdomains", requested.len())
+            {
+                return Err(crate::error::Error::bad_args("batch_create_subdomains", msg));
+            }
+            // Belt-and-suspenders: confirm_guard denies any unconfirmed call
+            // before this body runs; this guards a registration path that
+            // forgot the hook (batch_create mints names for real $LH — same
+            // posture as bulk_release / batch_send_lh).
+            let confirmed = params
+                .confirmation
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(crate::error::Error::bad_args(
+                    "batch_create_subdomains",
+                    "batch_create_subdomains requires the platform-issued confirmation code",
+                ));
+            }
             // A PAID claim (mainnet registrationCost > 0) inserts ONE cumulative
             // `approve` at the head of EVERY chunk's tx (events/subdomains.rs),
             // so each chunk carries at most 7 names — the reserved-slot rule the
-            // old hard cap encoded (telemetry #88). >7 names now auto-chunk into
-            // sequential sponsored txs instead of erroring (telemetry #85);
-            // chunks are independent, a failed chunk is reported and the rest
-            // still run.
+            // old hard cap encoded (telemetry #88). The slot is reserved
+            // UNCONDITIONALLY: on a registrationCost()==0 chain no approve rides
+            // and the slot is wasted — accepted (one spare call per chunk beats
+            // an async cost read inside the pure partitioner). >7 names
+            // auto-chunk into sequential sponsored txs (telemetry #85); a failed
+            // chunk is reported and the rest run UNLESS the breaker trips (2
+            // consecutive failures), a receipt times out (stop immediately —
+            // chain state unknown), or the user pressed Stop (the dwell idiom).
             let ranges = crate::relay_chunk::chunk_ranges(requested.len(), true);
             let mut outcomes: Vec<crate::relay_chunk::ChunkOutcome> =
                 Vec::with_capacity(ranges.len());
             let mut registered_all: Vec<String> = Vec::new();
             for r in &ranges {
+                if crate::app::chat::turn_cancelled()
+                    || crate::relay_chunk::should_stop(&outcomes)
+                {
+                    break;
+                }
                 let chunk = requested[r.clone()].to_vec();
                 match crate::app::events::run_batch_create_subdomains(&chunk).await {
                     Ok((registered, tx)) => {
@@ -1011,17 +1099,23 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                         outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(tx));
                     }
                     // Every name in this chunk was taken/invalid — nothing was
-                    // submitted. Handled (all end up in `skipped`), not a failure.
+                    // submitted. Handled (all end up in `skipped`), not a
+                    // failure. EXACT-STRING sentinel: matched by equality
+                    // against the shared const, so the producer
+                    // (events/subdomains.rs) must never wrap or reword it.
                     Err(e) if e == crate::app::events::NO_VALID_NAMES => {
                         outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(String::new()));
                     }
-                    Err(e) => outcomes.push(crate::relay_chunk::ChunkOutcome::Failed(e)),
+                    Err(e) => outcomes.push(crate::relay_chunk::classify_failure(e)),
                 }
             }
             let fold = crate::relay_chunk::fold_outcomes(&ranges, &outcomes);
-            if registered_all.is_empty() {
-                // Total loss: preserve the old single-tx error contract (first
-                // chunk error, or the all-skipped sentinel).
+            if registered_all.is_empty() && fold.unconfirmed.is_empty() {
+                // Total loss (and nothing pending): preserve the old single-tx
+                // error contract (first chunk error, or the all-skipped
+                // sentinel). With an unconfirmed chunk the structured result
+                // below reports it instead — an Err would falsely claim no
+                // registration can have happened.
                 let msg = fold
                     .chunk_errors
                     .first()
@@ -1032,13 +1126,15 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             // Skipped = names whose chunk was handled but which did not register
             // (taken/invalid). Failed-chunk names are NOT "skipped" — they were
             // attempted and their tx failed; they ride `failed` instead.
+            let registered_set: std::collections::HashSet<&str> =
+                registered_all.iter().map(|s| s.as_str()).collect();
             let skipped: Vec<&String> = fold
                 .landed
                 .iter()
                 .map(|&i| &requested[i])
                 .filter(|r| {
                     let c = crate::app::tenant::sanitize(r);
-                    !registered_all.iter().any(|reg| reg == &c)
+                    !registered_set.contains(c.as_str())
                 })
                 .collect();
             let failed: Vec<serde_json::Value> = fold
@@ -1049,12 +1145,28 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                     "error": err,
                 }))
                 .collect();
+            // Receipt TIMEOUT ≠ revert: these txs MAY still land — surface the
+            // hash, never claim the names did or did not register.
+            let unconfirmed: Vec<serde_json::Value> = fold
+                .unconfirmed_txs
+                .iter()
+                .map(|(ci, tx)| serde_json::json!({
+                    "names": requested[ranges[*ci].clone()],
+                    "tx_hash": tx,
+                    "note": "receipt timed out — the tx may still land; check the \
+                             tx hash before retrying these names",
+                }))
+                .collect();
+            let unattempted: Vec<&String> =
+                fold.unattempted.iter().map(|&i| &requested[i]).collect();
             Ok(serde_json::json!({
                 "registered": registered_all,
                 "skipped": skipped,
                 "count": registered_all.len(),
                 "tx_hashes": fold.tx_hashes,
                 "failed": failed,
+                "unconfirmed": unconfirmed,
+                "unattempted": unattempted,
                 "urls": registered_all.iter()
                     .map(|n| format!("https://{n}.localharness.xyz/"))
                     .collect::<Vec<_>>(),
@@ -1288,7 +1400,8 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 "type": "array",
                 "description": "The transfers to execute. More than 7 are split \
                     across multiple sponsored transactions automatically (at \
-                    most 7 ride each tx).",
+                    most 7 ride each tx); at most 28 transfers per call — split \
+                    a bigger batch into separate calls.",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -1320,15 +1433,21 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "batch_send_lh",
         "Transfer $LH to MULTIPLE recipients in batched on-chain transactions \
          — more than 7 transfers are split across multiple sponsored txs \
-         automatically. Each transfer names a 0x… address or a subdomain (paid \
-         to its on-chain owner). Far cheaper than repeated send_lh calls. \
+         automatically; at most 28 transfers per call (split a bigger payroll \
+         into separate calls). Each transfer names a 0x… address or a subdomain \
+         (paid to its on-chain owner). Far cheaper than repeated send_lh calls. \
          MOVES VALUE — the first call does NOT execute: it returns a single-use \
          confirmation code (also shown to the owner in the UI). Show the full \
          list, ask the owner to TYPE the code, then retry with `confirmation` \
-         set to it. ONE code for the whole batch. A failed chunk is reported in \
-         `failed` (those transfers did NOT move) and the remaining chunks still \
-         run. Returns { count, total, transfers: [{recipient, resolved, amount, \
-         status}], tx_hashes, failed }.",
+         set to it. ONE code for the whole batch. Per-transfer `status` is \
+         \"landed\", \"failed\" (that chunk's tx FAILED — those transfers did \
+         NOT move), \"unconfirmed\" (the chunk's receipt TIMED OUT — the tx MAY \
+         still land; check its tx_hash before re-sending, or you risk paying \
+         twice; the batch stops there), or \"unattempted\" (never tried — the \
+         batch stops early after 2 consecutive failed chunks, an unconfirmed \
+         chunk, or a user Stop). Returns { count, total, transfers: \
+         [{recipient, resolved, amount, status}], tx_hashes, failed, \
+         unconfirmed, unattempted }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             use crate::encoding::parse_token_amount;
@@ -1343,6 +1462,12 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     "batch_send_lh",
                     "batch_send_lh: transfers must be a non-empty array",
                 ));
+            }
+            // Hard total bound (relay_chunk::MAX_BATCH_ITEMS): the value-move
+            // ceiling one confirmed call may carry.
+            if let Some(msg) = crate::relay_chunk::over_batch_limit("batch_send_lh", items.len())
+            {
+                return Err(crate::error::Error::bad_args("batch_send_lh", msg));
             }
             // Belt-and-suspenders: confirm_guard denies any unconfirmed call before
             // this body runs; this guards a path that forgot the hook (batch_send_lh
@@ -1406,13 +1531,22 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // bridge reserves ONE slot in every chunk's tx, the reserved-slot
             // rule the old hard cap encoded (crate::relay_chunk; telemetry #85).
             // The bridge decision re-runs per chunk against the LIVE balance
-            // (earlier chunks may have drained the wallet). Chunks are
-            // independent: a failed chunk is reported and the rest still run.
+            // (earlier chunks may have drained the wallet). A failed chunk is
+            // reported and the rest run UNLESS the breaker trips (2 consecutive
+            // failures), a receipt times out — then the loop stops IMMEDIATELY:
+            // that tx may still mine, so a further chunk's live-balance bridge
+            // read could double-bridge/double-pay — or the user pressed Stop
+            // (the dwell idiom).
             let ranges = crate::relay_chunk::chunk_ranges(resolved.len(), true);
             let mut outcomes: Vec<crate::relay_chunk::ChunkOutcome> =
                 Vec::with_capacity(ranges.len());
             let mut bridged_any = false;
             for r in &ranges {
+                if crate::app::chat::turn_cancelled()
+                    || crate::relay_chunk::should_stop(&outcomes)
+                {
+                    break;
+                }
                 let chunk = &resolved[r.clone()];
                 let chunk_total: u128 = chunk.iter().map(|(_, _, w, _)| *w).sum();
                 let attempt: Result<(String, bool), String> = async {
@@ -1453,11 +1587,11 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                         bridged_any |= bridged;
                         outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(tx));
                     }
-                    Err(e) => outcomes.push(crate::relay_chunk::ChunkOutcome::Failed(e)),
+                    Err(e) => outcomes.push(crate::relay_chunk::classify_failure(e)),
                 }
             }
             let fold = crate::relay_chunk::fold_outcomes(&ranges, &outcomes);
-            if fold.landed.is_empty() {
+            if fold.landed.is_empty() && fold.unconfirmed.is_empty() {
                 if let Some((_, e)) = fold.chunk_errors.first() {
                     return Err(crate::error::Error::other(format!("batch_send_lh failed: {e}")));
                 }
@@ -1475,15 +1609,33 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             }
 
             let landed_total: u128 = fold.landed.iter().map(|&i| resolved[i].2).sum();
+            // O(1) membership for the per-transfer status labels (the naive
+            // per-item `Vec::contains` scan was O(n²) across the batch).
+            use std::collections::HashSet;
+            let landed_set: HashSet<usize> = fold.landed.iter().copied().collect();
+            let failed_set: HashSet<usize> = fold.failed.iter().copied().collect();
+            let unconfirmed_set: HashSet<usize> = fold.unconfirmed.iter().copied().collect();
             let transfers: Vec<serde_json::Value> = resolved
                 .iter()
                 .enumerate()
                 .map(|(i, (recipient, to_hex, _, amount_str))| {
+                    // Honest four-way label: an UNATTEMPTED transfer was never
+                    // tried (not "failed"), and an UNCONFIRMED one may still
+                    // land (its money claim is UNKNOWN, never "did not move").
+                    let status = if landed_set.contains(&i) {
+                        "landed"
+                    } else if failed_set.contains(&i) {
+                        "failed"
+                    } else if unconfirmed_set.contains(&i) {
+                        "unconfirmed"
+                    } else {
+                        "unattempted"
+                    };
                     serde_json::json!({
                         "recipient": recipient,
                         "resolved": to_hex,
                         "amount": amount_str,
-                        "status": if fold.landed.contains(&i) { "landed" } else { "failed" },
+                        "status": status,
                     })
                 })
                 .collect();
@@ -1497,6 +1649,23 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     "error": err,
                 }))
                 .collect();
+            // Receipt TIMEOUT ≠ revert: the tx MAY still land. Report the hash
+            // and never a "did NOT move" claim — re-sending unchecked risks
+            // paying these recipients twice.
+            let unconfirmed: Vec<serde_json::Value> = fold
+                .unconfirmed_txs
+                .iter()
+                .map(|(ci, tx)| serde_json::json!({
+                    "recipients": ranges[*ci].clone()
+                        .map(|i| resolved[i].0.clone())
+                        .collect::<Vec<_>>(),
+                    "tx_hash": tx,
+                    "note": "receipt timed out — the transfer may still land; check \
+                             the tx hash before re-sending or you risk paying twice",
+                }))
+                .collect();
+            let unattempted: Vec<String> =
+                fold.unattempted.iter().map(|&i| resolved[i].0.clone()).collect();
             // `count`/`total` name what actually MOVED — never the request size.
             Ok(serde_json::json!({
                 "count": fold.landed.len(),
@@ -1505,6 +1674,8 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 "transfers": transfers,
                 "tx_hashes": fold.tx_hashes,
                 "failed": failed,
+                "unconfirmed": unconfirmed,
+                "unattempted": unattempted,
             }))
         },
     )

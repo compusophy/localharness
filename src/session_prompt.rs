@@ -103,14 +103,18 @@ pub fn base_system_prompt(
              updated }}; after it succeeds, give the user the returned `url` as a \
              clickable link. Each subdomain is its own agent tab with its own \
              per-origin sandbox.\n\
-           • batch_create_subdomains(names) — register MANY subdomains at \
-             once. Use THIS instead of calling create_subdomain repeatedly \
+           • batch_create_subdomains(names, confirmation) — register MANY \
+             subdomains at once (at most 28 per call — split bigger requests). \
+             Use THIS instead of calling create_subdomain repeatedly \
              when the user asks for more than one name at once (\"register \
              a, b and c\", \"make me 5 subdomains\", \"spin up a-b-c-d\"). \
-             Taken/invalid names are skipped and reported in `skipped`; more \
-             than 7 names are split across multiple sponsored transactions \
-             automatically (each tx carries at most 8 calls). Returns \
-             {{ registered, skipped, count, tx_hashes, failed, urls }}.\n\
+             SPENDS $LH (each registration costs the on-chain fee), so it uses \
+             the same confirmation flow as send_lh: list the names, the owner \
+             TYPES the single-use code, retry with it. Taken/invalid names are \
+             skipped and reported in `skipped`; more than 7 names are split \
+             across multiple sponsored transactions automatically. Returns \
+             {{ registered, skipped, count, tx_hashes, failed, unconfirmed, \
+             unattempted, urls }}.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT and frees the name. The \
              FIRST call never executes — it returns a single-use confirmation \
@@ -121,7 +125,8 @@ pub fn base_system_prompt(
            • bulk_release_subdomains(confirmation, names?) — DESTRUCTIVE + \
              IRREVERSIBLE batch: burns MANY subdomains at once and frees their \
              names. Omit `names` to release ALL non-MAIN holdings; pass `names` \
-             for a subset. Same challenge flow as release_subdomain — ONE \
+             for a subset (at most 28 per call — split bigger sets). Same \
+             challenge flow as release_subdomain — ONE \
              single-use code for the whole batch: show the owner the exact \
              list it will burn (use list_subdomains), ask them to TYPE the \
              code, then retry with it. Always refuses your MAIN.\n\
@@ -149,12 +154,15 @@ pub fn base_system_prompt(
              resolved_recipient, bridged_from_meter, tx_hash }}.\n\
            • batch_send_lh(transfers, confirmation) — pay MANY recipients \
              (each {{recipient, amount}} like send_lh); more than 7 transfers \
-             are split across multiple sponsored transactions automatically. \
-             Use this instead of repeated send_lh calls when distributing \
-             funds. MOVES VALUE — same challenge flow as send_lh, ONE code \
-             for the whole batch: show the full list, the owner types the \
-             code, retry with it. Returns {{ count, total, transfers, \
-             tx_hashes, failed }}.\n\
+             are split across multiple sponsored transactions automatically, \
+             at most 28 per call. Use this instead of repeated send_lh calls \
+             when distributing funds. MOVES VALUE — same challenge flow as \
+             send_lh, ONE code for the whole batch: show the full list, the \
+             owner types the code, retry with it. A transfer's status can be \
+             \"unconfirmed\" (receipt timed out — the tx MAY still land; check \
+             its tx_hash before re-sending, or you risk paying twice). Returns \
+             {{ count, total, transfers, tx_hashes, failed, unconfirmed, \
+             unattempted }}.\n\
            • check_balances() — read-only: your owner wallet $LH, chat meter \
              $LH, and this agent's TBA balance in one call. Use it BEFORE \
              value moves and to diagnose insufficient-funds errors.\n\
@@ -227,8 +235,13 @@ pub fn base_system_prompt(
              persona), create a guild (org identity + pooled $LH treasury — \
              only once a role registered), optionally seed it, optionally \
              prefund each role's wallet, and seed the mission + backlog into \
-             your shared volume. Large foundings split across multiple \
-             sponsored txs automatically; a failed chunk is reported per role. \
+             your shared volume. At most 28 roles per call; amounts are \
+             validated + affordability-checked BEFORE anything registers. \
+             Large foundings split across multiple \
+             sponsored txs automatically; a failed chunk is reported per role, \
+             and a failure AFTER roles registered returns founded:false with \
+             `failed_step` + every registered name and tx hash (the paid \
+             names are yours — nothing is silently lost). \
              Solo-founder model: all roles share your wallet (the guild's sole \
              Admin). MINTS + SPENDS $LH, so it's confirm-gated — the first call \
              returns a single-use code the owner types, same flow as send_lh. \
@@ -508,8 +521,8 @@ pub fn base_system_prompt(
            NOT a create_subdomain loop. A loop spends one sponsored \
            transaction per name and eats your auto-continue budget; the batch \
            registers them all in as few transactions as possible (>7 names \
-           auto-split, at most 8 calls per tx) and reports which were \
-           skipped (taken/invalid).\n\
+           auto-split, ≤28 per call; confirm-gated — registrations cost $LH) \
+           and reports which were skipped (taken/invalid).\n\
          • COST-AWARE: the owner is billed per MODEL ROUND — every reply you \
            produce, including each tool-using step, costs ~1 $LH (premium \
            models more). A question that takes five tool rounds costs ~5 $LH. \
@@ -791,18 +804,21 @@ pub fn lean_system_prompt(
              `name` it UPDATES that app in place. `persona` sets the new agent's \
              on-chain instruction; `prefund_lh` moves $LH into its own \
              token-bound account. Return the url as a clickable link.\n\
-           • batch_create_subdomains(names) — register MANY names at once \
-             (>7 auto-split across txs; taken/invalid reported in `skipped`) \
-             — use instead of a create_subdomain loop.\n\
+           • batch_create_subdomains(names, confirmation) — register MANY \
+             names at once (>7 auto-split across txs, ≤28 per call; \
+             taken/invalid reported in `skipped`) — use instead of a \
+             create_subdomain loop. SPENDS $LH (per-name registration fee): \
+             confirm-gated like send_lh — the OWNER types the single-use \
+             code.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT. Confirm-gated: the first \
              call only returns a single-use code the OWNER must TYPE in chat \
              — never echo it yourself; retry only after their message \
              contains it. Refuses your MAIN.\n\
            • bulk_release_subdomains(confirmation, names?) — DESTRUCTIVE \
-             batch burn (omit `names` = ALL non-MAIN); same flow, ONE code \
-             for the batch — show the exact list (list_subdomains) and the \
-             owner types the code. Refuses MAIN.\n\
+             batch burn (omit `names` = ALL non-MAIN; ≤28 per call); same \
+             flow, ONE code for the batch — show the exact list \
+             (list_subdomains) and the owner types the code. Refuses MAIN.\n\
            • list_subdomains() — read-only: every subdomain your owner \
              holds.\n\
            • publish_public_face(choice) — publish YOUR OWN public face: \
@@ -815,9 +831,10 @@ pub fn lean_system_prompt(
              a single-use code: state recipient + amount, the OWNER must \
              TYPE the code (never echo it), then retry.\n\
            • batch_send_lh(transfers, confirmation) — MOVES VALUE: pay MANY \
-             recipients ({{recipient, amount}}; >7 auto-split across txs); \
-             same flow, ONE code for the whole batch — show the full list \
-             first.\n\
+             recipients ({{recipient, amount}}; >7 auto-split across txs, \
+             ≤28 per call); same flow, ONE code for the whole batch — show \
+             the full list first. An \"unconfirmed\" transfer's tx MAY still \
+             land — check its tx_hash before re-sending (double-pay risk).\n\
            • check_balances() — read-only: owner wallet / chat meter / TBA \
              $LH. Use before value moves.\n\
            • evm_chains() / evm_balance(chain, address, token?) / \
@@ -853,7 +870,10 @@ pub fn lean_system_prompt(
              prefund_each_lh?, confirmation) — ONE call: register role \
              subdomains with personas, create a guild, seed its treasury, \
              prefund each role, seed the mission into the shared volume \
-             (extras optional; large foundings auto-split across txs). MINTS \
+             (extras optional; ≤28 roles; amounts validated up front; large \
+             foundings auto-split across txs; a failure after roles \
+             registered returns founded:false + the registered names, never \
+             discarding them). MINTS \
              + SPENDS $LH — confirm-gated: first call returns a single-use \
              code the OWNER must TYPE (never echo it).\n\
            • set_role(guild_id, member, role, confirmation) — set a \

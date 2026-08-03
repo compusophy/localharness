@@ -1007,7 +1007,13 @@ crate::tool_params! {
                     bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
                     digits, hyphens. Already-taken or invalid names are skipped \
                     and reported back. More than 7 are split across multiple \
-                    sponsored txs automatically.",
+                    sponsored txs automatically; at most 28 names per call — \
+                    split a bigger request into separate calls.",
+        confirmation: opt_str = "Single-use confirmation code. OMIT (or pass \"\") on \
+                    the first call — it returns a challenge code shown to the owner \
+                    (each registration costs real $LH on mainnet). List the names, ask \
+                    the owner to TYPE the code in chat, then retry with it. Never \
+                    invent it; only the platform issues it.",
     }
 }
 
@@ -2667,7 +2673,16 @@ mod tests {
                             bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
                             digits, hyphens. Already-taken or invalid names are skipped \
                             and reported back. More than 7 are split across multiple \
-                            sponsored txs automatically."
+                            sponsored txs automatically; at most 28 names per call — \
+                            split a bigger request into separate calls."
+                    },
+                    "confirmation": {
+                        "type": "string",
+                        "description": "Single-use confirmation code. OMIT (or pass \"\") on \
+                            the first call — it returns a challenge code shown to the owner \
+                            (each registration costs real $LH on mainnet). List the names, ask \
+                            the owner to TYPE the code in chat, then retry with it. Never \
+                            invent it; only the platform issues it."
                     }
                 },
                 "required": ["names"]
