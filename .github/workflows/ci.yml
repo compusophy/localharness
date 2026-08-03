@@ -34,6 +34,14 @@ jobs:
         with:
           components: clippy
           targets: wasm32-unknown-unknown
+      # This job builds 5 clippy configs + 2 test profiles into one target dir;
+      # the stock ~14 GB of runner headroom isn't enough — the runner agent died
+      # silently (no logs, step frozen in_progress) at `test (default)` twice.
+      # Drop ~25 GB of preinstalled bloat we never use.
+      - name: free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL /usr/local/.ghcup /usr/share/dotnet
+          df -h /
       - uses: Swatinem/rust-cache@v2
 
       # Clippy across every SHIPPED feature config — all kept warning-clean.
