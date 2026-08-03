@@ -742,6 +742,7 @@ pub(crate) const GENERIC_REVERT_HINT: &str = "the transaction reverted on-chain.
 /// and always append the generic hint.
 pub(crate) async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
     let client = read_client();
+    let mut poll_errs = 0usize;
     for _ in 0..30 {
         let body = RpcRequest {
             jsonrpc: "2.0",
@@ -754,7 +755,7 @@ pub(crate) async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
         // no-op-timeout case) — same guard the JSON-RPC reads use. Receipt
         // comes back as an object or null, so bypass the RpcResponse
         // string-only deserializer.
-        let json: serde_json::Value = timeout_send("receipt poll", async {
+        let json: serde_json::Value = match timeout_send("receipt poll", async {
             let resp = client
                 .post(RPC_URL())
                 .json(&body)
@@ -765,7 +766,29 @@ pub(crate) async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
                 .await
                 .map_err(|e| format!("receipt parse: {e}"))
         })
-        .await??;
+        .await
+        {
+            Ok(Ok(v)) => {
+                poll_errs = 0;
+                v
+            }
+            // A poll transport/parse/timeout failure is NOT evidence about the
+            // tx — it is already SUBMITTED, so chain state is unknown. Aborting
+            // here used to escape WITHOUT the marker (and tx.rs drops the hash),
+            // so the batch tools reported "did NOT move" over an unknown tx.
+            // Retry; three consecutive dead polls give up UNCONFIRMED below.
+            Ok(Err(_)) | Err(_) => {
+                poll_errs += 1;
+                if poll_errs >= 3 {
+                    return Err(format!(
+                        "{}{tx_hash} (receipt polling unreachable)",
+                        crate::relay_chunk::RECEIPT_TIMEOUT_MARKER
+                    ));
+                }
+                sleep_ms(1000).await;
+                continue;
+            }
+        };
         if let Some(receipt) = json.get("result").filter(|v| !v.is_null()) {
             let status = receipt
                 .get("status")

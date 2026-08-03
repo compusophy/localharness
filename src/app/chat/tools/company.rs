@@ -390,7 +390,10 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // withdrawable chat meter — and it pulls WALLET-FIRST, so when
             // prefunds ride too the wallet must cover seed + prefunds + fees.
             let reg_cost = crate::app::registry::registration_cost().await.unwrap_or(0);
-            let reg_total = reg_cost.saturating_mul(roles.len() as u128);
+            // roles + 1: create_guild_sponsored pulls the SAME registrationCost()
+            // for the guild's own identity (guild.rs) — a wallet sized exactly
+            // to the roles would still die at STEP 2.
+            let reg_total = reg_cost.saturating_mul(roles.len() as u128 + 1);
             let total_prefund = prefund_wei
                 .checked_mul(roles.len() as u128)
                 .ok_or_else(|| {
@@ -546,6 +549,15 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // From here on, N registrations are PAID on-chain state: every
             // failure path returns the partial manifest (registered names + tx
             // hashes + which step failed), never a bare Err that discards them.
+            // A user Stop must also stop BETWEEN steps — guild creation pulls
+            // registrationCost() $LH, so it may not run after a cancel.
+            if crate::app::chat::turn_cancelled() {
+                return Ok(partial_manifest(
+                    "cancelled",
+                    "stopped by the user before guild creation",
+                    &name, &mission, &registered, &reg_fold, None, None,
+                ));
+            }
             let signer = match bounty_signer().await {
                 Ok(s) => s,
                 Err(e) => {
@@ -599,6 +611,16 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // `seed_wei` was parsed + affordability-checked BEFORE step 1; this
             // re-reads the LIVE pots for the bridge split only.
             if seed_wei > 0 {
+                // Same Stop rule as STEP 2: seeding moves the model-supplied
+                // treasury amount — never after a cancel.
+                if crate::app::chat::turn_cancelled() {
+                    return Ok(partial_manifest(
+                        "cancelled",
+                        "stopped by the user before treasury seeding",
+                        &name, &mission, &registered, &reg_fold,
+                        Some(&create_tx), Some(guild_id),
+                    ));
+                }
                 let from_hex =
                     crate::encoding::bytes_to_hex_str(&crate::wallet::address(&signer));
                 let bridge_wei =

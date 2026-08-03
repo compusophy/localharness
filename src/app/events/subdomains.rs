@@ -90,6 +90,11 @@ pub(crate) async fn run_bulk_release(
     Ok((released, tx))
 }
 
+/// Sentinel error: every requested name was filtered (taken/invalid) so
+/// NOTHING was submitted. The chunked batch tools match on this exact string
+/// to record an all-skipped chunk as "handled, no tx" rather than a failure.
+pub(crate) const NO_VALID_NAMES: &str = "no valid, available names to register";
+
 /// Batch-register N subdomains in ONE sponsored, iframe-signed tx — the
 /// sanctioned mass-registration path (vs. a sequential `create_subdomain`
 /// loop, which spends N sponsored txs + N auto-continue iterations). Names
@@ -98,11 +103,6 @@ pub(crate) async fn run_bulk_release(
 /// the whole multicall on-chain and waste sponsor gas — same defensive
 /// lesson as `run_bulk_release`'s holder check). Returns (registered_names,
 /// tx_hash). The owner context is resolved from the current tenant.
-/// Sentinel error: every requested name was filtered (taken/invalid) so
-/// NOTHING was submitted. The chunked batch tools match on this exact string
-/// to record an all-skipped chunk as "handled, no tx" rather than a failure.
-pub(crate) const NO_VALID_NAMES: &str = "no valid, available names to register";
-
 pub(crate) async fn run_batch_create_subdomains(
     names: &[String],
 ) -> Result<(Vec<String>, String), String> {

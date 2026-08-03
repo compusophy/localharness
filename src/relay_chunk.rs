@@ -169,6 +169,7 @@ pub enum ChunkOutcome {
 
 /// The honest aggregate of a chunked batch run.
 #[derive(Debug, Default, PartialEq, Eq)]
+#[non_exhaustive] // pub SDK surface — adding a field must not be semver-breaking
 pub struct BatchFold {
     /// Item indices whose chunk landed, in order.
     pub landed: Vec<usize>,
@@ -324,12 +325,47 @@ mod tests {
         // A trailing clause must not ride into the hash.
         let e = format!("{RECEIPT_TIMEOUT_MARKER}0xdead (check later).");
         assert_eq!(unconfirmed_tx_hash(&e).as_deref(), Some("0xdead"));
+        // The bounded poll-error escape (rpc.rs wait_for_receipt: 3 dead polls
+        // give up UNCONFIRMED) — the shape that used to escape marker-less and
+        // read as "did NOT move".
+        let e = format!("submit: {RECEIPT_TIMEOUT_MARKER}0xfeed (receipt polling unreachable)");
+        assert_eq!(unconfirmed_tx_hash(&e).as_deref(), Some("0xfeed"));
+        assert_eq!(
+            classify_failure(e),
+            ChunkOutcome::Unconfirmed("0xfeed".into())
+        );
         // A revert (or any non-timeout error) stays a plain failure.
         for revert in ["tx reverted: LH2024 insufficient", "signer: no wallet"] {
             assert_eq!(unconfirmed_tx_hash(revert), None);
             assert_eq!(
                 classify_failure(revert.into()),
                 ChunkOutcome::Failed(revert.into())
+            );
+        }
+    }
+
+    #[test]
+    fn model_facing_text_carries_the_live_batch_bound() {
+        // MAX_BATCH_ITEMS is hand-written into tool descriptions, both prompt
+        // variants, and llms.txt prose. Bumping the const must redden here
+        // until every surface is re-swept — stale caps are model-facing lies.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let n = MAX_BATCH_ITEMS.to_string();
+        for rel in [
+            "src/app/chat/tools/platform.rs",
+            "src/app/chat/tools/company.rs",
+            "src/session_prompt.rs",
+            "web/llms.txt",
+        ] {
+            let text = std::fs::read_to_string(root.join(rel)).unwrap();
+            let hit = text.contains(&format!("at most {n}"))
+                || text.contains(&format!("At most {n}"))
+                || text.contains(&format!("\u{2264}{n}"))
+                || text.contains(&format!("capped at {n}"));
+            assert!(
+                hit,
+                "{rel}: no batch-bound phrase mentions {n} — resweep the \
+                 model-facing text after changing MAX_BATCH_ITEMS"
             );
         }
     }

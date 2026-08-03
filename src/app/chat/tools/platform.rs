@@ -835,7 +835,8 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 "type": "array",
                 "items": { "type": "string" },
                 "description": "OPTIONAL subset of subdomain names to release in one \
-                    batch. Omit to target EVERY non-MAIN subdomain the owner holds. \
+                    batch. Omit to target EVERY non-MAIN subdomain the owner holds \
+                    (errors when the owner holds more than 28 — pass subsets instead). \
                     At most 28 names per call — for more, pass explicit subsets in \
                     separate calls."
             },
@@ -853,8 +854,9 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
     ClosureTool::new(
         "bulk_release_subdomains",
         "DESTRUCTIVE + IRREVERSIBLE: burn MANY subdomain NFTs and free their names in \
-         ONE batch. With no `names`, releases EVERY non-MAIN subdomain the owner holds; \
-         with `names`, only that subset. At most 28 names per call — for more, pass \
+         ONE batch. With no `names`, releases EVERY non-MAIN subdomain the owner holds \
+         (errors when that exceeds 28 — pass subsets instead); with `names`, only that \
+         subset. At most 28 names per call — for more, pass \
          explicit `names` subsets in separate calls. The first call does NOT execute: it \
          returns a single-use confirmation code (also shown to the owner in the UI). Show \
          the owner the exact list that will be burned (use list_subdomains), ask them to \
