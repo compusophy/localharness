@@ -226,7 +226,8 @@ mod tests {
     #[test]
     fn partitions_hit_exact_boundaries() {
         // (n, reserved-aux-slot, expected)
-        let cases: &[(usize, bool, &[(usize, usize)])] = &[
+        type Case = (usize, bool, &'static [(usize, usize)]);
+        let cases: &[Case] = &[
             (0, false, &[]),
             (7, false, &[(0, 7)]),
             (8, false, &[(0, 8)]),
@@ -393,7 +394,7 @@ mod tests {
         let unconf = ChunkOutcome::Unconfirmed("0xbeef".into());
         // One unconfirmed chunk = stop NOW (chain state unknown; a further
         // chunk could double-bridge/double-spend).
-        assert!(should_stop(&[unconf.clone()]));
+        assert!(should_stop(std::slice::from_ref(&unconf)));
         assert!(should_stop(&[ChunkOutcome::Landed("0xa".into()), unconf.clone()]));
         let r = ranges(&[(0, 2), (2, 4), (4, 5)]);
         let f = fold_outcomes(&r, &[ChunkOutcome::Landed("0xa".into()), unconf]);
