@@ -725,7 +725,9 @@ fn transfer_recipient(input: &[u8]) -> Result<[u8; 20], String> {
 /// cross-origin-signed. `submitFeedback`/`setPushSub` are gone too: feedback and
 /// push enrollment moved fully OFF-CHAIN (telemetry repo / proxy push store).
 /// Selectors are computed from the canonical signatures so
-/// they stay in lockstep with `registry::selector`.
+/// they stay in lockstep with `registry::selector`. Parity with sponsor.ts +
+/// the registry `*_sponsored` set is enforced by
+/// `tests/relay_allowlist_parity.rs` — update BOTH lists (+ its pin) together.
 fn diamond_signable_selectors() -> Vec<[u8; 4]> {
     [
         "register(string)",
@@ -736,6 +738,11 @@ fn diamond_signable_selectors() -> Vec<[u8; 4]> {
         "withdrawCredits(uint256)",
         "depositCredits(uint256)",
         "redeem(string)",
+        // Ready-Up feed membership (SubscribeFacet) — gas-only roster toggles
+        // the relay already sponsors; were sponsor.ts-only (the exact drift
+        // class tests/relay_allowlist_parity.rs now guards).
+        "subscribe(uint256)",
+        "unsubscribe(uint256)",
         "createInvite(bytes32,uint256,uint64)",
         "acceptInvite(string)",
         "reclaimInvite(bytes32)",

@@ -98,7 +98,9 @@ const SPONSOR_FEE_TOKEN = FEE_TOKEN.toLowerCase();
 // EXACT ABI strings used by `src/registry/*` (so the 4-byte selectors match the
 // Rust `selector()`). Admin/owner-gated calls (diamondCut, adminReset*,
 // mintFromFiat, meter, recordRun) are deliberately ABSENT — they revert without
-// the role anyway and must never be relay-sponsored.
+// the role anyway and must never be relay-sponsored. Parity with signer.rs
+// diamond_signable_selectors() + the registry `*_sponsored` set is enforced by
+// tests/relay_allowlist_parity.rs — update both lists (+ its pin) together.
 const DIAMOND_WRITE_SIGS = [
   'register(string)',
   'registerMain(uint256)',

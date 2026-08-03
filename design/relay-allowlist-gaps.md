@@ -7,6 +7,13 @@ chunking follow-up (in progress).**
   governance tools no longer 403. Residual: an on-chain E2E smoke (form a party →
   join → complete) not yet run — needs live setup.
 - **#3 (funded-gate setMetadata message): DONE + LIVE** (same proxy deploy).
+- **Prevention drift test (below): SHIPPED** — `tests/relay_allowlist_parity.rs`
+  pins the registry `*_sponsored` fn→signature table (enumeration-guarded: a new
+  `*_sponsored` fn fails the test until classified) and asserts every submitted
+  diamond signature appears in BOTH `signer.rs diamond_signable_selectors()` and
+  `sponsor.ts DIAMOND_WRITE_SIGS`, plus exact signer↔relay mirror parity. First
+  run caught `subscribe(uint256)`/`unsubscribe(uint256)` present in sponsor.ts
+  but missing from signer.rs — fixed in the same commit.
 - **The 504 fix bundled in the same session BROKE inference** (edge→node = 500 on
   every request) and was reverted — see `design/proxy-504-fix.md`. It is NOT a
   config flip. The relay/price/msg changes were unaffected.
