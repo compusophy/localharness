@@ -60,9 +60,15 @@ jobs:
       - name: clippy (browser-app + mainnet, wasm32)
         run: cargo clippy --no-default-features --features browser-app,mainnet --target wasm32-unknown-unknown -- -D warnings
 
+      # Step timeouts: a hung test killed BY the runner uploads logs naming the
+      # stuck binary; without them the hang starved the runner itself, which
+      # died with zero logs (3 consecutive runs, 2026-08-03). Superset finishes
+      # in ~2 min — 15 is generous headroom, not an expected duration.
       - name: test (wallet + anthropic + openai — superset)
+        timeout-minutes: 15
         run: cargo test --features "wallet anthropic openai"
       - name: test (default)
+        timeout-minutes: 15
         run: cargo test
 
       - name: wasm guard (SDK-only)
