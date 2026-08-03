@@ -98,6 +98,11 @@ pub(crate) async fn run_bulk_release(
 /// the whole multicall on-chain and waste sponsor gas — same defensive
 /// lesson as `run_bulk_release`'s holder check). Returns (registered_names,
 /// tx_hash). The owner context is resolved from the current tenant.
+/// Sentinel error: every requested name was filtered (taken/invalid) so
+/// NOTHING was submitted. The chunked batch tools match on this exact string
+/// to record an all-skipped chunk as "handled, no tx" rather than a failure.
+pub(crate) const NO_VALID_NAMES: &str = "no valid, available names to register";
+
 pub(crate) async fn run_batch_create_subdomains(
     names: &[String],
 ) -> Result<(Vec<String>, String), String> {
@@ -139,7 +144,7 @@ pub(crate) async fn run_batch_create_subdomains(
         registered.push(cleaned);
     }
     if calls.is_empty() {
-        return Err("no valid, available names to register".into());
+        return Err(NO_VALID_NAMES.into());
     }
     // PAID CLAIMS: a non-zero `registrationCost()` makes every register pull
     // the fee via transferFrom — ONE cumulative `approve(diamond, cost × n)`

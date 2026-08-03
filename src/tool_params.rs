@@ -998,14 +998,16 @@ crate::tool_params! {
 
 crate::tool_params! {
     /// Args for the browser `batch_create_subdomains` tool
-    /// (`src/app/chat/tools/platform.rs`) — N registrations in ONE sponsored
-    /// tx. The body keeps its own trim/empty/cap validation.
+    /// (`src/app/chat/tools/platform.rs`) — N registrations in batched
+    /// sponsored txs (auto-chunked, `crate::relay_chunk`). The body keeps its
+    /// own trim/empty validation.
     pub struct BatchCreateSubdomainsParams: lenient {
-        names: req_str_array = "Subdomain names to register in ONE tx, e.g. \
+        names: req_str_array = "Subdomain names to register, e.g. \
                     [\"alice\",\"bob\"] -> alice.localharness.xyz, \
                     bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
                     digits, hyphens. Already-taken or invalid names are skipped \
-                    and reported back. Max 7 per call.",
+                    and reported back. More than 7 are split across multiple \
+                    sponsored txs automatically.",
     }
 }
 
@@ -2660,11 +2662,12 @@ mod tests {
                     "names": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Subdomain names to register in ONE tx, e.g. \
+                        "description": "Subdomain names to register, e.g. \
                             [\"alice\",\"bob\"] -> alice.localharness.xyz, \
                             bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
                             digits, hyphens. Already-taken or invalid names are skipped \
-                            and reported back. Max 7 per call."
+                            and reported back. More than 7 are split across multiple \
+                            sponsored txs automatically."
                     }
                 },
                 "required": ["names"]
