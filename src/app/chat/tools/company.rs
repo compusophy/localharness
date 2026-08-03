@@ -233,12 +233,19 @@ pub(crate) fn company_status_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// `found_company(name, mission, roles?, seed_treasury_lh?, prefund_each_lh?,
 /// confirmation)` — the WRITE half: stand up a whole COMPANY from existing
 /// sponsored primitives in one call (Model A, solo-founder). Composes:
-/// `create_guild_sponsored` (org identity + pooled `$LH` treasury) → optional
-/// `fund_guild` (seed the treasury) → `batch_create_subdomains` (the N role
-/// subdomains, ONE tx) → per-role on-chain persona + optional prefund
-/// (`build_actor_setup`, batched into ONE sponsored tx) → seed the mission +
-/// backlog into the owner's shared volume (SessionRoom KV). Returns a manifest
-/// (guild id, treasury, role→subdomain map) that `company_status` reads back.
+/// role-subdomain registration (chunked ≤8-call sponsored txs,
+/// `crate::relay_chunk`) → `create_guild_sponsored` (org identity + pooled
+/// `$LH` treasury — created ONLY after at least one role registration landed,
+/// so a failed registration can't strand a live guild with zero roles) →
+/// optional `fund_guild` (seed the treasury) → per-role on-chain persona +
+/// optional prefund (`build_actor_setup`, chunked so one role's calls never
+/// split across txs; the DEFAULT 7-roles+prefund = 21 calls used to be ONE
+/// relay-rejected tx — design/relay-allowlist-gaps.md #2 / telemetry #85) →
+/// seed the mission + backlog into the owner's shared volume (SessionRoom KV).
+/// Returns a manifest (guild id, treasury, role→subdomain map) that
+/// `company_status` reads back. A role's `persona_set`/`prefunded_lh`/`tba`
+/// are stamped ONLY after its chunk's tx lands — the manifest can't report
+/// funds or TBAs that didn't happen.
 ///
 /// MINTS + SPENDS, so it rides the typed-confirmation gate (`confirm_guard`)
 /// like `send_lh` / `spend_treasury`, AND is allowlist-gated like `set_persona`.
@@ -256,19 +263,22 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = crate::tool_params::FoundCompanyParams::schema();
     ClosureTool::new(
         "found_company",
-        "Found a whole COMPANY in one call: create an on-chain GUILD (org identity + \
-         pooled $LH treasury), optionally seed the treasury, register N ROLE SUBDOMAINS \
-         (each a persona-bearing agent you own — executive/pm/coder/reviewer/accounting/ \
-         hr/marketing by default), set each role's on-chain persona, optionally prefund \
-         each role's wallet, and seed the mission + backlog into your shared volume. \
-         Model A (solo-founder): all roles share your wallet, which is the guild's sole \
-         Admin — governance is single-controller for now. MINTS + SPENDS $LH, so the \
-         first call does NOT execute: it returns a single-use confirmation code (also \
-         shown to the owner). State the name, roles, and spend, ask the owner to TYPE the \
-         code, then retry with `confirmation` set to it. Inspect the result later with \
-         company_status. Returns a manifest { guild_id, name, mission, treasury, \
-         treasury_lh, roles:[{role,subdomain,url,tba?,persona_set}], skipped_roles, \
-         backlog_seeded, tx_hashes }.",
+        "Found a whole COMPANY in one call: register N ROLE SUBDOMAINS (each a \
+         persona-bearing agent you own — executive/pm/coder/reviewer/accounting/ \
+         hr/marketing by default), create an on-chain GUILD (org identity + pooled \
+         $LH treasury — only once at least one role registered), optionally seed the \
+         treasury, set each role's on-chain persona, optionally prefund each role's \
+         wallet, and seed the mission + backlog into your shared volume. Large \
+         foundings are split across multiple sponsored txs automatically (each tx \
+         carries at most 8 calls); a failed chunk is reported per role and the rest \
+         still run. Model A (solo-founder): all roles share your wallet, which is the \
+         guild's sole Admin — governance is single-controller for now. MINTS + SPENDS \
+         $LH, so the first call does NOT execute: it returns a single-use confirmation \
+         code (also shown to the owner). State the name, roles, and spend, ask the \
+         owner to TYPE the code, then retry with `confirmation` set to it. Inspect the \
+         result later with company_status. Returns a manifest { guild_id, name, \
+         mission, treasury, treasury_lh, roles:[{role,subdomain,url,tba?,persona_set}], \
+         skipped_roles, backlog_seeded, tx_hashes }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let p = crate::tool_params::FoundCompanyParams::lenient(&args);
@@ -324,7 +334,52 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 crate::error::Error::other("no identity — claim a subdomain first")
             })?;
 
-            // STEP 1 — create the guild (org identity + pooled $LH treasury). The
+            // STEP 1 — register the N role subdomains FIRST, in chunked ≤8-call
+            // sponsored txs (crate::relay_chunk; the paid-claim approve reserves
+            // one slot per chunk, so ≤7 names ride each tx). The guild is NOT
+            // created until at least one role registration actually landed — a
+            // failed registration must not strand a live guild with zero roles
+            // (design/relay-allowlist-gaps.md #2 / telemetry #85). Taken/invalid
+            // candidates are skipped + reported (never an error); a failed chunk
+            // is reported per role and the other chunks still run.
+            let candidates: Vec<(String, &ResolvedRole)> = roles
+                .iter()
+                .map(|r| (format!("{company_slug}-{}", r.slug), r))
+                .collect();
+            let want_names: Vec<String> = candidates.iter().map(|(n, _)| n.clone()).collect();
+            let reg_ranges = crate::relay_chunk::chunk_ranges(want_names.len(), true);
+            let mut reg_outcomes: Vec<crate::relay_chunk::ChunkOutcome> =
+                Vec::with_capacity(reg_ranges.len());
+            let mut registered: Vec<String> = Vec::new();
+            for r in &reg_ranges {
+                let chunk = want_names[r.clone()].to_vec();
+                match crate::app::events::run_batch_create_subdomains(&chunk).await {
+                    Ok((reg, tx)) => {
+                        registered.extend(reg);
+                        reg_outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(tx));
+                    }
+                    // Every name in this chunk was taken/invalid — nothing was
+                    // submitted; handled (those roles report skipped), not a failure.
+                    Err(e) if e == crate::app::events::NO_VALID_NAMES => {
+                        reg_outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(String::new()));
+                    }
+                    Err(e) => reg_outcomes.push(crate::relay_chunk::ChunkOutcome::Failed(e)),
+                }
+            }
+            let reg_fold = crate::relay_chunk::fold_outcomes(&reg_ranges, &reg_outcomes);
+            if registered.is_empty() {
+                let why = reg_fold
+                    .chunk_errors
+                    .first()
+                    .map(|(_, e)| e.clone())
+                    .unwrap_or_else(|| "every role name is taken or invalid".to_string());
+                return Err(crate::error::Error::other(format!(
+                    "no role subdomain could be registered ({why}) — company not \
+                     founded, guild not created"
+                )));
+            }
+
+            // STEP 2 — create the guild (org identity + pooled $LH treasury). The
             // caller becomes its founding Admin (so the roster IS the founder).
             let signer = bounty_signer().await?;
             let create_tx = crate::app::registry::create_guild_sponsored(&signer, &name)
@@ -343,9 +398,19 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 })?;
             let treasury = crate::app::registry::guild_address(guild_id).await.unwrap_or_default();
 
-            let mut tx_hashes = serde_json::json!({ "create_guild": create_tx });
+            let mut tx_hashes = serde_json::json!({
+                "create_guild": create_tx,
+                "create_subdomains": reg_fold.tx_hashes,
+            });
+            if !reg_fold.chunk_errors.is_empty() {
+                tx_hashes["create_subdomains_errors"] = serde_json::json!(reg_fold
+                    .chunk_errors
+                    .iter()
+                    .map(|(_, e)| e.clone())
+                    .collect::<Vec<_>>());
+            }
 
-            // STEP 2 (optional) — seed the treasury from the founder's wallet.
+            // STEP 3 (optional) — seed the treasury from the founder's wallet.
             // Mirrors fund_guild_tool (meter-credit auto-bridge in the same tx).
             if let Some(seed) = p.seed_treasury_lh.as_deref() {
                 let seed = seed.trim();
@@ -373,41 +438,54 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 }
             }
 
-            // STEP 3 — register the N role subdomains in ONE sponsored tx. Taken/
-            // invalid candidates are skipped + reported (never an error). The
-            // founder ends up owning every role NFT.
-            let candidates: Vec<(String, &ResolvedRole)> = roles
-                .iter()
-                .map(|r| (format!("{company_slug}-{}", r.slug), r))
-                .collect();
-            let want_names: Vec<String> = candidates.iter().map(|(n, _)| n.clone()).collect();
-            let (registered, subdomains_tx) =
-                crate::app::events::run_batch_create_subdomains(&want_names)
-                    .await
-                    .map_err(|e| {
-                        crate::error::Error::other(format!("create role subdomains failed: {e}"))
-                    })?;
-            tx_hashes["create_subdomains"] = serde_json::json!(subdomains_tx);
-
-            // STEP 4 (priority 2) — set each created role's on-chain persona and
-            // optionally prefund its TBA, batched into ONE sponsored tx. Best-effort:
-            // a role whose tokenId isn't visible yet is skipped (recorded), never
-            // sinking a founding that already created the guild + subdomains.
+            // STEP 4 — set each created role's on-chain persona and optionally
+            // prefund its TBA, chunked into ≤8-call sponsored txs that never
+            // split one role's calls (a prefund's createTBA + transfer must land
+            // with its persona — crate::relay_chunk::chunk_ranges_weighted; the
+            // DEFAULT 7-roles+prefund_each = 21 calls used to be ONE
+            // relay-rejected tx, telemetry #85). A role's manifest fields
+            // (persona_set / prefunded_lh / tba) are stamped ONLY after its
+            // chunk's tx LANDS, so the manifest can never report funds or TBAs
+            // that didn't happen; roles in a failed chunk carry `setup_error`
+            // and the remaining chunks still run. Best-effort: a role whose
+            // tokenId isn't visible yet is skipped (recorded), never sinking a
+            // founding that already created the guild + subdomains.
             let prefund_each = p
                 .prefund_each_lh
                 .as_deref()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty() && s != "0");
+            // One role's prepared setup, awaiting its chunk's sponsored tx.
+            struct PendingSetup {
+                entry_idx: usize,
+                calls: Vec<crate::tempo_tx::TempoCall>,
+                gas: u128,
+                persona_set: bool,
+                prefunded_lh: Option<String>,
+                tba: Option<String>,
+            }
             let mut role_entries: Vec<serde_json::Value> = Vec::new();
             let mut skipped_roles: Vec<serde_json::Value> = Vec::new();
-            let mut setup_calls: Vec<crate::tempo_tx::TempoCall> = Vec::new();
-            let mut setup_gas: u128 = 0;
-            for (cand, role) in &candidates {
+            let mut pending: Vec<PendingSetup> = Vec::new();
+            for (i, (cand, role)) in candidates.iter().enumerate() {
                 if !registered.iter().any(|r| r == cand) {
+                    // Honest reason: a role whose registration CHUNK failed was
+                    // attempted, not "taken or invalid".
+                    let reason = if reg_fold.failed.contains(&i) {
+                        let err = reg_ranges
+                            .iter()
+                            .position(|r| r.contains(&i))
+                            .and_then(|ci| reg_fold.chunk_errors.iter().find(|(c, _)| *c == ci))
+                            .map(|(_, e)| e.as_str())
+                            .unwrap_or("tx failed");
+                        format!("registration tx failed: {err}")
+                    } else {
+                        "name taken or invalid — already registered or out of range".to_string()
+                    };
                     skipped_roles.push(serde_json::json!({
                         "role": role.role,
                         "intended_subdomain": cand,
-                        "reason": "name taken or invalid — already registered or out of range",
+                        "reason": reason,
                     }));
                     continue;
                 }
@@ -430,19 +508,17 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                         )
                         .await
                         {
-                            Ok(setup) => {
-                                if setup.persona_set {
-                                    entry["persona_set"] = serde_json::json!(true);
-                                }
-                                if let Some(amt) = &setup.prefunded_lh {
-                                    entry["prefunded_lh"] = serde_json::json!(amt);
-                                }
-                                if let Some(tba) = &setup.tba {
-                                    entry["tba"] = serde_json::json!(tba);
-                                }
-                                setup_calls.extend(setup.calls);
-                                setup_gas += setup.extra_gas;
+                            Ok(setup) if !setup.calls.is_empty() => {
+                                pending.push(PendingSetup {
+                                    entry_idx: role_entries.len(),
+                                    calls: setup.calls,
+                                    gas: setup.extra_gas,
+                                    persona_set: setup.persona_set,
+                                    prefunded_lh: setup.prefunded_lh,
+                                    tba: setup.tba,
+                                });
                             }
+                            Ok(_) => {} // nothing to set up for this role
                             Err(e) => {
                                 entry["setup_error"] = serde_json::json!(e.to_string());
                             }
@@ -456,42 +532,57 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 }
                 role_entries.push(entry);
             }
-            // One sponsored tx for ALL role personas + prefunds (gotcha #5: batch
-            // the founding fan-out). Best-effort — a failure here doesn't unwind
-            // the guild/subdomains that already exist; it's reported instead.
-            if !setup_calls.is_empty() {
+            let weights: Vec<usize> = pending.iter().map(|s| s.calls.len()).collect();
+            let setup_ranges = crate::relay_chunk::chunk_ranges_weighted(&weights, false);
+            let mut setup_txs: Vec<String> = Vec::new();
+            let mut setup_errors: Vec<String> = Vec::new();
+            for r in &setup_ranges {
+                let group = &pending[r.clone()];
+                let calls: Vec<crate::tempo_tx::TempoCall> =
+                    group.iter().flat_map(|s| s.calls.iter().cloned()).collect();
+                let gas: u128 = group.iter().map(|s| s.gas).sum();
                 match crate::app::events::run_sponsored_tempo_call(
                     &owner,
-                    setup_calls,
-                    1_000_000 + setup_gas,
+                    calls,
+                    1_000_000 + gas,
                     "company role setup (personas + prefund)",
                 )
                 .await
                 {
                     Ok(tx) => {
-                        tx_hashes["role_setup"] = serde_json::json!(tx);
-                    }
-                    Err(e) => {
-                        // The WHOLE setup tx (personas + every createTBA + every
-                        // prefund transfer) was rejected as one unit, so NOTHING
-                        // landed — the roles still exist only as bare subdomains.
-                        // Clear the optimistic fields set at 437-441 BEFORE the tx,
-                        // not just persona_set: leaving prefunded_lh/tba made the
-                        // manifest report prefunds + TBAs that never happened (a
-                        // false "staffed + funded" the model would act on). The
-                        // default 7-roles+prefund_each = 21 calls always trips the
-                        // relay's 8-call cap, so this path fires on the DEFAULT
-                        // config — until STEP 4 is chunked (design/relay-allowlist-gaps.md).
-                        for entry in role_entries.iter_mut() {
-                            entry["persona_set"] = serde_json::json!(false);
-                            if let Some(obj) = entry.as_object_mut() {
-                                obj.remove("prefunded_lh");
-                                obj.remove("tba");
+                        setup_txs.push(tx);
+                        // The chunk landed — only NOW may the manifest claim it.
+                        for s in group {
+                            let entry = &mut role_entries[s.entry_idx];
+                            if s.persona_set {
+                                entry["persona_set"] = serde_json::json!(true);
+                            }
+                            if let Some(amt) = &s.prefunded_lh {
+                                entry["prefunded_lh"] = serde_json::json!(amt);
+                            }
+                            if let Some(tba) = &s.tba {
+                                entry["tba"] = serde_json::json!(tba);
                             }
                         }
-                        tx_hashes["role_setup_error"] = serde_json::json!(e.to_string());
+                    }
+                    Err(e) => {
+                        // This chunk (personas + createTBAs + prefund transfers)
+                        // was rejected as ONE unit — nothing in it landed. Its
+                        // roles keep persona_set=false and never get
+                        // prefunded_lh/tba; the other chunks still run.
+                        for s in group {
+                            role_entries[s.entry_idx]["setup_error"] =
+                                serde_json::json!(format!("role setup tx failed: {e}"));
+                        }
+                        setup_errors.push(e);
                     }
                 }
+            }
+            if !setup_txs.is_empty() {
+                tx_hashes["role_setup"] = serde_json::json!(setup_txs);
+            }
+            if !setup_errors.is_empty() {
+                tx_hashes["role_setup_error"] = serde_json::json!(setup_errors);
             }
 
             // STEP 5 (priority 2) — seed the mission + backlog into the owner's
