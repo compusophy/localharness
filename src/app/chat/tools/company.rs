@@ -380,10 +380,10 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 })?,
                 None => 0,
             };
-            // AGGREGATE spend pre-check against the LIVE balance (the per-role
-            // gate in build_actor_setup checks each role against the FULL
-            // balance, so without this, chunk 1 drains the wallet and later
-            // chunks revert opaquely). Wallet-only spends: the registration
+            // AGGREGATE spend pre-check against the LIVE balance BEFORE any
+            // registration (the STEP-4 per-role gate only sees the remaining
+            // budget AFTER registrations + guild + seed have spent — by then
+            // the $LH is already gone). Wallet-only spends: the registration
             // fee (registrationCost() × roles — an upper bound: taken names
             // are skipped, which only lowers the real spend) and every
             // prefund. Only the treasury seed may auto-bridge from the
@@ -682,6 +682,17 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let mut role_entries: Vec<serde_json::Value> = Vec::new();
             let mut skipped_roles: Vec<serde_json::Value> = Vec::new();
             let mut pending: Vec<PendingSetup> = Vec::new();
+            // ONE cached wallet read backs every role's prefund gate (each
+            // role's build_actor_setup used to re-read the creator's UNCHANGED
+            // balance — an extra round trip per role); the remainder DECLINES
+            // as roles allocate prefunds, so the gate compares against what is
+            // actually left instead of the same full balance N times. A failed
+            // read stamps that role's setup_error and the NEXT role retries
+            // the read — the per-role error surface the old in-helper read
+            // had. (id_of_name / tba_of_name stay sequential per role: they
+            // DIFFER per role, and this wasm code has no concurrent-join
+            // idiom to piggyback on.)
+            let mut prefund_remaining: Option<u128> = None;
             for (i, (cand, role)) in candidates.iter().enumerate() {
                 if !registered_set.contains(cand.as_str()) {
                     // Honest reason: a role whose registration CHUNK failed was
@@ -718,17 +729,45 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 // Resolve the freshly-minted tokenId for persona + (optional) prefund.
                 match crate::app::registry::id_of_name(cand).await {
                     Ok(token_id) if token_id != 0 => {
+                        let avail = if prefund_each.is_some() {
+                            match prefund_remaining {
+                                Some(v) => v,
+                                None => match crate::app::registry::token_balance_of(&owner)
+                                    .await
+                                {
+                                    Ok(b) => {
+                                        prefund_remaining = Some(b);
+                                        b
+                                    }
+                                    Err(e) => {
+                                        entry["setup_error"] = serde_json::json!(format!(
+                                            "token_balance_of: {e}"
+                                        ));
+                                        role_entries.push(entry);
+                                        continue;
+                                    }
+                                },
+                            }
+                        } else {
+                            0
+                        };
                         match crate::app::chat::access::build_actor_setup(
-                            "found_company",
-                            &owner,
                             token_id,
                             cand,
                             Some(&role.persona),
-                            prefund_each.as_deref(),
+                            prefund_each.as_deref().map(|s| (s, prefund_wei)),
+                            avail,
                         )
                         .await
                         {
                             Ok(setup) if !setup.calls.is_empty() => {
+                                // Allocate this role's prefund out of the
+                                // cached budget so the next role gates on
+                                // what is actually left.
+                                if setup.prefunded_lh.is_some() {
+                                    prefund_remaining = prefund_remaining
+                                        .map(|v| v.saturating_sub(prefund_wei));
+                                }
                                 pending.push(PendingSetup {
                                     entry_idx: role_entries.len(),
                                     calls: setup.calls,

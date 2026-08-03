@@ -184,8 +184,10 @@ Face-value ARG rejections (empty/parse/range, confirmation-code gates,
 `classify_recipient`/role parses, bashlite diagnostics) are
 `Error::bad_args(tool, msg)` — Display verbatim, structural CORE_TOOL_FAILED,
 never substring-classified (model-echoed args must not read as backend codes;
-shared helpers `resolve_account`/`resolve_lh_recipient`/`build_actor_setup`
-take the tool name). Proxy non-2xx replies with a real status →
+shared helpers `resolve_account`/`resolve_lh_recipient`/`access::parse_prefund`
+take the tool name — parse_prefund runs BEFORE any mint, and `build_actor_setup`
+consumes the pre-parsed amount + a caller-read balance budget, no bad_args
+left inside it). Proxy non-2xx replies with a real status →
 `Error::http_status`. Everything else — chain/RPC/tx prose ("X failed: {e}"),
 state-dependent refusals (no identity / not-registered / owned-by-other),
 opaque re-wraps — DELIBERATELY stays `Error::other`: its `classify()` pass is

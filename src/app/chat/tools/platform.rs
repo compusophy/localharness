@@ -164,17 +164,21 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
             // A blank/whitespace `source` means "no app" — a name-only mint.
             let source = params.source.as_deref().map(str::trim).filter(|s| !s.is_empty());
             let persona = params.persona.as_deref();
-            let prefund_lh = params.prefund_lh.as_deref();
             // Validate (don't silently mangle) — an invalid name returns a clear
             // reason to the agent instead of minting a DIFFERENT name (#66/#60).
             let cleaned = crate::subdomain::validate(name).map_err(|why| {
                 crate::error::Error::bad_args("create_subdomain", format!("invalid subdomain name: {why}"))
             })?;
+            // Parse/validate prefund_lh BEFORE the mint (the found_company
+            // blocker class): a bad amount must reject while the tx count is
+            // still zero, never after the sponsored on-chain claim.
+            let prefund =
+                crate::app::chat::access::parse_prefund("create_subdomain", params.prefund_lh.as_deref())?;
             match source {
                 // name + source → compile + register + publish (ownership-aware).
-                Some(src) => create_subdomain_with_app(&cleaned, src, persona, prefund_lh).await,
+                Some(src) => create_subdomain_with_app(&cleaned, src, persona, prefund).await,
                 // name only → the sponsored mint (+ optional actor setup).
-                None => create_subdomain_name_only(&cleaned, persona, prefund_lh).await,
+                None => create_subdomain_name_only(&cleaned, persona, prefund).await,
             }
         },
     )
@@ -182,11 +186,11 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
 
 /// The name-only `create_subdomain` path (no `source`): a sponsored mint plus
 /// optional actor-model persona/prefund. The master wallet ends up holding the
-/// new id.
+/// new id. `prefund` was parsed/validated by the tool body BEFORE the mint.
 async fn create_subdomain_name_only(
     cleaned: &str,
     persona: Option<&str>,
-    prefund_lh: Option<&str>,
+    prefund: Option<(String, u128)>,
 ) -> Result<serde_json::Value, crate::error::Error> {
     // Register the name first (master wallet ends up holding the new id).
     let (owner, claim_tx) = crate::app::verify::claim_name_via_iframe(cleaned)
@@ -203,19 +207,13 @@ async fn create_subdomain_name_only(
 
     // Optional ACTOR-MODEL extras: persona + prefund. Only if asked.
     let want_persona = persona.map(|p| !p.trim().is_empty()).unwrap_or(false);
-    let want_prefund = prefund_lh
-        .map(|p| {
-            let t = p.trim();
-            !t.is_empty() && t != "0"
-        })
-        .unwrap_or(false);
     let mut result = serde_json::json!({
         "name": cleaned,
         "url": format!("https://{cleaned}.localharness.xyz/"),
         "owner": owner,
         "tx_hash": claim_tx,
     });
-    if want_persona || want_prefund {
+    if want_persona || prefund.is_some() {
         // Resolve the freshly-minted tokenId for the metadata/TBA ops.
         let token_id = match crate::app::registry::id_of_name(cleaned).await {
             Ok(id) if id != 0 => id,
@@ -228,12 +226,11 @@ async fn create_subdomain_name_only(
             Err(e) => return Err(crate::error::Error::other(format!("id_of_name: {e}"))),
         };
         let setup = build_actor_setup(
-            "create_subdomain",
-            &owner,
             token_id,
             cleaned,
             persona,
-            prefund_lh,
+            prefund.as_ref().map(|(s, w)| (s.as_str(), *w)),
+            prefund_budget_wei(&owner, prefund.is_some()).await?,
         )
         .await?;
         if !setup.calls.is_empty() {
@@ -276,7 +273,7 @@ async fn create_subdomain_with_app(
     cleaned: &str,
     source: &str,
     persona: Option<&str>,
-    prefund_lh: Option<&str>,
+    prefund: Option<(String, u128)>,
 ) -> Result<serde_json::Value, crate::error::Error> {
     // Who would sign? The owner of the current host subdomain — the master
     // wallet that holds ALL this identity's names. Used to decide OWN vs
@@ -347,10 +344,16 @@ async fn create_subdomain_with_app(
     stash_published_app_embed(cleaned, wasm);
     // ACTOR MODEL: persona + prefund stay ON-CHAIN (identity / economy
     // primitives, small/cheap unlike the app bytes). Submit them as their own
-    // sponsored batch only if either was requested.
-    let setup =
-        build_actor_setup("create_subdomain", &owner, token_id, cleaned, persona, prefund_lh)
-            .await?;
+    // sponsored batch only if either was requested. (`prefund` was parsed by
+    // the tool body BEFORE the mint.)
+    let setup = build_actor_setup(
+        token_id,
+        cleaned,
+        persona,
+        prefund.as_ref().map(|(s, w)| (s.as_str(), *w)),
+        prefund_budget_wei(&owner, prefund.is_some()).await?,
+    )
+    .await?;
     let setup_tx = if setup.calls.is_empty() {
         None
     } else {
@@ -388,6 +391,18 @@ async fn create_subdomain_with_app(
         result["tba"] = serde_json::json!(tba);
     }
     Ok(result)
+}
+
+/// The creator's live $LH wallet balance when a prefund was requested — the
+/// ONE pre-setup balance read (`build_actor_setup` no longer reads it); 0
+/// with no RPC round trip otherwise.
+async fn prefund_budget_wei(owner: &str, want: bool) -> Result<u128, crate::error::Error> {
+    if !want {
+        return Ok(0);
+    }
+    crate::app::registry::token_balance_of(owner)
+        .await
+        .map_err(crate::error::Error::other)
 }
 
 /// The device's MASTER-wallet signer, asserted to be `owner`. Publishing is
@@ -862,12 +877,13 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
          the owner the exact list that will be burned (use list_subdomains), ask them to \
          TYPE the code, then retry with `confirmation` set to it. ONE code for the whole \
          batch; more than 8 names are split across multiple sponsored txs automatically \
-         (each tx burns at most 8). Returns { released, count, tx_hashes, failed, \
-         unconfirmed, unattempted } — `failed` lists chunks whose tx FAILED (those names \
-         were NOT burned); `unconfirmed` lists chunks whose receipt TIMED OUT (the tx MAY \
-         still land — check its tx_hash before retrying; the batch stops there); \
-         `unattempted` lists names never tried (the batch stops early after 2 \
-         consecutive failed chunks, an unconfirmed chunk, or a user Stop).",
+         (each tx burns at most 8). Returns { released, skipped, count, tx_hashes, \
+         failed, unconfirmed, unattempted } — `skipped` lists names with nothing left to \
+         burn (already gone — handled without a tx, not an error); `failed` lists chunks \
+         whose tx FAILED (those names were NOT burned); `unconfirmed` lists chunks whose \
+         receipt TIMED OUT (the tx MAY still land — check its tx_hash before retrying; \
+         the batch stops there); `unattempted` lists names never tried (the batch stops \
+         early after 2 consecutive failed chunks, an unconfirmed chunk, or a user Stop).",
         schema,
         |args: serde_json::Value, _ctx| async move {
             // The typed-confirmation gate (confirm_guard) runs BEFORE this
@@ -957,6 +973,17 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                         released_all.extend(released);
                         outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(tx));
                     }
+                    // Every name in this chunk was filtered out (nothing left
+                    // to burn) — nothing was submitted. Handled (those names
+                    // report `skipped`, never `released`), not a failure: two
+                    // such chunks must not trip the breaker and abandon the
+                    // rest (same vacuous-Landed fold as batch_create's
+                    // NO_VALID_NAMES). EXACT-STRING sentinel: matched by
+                    // equality against the shared const, so the producer
+                    // (events/subdomains.rs) must never wrap or reword it.
+                    Err(e) if e == crate::app::events::NO_RELEASABLE_NAMES => {
+                        outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(String::new()));
+                    }
                     Err(e) => outcomes.push(crate::relay_chunk::classify_failure(e)),
                 }
             }
@@ -970,10 +997,27 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 && fold.unconfirmed.is_empty()
                 && fold.unattempted.is_empty()
             {
-                if let Some((_, e)) = fold.chunk_errors.first() {
-                    return Err(crate::error::Error::other(format!("bulk release failed: {e}")));
-                }
+                // First chunk error, or the all-skipped sentinel (every chunk
+                // vacuous — nothing was left to burn): the old single-tx error
+                // contract, same fallback shape as batch_create.
+                let msg = fold
+                    .chunk_errors
+                    .first()
+                    .map(|(_, e)| e.clone())
+                    .unwrap_or_else(|| crate::app::events::NO_RELEASABLE_NAMES.to_string());
+                return Err(crate::error::Error::other(format!("bulk release failed: {msg}")));
             }
+            // Skipped = names whose chunk was handled but which did NOT burn
+            // (filtered — nothing releasable / already gone). Failed-chunk
+            // names are NOT "skipped" — they were attempted; they ride `failed`.
+            let released_set: std::collections::HashSet<&str> =
+                released_all.iter().map(|s| s.as_str()).collect();
+            let skipped: Vec<&String> = fold
+                .landed
+                .iter()
+                .map(|&i| &targets[i])
+                .filter(|n| !released_set.contains(n.as_str()))
+                .collect();
             let failed: Vec<serde_json::Value> = fold
                 .chunk_errors
                 .iter()
@@ -998,6 +1042,7 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 fold.unattempted.iter().map(|&i| &targets[i]).collect();
             Ok(serde_json::json!({
                 "released": released_all,
+                "skipped": skipped,
                 "count": released_all.len(),
                 "tx_hashes": fold.tx_hashes,
                 "failed": failed,

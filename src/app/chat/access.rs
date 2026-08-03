@@ -240,6 +240,27 @@ fn create_tba_calldata(token_id: u64) -> Vec<u8> {
     data
 }
 
+/// Parse + validate a `prefund_lh` argument — the caller runs this BEFORE any
+/// on-chain write (the found_company blocker class: a bad amount must reject
+/// while the tx count is still zero, never after a paid mint). Empty / `"0"` /
+/// zero-valued → `Ok(None)` (no prefund); unparseable → `Error::bad_args(tool)`.
+/// Returns the (display, wei) pair [`build_actor_setup`] consumes.
+pub(crate) fn parse_prefund(
+    tool: &str,
+    prefund_lh: Option<&str>,
+) -> Result<Option<(String, u128)>, crate::error::Error> {
+    let Some(s) = prefund_lh.map(str::trim).filter(|s| !s.is_empty() && *s != "0") else {
+        return Ok(None);
+    };
+    let wei = crate::encoding::parse_token_amount(s).ok_or_else(|| {
+        crate::error::Error::bad_args(tool, format!(
+            "could not parse prefund_lh \"{s}\" — pass a decimal $LH figure like \
+             \"5\" or \"1.5\""
+        ))
+    })?;
+    Ok((wei > 0).then(|| (s.to_string(), wei)))
+}
+
 /// Result of preparing the optional actor-model extras (persona + prefund) for
 /// a freshly-registered subdomain. `calls` are appended to the same sponsored
 /// Tempo tx that publishes / sets up the new token; `extra_gas` is added to the
@@ -267,17 +288,19 @@ pub(crate) struct ActorSetup {
 /// controls. We batch `createTokenBoundAccount(tokenId)` first (idempotent) so
 /// the counterfactual TBA exists to receive the transfer.
 ///
-/// `tool` names the calling agent tool (for the `prefund_lh` arg-rejection —
-/// `Error::bad_args`); `creator` is the owner address paying / signing;
 /// `token_id` is the new name's freshly-minted id; `name` is the (sanitised)
-/// subdomain.
+/// subdomain. `prefund` is the CALLER-parsed `(display, wei)` amount
+/// ([`parse_prefund`] — validation happens BEFORE the sponsored mint, so a bad
+/// amount can never surface after an on-chain write). `available_wei` is the
+/// creator's spendable `$LH` budget, read ONCE by the caller (found_company
+/// threads a declining remainder through its role loop instead of re-reading
+/// an unchanged balance per role); ignored when `prefund` is `None`.
 pub(crate) async fn build_actor_setup(
-    tool: &str,
-    creator: &str,
     token_id: u64,
     name: &str,
     persona: Option<&str>,
-    prefund_lh: Option<&str>,
+    prefund: Option<(&str, u128)>,
+    available_wei: u128,
 ) -> Result<ActorSetup, crate::error::Error> {
     let registry_addr =
         parse_address(crate::app::registry::REGISTRY_ADDRESS()).map_err(crate::error::Error::other)?;
@@ -304,66 +327,53 @@ pub(crate) async fn build_actor_setup(
         }
     }
 
-    // PREFUND — move `$LH` from the CREATOR to the new name's TBA. Validate the
-    // creator actually holds the amount first (clear error, before any write).
-    if let Some(amt_str) = prefund_lh {
-        let amt_str = amt_str.trim();
-        if !amt_str.is_empty() {
-            let amount_wei = crate::encoding::parse_token_amount(amt_str).ok_or_else(|| {
-                crate::error::Error::bad_args(tool, format!(
-                    "could not parse prefund_lh \"{amt_str}\" — pass a decimal $LH figure \
-                     like \"5\" or \"1.5\""
-                ))
-            })?;
-            if amount_wei > 0 {
-                // Balance gate: refuse if the creator can't cover it.
-                let bal = crate::app::registry::token_balance_of(creator)
-                    .await
-                    .map_err(crate::error::Error::other)?;
-                if bal < amount_wei {
-                    return Err(crate::error::Error::other(format!(
-                        "insufficient $LH to prefund: need {amt_str}, creator holds \
-                         {} wei — redeem a code or lower prefund_lh",
-                        bal
-                    )));
-                }
-                // Resolve the new name's TBA (counterfactual address). We batch
-                // createTokenBoundAccount(tokenId) FIRST so it's deployed to
-                // receive funds (idempotent if already deployed).
-                let tba = crate::app::registry::tba_of_name(name)
-                    .await
-                    .map_err(crate::error::Error::other)?
-                    .ok_or_else(|| {
-                        crate::error::Error::other(
-                            "could not resolve the new subdomain's token-bound account \
-                             (TBA) to prefund — retry shortly",
-                        )
-                    })?;
-                let tba_bytes = parse_address(&tba).map_err(crate::error::Error::other)?;
-                let token_addr =
-                    parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS())
-                        .map_err(crate::error::Error::other)?;
-                // 1) deploy the TBA (on the registry diamond)
-                calls.push(crate::tempo_tx::TempoCall {
-                    to: registry_addr,
-                    value_wei: 0,
-                    input: create_tba_calldata(token_id),
-                });
-                // 2) ERC-20 transfer creator → TBA (on the $LH token)
-                calls.push(crate::tempo_tx::TempoCall {
-                    to: token_addr,
-                    value_wei: 0,
-                    input: lh_transfer_calldata(&tba_bytes, amount_wei),
-                });
-                // TBA deploy (~mint-class cold SSTOREs) + ERC-20 transfer.
-                extra_gas += 1_500_000 + 500_000;
-                prefunded_lh = Some(amt_str.to_string());
-                tba_out = Some(tba);
+    // PREFUND — move `$LH` from the CREATOR to the new name's TBA. The amount
+    // was parsed by the caller BEFORE any write; gate it against the caller's
+    // budget (clear error, before this setup tx).
+    if let Some((amt_str, amount_wei)) = prefund {
+        if amount_wei > 0 {
+            // Budget gate: refuse if the creator's remaining balance can't cover it.
+            if available_wei < amount_wei {
+                return Err(crate::error::Error::other(format!(
+                    "insufficient $LH to prefund: need {amt_str}, creator has \
+                     {available_wei} wei available — redeem a code or lower prefund_lh"
+                )));
             }
+            // Resolve the new name's TBA (counterfactual address). We batch
+            // createTokenBoundAccount(tokenId) FIRST so it's deployed to
+            // receive funds (idempotent if already deployed).
+            let tba = crate::app::registry::tba_of_name(name)
+                .await
+                .map_err(crate::error::Error::other)?
+                .ok_or_else(|| {
+                    crate::error::Error::other(
+                        "could not resolve the new subdomain's token-bound account \
+                         (TBA) to prefund — retry shortly",
+                    )
+                })?;
+            let tba_bytes = parse_address(&tba).map_err(crate::error::Error::other)?;
+            let token_addr =
+                parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS())
+                    .map_err(crate::error::Error::other)?;
+            // 1) deploy the TBA (on the registry diamond)
+            calls.push(crate::tempo_tx::TempoCall {
+                to: registry_addr,
+                value_wei: 0,
+                input: create_tba_calldata(token_id),
+            });
+            // 2) ERC-20 transfer creator → TBA (on the $LH token)
+            calls.push(crate::tempo_tx::TempoCall {
+                to: token_addr,
+                value_wei: 0,
+                input: lh_transfer_calldata(&tba_bytes, amount_wei),
+            });
+            // TBA deploy (~mint-class cold SSTOREs) + ERC-20 transfer.
+            extra_gas += 1_500_000 + 500_000;
+            prefunded_lh = Some(amt_str.to_string());
+            tba_out = Some(tba);
         }
     }
 
-    let _ = creator; // (used above only when prefunding)
     Ok(ActorSetup {
         calls,
         extra_gas,

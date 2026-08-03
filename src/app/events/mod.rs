@@ -141,7 +141,8 @@ fn ios_standalone() -> bool {
 }
 pub(crate) use key_sync::{sync_local_key_to_main, try_auto_restore_gemini_key};
 pub(crate) use subdomains::{
-    run_batch_create_subdomains, run_bulk_release, run_release_subdomain, NO_VALID_NAMES,
+    run_batch_create_subdomains, run_bulk_release, run_release_subdomain, NO_RELEASABLE_NAMES,
+    NO_VALID_NAMES,
 };
 
 /// Every user interaction maps to one of these. The closed enum makes

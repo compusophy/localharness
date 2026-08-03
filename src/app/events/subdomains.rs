@@ -30,6 +30,11 @@ pub(crate) async fn run_release_subdomain(name: &str) -> Result<String, String> 
     super::run_sponsored_tempo_call(&owner, vec![call], 1_000_000, "release subdomain").await
 }
 
+/// Sentinel error: every requested name was filtered (blank) so NOTHING was
+/// submitted. The chunked bulk-release tool matches on this exact string to
+/// record an all-skipped chunk as "handled, no tx" rather than a failure.
+pub(crate) const NO_RELEASABLE_NAMES: &str = "no subdomains to release after filtering";
+
 /// Bulk-release (burn) several subdomains in ONE sponsored, iframe-signed
 /// tx. `names` are resolved to token ids; the owner's MAIN is refused
 /// up-front (and again on-chain). The CALLER (tool) MUST gate on a single
@@ -82,7 +87,7 @@ pub(crate) async fn run_bulk_release(
         released.push(name.to_string());
     }
     if calls.is_empty() {
-        return Err("no subdomains to release after filtering".into());
+        return Err(NO_RELEASABLE_NAMES.into());
     }
     // 1M base headroom (mirrors release_name_sponsored) + ~250k per extra burn.
     let gas = 1_000_000 + (calls.len() as u128).saturating_sub(1) * 250_000;
