@@ -254,7 +254,7 @@ mod tests {
             assert!(NONCE_ALPHABET.contains(&c), "char {c} outside alphabet");
         }
         // No ambiguous glyphs by construction.
-        for banned in [b'I', b'L', b'O', b'0', b'1'] {
+        for banned in *b"ILO01" {
             assert!(!NONCE_ALPHABET.contains(&banned));
         }
     }

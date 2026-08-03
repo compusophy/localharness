@@ -27,7 +27,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # PINNED, not @stable: -D warnings + a floating clippy means every 6-week
+      # release lands new lints and reds main with no code change. Bump the pin
+      # (and fix its new lints) deliberately.
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy
           targets: wasm32-unknown-unknown

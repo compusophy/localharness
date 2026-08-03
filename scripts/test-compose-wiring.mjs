@@ -352,34 +352,30 @@ const childWasm = compileSource(childSrc, 'child');
   check('7e admitted child FB is accounted (1 MB)', worker.composeTotalFbBytes() === 512 * 512 * 4,
     `total=${worker.composeTotalFbBytes()}`);
 
-  // The tree-wide aggregate (8 MB) is independent of the per-node count cap (8):
-  // spread 1 MB children across a 2-level tree so the FB cap — not the count cap
-  // — is what stops the (cap/1MB + 1)th. Once the total reaches the cap, the next
-  // instantiate is refused (FAILED) and adds nothing.
+  // The tree-wide aggregate (16 MB) is independent of the per-node count cap
+  // (16): fill the cap with cap/1MB children at the root, then mount one MORE
+  // under the first child (so the count cap is NOT what bites) — the FB cap
+  // must refuse it (FAILED) and add nothing.
   worker.composeReset();
   const cap = worker.COMPOSE_MAX_TOTAL_FB_BYTES;
-  const per = 512 * 512 * 4;          // 1 MB
-  const maxAdmit = Math.floor(cap / per); // 8 children fit (8 MB == cap)
-  // root holds up to COMPOSE_MAX_CHILDREN; park the rest under the first child.
+  const per = 512 * 512 * 4;              // 1 MB
+  const maxAdmit = Math.floor(cap / per); // 16 children fit (16 MB == cap)
   const roots = [];
-  for (let i = 0; i < Math.min(maxAdmit, 8); i++) roots.push(worker.composeMountForTest('ok', 0, 0, 16, 16));
+  for (let i = 0; i < maxAdmit; i++) roots.push(worker.composeMountForTest('ok', 0, 0, 16, 16));
   let admitted = 0;
   for (const h of roots) {
     if (h < 0) continue;
     worker.composeInstantiateForTest(h, ab(okWasm));
     if (worker.composeChildren()[h].state === MOD_READY) admitted++;
   }
-  // Mount one MORE 1 MB child (under the first root child, so the per-node count
-  // cap is NOT what bites): the FB total is already at the 8 MB aggregate cap, so
-  // it must be refused.
   const parent = worker.composeChildren()[roots[0]];
   const hOver = worker.composeMountInto(parent, 'over', 0, 0, 16, 16);
-  check('7f a 9th 1 MB child mounts past the count cap', hOver >= 0, `h=${hOver}`);
+  check(`7f a ${maxAdmit + 1}th 1 MB child mounts past the count cap`, hOver >= 0, `h=${hOver}`);
   worker.composeInstantiateForTest(hOver, ab(okWasm), parent);
   check('7g child over the aggregate FB cap is refused', parent.children[hOver].state === MOD_FAILED,
     `state=${parent.children[hOver].state}`);
-  check('7h FB total never exceeds the aggregate cap', worker.composeTotalFbBytes() === admitted * per && worker.composeTotalFbBytes() <= cap,
-    `total=${worker.composeTotalFbBytes()} admitted=${admitted}`);
+  check('7h FB total is exactly the full cap, never exceeded', admitted === maxAdmit && worker.composeTotalFbBytes() === maxAdmit * per,
+    `total=${worker.composeTotalFbBytes()} admitted=${admitted}/${maxAdmit}`);
   worker.composeReset();
   check('7i reset clears the FB total', worker.composeTotalFbBytes() === 0);
 }
