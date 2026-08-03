@@ -25,6 +25,10 @@ jobs:
   rust:
     name: rust — clippy + test + wasm
     runs-on: ubuntu-latest
+    # For the TEMPORARY flight recorder's diag-branch pushes (repo default is
+    # read-only). Remove with the recorder.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       # PINNED, not @stable: -D warnings + a floating clippy means every 6-week
