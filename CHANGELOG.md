@@ -5,6 +5,70 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.79.0] - 2026-08-03
+
+### Added
+
+- **`localharness work` — the local coding agent, benchmarked to parity.**
+  `work [--as <me>] [--model <id>] <task>` runs the SDK's native agent loop
+  in the CURRENT DIRECTORY (all 8 fs builtins + run_command, workspace_only
+  containment, live tool streaming, meter-billed), and
+  `adapters/terminal-bench/` runs it under Harbor as a Terminal-Bench 2.1
+  agent. A transcript-diagnosed fix arc took TB-2.1 from 0/3 to **parity
+  5/5 vs terminus-2** on the same flash model (Δ 0.0, ~17% fewer steps):
+  auto-continue past the SDK's 16-round turn cap (the guillotine that
+  scored 0/3), per-request auth-token re-signing (long runs died 401 on
+  the proxy's 5-min token window), a 429 backoff ladder instead of dying
+  on rate limits, run_command process-group kill + bounded pipe drains
+  (grandchildren die on timeout; every byte already read survives), and
+  auto-compaction at the shared 128K ceiling so deep tasks neither
+  overflow nor false-fail. `claude-*` models route to the Anthropic
+  backend; `tbench-compare` runs same-model head-to-heads with opt-in
+  reference arms.
+- **Router intent eval set**: `datasets/router/` — 218 labeled cases
+  (natural free phrasings + adversarial must-be-metered) + an offline
+  `router_eval` regression gate. Result: precision 1.000 (ZERO
+  false-frees — the conservatism contract holds), heuristic recall 44.1%
+  — the measured headroom for the local classifier.
+- **claude-sonnet-5** in the CLI MODELS list + the proxy rate table.
+
+### Changed
+
+- **`create_and_publish_app` merged into `create_subdomain`** (telemetry
+  #86): one tool — `name` alone is the sponsored mint; `name` + `source`
+  compiles rustlite FIRST, registers, and publishes to the app store
+  (ownership-aware: fresh mint / in-place update), with inline auto-embed
+  keyed on the publish. The old tool is DELETED, no shim (reset > compat).
+- **Compose caps raised for real grids** (telemetry #87): per-node child
+  cap 8→16 and total-framebuffer budget 8→16 MB, so 3×3/4×4 composite
+  grids fully spawn.
+- **Batch tools honor the relay's 8-call window** (telemetry #88 +
+  siblings): `batch_create_subdomains` capped at 7,
+  `batch_send_lh`/`bulk_release` brought into the same class, and the
+  stale batch/compose limits in prompts + docs corrected (the
+  own-text-lies audit).
+- **CI stabilized after the silent-runner-death hunt**: rust pinned to
+  1.96.0 (1.97 codegen froze the VM compiling the default-config lib
+  test), the default-config test job gets its own runner VM, and step
+  timeouts + disk headroom turn silent runner deaths into logged failures.
+
+### Fixed
+
+- **Relay allowlist: the 7 missing sponsored selectors** (stranded-funds
+  bug): party lifecycle (`joinParty`/`completeParty`/`disbandParty`),
+  governance `execute`/`executeWeighted`, and validation
+  `challengeValidation`/`reclaimStake`/`reclaimUnresolved` 403'd on
+  mainnet while their siblings worked — party/validation escrow was
+  stranded and rung-4 payouts dead. Added to the relay + browser signer
+  allowlists in lockstep; the funded-gate 403 message now names the real
+  trigger instead of the impossible "self-pay your fees".
+- **Proxy `gemini.ts` edge→Node — the 504 fix, for real.** The earlier
+  revert blamed the runtime; it was two port bugs (a bare default export
+  getting the legacy invocation, extensionless ESM imports). Deep-context
+  requests that 504'd on Edge (~130K tokens) now round-trip in seconds.
+- **`found_company`** no longer reports prefunds/TBAs that never landed
+  when setup fails partway — honest per-item failure instead.
+
 ## [0.78.0] - 2026-07-30
 
 ### Added
