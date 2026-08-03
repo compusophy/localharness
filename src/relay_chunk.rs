@@ -18,6 +18,91 @@ use std::ops::Range;
 /// The relay's hard per-tx call cap (`proxy/api/sponsor.ts`).
 pub const RELAY_MAX_CALLS_PER_TX: usize = 8;
 
+/// Hard TOTAL-items bound for ONE batch-tool call — the spend bound the old
+/// per-tx caps used to provide. Auto-chunking removed the per-tx ceiling; with
+/// no total bound, one confirmed call could mint 200 names (= 200 real $LH on
+/// mainnet) across ~29 sponsored txs, with only the relay's ~30-tx/h window as
+/// a backstop. 28 = FOUR full chunks at the reserved-aux-slot capacity of 7
+/// (`chunk_capacity(true)`): big enough for every sanctioned flow (the
+/// default 7-role `found_company`, "make me 20 subdomains", a whole-fleet
+/// payroll) while capping one call's worst-case real-value exposure at
+/// 28 items (≤28 $LH of mainnet registrations) and ≤4 registration txs —
+/// leaving relay-window room for the guild/seed/setup txs a founding also
+/// submits. Enforced by EVERY chunked batch adopter (`batch_create_subdomains`,
+/// `batch_send_lh`, `bulk_release_subdomains`, `found_company`).
+pub const MAX_BATCH_ITEMS: usize = 28;
+
+/// The over-limit rejection for [`MAX_BATCH_ITEMS`]: `Some(message)` when `n`
+/// items exceed the bound, telling the model to SPLIT the request (each split
+/// call re-rides its own typed confirmation). `None` = within bounds.
+pub fn over_batch_limit(tool: &str, n: usize) -> Option<String> {
+    (n > MAX_BATCH_ITEMS).then(|| {
+        format!(
+            "{tool}: {n} items exceed the per-call bound of {MAX_BATCH_ITEMS}. \
+             Split the request into separate calls of at most {MAX_BATCH_ITEMS} \
+             items each (each call is confirmed on its own)."
+        )
+    })
+}
+
+/// The marker `registry::rpc::wait_for_receipt` embeds in a receipt-poll
+/// timeout error, followed by the tx hash. A timeout is NOT a revert — the tx
+/// was accepted by the node and MAY STILL MINE; only this marker
+/// distinguishes "unknown chain state" from "did not happen". The producer
+/// (rpc.rs) formats with this constant so the classifier can't drift.
+pub const RECEIPT_TIMEOUT_MARKER: &str = "receipt timeout for ";
+
+/// Extract the tx hash from a receipt-timeout error (however many layers of
+/// "submit: …" / "X failed: …" wrapped it). `None` = not a timeout (a revert
+/// or a pre-submit failure — the tx did NOT land).
+pub fn unconfirmed_tx_hash(err: &str) -> Option<String> {
+    let at = err.find(RECEIPT_TIMEOUT_MARKER)?;
+    let rest = &err[at + RECEIPT_TIMEOUT_MARKER.len()..];
+    let hash: String = rest
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_string();
+    (!hash.is_empty()).then_some(hash)
+}
+
+/// Classify one chunk's submit error: a receipt TIMEOUT becomes
+/// [`ChunkOutcome::Unconfirmed`] (tx hash known, chain state UNKNOWN — the tx
+/// may still mine), anything else [`ChunkOutcome::Failed`] (the tx did not
+/// land). Every chunk loop routes its `Err` arm through this so a timed-out
+/// chunk is never reported as "did NOT move/burn".
+pub fn classify_failure(err: String) -> ChunkOutcome {
+    match unconfirmed_tx_hash(&err) {
+        Some(tx) => ChunkOutcome::Unconfirmed(tx),
+        None => ChunkOutcome::Failed(err),
+    }
+}
+
+/// Consecutive-failure circuit breaker: after this many failed chunks IN A
+/// ROW, a batch loop stops and reports the rest via
+/// [`BatchFold::unattempted`] (a systemic failure — bad signer, drained
+/// wallet, relay outage — will fail every remaining chunk identically;
+/// grinding on burns sponsor budget for nothing).
+pub const MAX_CONSECUTIVE_CHUNK_FAILURES: usize = 2;
+
+/// Should the chunk loop STOP before attempting the next chunk?
+/// - The last outcome is [`ChunkOutcome::Unconfirmed`] → stop IMMEDIATELY:
+///   chain state is unknown and continuing risks double-spending (e.g. a
+///   second meter bridge in `batch_send_lh` while the first may still mine).
+/// - [`MAX_CONSECUTIVE_CHUNK_FAILURES`] trailing `Failed`s → circuit-break.
+pub fn should_stop(outcomes: &[ChunkOutcome]) -> bool {
+    if matches!(outcomes.last(), Some(ChunkOutcome::Unconfirmed(_))) {
+        return true;
+    }
+    outcomes.len() >= MAX_CONSECUTIVE_CHUNK_FAILURES
+        && outcomes
+            .iter()
+            .rev()
+            .take(MAX_CONSECUTIVE_CHUNK_FAILURES)
+            .all(|o| matches!(o, ChunkOutcome::Failed(_)))
+}
+
 /// Items a single chunk may carry: the relay cap, minus one when an aux call
 /// (paid-claim `approve` / meter bridge) rides in every chunk's tx.
 pub fn chunk_capacity(reserve_aux_slot: bool) -> usize {
@@ -75,6 +160,11 @@ pub enum ChunkOutcome {
     Landed(String),
     /// The chunk's tx failed as ONE unit — none of its items landed.
     Failed(String),
+    /// The chunk's tx was SUBMITTED but its receipt never resolved (the
+    /// [`RECEIPT_TIMEOUT_MARKER`] class). Carries the tx hash. Chain state is
+    /// UNKNOWN — the tx may still mine, so its items are neither landed nor
+    /// failed, and the loop must stop after it.
+    Unconfirmed(String),
 }
 
 /// The honest aggregate of a chunked batch run.
@@ -84,10 +174,16 @@ pub struct BatchFold {
     pub landed: Vec<usize>,
     /// Item indices whose chunk's tx failed, in order.
     pub failed: Vec<usize>,
+    /// Item indices whose chunk's tx is UNCONFIRMED (receipt timeout — it may
+    /// still mine), in order. Never counted as failed.
+    pub unconfirmed: Vec<usize>,
     /// Item indices whose chunk was never attempted (the caller stopped early).
     pub unattempted: Vec<usize>,
     /// Tx hash per landed (non-vacuous) chunk, in submission order.
     pub tx_hashes: Vec<String>,
+    /// `(chunk index, tx hash)` per UNCONFIRMED chunk, in submission order —
+    /// the hash the caller must surface so the outcome can be checked later.
+    pub unconfirmed_txs: Vec<(usize, String)>,
     /// `(chunk index, error)` per failed chunk, in submission order.
     pub chunk_errors: Vec<(usize, String)>,
 }
@@ -107,6 +203,10 @@ pub fn fold_outcomes(ranges: &[Range<usize>], outcomes: &[ChunkOutcome]) -> Batc
             Some(ChunkOutcome::Failed(e)) => {
                 fold.failed.extend(r.clone());
                 fold.chunk_errors.push((i, e.clone()));
+            }
+            Some(ChunkOutcome::Unconfirmed(tx)) => {
+                fold.unconfirmed.extend(r.clone());
+                fold.unconfirmed_txs.push((i, tx.clone()));
             }
             None => fold.unattempted.extend(r.clone()),
         }
@@ -197,5 +297,74 @@ mod tests {
         let f = fold_outcomes(&r, &[ChunkOutcome::Landed(String::new())]);
         assert_eq!(f.landed, vec![0, 1]);
         assert!(f.tx_hashes.is_empty());
+    }
+
+    #[test]
+    fn batch_bound_rejects_over_limit_with_a_split_instruction() {
+        assert_eq!(over_batch_limit("batch_send_lh", 0), None);
+        assert_eq!(over_batch_limit("batch_send_lh", MAX_BATCH_ITEMS), None);
+        let msg = over_batch_limit("batch_send_lh", MAX_BATCH_ITEMS + 1).unwrap();
+        assert!(msg.contains("batch_send_lh"));
+        assert!(msg.contains(&MAX_BATCH_ITEMS.to_string()));
+        assert!(msg.to_lowercase().contains("split"));
+        // 200 names — the unbounded-mint scenario the bound exists to stop.
+        assert!(over_batch_limit("batch_create_subdomains", 200).is_some());
+    }
+
+    #[test]
+    fn timeout_classifies_unconfirmed_with_tx_hash_revert_stays_failed() {
+        // The wrapped shape a chunk loop actually sees:
+        // run_sponsored_tempo_call prepends "submit: ", tools prepend more.
+        let e = format!("batch failed: submit: {RECEIPT_TIMEOUT_MARKER}0xabc123");
+        assert_eq!(unconfirmed_tx_hash(&e).as_deref(), Some("0xabc123"));
+        assert_eq!(
+            classify_failure(e),
+            ChunkOutcome::Unconfirmed("0xabc123".into())
+        );
+        // A trailing clause must not ride into the hash.
+        let e = format!("{RECEIPT_TIMEOUT_MARKER}0xdead (check later).");
+        assert_eq!(unconfirmed_tx_hash(&e).as_deref(), Some("0xdead"));
+        // A revert (or any non-timeout error) stays a plain failure.
+        for revert in ["tx reverted: LH2024 insufficient", "signer: no wallet"] {
+            assert_eq!(unconfirmed_tx_hash(revert), None);
+            assert_eq!(
+                classify_failure(revert.into()),
+                ChunkOutcome::Failed(revert.into())
+            );
+        }
+    }
+
+    #[test]
+    fn breaker_stops_after_two_consecutive_failures_and_fold_reports_unattempted() {
+        let fail = || ChunkOutcome::Failed("boom".into());
+        let land = || ChunkOutcome::Landed("0xa".into());
+        assert!(!should_stop(&[]));
+        assert!(!should_stop(&[fail()]));
+        assert!(should_stop(&[fail(), fail()]));
+        // A landed chunk RESETS the streak.
+        assert!(!should_stop(&[fail(), land(), fail()]));
+        assert!(should_stop(&[land(), fail(), fail()]));
+        // The broken loop's trailing chunks fold as UNATTEMPTED — the
+        // reachable-`BatchFold::unattempted` proof.
+        let r = ranges(&[(0, 2), (2, 4), (4, 6), (6, 8)]);
+        let f = fold_outcomes(&r, &[fail(), fail()]);
+        assert_eq!(f.failed, vec![0, 1, 2, 3]);
+        assert_eq!(f.unattempted, vec![4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn unconfirmed_stops_immediately_and_folds_neither_landed_nor_failed() {
+        let unconf = ChunkOutcome::Unconfirmed("0xbeef".into());
+        // One unconfirmed chunk = stop NOW (chain state unknown; a further
+        // chunk could double-bridge/double-spend).
+        assert!(should_stop(&[unconf.clone()]));
+        assert!(should_stop(&[ChunkOutcome::Landed("0xa".into()), unconf.clone()]));
+        let r = ranges(&[(0, 2), (2, 4), (4, 5)]);
+        let f = fold_outcomes(&r, &[ChunkOutcome::Landed("0xa".into()), unconf]);
+        assert_eq!(f.landed, vec![0, 1]);
+        assert!(f.failed.is_empty() && f.chunk_errors.is_empty());
+        assert_eq!(f.unconfirmed, vec![2, 3]);
+        assert_eq!(f.unconfirmed_txs, vec![(1, "0xbeef".to_string())]);
+        assert_eq!(f.unattempted, vec![4]);
     }
 }

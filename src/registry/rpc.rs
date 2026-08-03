@@ -787,7 +787,15 @@ pub(crate) async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
         // bottleneck. For now: a busy yield via JS microtask.
         sleep_ms(1000).await;
     }
-    Err(format!("receipt timeout for {tx_hash}"))
+    // NOT a revert: the tx was accepted and MAY STILL MINE — only the receipt
+    // poll gave up. The marker constant is the ONE hook the batch chunk loops
+    // classify on (`relay_chunk::unconfirmed_tx_hash`), so an unconfirmed tx
+    // is reported with its hash instead of as "did not happen". Keep the
+    // `{marker}{tx_hash}` shape.
+    Err(format!(
+        "{}{tx_hash}",
+        crate::relay_chunk::RECEIPT_TIMEOUT_MARKER
+    ))
 }
 
 /// Fetch a mined tx's `contractAddress` — the address of a contract deployed by
