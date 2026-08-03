@@ -211,6 +211,14 @@ pub mod kv_room;
 /// `app::chat::confirm_guard` at the dispatch layer. See `src/confirm.rs`.
 pub mod confirm;
 
+/// Pure chunk-partition + result-fold core for the sponsor relay's 8-call
+/// per-tx cap (native-testable, telemetry #85/#88): partitions N batch items
+/// into ≤8-call sponsored-tx chunks (an aux approve/bridge call reserves one
+/// slot per chunk) and folds per-chunk outcomes into an honest
+/// landed/failed/never-attempted aggregate. Wired into the browser batch
+/// tools + `found_company`. See `src/relay_chunk.rs`.
+pub mod relay_chunk;
+
 /// Static safety lint for agent-authored facet cuts (SolidityLite §7 Layer 1):
 /// reserved-selector denylist + clash + `_init==0`. Pure + native-testable;
 /// wired into `localharness facet cut` as a pre-flight. See `src/cut_guard.rs`.
