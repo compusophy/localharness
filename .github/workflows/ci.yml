@@ -67,9 +67,28 @@ jobs:
       - name: test (wallet + anthropic + openai — superset)
         timeout-minutes: 15
         run: cargo test --features "wallet anthropic openai"
+      # TEMPORARY flight recorder: this step hangs ~44 min then takes the whole
+      # runner down — no logs ever upload and even the step timeout can't fire
+      # (the agent itself is starved). Stream ps/mem/output snapshots to a diag
+      # branch every 20s DURING the run; the last snapshot before the VM dies
+      # names the culprit. Remove once diagnosed.
       - name: test (default)
         timeout-minutes: 15
-        run: cargo test
+        run: |
+          ( while true; do
+              { date -u; echo ===MEM===; free -m; echo ===PS===; ps aux --sort=-%mem | head -30; \
+                echo ===DMESG===; sudo dmesg 2>/dev/null | tail -15; \
+                echo ===TESTLOG===; tail -60 /tmp/test-default.log 2>/dev/null; } > .ci-diag.txt 2>&1
+              git add .ci-diag.txt >/dev/null 2>&1
+              git -c user.email=ci@localharness.xyz -c user.name=ci-diag commit -qm "diag $(date -u +%H:%M:%S)" >/dev/null 2>&1
+              git push -f -q origin HEAD:refs/heads/ci-diag >/dev/null 2>&1 || true
+              sleep 20
+            done ) &
+          RECORDER=$!
+          cargo test 2>&1 | tee /tmp/test-default.log
+          rc=${PIPESTATUS[0]}
+          kill $RECORDER 2>/dev/null || true
+          exit $rc
 
       - name: wasm guard (SDK-only)
         run: cargo check --no-default-features --target wasm32-unknown-unknown
