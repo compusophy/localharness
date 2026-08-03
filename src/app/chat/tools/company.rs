@@ -265,19 +265,28 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "found_company",
         "Found a whole COMPANY in one call: register N ROLE SUBDOMAINS (each a \
          persona-bearing agent you own — executive/pm/coder/reviewer/accounting/ \
-         hr/marketing by default), create an on-chain GUILD (org identity + pooled \
-         $LH treasury — only once at least one role registered), optionally seed the \
-         treasury, set each role's on-chain persona, optionally prefund each role's \
-         wallet, and seed the mission + backlog into your shared volume. Large \
-         foundings are split across multiple sponsored txs automatically (each tx \
-         carries at most 8 calls); a failed chunk is reported per role and the rest \
-         still run. Model A (solo-founder): all roles share your wallet, which is the \
-         guild's sole Admin — governance is single-controller for now. MINTS + SPENDS \
-         $LH, so the first call does NOT execute: it returns a single-use confirmation \
-         code (also shown to the owner). State the name, roles, and spend, ask the \
-         owner to TYPE the code, then retry with `confirmation` set to it. Inspect the \
-         result later with company_status. Returns a manifest { guild_id, name, \
-         mission, treasury, treasury_lh, roles:[{role,subdomain,url,tba?,persona_set}], \
+         hr/marketing by default; at most 28 roles per call), create an on-chain \
+         GUILD (org identity + pooled $LH treasury — only once at least one role \
+         registered), optionally seed the treasury, set each role's on-chain \
+         persona, optionally prefund each role's wallet, and seed the mission + \
+         backlog into your shared volume. All $LH amounts are validated (and the \
+         aggregate spend checked against your live balance) BEFORE anything is \
+         registered. Large foundings are split across multiple sponsored txs \
+         automatically (each tx carries at most 8 calls); a failed chunk is \
+         reported per role, and the batch stops early after 2 consecutive failed \
+         chunks or a receipt TIMEOUT (an unconfirmed tx MAY still land — its \
+         hash is reported; never treat it as failed). If a later step fails \
+         AFTER roles were registered (they cost real $LH), the result still \
+         reports founded:false with `failed_step` plus every registered name + \
+         tx hash — those subdomains are yours; nothing is silently discarded. \
+         Model A (solo-founder): all roles share your wallet, which is the \
+         guild's sole Admin — governance is single-controller for now. MINTS + \
+         SPENDS $LH, so the first call does NOT execute: it returns a \
+         single-use confirmation code (also shown to the owner). State the \
+         name, roles, and spend, ask the owner to TYPE the code, then retry \
+         with `confirmation` set to it. Inspect the result later with \
+         company_status. Returns a manifest { guild_id, name, mission, \
+         treasury, treasury_lh, roles:[{role,subdomain,url,tba?,persona_set}], \
          skipped_roles, backlog_seeded, tx_hashes }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
@@ -326,6 +335,15 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if roles.is_empty() {
                 return Err(crate::error::Error::bad_args("found_company", "no valid roles to staff"));
             }
+            // Hard total bound (relay_chunk::MAX_BATCH_ITEMS): each role is a
+            // real-$LH registration, so one confirmed founding is capped like
+            // the other batch tools.
+            if let Some(msg) = crate::relay_chunk::over_batch_limit("found_company", roles.len()) {
+                return Err(crate::error::Error::bad_args(
+                    "found_company",
+                    format!("{msg} Found the company with fewer roles."),
+                ));
+            }
 
             // The founder owner — all role subdomains + the guild are owned/signed
             // by this master wallet (Model A). Needed up front for the guild-id
@@ -333,6 +351,106 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let owner = credit_address_existing().await.ok_or_else(|| {
                 crate::error::Error::other("no identity — claim a subdomain first")
             })?;
+
+            // ── Amount parses + aggregate affordability — ALL BEFORE STEP 1 ──
+            // Registration is a real-$LH write; no arg-shaped `bad_args` may
+            // remain reachable after it. Parse + validate every amount NOW.
+            let seed_wei: u128 = match p.seed_treasury_lh.as_deref().map(str::trim) {
+                Some(s) if !s.is_empty() && s != "0" => {
+                    crate::encoding::parse_token_amount(s).ok_or_else(|| {
+                        crate::error::Error::bad_args("found_company", format!(
+                            "could not parse seed_treasury_lh \"{s}\" — pass a decimal \
+                             $LH figure like \"10\" or \"2.5\""
+                        ))
+                    })?
+                }
+                _ => 0,
+            };
+            let prefund_each = p
+                .prefund_each_lh
+                .as_deref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty() && s != "0");
+            let prefund_wei: u128 = match prefund_each.as_deref() {
+                Some(s) => crate::encoding::parse_token_amount(s).ok_or_else(|| {
+                    crate::error::Error::bad_args("found_company", format!(
+                        "could not parse prefund_each_lh \"{s}\" — pass a decimal $LH \
+                         figure like \"5\" or \"1.5\""
+                    ))
+                })?,
+                None => 0,
+            };
+            // AGGREGATE spend pre-check against the LIVE balance (the per-role
+            // gate in build_actor_setup checks each role against the FULL
+            // balance, so without this, chunk 1 drains the wallet and later
+            // chunks revert opaquely). Wallet-only spends: the registration
+            // fee (registrationCost() × roles — an upper bound: taken names
+            // are skipped, which only lowers the real spend) and every
+            // prefund. Only the treasury seed may auto-bridge from the
+            // withdrawable chat meter — and it pulls WALLET-FIRST, so when
+            // prefunds ride too the wallet must cover seed + prefunds + fees.
+            let reg_cost = crate::app::registry::registration_cost().await.unwrap_or(0);
+            let reg_total = reg_cost.saturating_mul(roles.len() as u128);
+            let total_prefund = prefund_wei
+                .checked_mul(roles.len() as u128)
+                .ok_or_else(|| {
+                    crate::error::Error::bad_args(
+                        "found_company",
+                        "prefund_each_lh × roles overflows — lower prefund_each_lh",
+                    )
+                })?;
+            let wallet = crate::app::registry::token_balance_of(&owner)
+                .await
+                .map_err(crate::error::Error::other)?;
+            if total_prefund > 0 {
+                let need = reg_total
+                    .checked_add(seed_wei)
+                    .and_then(|v| v.checked_add(total_prefund))
+                    .ok_or_else(|| {
+                        crate::error::Error::bad_args(
+                            "found_company",
+                            "seed_treasury_lh + prefunds overflow — lower the amounts",
+                        )
+                    })?;
+                if wallet < need {
+                    return Err(crate::error::Error::other(format!(
+                        "insufficient $LH for this founding: it needs {} $LH in the \
+                         WALLET ({} registration fees + {} treasury seed + {} × {} \
+                         role prefunds) but the wallet holds {} — lower \
+                         prefund_each_lh / seed_treasury_lh, staff fewer roles, or \
+                         fund up first (registration fees and prefunds cannot bridge \
+                         from the chat meter)",
+                        crate::app::format_wei_as_test_eth(need),
+                        crate::app::format_wei_as_test_eth(reg_total),
+                        crate::app::format_wei_as_test_eth(seed_wei),
+                        crate::app::format_wei_as_test_eth(prefund_wei),
+                        roles.len(),
+                        crate::app::format_wei_as_test_eth(wallet),
+                    )));
+                }
+            } else {
+                // No prefunds: the wallet must cover the registration fees; the
+                // seed may bridge its shortfall from the withdrawable meter —
+                // the standard pot-aware pre-flight covers fees + seed.
+                if seed_wei > 0 {
+                    crate::app::chat::escrow_bridge_wei(
+                        &owner,
+                        reg_total.saturating_add(seed_wei),
+                    )
+                    .await
+                    .map_err(crate::error::Error::other)?;
+                }
+                if wallet < reg_total {
+                    return Err(crate::error::Error::other(format!(
+                        "insufficient $LH for this founding: {} role registrations \
+                         cost {} $LH in fees but the wallet holds {} — staff fewer \
+                         roles or fund up first",
+                        roles.len(),
+                        crate::app::format_wei_as_test_eth(reg_total),
+                        crate::app::format_wei_as_test_eth(wallet),
+                    )));
+                }
+            }
 
             // STEP 1 — register the N role subdomains FIRST, in chunked ≤8-call
             // sponsored txs (crate::relay_chunk; the paid-claim approve reserves
@@ -347,11 +465,24 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .map(|r| (format!("{company_slug}-{}", r.slug), r))
                 .collect();
             let want_names: Vec<String> = candidates.iter().map(|(n, _)| n.clone()).collect();
+            // The aux slot is reserved UNCONDITIONALLY for the paid-claim
+            // approve; on a registrationCost()==0 chain no approve rides and
+            // the slot is wasted — accepted (one spare call per chunk beats
+            // plumbing the cost read into the pure partitioner).
             let reg_ranges = crate::relay_chunk::chunk_ranges(want_names.len(), true);
             let mut reg_outcomes: Vec<crate::relay_chunk::ChunkOutcome> =
                 Vec::with_capacity(reg_ranges.len());
             let mut registered: Vec<String> = Vec::new();
             for r in &reg_ranges {
+                // The dwell idiom + the chunk breaker: stop before the next
+                // chunk on user Stop, after 2 consecutive failed chunks, or
+                // IMMEDIATELY after an unconfirmed (receipt-timeout) chunk —
+                // chain state unknown. Remaining roles fold as unattempted.
+                if crate::app::chat::turn_cancelled()
+                    || crate::relay_chunk::should_stop(&reg_outcomes)
+                {
+                    break;
+                }
                 let chunk = want_names[r.clone()].to_vec();
                 match crate::app::events::run_batch_create_subdomains(&chunk).await {
                     Ok((reg, tx)) => {
@@ -359,43 +490,79 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                         reg_outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(tx));
                     }
                     // Every name in this chunk was taken/invalid — nothing was
-                    // submitted; handled (those roles report skipped), not a failure.
+                    // submitted; handled (those roles report skipped), not a
+                    // failure. EXACT-STRING sentinel: matched by equality
+                    // against the shared const — the producer
+                    // (events/subdomains.rs) must never wrap or reword it.
                     Err(e) if e == crate::app::events::NO_VALID_NAMES => {
                         reg_outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(String::new()));
                     }
-                    Err(e) => reg_outcomes.push(crate::relay_chunk::ChunkOutcome::Failed(e)),
+                    Err(e) => reg_outcomes.push(crate::relay_chunk::classify_failure(e)),
                 }
             }
             let reg_fold = crate::relay_chunk::fold_outcomes(&reg_ranges, &reg_outcomes);
+            // An UNCONFIRMED registration chunk means role names MAY have
+            // minted (and been paid for) — chain state unknown. Stop the
+            // founding here with the honest partial manifest (no guild is
+            // created on top of unknown state); the caller re-checks the tx
+            // and retries.
+            if !reg_fold.unconfirmed.is_empty() {
+                return Ok(partial_manifest(
+                    "register_roles (unconfirmed)",
+                    "a registration tx receipt timed out — it MAY still land; check \
+                     the unconfirmed tx hash, then retry found_company with the same \
+                     name",
+                    &name, &mission, &registered, &reg_fold, None, None,
+                ));
+            }
             if registered.is_empty() {
                 let why = reg_fold
                     .chunk_errors
                     .first()
                     .map(|(_, e)| e.clone())
                     .unwrap_or_else(|| "every role name is taken or invalid".to_string());
+                // Honest scope: THIS call registered nothing and created no
+                // guild. It cannot know a PREVIOUS attempt's state (the names
+                // may be "taken" because an earlier founding minted them), so
+                // it claims nothing beyond this call.
                 return Err(crate::error::Error::other(format!(
-                    "no role subdomain could be registered ({why}) — company not \
-                     founded, guild not created"
+                    "no role subdomain could be registered ({why}) — this call made \
+                     no on-chain changes (no guild was created by this call; if a \
+                     previous attempt partially ran, its names/guild still exist — \
+                     check list_subdomains / list_my_guilds)"
                 )));
             }
 
             // STEP 2 — create the guild (org identity + pooled $LH treasury). The
             // caller becomes its founding Admin (so the roster IS the founder).
+            // From here on, N registrations are PAID on-chain state: every
+            // failure path returns the partial manifest (registered names + tx
+            // hashes + which step failed), never a bare Err that discards them.
             let signer = bounty_signer().await?;
-            let create_tx = crate::app::registry::create_guild_sponsored(&signer, &name)
-            .await
-            .map_err(|e| crate::error::Error::other(format!("create_guild failed: {e}")))?;
+            let create_tx = match crate::app::registry::create_guild_sponsored(&signer, &name).await
+            {
+                Ok(tx) => tx,
+                Err(e) => {
+                    return Ok(partial_manifest(
+                        "create_guild",
+                        &format!("create_guild failed: {e}"),
+                        &name, &mission, &registered, &reg_fold, None, None,
+                    ))
+                }
+            };
             // New guild id = the founder's last entry in guilds_of.
-            let guild_id = crate::app::registry::guilds_of(&owner)
+            let Some(guild_id) = crate::app::registry::guilds_of(&owner)
                 .await
                 .ok()
                 .and_then(|ids| ids.last().copied())
-                .ok_or_else(|| {
-                    crate::error::Error::other(
-                        "guild created but its id is not yet visible on-chain — retry \
-                         shortly, or check list_my_guilds",
-                    )
-                })?;
+            else {
+                return Ok(partial_manifest(
+                    "guild_id_readback",
+                    "guild created but its id is not yet visible on-chain — check \
+                     list_my_guilds shortly; the role subdomains are registered",
+                    &name, &mission, &registered, &reg_fold, Some(&create_tx), None,
+                ));
+            };
             let treasury = crate::app::registry::guild_address(guild_id).await.unwrap_or_default();
 
             let mut tx_hashes = serde_json::json!({
@@ -412,28 +579,36 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 
             // STEP 3 (optional) — seed the treasury from the founder's wallet.
             // Mirrors fund_guild_tool (meter-credit auto-bridge in the same tx).
-            if let Some(seed) = p.seed_treasury_lh.as_deref() {
-                let seed = seed.trim();
-                if !seed.is_empty() && seed != "0" {
-                    let amount_wei = crate::encoding::parse_token_amount(seed).ok_or_else(|| {
-                        crate::error::Error::bad_args("found_company", format!(
-                            "could not parse seed_treasury_lh \"{seed}\" — pass a decimal \
-                             $LH figure like \"10\" or \"2.5\""
+            // `seed_wei` was parsed + affordability-checked BEFORE step 1; this
+            // re-reads the LIVE pots for the bridge split only.
+            if seed_wei > 0 {
+                let from_hex =
+                    crate::encoding::bytes_to_hex_str(&crate::wallet::address(&signer));
+                let bridge_wei =
+                    match crate::app::chat::escrow_bridge_wei(&from_hex, seed_wei).await {
+                        Ok(w) => w,
+                        Err(e) => {
+                            return Ok(partial_manifest(
+                                "seed_treasury (balance pre-check)",
+                                &e,
+                                &name, &mission, &registered, &reg_fold,
+                                Some(&create_tx), Some(guild_id),
+                            ))
+                        }
+                    };
+                match crate::app::registry::fund_guild_sponsored_bridged(
+                    &signer, guild_id, seed_wei, bridge_wei,
+                )
+                .await
+                {
+                    Ok(fund_tx) => tx_hashes["seed_treasury"] = serde_json::json!(fund_tx),
+                    Err(e) => {
+                        return Ok(partial_manifest(
+                            "seed_treasury",
+                            &format!("seed treasury failed: {e}"),
+                            &name, &mission, &registered, &reg_fold,
+                            Some(&create_tx), Some(guild_id),
                         ))
-                    })?;
-                    if amount_wei > 0 {
-                        let from_hex =
-                            crate::encoding::bytes_to_hex_str(&crate::wallet::address(&signer));
-                        let bridge_wei =
-                            crate::app::chat::escrow_bridge_wei(&from_hex, amount_wei)
-                                .await
-                                .map_err(crate::error::Error::other)?;
-                        let fund_tx = crate::app::registry::fund_guild_sponsored_bridged(&signer, guild_id, amount_wei, bridge_wei)
-                        .await
-                        .map_err(|e| {
-                            crate::error::Error::other(format!("seed treasury failed: {e}"))
-                        })?;
-                        tx_hashes["seed_treasury"] = serde_json::json!(fund_tx);
                     }
                 }
             }
@@ -450,11 +625,7 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // and the remaining chunks still run. Best-effort: a role whose
             // tokenId isn't visible yet is skipped (recorded), never sinking a
             // founding that already created the guild + subdomains.
-            let prefund_each = p
-                .prefund_each_lh
-                .as_deref()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty() && s != "0");
+            // (`prefund_each` was parsed + aggregate-checked BEFORE step 1.)
             // One role's prepared setup, awaiting its chunk's sponsored tx.
             struct PendingSetup {
                 entry_idx: usize,
@@ -464,14 +635,20 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 prefunded_lh: Option<String>,
                 tba: Option<String>,
             }
+            use std::collections::HashSet;
+            let registered_set: HashSet<&str> = registered.iter().map(|s| s.as_str()).collect();
+            let reg_failed_set: HashSet<usize> = reg_fold.failed.iter().copied().collect();
+            let reg_unattempted_set: HashSet<usize> =
+                reg_fold.unattempted.iter().copied().collect();
             let mut role_entries: Vec<serde_json::Value> = Vec::new();
             let mut skipped_roles: Vec<serde_json::Value> = Vec::new();
             let mut pending: Vec<PendingSetup> = Vec::new();
             for (i, (cand, role)) in candidates.iter().enumerate() {
-                if !registered.iter().any(|r| r == cand) {
+                if !registered_set.contains(cand.as_str()) {
                     // Honest reason: a role whose registration CHUNK failed was
-                    // attempted, not "taken or invalid".
-                    let reason = if reg_fold.failed.contains(&i) {
+                    // attempted (not "taken"), and one the stopped loop never
+                    // reached was not attempted at all.
+                    let reason = if reg_failed_set.contains(&i) {
                         let err = reg_ranges
                             .iter()
                             .position(|r| r.contains(&i))
@@ -479,6 +656,10 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                             .map(|(_, e)| e.as_str())
                             .unwrap_or("tx failed");
                         format!("registration tx failed: {err}")
+                    } else if reg_unattempted_set.contains(&i) {
+                        "registration not attempted — the batch stopped early \
+                         (consecutive chunk failures or a user Stop)"
+                            .to_string()
                     } else {
                         "name taken or invalid — already registered or out of range".to_string()
                     };
@@ -518,7 +699,10 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                                     tba: setup.tba,
                                 });
                             }
-                            Ok(_) => {} // nothing to set up for this role
+                            // An EMPTY setup is fine, not a failure: no persona
+                            // and no prefund were requested for this role, so
+                            // there is simply nothing to do.
+                            Ok(_) => {}
                             Err(e) => {
                                 entry["setup_error"] = serde_json::json!(e.to_string());
                             }
@@ -536,7 +720,24 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let setup_ranges = crate::relay_chunk::chunk_ranges_weighted(&weights, false);
             let mut setup_txs: Vec<String> = Vec::new();
             let mut setup_errors: Vec<String> = Vec::new();
+            let mut setup_outcomes: Vec<crate::relay_chunk::ChunkOutcome> =
+                Vec::with_capacity(setup_ranges.len());
             for r in &setup_ranges {
+                // Same stop rules as the registration loop: user Stop (the
+                // dwell idiom), 2 consecutive failed chunks, or an unconfirmed
+                // chunk (receipt timeout — its personas/prefunds MAY still
+                // land, so nothing further may be submitted on unknown state).
+                if crate::app::chat::turn_cancelled()
+                    || crate::relay_chunk::should_stop(&setup_outcomes)
+                {
+                    for s in &pending[r.clone()] {
+                        role_entries[s.entry_idx]["setup_error"] = serde_json::json!(
+                            "role setup not attempted — the batch stopped early \
+                             (unconfirmed/failed earlier chunks or a user Stop)"
+                        );
+                    }
+                    continue;
+                }
                 let group = &pending[r.clone()];
                 let calls: Vec<crate::tempo_tx::TempoCall> =
                     group.iter().flat_map(|s| s.calls.iter().cloned()).collect();
@@ -550,7 +751,8 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .await
                 {
                     Ok(tx) => {
-                        setup_txs.push(tx);
+                        setup_txs.push(tx.clone());
+                        setup_outcomes.push(crate::relay_chunk::ChunkOutcome::Landed(tx));
                         // The chunk landed — only NOW may the manifest claim it.
                         for s in group {
                             let entry = &mut role_entries[s.entry_idx];
@@ -565,17 +767,36 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                             }
                         }
                     }
-                    Err(e) => {
-                        // This chunk (personas + createTBAs + prefund transfers)
-                        // was rejected as ONE unit — nothing in it landed. Its
-                        // roles keep persona_set=false and never get
-                        // prefunded_lh/tba; the other chunks still run.
-                        for s in group {
-                            role_entries[s.entry_idx]["setup_error"] =
-                                serde_json::json!(format!("role setup tx failed: {e}"));
+                    Err(e) => match crate::relay_chunk::classify_failure(e) {
+                        // Receipt TIMEOUT ≠ revert: the chunk's personas +
+                        // prefunds MAY still land. Stamp the tx hash (never a
+                        // "failed"/"did not move" claim); the stop check above
+                        // ends the loop before the next chunk.
+                        crate::relay_chunk::ChunkOutcome::Unconfirmed(tx) => {
+                            for s in group {
+                                role_entries[s.entry_idx]["setup_unconfirmed"] =
+                                    serde_json::json!(format!(
+                                        "receipt timed out for tx {tx} — the setup may \
+                                         still land; check the tx before retrying"
+                                    ));
+                            }
+                            setup_outcomes
+                                .push(crate::relay_chunk::ChunkOutcome::Unconfirmed(tx));
                         }
-                        setup_errors.push(e);
-                    }
+                        crate::relay_chunk::ChunkOutcome::Failed(e) => {
+                            // This chunk (personas + createTBAs + prefund
+                            // transfers) was rejected as ONE unit — nothing in
+                            // it landed. Its roles keep persona_set=false and
+                            // never get prefunded_lh/tba.
+                            for s in group {
+                                role_entries[s.entry_idx]["setup_error"] =
+                                    serde_json::json!(format!("role setup tx failed: {e}"));
+                            }
+                            setup_errors.push(e.clone());
+                            setup_outcomes.push(crate::relay_chunk::ChunkOutcome::Failed(e));
+                        }
+                        crate::relay_chunk::ChunkOutcome::Landed(_) => unreachable!(),
+                    },
                 }
             }
             if !setup_txs.is_empty() {
@@ -583,6 +804,12 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             }
             if !setup_errors.is_empty() {
                 tx_hashes["role_setup_error"] = serde_json::json!(setup_errors);
+            }
+            if let Some(crate::relay_chunk::ChunkOutcome::Unconfirmed(tx)) = setup_outcomes
+                .iter()
+                .find(|o| matches!(o, crate::relay_chunk::ChunkOutcome::Unconfirmed(_)))
+            {
+                tx_hashes["role_setup_unconfirmed"] = serde_json::json!(tx);
             }
 
             // STEP 5 (priority 2) — seed the mission + backlog into the owner's
@@ -612,6 +839,7 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 
             let treasury_wei = crate::app::registry::treasury_balance_of(guild_id).await.unwrap_or(0);
             Ok(serde_json::json!({
+                "founded": true,
                 "guild_id": guild_id,
                 "name": name,
                 "mission": mission,
@@ -632,6 +860,64 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             }))
         },
     )
+}
+
+/// The honest PARTIAL manifest for a founding that registered (and PAID for)
+/// role subdomains and then failed a later step. Returned as `Ok` — a bare
+/// `Err` would discard N real-$LH registrations from the record. Reports
+/// `founded: false`, which step failed, every registered name + its
+/// registration tx hashes (and any unconfirmed registration txs), plus what
+/// is known about the guild, so the model/owner can verify and continue
+/// instead of re-paying blind.
+#[allow(clippy::too_many_arguments)]
+fn partial_manifest(
+    failed_step: &str,
+    error: &str,
+    name: &str,
+    mission: &str,
+    registered: &[String],
+    reg_fold: &crate::relay_chunk::BatchFold,
+    create_guild_tx: Option<&str>,
+    guild_id: Option<u64>,
+) -> serde_json::Value {
+    let mut tx_hashes = serde_json::json!({
+        "create_subdomains": reg_fold.tx_hashes,
+    });
+    if !reg_fold.unconfirmed_txs.is_empty() {
+        tx_hashes["create_subdomains_unconfirmed"] = serde_json::json!(reg_fold
+            .unconfirmed_txs
+            .iter()
+            .map(|(_, tx)| tx.clone())
+            .collect::<Vec<_>>());
+    }
+    if !reg_fold.chunk_errors.is_empty() {
+        tx_hashes["create_subdomains_errors"] = serde_json::json!(reg_fold
+            .chunk_errors
+            .iter()
+            .map(|(_, e)| e.clone())
+            .collect::<Vec<_>>());
+    }
+    if let Some(tx) = create_guild_tx {
+        tx_hashes["create_guild"] = serde_json::json!(tx);
+    }
+    let mut out = serde_json::json!({
+        "founded": false,
+        "failed_step": failed_step,
+        "error": error,
+        "name": name,
+        "mission": mission,
+        "registered": registered,
+        "tx_hashes": tx_hashes,
+        "next": "The registered role subdomains above are YOURS (their registration \
+                 was paid and landed). Verify state (list_subdomains / \
+                 list_my_guilds / the tx hashes), fix the error, then retry \
+                 found_company with the same name to continue — already-taken role \
+                 names are skipped, not re-paid.",
+    });
+    if let Some(id) = guild_id {
+        out["guild_id"] = serde_json::json!(id);
+    }
+    out
 }
 
 /// Resolve a free-form company argument — a numeric guild id OR a guild display
