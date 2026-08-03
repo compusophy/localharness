@@ -17,7 +17,14 @@ chunking follow-up (in progress).**
 - **The 504 fix bundled in the same session BROKE inference** (edge→node = 500 on
   every request) and was reverted — see `design/proxy-504-fix.md`. It is NOT a
   config flip. The relay/price/msg changes were unaffected.
-- **#2 (found_company chunking + the batch-tool chunking, #85): still the follow-up.**
+- **#2 (found_company chunking + the batch-tool chunking, #85): CODE SHIPPED
+  (pending web deploy).** `src/relay_chunk.rs` (pure ≤8-call partition + honest
+  fold, native-tested) now backs `batch_create_subdomains` / `batch_send_lh` /
+  `bulk_release_subdomains` (hard caps → auto-chunking, per-chunk results) and
+  `found_company` (role registration chunked BEFORE the guild is created; STEP-4
+  persona+prefund chunked without splitting a role's calls; manifest fields
+  stamped only after a chunk LANDS). Residual: a live on-chain smoke of a >7-item
+  batch + a default-config found_company.
   The stale-prefund-field lie was fixed separately (commit b86c4288, live).
 
 ---

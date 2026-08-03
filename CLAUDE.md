@@ -116,10 +116,9 @@ src/                  library crate
 │                     signaling_seal.rs kv_reduce.rs kv_room.rs lessons.rs
 │                     push_enroll.rs(verify + bell status, #40) confirm.rs
 │                     cut_guard.rs(facet-cut safety lint, reserved selectors)
-│                     qr.rs(inline SVG QR)
+│                     qr.rs(inline SVG QR) relay_chunk.rs(≤8-call sponsored-tx
+│                     chunk+honest-fold core — batch tools + found_company, #85)
 │                     skills.rs(SKILLS LOOP blob core) — native-testable cores
-│                     (framebuffer/compose/reconcile/SDP seal/#22 KV CRDT + AES
-│                     op-seal/lessons/confirm/…)
 ├── rustlite/         Rust-subset → wasm compiler: lexer / parser / ast /
 │                     typecheck / codegen(wasm emitter) / loader(wasm32 cartridge)
 ├── soliditylite/     Solidity/EVM-subset → EVM-bytecode compiler (the EVM analog

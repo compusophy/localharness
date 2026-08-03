@@ -103,13 +103,14 @@ pub fn base_system_prompt(
              updated }}; after it succeeds, give the user the returned `url` as a \
              clickable link. Each subdomain is its own agent tab with its own \
              per-origin sandbox.\n\
-           • batch_create_subdomains(names) — register MANY subdomains in ONE \
-             on-chain transaction. Use THIS instead of calling create_subdomain \
-             repeatedly when the user asks for more than one name at once \
-             (\"register a, b and c\", \"make me 5 subdomains\", \"spin up \
-             a-b-c-d\"). Taken/invalid names are skipped and reported in \
-             `skipped`. Max 7 per call. Returns {{ registered, skipped, count, \
-             tx_hash, urls }}.\n\
+           • batch_create_subdomains(names) — register MANY subdomains at \
+             once. Use THIS instead of calling create_subdomain repeatedly \
+             when the user asks for more than one name at once (\"register \
+             a, b and c\", \"make me 5 subdomains\", \"spin up a-b-c-d\"). \
+             Taken/invalid names are skipped and reported in `skipped`; more \
+             than 7 names are split across multiple sponsored transactions \
+             automatically (each tx carries at most 8 calls). Returns \
+             {{ registered, skipped, count, tx_hashes, failed, urls }}.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT and frees the name. The \
              FIRST call never executes — it returns a single-use confirmation \
@@ -146,13 +147,14 @@ pub fn base_system_prompt(
              If the wallet is short, unspent chat-meter credits auto-bridge \
              into the same transaction. Returns {{ amount, recipient, \
              resolved_recipient, bridged_from_meter, tx_hash }}.\n\
-           • batch_send_lh(transfers, confirmation) — pay UP TO 7 recipients \
-             in ONE on-chain transaction (each {{recipient, amount}} like \
-             send_lh). Use this instead of repeated send_lh calls when \
-             distributing funds. MOVES VALUE — same challenge flow as send_lh, \
-             ONE code for the whole batch: show the full list, the owner types \
-             the code, retry with it. Returns {{ count, total, transfers, \
-             tx_hash }}.\n\
+           • batch_send_lh(transfers, confirmation) — pay MANY recipients \
+             (each {{recipient, amount}} like send_lh); more than 7 transfers \
+             are split across multiple sponsored transactions automatically. \
+             Use this instead of repeated send_lh calls when distributing \
+             funds. MOVES VALUE — same challenge flow as send_lh, ONE code \
+             for the whole batch: show the full list, the owner types the \
+             code, retry with it. Returns {{ count, total, transfers, \
+             tx_hashes, failed }}.\n\
            • check_balances() — read-only: your owner wallet $LH, chat meter \
              $LH, and this agent's TBA balance in one call. Use it BEFORE \
              value moves and to diagnose insufficient-funds errors.\n\
@@ -220,16 +222,19 @@ pub fn base_system_prompt(
              name you belong to. Use it to inspect an org's roster + treasury.\n\
            • found_company(name, mission, roles?, seed_treasury_lh?, \
              prefund_each_lh?, confirmation) — stand up a whole COMPANY in ONE \
-             call: create a guild (org identity + pooled $LH treasury), \
-             optionally seed it, register N ROLE SUBDOMAINS you own (executive/ \
-             pm/coder/reviewer/accounting/hr/marketing by default, each with an \
-             on-chain persona), optionally prefund each role's wallet, and seed \
-             the mission + backlog into your shared volume. Solo-founder model: \
-             all roles share your wallet (the guild's sole Admin). MINTS + \
-             SPENDS $LH, so it's confirm-gated — the first call returns a \
-             single-use code the owner types, same flow as send_lh. Read it back \
-             later with company_status. Returns a manifest {{ guild_id, treasury, \
-             roles:[{{role,subdomain,url,tba?}}], tx_hashes }}.\n\
+             call: register N ROLE SUBDOMAINS you own (executive/pm/coder/ \
+             reviewer/accounting/hr/marketing by default, each with an on-chain \
+             persona), create a guild (org identity + pooled $LH treasury — \
+             only once a role registered), optionally seed it, optionally \
+             prefund each role's wallet, and seed the mission + backlog into \
+             your shared volume. Large foundings split across multiple \
+             sponsored txs automatically; a failed chunk is reported per role. \
+             Solo-founder model: all roles share your wallet (the guild's sole \
+             Admin). MINTS + SPENDS $LH, so it's confirm-gated — the first call \
+             returns a single-use code the owner types, same flow as send_lh. \
+             Read it back later with company_status. Returns a manifest \
+             {{ guild_id, treasury, roles:[{{role,subdomain,url,tba?}}], \
+             tx_hashes }}.\n\
            • set_role(guild_id, member, role, confirmation) — set a member's \
              RANK (member/officer/admin) in a guild you administer. Admin-gated \
              on-chain; changes treasury authority, so it's confirm-gated (the \
@@ -500,9 +505,10 @@ pub fn base_system_prompt(
            anyone can open https://<name>.localharness.xyz/ — that URL is the \
            shareable link.\n\
          • Registering MULTIPLE names at once → batch_create_subdomains(names), \
-           ONE tx, NOT a create_subdomain loop. A loop spends one sponsored \
+           NOT a create_subdomain loop. A loop spends one sponsored \
            transaction per name and eats your auto-continue budget; the batch \
-           registers them all in a single transaction and reports which were \
+           registers them all in as few transactions as possible (>7 names \
+           auto-split, at most 8 calls per tx) and reports which were \
            skipped (taken/invalid).\n\
          • COST-AWARE: the owner is billed per MODEL ROUND — every reply you \
            produce, including each tool-using step, costs ~1 $LH (premium \
@@ -785,9 +791,9 @@ pub fn lean_system_prompt(
              `name` it UPDATES that app in place. `persona` sets the new agent's \
              on-chain instruction; `prefund_lh` moves $LH into its own \
              token-bound account. Return the url as a clickable link.\n\
-           • batch_create_subdomains(names) — register MANY names in ONE tx \
-             (max 7; taken/invalid reported in `skipped`) — use instead of \
-             a create_subdomain loop.\n\
+           • batch_create_subdomains(names) — register MANY names at once \
+             (>7 auto-split across txs; taken/invalid reported in `skipped`) \
+             — use instead of a create_subdomain loop.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT. Confirm-gated: the first \
              call only returns a single-use code the OWNER must TYPE in chat \
@@ -808,9 +814,10 @@ pub fn lean_system_prompt(
              name's on-chain owner (decimal amount > 0). First call returns \
              a single-use code: state recipient + amount, the OWNER must \
              TYPE the code (never echo it), then retry.\n\
-           • batch_send_lh(transfers, confirmation) — MOVES VALUE: pay up \
-             to 7 recipients ({{recipient, amount}}) in ONE tx; same flow, \
-             ONE code for the whole batch — show the full list first.\n\
+           • batch_send_lh(transfers, confirmation) — MOVES VALUE: pay MANY \
+             recipients ({{recipient, amount}}; >7 auto-split across txs); \
+             same flow, ONE code for the whole batch — show the full list \
+             first.\n\
            • check_balances() — read-only: owner wallet / chat meter / TBA \
              $LH. Use before value moves.\n\
            • evm_chains() / evm_balance(chain, address, token?) / \
@@ -843,12 +850,12 @@ pub fn lean_system_prompt(
            • company_status(company) — read-only: a guild's roster + roles \
              + treasury (id or name).\n\
            • found_company(name, mission, roles?, seed_treasury_lh?, \
-             prefund_each_lh?, confirmation) — ONE call: create a guild, \
-             seed its treasury, register role subdomains with personas, \
-             prefund each, seed the mission into the shared volume (extras \
-             optional). MINTS + SPENDS $LH — confirm-gated: first call \
-             returns a single-use code the OWNER must TYPE (never echo \
-             it).\n\
+             prefund_each_lh?, confirmation) — ONE call: register role \
+             subdomains with personas, create a guild, seed its treasury, \
+             prefund each role, seed the mission into the shared volume \
+             (extras optional; large foundings auto-split across txs). MINTS \
+             + SPENDS $LH — confirm-gated: first call returns a single-use \
+             code the OWNER must TYPE (never echo it).\n\
            • set_role(guild_id, member, role, confirmation) — set a \
              member's rank (member/officer/admin); changes treasury \
              authority so confirm-gated (the owner types the code).\n\
