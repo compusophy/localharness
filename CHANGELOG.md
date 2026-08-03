@@ -5,6 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.80.0] - 2026-08-03
+
+### Added
+
+- **Relay/signer allowlist parity drift test**
+  (`tests/relay_allowlist_parity.rs`): enumerates all 63 `*_sponsored`
+  registry fns and asserts every submitted diamond signature appears in
+  BOTH the browser signer allowlist and the proxy relay allowlist, with
+  the two lists exact mirrors — any new or renamed sponsored fn fails
+  the guard until classified. Its first run caught real drift
+  (`subscribe`/`unsubscribe` in the relay but missing from `signer.rs`)
+  — fixed in lockstep.
+
+### Changed
+
+- **Batch tools auto-chunk past the relay's 8-call cap** (telemetry
+  #85/#88): `batch_create_subdomains` / `batch_send_lh` /
+  `bulk_release_subdomains` / `found_company` split big batches across
+  sequential sponsored txs via the new pure core `src/relay_chunk.rs` —
+  the old hard caps are gone, replaced by ONE 28-item per-call spend
+  bound. A failed chunk no longer sinks the batch: results partition
+  honestly into landed / failed / unconfirmed (receipt timeout — tx
+  hash surfaced, loop stops) / unattempted (2-consecutive-failure
+  breaker or user Stop). `batch_create_subdomains` joins the
+  typed-confirmation gate (it mints names for real $LH).
+- **`found_company` founds in chunks, safely ordered**: role subdomains
+  register FIRST and the guild is created only after at least one
+  landed (a failed registration can no longer strand a live guild with
+  zero roles); amounts + AGGREGATE affordability are validated BEFORE
+  the first mint; Stop is honored between paid steps; and a role's
+  persona/prefund/TBA is stamped only after its chunk's tx lands —
+  any partway failure returns a partial manifest naming exactly what
+  landed instead of a bare error.
+
+### Fixed
+
+- **Receipt polling no longer reports a live tx as "did not happen"**:
+  `wait_for_receipt` retries dead polls and gives up only after 3
+  consecutive failures — as UNCONFIRMED with the tx hash, never a
+  false revert over unknown chain state.
+- **Model-facing batch-cap text told the old story**: every "max 7" /
+  "up to 20" claim across the session prompts, tool descriptions, and
+  llms.txt now describes auto-chunking, and a drift test pins the
+  hand-written 28-item bound across all surfaces.
+
 ## [0.79.0] - 2026-08-03
 
 ### Added
