@@ -520,7 +520,15 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     .chunk_errors
                     .first()
                     .map(|(_, e)| e.clone())
-                    .unwrap_or_else(|| "every role name is taken or invalid".to_string());
+                    .unwrap_or_else(|| {
+                        if reg_fold.unattempted.is_empty() {
+                            "every role name is taken or invalid".to_string()
+                        } else {
+                            // Stopped (user Stop / breaker) before these chunks
+                            // ran — never claim the names were taken.
+                            "the batch stopped before registration was attempted".to_string()
+                        }
+                    });
                 // Honest scope: THIS call registered nothing and created no
                 // guild. It cannot know a PREVIOUS attempt's state (the names
                 // may be "taken" because an earlier founding minted them), so

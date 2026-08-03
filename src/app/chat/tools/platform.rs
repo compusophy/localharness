@@ -959,11 +959,15 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 }
             }
             let fold = crate::relay_chunk::fold_outcomes(&ranges, &outcomes);
-            // Total loss (nothing burned, nothing pending) keeps the plain
-            // error contract; any landed OR unconfirmed outcome must return
-            // the structured breakdown instead (an Err would falsely claim
-            // nothing happened).
-            if released_all.is_empty() && fold.unconfirmed.is_empty() {
+            // Total loss (nothing burned, nothing pending, nothing skipped by
+            // an early stop) keeps the plain error contract; any landed,
+            // unconfirmed, or unattempted outcome must return the structured
+            // breakdown instead (an Err would falsely claim nothing happened /
+            // everything failed).
+            if released_all.is_empty()
+                && fold.unconfirmed.is_empty()
+                && fold.unattempted.is_empty()
+            {
                 if let Some((_, e)) = fold.chunk_errors.first() {
                     return Err(crate::error::Error::other(format!("bulk release failed: {e}")));
                 }
@@ -1110,12 +1114,16 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 }
             }
             let fold = crate::relay_chunk::fold_outcomes(&ranges, &outcomes);
-            if registered_all.is_empty() && fold.unconfirmed.is_empty() {
-                // Total loss (and nothing pending): preserve the old single-tx
-                // error contract (first chunk error, or the all-skipped
-                // sentinel). With an unconfirmed chunk the structured result
-                // below reports it instead — an Err would falsely claim no
-                // registration can have happened.
+            if registered_all.is_empty()
+                && fold.unconfirmed.is_empty()
+                && fold.unattempted.is_empty()
+            {
+                // Total loss (nothing registered, nothing pending, every chunk
+                // ran): preserve the old single-tx error contract (first chunk
+                // error, or the all-skipped sentinel). With an unconfirmed or
+                // unattempted chunk the structured result below reports it
+                // instead — an Err would falsely claim nothing can have
+                // registered / the names were invalid.
                 let msg = fold
                     .chunk_errors
                     .first()
@@ -1591,7 +1599,13 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 }
             }
             let fold = crate::relay_chunk::fold_outcomes(&ranges, &outcomes);
-            if fold.landed.is_empty() && fold.unconfirmed.is_empty() {
+            // Total loss only (nothing moved, nothing pending, every chunk
+            // ran): otherwise the structured per-transfer breakdown below is
+            // the honest report.
+            if fold.landed.is_empty()
+                && fold.unconfirmed.is_empty()
+                && fold.unattempted.is_empty()
+            {
                 if let Some((_, e)) = fold.chunk_errors.first() {
                     return Err(crate::error::Error::other(format!("batch_send_lh failed: {e}")));
                 }
