@@ -103,18 +103,27 @@ pub fn base_system_prompt(
              updated }}; after it succeeds, give the user the returned `url` as a \
              clickable link. Each subdomain is its own agent tab with its own \
              per-origin sandbox.\n\
-           • batch_create_subdomains(names, confirmation) — register MANY \
-             subdomains at once (at most 28 per call — split bigger requests). \
-             Use THIS instead of calling create_subdomain repeatedly \
+           • batch_create_subdomains(names | items, confirmation) — register \
+             MANY subdomains at once (at most 28 per call — split bigger \
+             requests). Use THIS instead of calling create_subdomain repeatedly \
              when the user asks for more than one name at once (\"register \
              a, b and c\", \"make me 5 subdomains\", \"spin up a-b-c-d\"). \
+             Pass `names` for name-only registrations, or `items` \
+             ([{{name, source?}}]) to ALSO publish a rustlite app onto each \
+             (create_subdomain's `source` behavior, batched): every source \
+             compiles FIRST — a bad cartridge fails that item before any \
+             spend (`compile_failed` carries the diagnostic); a name you \
+             already own updates IN PLACE (published, no re-register, no \
+             fee); publishing is off-chain + free (`published` carries each \
+             url; a publish failure rides `publish_failed`, the registration \
+             still stands). \
              SPENDS $LH (each registration costs the on-chain fee), so it uses \
              the same confirmation flow as send_lh: list the names, the owner \
              TYPES the single-use code, retry with it. Taken/invalid names are \
              skipped and reported in `skipped`; more than 7 names are split \
              across multiple sponsored transactions automatically. Returns \
              {{ registered, skipped, count, tx_hashes, failed, unconfirmed, \
-             unattempted, urls }}.\n\
+             unattempted, urls, published, publish_failed, compile_failed }}.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT and frees the name. The \
              FIRST call never executes — it returns a single-use confirmation \
@@ -517,12 +526,15 @@ pub fn base_system_prompt(
            face for a homepage). Local files are device-only; once published, \
            anyone can open https://<name>.localharness.xyz/ — that URL is the \
            shareable link.\n\
-         • Registering MULTIPLE names at once → batch_create_subdomains(names), \
+         • Registering MULTIPLE names at once → batch_create_subdomains, \
            NOT a create_subdomain loop. A loop spends one sponsored \
            transaction per name and eats your auto-continue budget; the batch \
            registers them all in as few transactions as possible (>7 names \
            auto-split, ≤28 per call; confirm-gated — registrations cost $LH) \
-           and reports which were skipped (taken/invalid).\n\
+           and reports which were skipped (taken/invalid). Making MULTIPLE \
+           APP subdomains at once → the same tool with `items` \
+           ([{{name, source?}}]): registers AND publishes each app in one \
+           call (compile-first — a bad source never spends).\n\
          • COST-AWARE: the owner is billed per MODEL ROUND — every reply you \
            produce, including each tool-using step, costs ~1 $LH (premium \
            models more). A question that takes five tool rounds costs ~5 $LH. \
@@ -804,12 +816,15 @@ pub fn lean_system_prompt(
              `name` it UPDATES that app in place. `persona` sets the new agent's \
              on-chain instruction; `prefund_lh` moves $LH into its own \
              token-bound account. Return the url as a clickable link.\n\
-           • batch_create_subdomains(names, confirmation) — register MANY \
-             names at once (>7 auto-split across txs, ≤28 per call; \
+           • batch_create_subdomains(names | items, confirmation) — register \
+             MANY names at once (>7 auto-split across txs, ≤28 per call; \
              taken/invalid reported in `skipped`) — use instead of a \
-             create_subdomain loop. SPENDS $LH (per-name registration fee): \
-             confirm-gated like send_lh — the OWNER types the single-use \
-             code.\n\
+             create_subdomain loop. `items` ([{{name, source?}}]) also \
+             publishes a rustlite app per name (each source compiles FIRST — \
+             a bad one fails that item before any spend; a name you already \
+             own updates in place, free). SPENDS $LH (per-name registration \
+             fee): confirm-gated like send_lh — the OWNER types the \
+             single-use code.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT. Confirm-gated: the first \
              call only returns a single-use code the OWNER must TYPE in chat \

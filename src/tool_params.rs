@@ -45,6 +45,10 @@
 //!   (`{label, description}`); the grammar has no object-items kind.
 //! * `batch_send_lh` (chat) — `transfers` is an array of NESTED OBJECTS
 //!   (`{recipient, amount}` with its own `required`).
+//! * `batch_create_subdomains` (chat) — UN-migrated when #85's `{name,
+//!   source}` array batch landed: `items` is an array of NESTED OBJECTS (the
+//!   batch_send_lh shape). Its hand-written schema is hoisted to
+//!   `crate::batch_apps::input_schema()` so `cargo test` still guards it.
 //! * `finish` (builtin) — its `output` property is deliberately TYPE-LESS
 //!   (accepts any JSON); every table kind emits a single `type`.
 //! * `consult_model` (chat) — the `model` enum AND the tool description are
@@ -997,27 +1001,6 @@ crate::tool_params! {
 }
 
 crate::tool_params! {
-    /// Args for the browser `batch_create_subdomains` tool
-    /// (`src/app/chat/tools/platform.rs`) — N registrations in batched
-    /// sponsored txs (auto-chunked, `crate::relay_chunk`). The body keeps its
-    /// own trim/empty validation.
-    pub struct BatchCreateSubdomainsParams: lenient {
-        names: req_str_array = "Subdomain names to register, e.g. \
-                    [\"alice\",\"bob\"] -> alice.localharness.xyz, \
-                    bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
-                    digits, hyphens. Already-taken or invalid names are skipped \
-                    and reported back. More than 7 are split across multiple \
-                    sponsored txs automatically; at most 28 names per call — \
-                    split a bigger request into separate calls.",
-        confirmation: opt_str = "Single-use confirmation code. OMIT (or pass \"\") on \
-                    the first call — it returns a challenge code shown to the owner \
-                    (each registration costs real $LH on mainnet). List the names, ask \
-                    the owner to TYPE the code in chat, then retry with it. Never \
-                    invent it; only the platform issues it.",
-    }
-}
-
-crate::tool_params! {
     /// Args for the browser `run_wasm_cli` tool (`src/app/chat/tools/misc.rs`)
     /// — the WASI-subset CLI sandbox. Fully table-parsed (`args` is the plain
     /// filter-map string-array extraction, exactly the historical chain).
@@ -1177,7 +1160,6 @@ mod tests {
             ("DwellParams", DwellParams::schema()),
             ("FormPartyParams", FormPartyParams::schema()),
             ("EvmCallParams", EvmCallParams::schema()),
-            ("BatchCreateSubdomainsParams", BatchCreateSubdomainsParams::schema()),
             ("RunWasmCliParams", RunWasmCliParams::schema()),
             ("FoundCompanyParams", FoundCompanyParams::schema()),
         ] {
@@ -2604,10 +2586,12 @@ mod tests {
     /// unlock): each generated schema serializes byte-for-byte equal to the
     /// hand-written literal it replaced in `src/app/chat/tools/{party,evm,
     /// platform,misc,company}.rs` (frozen verbatim below) — the same migration
-    /// contract as waves 1-4.
+    /// contract as waves 1-4. (`batch_create_subdomains` left this wave when
+    /// #85's `{name, source}` array batch made it a nested-object-array
+    /// RESIDENT — its hand-written schema is guarded in `crate::batch_apps`.)
     #[test]
     fn chat_tool_wave5_schemas_are_byte_identical_to_the_frozen_originals() {
-        let cases: [(&str, Value, Value); 5] = [
+        let cases: [(&str, Value, Value); 4] = [
             ("form_party", FormPartyParams::schema(), json!({
                 "type": "object",
                 "properties": {
@@ -2661,31 +2645,6 @@ mod tests {
                     }
                 },
                 "required": ["chain", "to", "function_signature"]
-            })),
-            ("batch_create_subdomains", BatchCreateSubdomainsParams::schema(), json!({
-                "type": "object",
-                "properties": {
-                    "names": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Subdomain names to register, e.g. \
-                            [\"alice\",\"bob\"] -> alice.localharness.xyz, \
-                            bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
-                            digits, hyphens. Already-taken or invalid names are skipped \
-                            and reported back. More than 7 are split across multiple \
-                            sponsored txs automatically; at most 28 names per call — \
-                            split a bigger request into separate calls."
-                    },
-                    "confirmation": {
-                        "type": "string",
-                        "description": "Single-use confirmation code. OMIT (or pass \"\") on \
-                            the first call — it returns a challenge code shown to the owner \
-                            (each registration costs real $LH on mainnet). List the names, ask \
-                            the owner to TYPE the code in chat, then retry with it. Never \
-                            invent it; only the platform issues it."
-                    }
-                },
-                "required": ["names"]
             })),
             ("run_wasm_cli", RunWasmCliParams::schema(), json!({
                 "type": "object",
@@ -2788,16 +2747,9 @@ mod tests {
         let p = EvmCallParams::lenient(&json!({"chain": " base ", "to": "0xC"}));
         assert_eq!((p.chain.trim(), p.to.trim(), p.function_signature.as_str()), ("base", "0xC", ""));
 
-        // batch_create_subdomains: raw strings out, body trims/filters/caps.
-        let p = BatchCreateSubdomainsParams::lenient(&json!({"names": [" a ", "", 3, "bob"]}));
-        let requested: Vec<String> = p
-            .names
-            .iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        assert_eq!(requested, vec!["a".to_string(), "bob".to_string()]);
-        assert!(BatchCreateSubdomainsParams::lenient(&json!({})).names.is_empty());
+        // (batch_create_subdomains left this wave for the resident roster —
+        // its legacy `names` lenient extraction is parity-tested in
+        // `crate::batch_apps::tests` instead.)
 
         // run_wasm_cli: path "" default keeps the empty-error reachable; argv
         // is the plain filter-map — non-strings drop, exactly as before.

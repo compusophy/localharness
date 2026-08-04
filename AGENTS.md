@@ -111,13 +111,14 @@ src/                  library crate
 ├── receipt.rs        execution receipts (wallet): versioned preimage + keccak
 │                     hash binding source→wasm→(call). CLI `receipt` = build
 │                     receipts; golden test pins the layout — bump RECEIPT_V
-├── raster.rs html_fb.rs(pure HTML→framebuffer rasterizer, hoisted from
-│                     app::display) compose.rs sharedfs_reconcile.rs
+├── raster.rs html_fb.rs(pure HTML→framebuffer rasterizer)
+│                     compose.rs sharedfs_reconcile.rs
 │                     signaling_seal.rs kv_reduce.rs kv_room.rs lessons.rs
-│                     push_enroll.rs(verify + bell status, #40) confirm.rs
-│                     cut_guard.rs(facet-cut safety lint, reserved selectors)
-│                     qr.rs(inline SVG QR) relay_chunk.rs(≤8-call sponsored-tx
-│                     chunk+honest-fold core — batch tools + found_company, #85)
+│                     push_enroll.rs(bell verify, #40) confirm.rs
+│                     cut_guard.rs(facet-cut safety lint)
+│                     qr.rs(SVG QR) relay_chunk.rs(≤8-call sponsored-tx
+│                     chunk+honest-fold core, #85) batch_apps.rs({name,source}
+│                     batch core: parse/compile-first/item fold)
 │                     skills.rs(SKILLS LOOP blob core) — native-testable cores
 ├── rustlite/         Rust-subset → wasm compiler: lexer / parser / ast /
 │                     typecheck / codegen(wasm emitter) / loader(wasm32 cartridge)

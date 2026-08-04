@@ -219,6 +219,14 @@ pub mod confirm;
 /// tools + `found_company`. See `src/relay_chunk.rs`.
 pub mod relay_chunk;
 
+/// Pure core for `batch_create_subdomains`' `{name, source}` array batch
+/// (telemetry #85, the #86 one-tool precedent batched): the `names`/`items`
+/// union parse, the compile-first partition (every source compiles via
+/// rustlite BEFORE any registration tx), the per-item status fold over the
+/// chunked-registration outcome, and the tool's hand-written Gemini-safe
+/// `input_schema`. See `src/batch_apps.rs`.
+pub mod batch_apps;
+
 /// Static safety lint for agent-authored facet cuts (SolidityLite §7 Layer 1):
 /// reserved-selector denylist + clash + `_init==0`. Pure + native-testable;
 /// wired into `localharness facet cut` as a pre-flight. See `src/cut_guard.rs`.

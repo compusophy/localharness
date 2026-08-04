@@ -451,25 +451,35 @@ async fn publish_app_face(
     if source.trim().is_empty() {
         return Err(crate::error::Error::other("source cannot be empty"));
     }
-    // Compile FIRST — a bad cartridge fails before any write. Surface the FULL
-    // rendering (LH code + line/col + caret) so the agent can fix it.
-    let wasm = crate::rustlite::compile(source).map_err(|e| {
-        crate::error::Error::other(format!("compile failed: {}", e.render(source)))
-    })?;
-    if wasm.len() > crate::app::registry::APP_STORE_MAX_WASM_BYTES {
-        return Err(crate::error::Error::other(format!(
-            "app wasm too large to publish: {} bytes (max {})",
-            wasm.len(),
-            crate::app::registry::APP_STORE_MAX_WASM_BYTES
-        )));
-    }
+    // Compile FIRST — a bad cartridge fails before any write. The shared
+    // native-tested compile step (`crate::batch_apps::compile_source`)
+    // surfaces the FULL rendering (LH code + line/col + caret) so the agent
+    // can fix it, and applies the store size cap.
+    let wasm = crate::batch_apps::compile_source(
+        source,
+        crate::app::registry::APP_STORE_MAX_WASM_BYTES,
+    )
+    .map_err(crate::error::Error::other)?;
+    publish_wasm_face(name, source, &wasm, owner).await?;
+    Ok(wasm)
+}
+
+/// The store half of [`publish_app_face`]: POST an ALREADY-COMPILED cartridge
+/// (bytes + source + face record in one authed request). Split out so the
+/// batch tool — which compile-first-verifies every source BEFORE any
+/// registration tx — can publish without recompiling.
+async fn publish_wasm_face(
+    name: &str,
+    source: &str,
+    wasm: &[u8],
+    owner: &str,
+) -> Result<(), crate::error::Error> {
     let signer = owner_master_signer("publish", owner)?;
     let now = (js_sys::Date::now() / 1000.0) as u64;
     let token = crate::registry::proxy_auth_token(&signer, now, "publish");
-    crate::app::registry::publish_app_to_store(name, &token, &wasm, source)
+    crate::app::registry::publish_app_to_store(name, &token, wasm, source)
         .await
-        .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-    Ok(wasm)
+        .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))
 }
 
 /// Publish an HTML page as `name`'s public face — the HTML-face sibling of
@@ -1053,57 +1063,81 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
     )
 }
 
-/// `batch_create_subdomains(names, confirmation)` — register MANY subdomains
-/// in batched sponsored multi-call txs (the mirror of `bulk_release_subdomains`).
+/// `batch_create_subdomains(names | items, confirmation)` — register MANY
+/// subdomains in batched sponsored multi-call txs (the mirror of
+/// `bulk_release_subdomains`), and OPTIONALLY publish an app onto each in the
+/// same call: telemetry #85's `{name, source}` ARRAY BATCH, following the #86
+/// one-tool precedent (a `source` is what makes an item an app).
 /// VALUE-MOVING on mainnet (each registration pulls `registrationCost()` — live:
 /// 1 $LH — from the owner's wallet), so it rides the typed-confirmation gate
 /// (`chat::confirm_guard`); the old "additive, no confirmation" rationale died
 /// with the hard cap. The sanctioned mass-registration path — a few txs instead
 /// of an N-deep `create_subdomain` loop. Names are sanitised +
-/// availability-checked; taken/invalid names are skipped and reported. >7 names
-/// auto-chunk (`crate::relay_chunk`; the paid-claim approve reserves one slot
-/// per chunk — telemetry #85/#88); at most `MAX_BATCH_ITEMS` per call. Not
-/// granted to subagents (same restraint as bulk_release).
+/// availability-checked; taken/invalid names are skipped and reported.
+/// COMPILE FIRST, SPEND NEVER ON A BAD SOURCE: every provided source compiles
+/// (the same rustlite path `create_subdomain` uses) BEFORE any registration
+/// tx; a compile failure fails THAT item up front and removes it from the
+/// registration set. A source item whose name the caller ALREADY OWNS is
+/// updated in place (publish only, no tx — the create_subdomain mirror); one
+/// owned by someone ELSE is skipped and never published. Publishing is
+/// off-chain + free; a publish failure is reported per-item and never claims
+/// the registration failed. >7 registrations auto-chunk (`crate::relay_chunk`;
+/// the paid-claim approve reserves one slot per chunk — telemetry #85/#88); at
+/// most `MAX_BATCH_ITEMS` items per call. Pure cores (union parse /
+/// compile-first / per-item fold): `crate::batch_apps`. Not granted to
+/// subagents (same restraint as bulk_release).
 pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
-    // Hoisted table: `crate::tool_params::BatchCreateSubdomainsParams`,
-    // byte-identity-tested natively.
-    let schema = crate::tool_params::BatchCreateSubdomainsParams::schema();
+    // Hand-written schema, HOISTED to `crate::batch_apps::input_schema()` so
+    // plain `cargo test` guards its Gemini-safety — `items` is an array of
+    // NESTED OBJECTS (the batch_send_lh resident shape), which the
+    // `tool_params!` grammar deliberately can't express.
+    let schema = crate::batch_apps::input_schema();
     ClosureTool::new(
         "batch_create_subdomains",
         "Register MANY <name>.localharness.xyz subdomains on-chain in batched \
-         sponsored transactions. PREFER THIS over calling create_subdomain in \
-         a loop when registering more than one name. The owner's master wallet \
-         ends up holding every resulting ERC-721 NFT. SPENDS $LH (each \
-         registration costs the on-chain registration fee — 1 $LH on mainnet), \
-         so the first call does NOT execute: it returns a single-use \
-         confirmation code (also shown to the owner in the UI). List the names, \
-         ask the owner to TYPE the code, then retry with `confirmation` set to \
-         it. At most 28 names per call — split a bigger request into separate \
-         calls. Taken or invalid names are skipped (not an error) and listed in \
-         `skipped`. More than 7 names are split across multiple sponsored txs \
-         automatically (each tx carries at most 8 calls). `failed` lists chunks \
-         whose tx FAILED (those names were NOT registered); `unconfirmed` lists \
-         chunks whose receipt TIMED OUT (the tx MAY still land — check its \
-         tx_hash before retrying; the batch stops there); `unattempted` lists \
-         names never tried (the batch stops early after 2 consecutive failed \
-         chunks, an unconfirmed chunk, or a user Stop). Returns { registered, \
-         skipped, count, tx_hashes, failed, unconfirmed, unattempted, urls }.",
+         sponsored transactions — and OPTIONALLY publish an app onto each in \
+         the SAME call. PREFER THIS over calling create_subdomain in a loop \
+         when creating more than one name. Pass EITHER `names` (name-only \
+         registrations) OR `items` ([{name, source?}] — an item with a \
+         rustlite `source` ALSO publishes it as that subdomain's fullscreen \
+         public face, the create_subdomain `source` behavior batched). Every \
+         source compiles FIRST: a compile failure fails THAT item up front \
+         (listed in `compile_failed` with the compiler diagnostic) and it is \
+         never registered, so a bad cartridge spends nothing. A source item \
+         whose name you ALREADY OWN is updated IN PLACE (published, no \
+         re-register, no fee); a name owned by someone ELSE is skipped and \
+         NOT published. Publishing is OFF-CHAIN and free; a publish failure \
+         (listed in `publish_failed`) never means the registration failed. \
+         The owner's master wallet ends up holding every new ERC-721 NFT. \
+         SPENDS $LH (each registration costs the on-chain registration fee — \
+         1 $LH on mainnet), so the first call does NOT execute: it returns a \
+         single-use confirmation code (also shown to the owner in the UI). \
+         List the names, ask the owner to TYPE the code, then retry with \
+         `confirmation` set to it. At most 28 items per call — split a bigger \
+         request into separate calls. Taken or invalid names are skipped (not \
+         an error) and listed in `skipped`. More than 7 registrations are \
+         split across multiple sponsored txs automatically (each tx carries \
+         at most 8 calls). `failed` lists chunks whose tx FAILED (those names \
+         were NOT registered); `unconfirmed` lists chunks whose receipt TIMED \
+         OUT (the tx MAY still land — check its tx_hash before retrying; the \
+         batch stops there); `unattempted` lists names never tried (the batch \
+         stops early after 2 consecutive failed chunks, an unconfirmed chunk, \
+         or a user Stop). Returns { registered, skipped, count, tx_hashes, \
+         failed, unconfirmed, unattempted, urls, published: [{name, url, \
+         updated}], publish_failed: [{name, error, registered}], \
+         compile_failed: [{name, error}] } — an in-place update appears in \
+         `published` with updated: true and NOT in `registered` (no tx was \
+         needed).",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let params = crate::tool_params::BatchCreateSubdomainsParams::lenient(&args);
-            let requested: Vec<String> = params
-                .names
-                .iter()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            if requested.is_empty() {
-                return Err(crate::error::Error::bad_args("batch_create_subdomains", "names cannot be empty"));
-            }
+            // The names/items UNION parse (pure, native-tested):
+            // EITHER the legacy names:[string] OR items:[{name, source?}].
+            let items = crate::batch_apps::parse_items(&args)
+                .map_err(|e| crate::error::Error::bad_args("batch_create_subdomains", e))?;
             // Hard total bound (relay_chunk::MAX_BATCH_ITEMS): the mint/spend
             // ceiling one confirmed call may carry.
             if let Some(msg) =
-                crate::relay_chunk::over_batch_limit("batch_create_subdomains", requested.len())
+                crate::relay_chunk::over_batch_limit("batch_create_subdomains", items.len())
             {
                 return Err(crate::error::Error::bad_args("batch_create_subdomains", msg));
             }
@@ -1111,9 +1145,9 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             // before this body runs; this guards a registration path that
             // forgot the hook (batch_create mints names for real $LH — same
             // posture as bulk_release / batch_send_lh).
-            let confirmed = params
-                .confirmation
-                .as_deref()
+            let confirmed = args
+                .get("confirmation")
+                .and_then(|v| v.as_str())
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
             if !confirmed {
@@ -1122,7 +1156,89 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                     "batch_create_subdomains requires the platform-issued confirmation code",
                 ));
             }
-            // A PAID claim (mainnet registrationCost > 0) inserts ONE cumulative
+
+            use crate::batch_apps::{ItemPlan, ItemState};
+            let any_source = items.iter().any(|it| it.source.is_some());
+
+            // COMPILE FIRST, SPEND NEVER ON A BAD SOURCE: every provided
+            // source compiles (the same rustlite path create_subdomain uses,
+            // incl. the store size cap) BEFORE any registration tx. A failure
+            // fails THAT item up front and removes it from the registration
+            // set; the full diagnostic rides the per-item report.
+            let compiled: Vec<Option<Result<Vec<u8>, String>>> = items
+                .iter()
+                .map(|it| {
+                    it.source.as_deref().map(|s| {
+                        crate::batch_apps::compile_source(
+                            s,
+                            crate::app::registry::APP_STORE_MAX_WASM_BYTES,
+                        )
+                    })
+                })
+                .collect();
+
+            // Publishing signs as the current host's owner (the master wallet
+            // holding ALL this identity's names) — required only when a source
+            // rides, both for the ownership pre-check and the store auth.
+            let signer_owner: Option<String> = if any_source {
+                Some(
+                    crate::app::tenant::current_tenant_owner()
+                        .await
+                        .map_err(|e| {
+                            crate::error::Error::other(format!(
+                                "publishing in a batch needs to run on your own \
+                                 subdomain so ownership can be verified: {e}"
+                            ))
+                        })?
+                        .1,
+                )
+            } else {
+                None
+            };
+
+            // Cleaned name per item — the SAME sanitize the events path
+            // registers, so the registered-set membership mapping can't drift.
+            let cleaned: Vec<String> =
+                items.iter().map(|it| crate::app::tenant::sanitize(&it.name)).collect();
+
+            // Route each item: source items get a validity + ownership
+            // pre-pass (free name → register; already OURS → update in place,
+            // the create_subdomain mirror; someone else's → skip, app NOT
+            // published). Source-less items go straight to the registration
+            // set — the events path filters taken/invalid exactly as before.
+            let mut plan: Vec<ItemPlan> = Vec::with_capacity(items.len());
+            for (i, it) in items.iter().enumerate() {
+                let p = match &compiled[i] {
+                    Some(Err(e)) => ItemPlan::CompileFailed(e.clone()),
+                    Some(Ok(_)) => match crate::subdomain::validate(&it.name) {
+                        Err(why) => ItemPlan::PreSkipped(format!("invalid subdomain name: {why}")),
+                        Ok(_) => match crate::app::registry::owner_of_name(&cleaned[i]).await {
+                            Ok(None) => ItemPlan::Register,
+                            Ok(Some(o))
+                                if signer_owner
+                                    .as_deref()
+                                    .map(|s| o.eq_ignore_ascii_case(s))
+                                    .unwrap_or(false) =>
+                            {
+                                ItemPlan::UpdateInPlace
+                            }
+                            Ok(Some(o)) => ItemPlan::PreSkipped(format!(
+                                "owned by {o}, not you — not registered, app NOT published"
+                            )),
+                            Err(e) => {
+                                return Err(crate::error::Error::other(format!(
+                                    "owner_of_name: {e}"
+                                )))
+                            }
+                        },
+                    },
+                    None => ItemPlan::Register,
+                };
+                plan.push(p);
+            }
+
+            // The registration subset (unchanged chunked path over it). A PAID
+            // claim (mainnet registrationCost > 0) inserts ONE cumulative
             // `approve` at the head of EVERY chunk's tx (events/subdomains.rs),
             // so each chunk carries at most 7 names — the reserved-slot rule the
             // old hard cap encoded (telemetry #88). The slot is reserved
@@ -1133,7 +1249,10 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             // chunk is reported and the rest run UNLESS the breaker trips (2
             // consecutive failures), a receipt times out (stop immediately —
             // chain state unknown), or the user pressed Stop (the dwell idiom).
-            let ranges = crate::relay_chunk::chunk_ranges(requested.len(), true);
+            let reg_indices = crate::batch_apps::register_set(&plan);
+            let reg_requested: Vec<String> =
+                reg_indices.iter().map(|&i| items[i].name.clone()).collect();
+            let ranges = crate::relay_chunk::chunk_ranges(reg_requested.len(), true);
             let mut outcomes: Vec<crate::relay_chunk::ChunkOutcome> =
                 Vec::with_capacity(ranges.len());
             let mut registered_all: Vec<String> = Vec::new();
@@ -1143,7 +1262,7 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 {
                     break;
                 }
-                let chunk = requested[r.clone()].to_vec();
+                let chunk = reg_requested[r.clone()].to_vec();
                 match crate::app::events::run_batch_create_subdomains(&chunk).await {
                     Ok((registered, tx)) => {
                         registered_all.extend(registered);
@@ -1161,16 +1280,19 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 }
             }
             let fold = crate::relay_chunk::fold_outcomes(&ranges, &outcomes);
-            if registered_all.is_empty()
+            if !any_source
+                && registered_all.is_empty()
                 && fold.unconfirmed.is_empty()
                 && fold.unattempted.is_empty()
             {
-                // Total loss (nothing registered, nothing pending, every chunk
-                // ran): preserve the old single-tx error contract (first chunk
-                // error, or the all-skipped sentinel). With an unconfirmed or
-                // unattempted chunk the structured result below reports it
-                // instead — an Err would falsely claim nothing can have
-                // registered / the names were invalid.
+                // Total loss on a pure-names call (nothing registered, nothing
+                // pending, every chunk ran): preserve the old single-tx error
+                // contract (first chunk error, or the all-skipped sentinel).
+                // With an unconfirmed or unattempted chunk the structured
+                // result below reports it instead — an Err would falsely claim
+                // nothing can have registered / the names were invalid. Any
+                // call carrying a source ALWAYS gets the structured per-item
+                // breakdown (compile/publish outcomes must be reported).
                 let msg = fold
                     .chunk_errors
                     .first()
@@ -1178,25 +1300,81 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                     .unwrap_or_else(|| crate::app::events::NO_VALID_NAMES.to_string());
                 return Err(crate::error::Error::other(format!("batch create failed: {msg}")));
             }
-            // Skipped = names whose chunk was handled but which did not register
-            // (taken/invalid). Failed-chunk names are NOT "skipped" — they were
-            // attempted and their tx failed; they ride `failed` instead.
-            let registered_set: std::collections::HashSet<&str> =
-                registered_all.iter().map(|s| s.as_str()).collect();
-            let skipped: Vec<&String> = fold
-                .landed
-                .iter()
-                .map(|&i| &requested[i])
-                .filter(|r| {
-                    let c = crate::app::tenant::sanitize(r);
-                    !registered_set.contains(c.as_str())
-                })
-                .collect();
+            // Per-item states via the pure fold (native-tested): scatter the
+            // registration-subset outcome back onto the full item list.
+            let states =
+                crate::batch_apps::item_states(&plan, &fold, &cleaned, &registered_all);
+
+            // PUBLISH phase: every source item whose name LANDED this call or
+            // was ALREADY OWNED (update in place) publishes its pre-compiled
+            // wasm to the store (off-chain, free — bytes + face record in one
+            // authed POST). A publish failure is reported per-item and NEVER
+            // rewrites the registration outcome above.
+            let mut published: Vec<serde_json::Value> = Vec::new();
+            let mut publish_failed: Vec<serde_json::Value> = Vec::new();
+            for (i, st) in states.iter().enumerate() {
+                let Some(Ok(wasm)) = &compiled[i] else { continue };
+                let updated = match st {
+                    ItemState::Registered => false,
+                    ItemState::UpdateInPlace => true,
+                    _ => continue,
+                };
+                // A user Stop skips the remaining publishes but must never
+                // swallow them silently — each skipped one is reported (the
+                // registration outcome above already happened and stands).
+                if crate::app::chat::turn_cancelled() {
+                    publish_failed.push(serde_json::json!({
+                        "name": cleaned[i],
+                        "error": "stopped before publish — re-run with the same \
+                                  source to publish this app",
+                        "registered": !updated,
+                    }));
+                    continue;
+                }
+                // `any_source` guarantees signer_owner is Some here.
+                let owner = signer_owner.as_deref().unwrap_or_default();
+                let source = items[i].source.as_deref().unwrap_or_default();
+                match publish_wasm_face(&cleaned[i], source, wasm, owner).await {
+                    Ok(()) => published.push(serde_json::json!({
+                        "name": cleaned[i],
+                        "url": format!("https://{}.localharness.xyz/", cleaned[i]),
+                        "updated": updated,
+                    })),
+                    Err(e) => publish_failed.push(serde_json::json!({
+                        "name": cleaned[i],
+                        "error": e.to_string(),
+                        // The honest split: a FRESH name still registered even
+                        // though its app didn't publish; an in-place target
+                        // was simply left unchanged.
+                        "registered": !updated,
+                    })),
+                }
+            }
+
+            // Bucket the remaining per-item states. `skipped` = names that
+            // did not register (pre-skipped, or their chunk landed but the
+            // events path filtered them as taken/invalid) — failed-chunk
+            // names are NOT "skipped" (they were attempted; they ride
+            // `failed`). Legacy string-list shape preserved.
+            let mut skipped: Vec<&str> = Vec::new();
+            let mut unattempted: Vec<&str> = Vec::new();
+            let mut compile_failed: Vec<serde_json::Value> = Vec::new();
+            for (i, st) in states.iter().enumerate() {
+                match st {
+                    ItemState::Skipped(_) => skipped.push(&items[i].name),
+                    ItemState::Unattempted => unattempted.push(&items[i].name),
+                    ItemState::CompileFailed(e) => compile_failed.push(serde_json::json!({
+                        "name": items[i].name,
+                        "error": e,
+                    })),
+                    _ => {}
+                }
+            }
             let failed: Vec<serde_json::Value> = fold
                 .chunk_errors
                 .iter()
                 .map(|(ci, err)| serde_json::json!({
-                    "names": requested[ranges[*ci].clone()],
+                    "names": reg_requested[ranges[*ci].clone()],
                     "error": err,
                 }))
                 .collect();
@@ -1206,14 +1384,12 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 .unconfirmed_txs
                 .iter()
                 .map(|(ci, tx)| serde_json::json!({
-                    "names": requested[ranges[*ci].clone()],
+                    "names": reg_requested[ranges[*ci].clone()],
                     "tx_hash": tx,
                     "note": "receipt timed out — the tx may still land; check the \
                              tx hash before retrying these names",
                 }))
                 .collect();
-            let unattempted: Vec<&String> =
-                fold.unattempted.iter().map(|&i| &requested[i]).collect();
             Ok(serde_json::json!({
                 "registered": registered_all,
                 "skipped": skipped,
@@ -1225,6 +1401,9 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 "urls": registered_all.iter()
                     .map(|n| format!("https://{n}.localharness.xyz/"))
                     .collect::<Vec<_>>(),
+                "published": published,
+                "publish_failed": publish_failed,
+                "compile_failed": compile_failed,
             }))
         },
     )
