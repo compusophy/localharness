@@ -627,6 +627,145 @@ mod tests {
         assert_eq!(stop, StreamEvent::MessageStop);
     }
 
+    /// FIXTURE (docs: build-with-claude/handling-stop-reasons — "Refusals in
+    /// Streaming Responses"): a refusal arrives as a `message_delta` whose
+    /// `delta` carries `stop_reason: "refusal"` PLUS an unmodeled
+    /// `stop_details` object — and NO `stop_sequence`, NO `usage`. All of
+    /// that must decode (unknown fields ignored, absent Options default);
+    /// a rejected frame here would fail the turn as an infra-looking
+    /// "anthropic sse decode" error instead of the refusal stop the loop
+    /// already classifies (the Gemini blocked-candidate class, ad931b47).
+    #[test]
+    fn deserialize_refusal_message_delta_with_stop_details() {
+        let ev: StreamEvent = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"end_turn","category":"policy_violation","explanation":"I can't help with that request"}}}"#,
+        )
+        .expect("documented refusal message_delta must decode");
+        match ev {
+            StreamEvent::MessageDelta { delta, usage } => {
+                assert_eq!(delta.stop_reason, Some(StopReason::Refusal));
+                assert_eq!(delta.stop_sequence, None);
+                assert!(usage.is_none(), "refusal delta may omit usage entirely");
+            }
+            other => panic!("expected MessageDelta, got {other:?}"),
+        }
+    }
+
+    /// FIXTURE (docs: build-with-claude/streaming — "Error events", verbatim
+    /// example): an in-band `error` SSE event ("overloaded_error", the
+    /// streaming analog of HTTP 529) decodes into `StreamEvent::Error` so the
+    /// loop can fail the turn with the provider's message, not a decode crash.
+    #[test]
+    fn deserialize_error_event() {
+        let ev: StreamEvent = serde_json::from_str(
+            r#"{"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}"#,
+        )
+        .expect("documented error event must decode");
+        match ev {
+            StreamEvent::Error { error } => {
+                assert_eq!(error.kind, "overloaded_error");
+                assert_eq!(error.message, "Overloaded");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    /// FIXTURE (docs: build-with-claude/streaming — thinking example,
+    /// verbatim): `message_start` may arrive with NO `usage` field at all
+    /// (and carries `"type":"message"`, `"content":[]`, null stop fields we
+    /// don't model), and a thinking `content_block_start` seeds an EMPTY
+    /// `signature`. Both must decode.
+    #[test]
+    fn deserialize_message_start_without_usage_and_thinking_seed() {
+        let start: StreamEvent = serde_json::from_str(
+            r#"{"type": "message_start", "message": {"id": "msg_01...", "type": "message", "role": "assistant", "content": [], "model": "claude-opus-5", "stop_reason": null, "stop_sequence": null}}"#,
+        )
+        .expect("message_start without usage must decode");
+        match start {
+            StreamEvent::MessageStart { message } => {
+                assert!(message.usage.is_none());
+                assert_eq!(message.role, Some(Role::Assistant));
+            }
+            other => panic!("expected MessageStart, got {other:?}"),
+        }
+
+        let block: StreamEvent = serde_json::from_str(
+            r#"{"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}"#,
+        )
+        .expect("thinking block seed must decode");
+        match block {
+            StreamEvent::ContentBlockStart { content_block, .. } => {
+                assert!(matches!(content_block, Block::Thinking { .. }));
+            }
+            other => panic!("expected ContentBlockStart, got {other:?}"),
+        }
+    }
+
+    /// FIXTURE (docs: build-with-claude/streaming — server-side fallback: "a
+    /// `fallback` content block arrives at each model boundary as a
+    /// `content_block_start` and `content_block_stop` pair"; and the
+    /// web-search example's `message_delta` whose usage carries a
+    /// `server_tool_use` sub-object): both unmodeled shapes must decode
+    /// benignly, not abort the stream.
+    #[test]
+    fn deserialize_fallback_block_and_server_tool_use_usage() {
+        let ev: StreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-opus-4-8"}}}"#,
+        )
+        .expect("fallback content block must decode");
+        match ev {
+            StreamEvent::ContentBlockStart { content_block, .. } => {
+                assert!(matches!(content_block, Block::Other));
+            }
+            other => panic!("expected ContentBlockStart, got {other:?}"),
+        }
+
+        // Verbatim from the web-search streaming example.
+        let delta: StreamEvent = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10682,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":510,"server_tool_use":{"web_search_requests":1}}}"#,
+        )
+        .expect("message_delta with server_tool_use usage must decode");
+        match delta {
+            StreamEvent::MessageDelta { delta, usage } => {
+                assert_eq!(delta.stop_reason, Some(StopReason::EndTurn));
+                assert_eq!(usage.unwrap().output_tokens, Some(510));
+            }
+            other => panic!("expected MessageDelta, got {other:?}"),
+        }
+    }
+
+    /// FIXTURE (docs: build-with-claude/handling-stop-reasons — "Response
+    /// Shape for Refusals", verbatim): the NON-streaming refusal body —
+    /// EMPTY `content`, `stop_reason: "refusal"`, an unmodeled
+    /// `stop_details` object. The one-shot path must decode it and report
+    /// empty text with the refusal stop.
+    #[test]
+    fn deserialize_nonstreaming_refusal_response() {
+        let resp: MessagesResponse = serde_json::from_str(
+            r#"{
+  "id": "msg_01234",
+  "type": "message",
+  "role": "assistant",
+  "content": [],
+  "stop_reason": "refusal",
+  "stop_sequence": null,
+  "stop_details": {
+    "type": "end_turn",
+    "category": "policy_violation",
+    "explanation": "I can't help with that request"
+  },
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 5
+  }
+}"#,
+        )
+        .expect("documented refusal response must decode");
+        assert_eq!(resp.stop_reason, Some(StopReason::Refusal));
+        assert!(resp.content.is_empty());
+        assert_eq!(resp.text(), "");
+    }
+
     #[test]
     fn request_serializes_required_fields() {
         let req = MessagesRequest {

@@ -376,4 +376,42 @@ mod tests {
         let item = s.next().await.unwrap();
         assert!(item.is_err(), "malformed JSON must be an Err, got {item:?}");
     }
+
+    /// FIXTURE — a content-filtered stream end-to-end through the SSE path
+    /// (OpenAI SDK `chat_completion_chunk.py` shapes): first delta with
+    /// `content: null` + a `refusal` text fragment (unmodeled field), a
+    /// `"usage": null` mid-stream chunk (include_usage), the terminal
+    /// `finish_reason: "content_filter"` chunk with an EMPTY delta and an
+    /// explicit `"tool_calls": null`, then the final usage chunk with EMPTY
+    /// `choices`, then `[DONE]`. Every frame must decode Ok — a rejected
+    /// frame kills the whole stream decode (the Gemini blocked-candidate
+    /// class, ad931b47).
+    #[tokio::test]
+    async fn decodes_content_filter_stream() {
+        let frames = [
+            "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"gpt-5-nano\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"refusal\":\"I'm sorry, I can't help with that.\"},\"logprobs\":null,\"finish_reason\":null}],\"usage\":null}\n\n".as_bytes(),
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":null},\"logprobs\":null,\"finish_reason\":\"content_filter\"}],\"usage\":null}\n\n".as_bytes(),
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":2,\"total_tokens\":11}}\n\n".as_bytes(),
+            "data: [DONE]\n\n".as_bytes(),
+        ];
+        let mut s = ChatSseStream::new(bytes_from(&frames));
+        let mut finish: Option<FinishReason> = None;
+        let mut usage_total: Option<i32> = None;
+        let mut chunks = 0;
+        while let Some(chunk) = s.next().await {
+            let chunk = chunk.expect("every documented filter frame must decode Ok");
+            chunks += 1;
+            for choice in &chunk.choices {
+                if let Some(fr) = choice.finish_reason {
+                    finish = Some(fr);
+                }
+            }
+            if let Some(u) = chunk.usage {
+                usage_total = u.total_tokens;
+            }
+        }
+        assert_eq!(chunks, 3, "three data chunks before [DONE]");
+        assert_eq!(finish, Some(FinishReason::ContentFilter));
+        assert_eq!(usage_total, Some(11));
+    }
 }

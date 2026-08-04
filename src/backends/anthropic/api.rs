@@ -526,6 +526,50 @@ mod tests {
         assert!(item.is_err(), "malformed JSON must be an Err, got {item:?}");
     }
 
+    /// FIXTURE — the full documented refusal stream (docs:
+    /// build-with-claude/handling-stop-reasons): `message_start` with an
+    /// EMPTY `content` array → NO content blocks at all → `message_delta`
+    /// carrying `stop_reason: "refusal"` plus an unmodeled `stop_details`
+    /// object (and no usage) → `message_stop`. Every frame must decode Ok —
+    /// a rejected frame would fail the turn as an infra-looking
+    /// "anthropic sse decode" error instead of the refusal stop
+    /// `map_finish_reason` already classifies (the Gemini blocked-candidate
+    /// class, ad931b47).
+    #[tokio::test]
+    async fn decodes_refusal_stream_with_stop_details() {
+        let frames = [
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01234\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-opus-5\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":100,\"output_tokens\":5}}}\n\n".as_bytes(),
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"end_turn\",\"category\":\"policy_violation\",\"explanation\":\"I can't help with that request\"}}}\n\n".as_bytes(),
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".as_bytes(),
+        ];
+        let mut s = MessagesSseStream::new(bytes_from(&frames));
+        let mut stop: Option<StopReason> = None;
+        let mut kinds: Vec<&'static str> = Vec::new();
+        while let Some(ev) = s.next().await {
+            match ev.expect("every documented refusal frame must decode Ok") {
+                StreamEvent::MessageStart { .. } => kinds.push("message_start"),
+                StreamEvent::MessageDelta { delta, .. } => {
+                    stop = delta.stop_reason;
+                    kinds.push("message_delta");
+                }
+                StreamEvent::MessageStop => kinds.push("message_stop"),
+                other => panic!("unexpected event in refusal stream: {other:?}"),
+            }
+        }
+        assert_eq!(kinds, vec!["message_start", "message_delta", "message_stop"]);
+        assert_eq!(stop, Some(StopReason::Refusal));
+    }
+
+    /// FIXTURE — the documented in-band `error` event (docs:
+    /// build-with-claude/streaming — "Error events", verbatim) decodes into
+    /// `StreamEvent::Error` through the SSE path, not a decode Err.
+    #[tokio::test]
+    async fn decodes_in_band_error_event() {
+        let frames = ["event: error\ndata: {\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"Overloaded\"}}\n\n".as_bytes()];
+        let s = MessagesSseStream::new(bytes_from(&frames));
+        assert_eq!(collect_kinds(s).await, vec!["error"]);
+    }
+
     /// Accumulate a multi-block stream EXACTLY as `loop.rs::run_turn` does —
     /// text deltas across TWO separate text blocks (indices 0 and 2) all fold
     /// into one text string; `input_json_delta` fragments route to the right

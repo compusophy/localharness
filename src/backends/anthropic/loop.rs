@@ -950,6 +950,40 @@ mod tests {
         assert_eq!(acc.stop_reason, Some(StopReason::ToolUse));
     }
 
+    /// FIXTURE — the documented refusal stream (docs: build-with-claude/
+    /// handling-stop-reasons) folded through the provider's real seam:
+    /// `message_start` (empty content) → `message_delta` with `stop_reason:
+    /// "refusal"` + an unmodeled `stop_details` object → `message_stop`,
+    /// with NO content blocks. The fold must accept every event (a decode
+    /// or fold rejection would kill the turn as an infra error), resolve
+    /// ZERO pending calls, and map the finish to the classified refusal
+    /// stop.
+    #[test]
+    fn refusal_stream_folds_to_refusal_finish() {
+        let (tx, _rx) = broadcast::channel::<Step>(8);
+        let state = LoopState::new(tx);
+        let mut acc = RoundAccum::default();
+        let events: Vec<StreamEvent> = [
+            r#"{"type":"message_start","message":{"id":"msg_01234","type":"message","role":"assistant","content":[],"model":"claude-opus-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":100,"output_tokens":5}}}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"end_turn","category":"policy_violation","explanation":"I can't help with that request"}}}"#,
+            r#"{"type":"message_stop"}"#,
+        ]
+        .iter()
+        .map(|s| serde_json::from_str(s).expect("documented refusal frame decodes"))
+        .collect();
+        turn_engine::test_fold_events::<AnthropicProvider>(&state, &mut acc, events);
+
+        assert!(
+            AnthropicProvider::resolve_pending_calls(&mut acc).is_empty(),
+            "a refusal round has no tool calls"
+        );
+        let (status, msg) = AnthropicProvider::map_finish_reason(&acc);
+        assert_eq!(status, StepStatus::Error);
+        assert_eq!(msg, "stopped by refusal");
+        // Usage from message_start still folds (the refusal delta has none).
+        assert_eq!(acc.usage.input_tokens, Some(100));
+    }
+
     /// THE `pause_turn` hook (the other hook this phase proves): under the
     /// anthropic-owned MAX_PAUSE_RESUMES cap the provider asks the engine to
     /// Resume (identical history, accumulators retained); AT the cap it ends

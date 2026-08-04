@@ -676,6 +676,40 @@ mod tests {
         assert_eq!(calls[1].args, json!({}), "empty args are a valid no-arg call");
     }
 
+    /// FIXTURE — the documented content-filter stop (OpenAI SDK
+    /// `chat_completion_chunk.py`: finish_reason "`content_filter` if
+    /// content was omitted due to a flag from our content filters") folded
+    /// through the provider's real seam: an assistant-role first delta with
+    /// `content: null`, a `delta.refusal` text fragment (unmodeled,
+    /// ignored), then the terminal chunk with an EMPTY delta +
+    /// `finish_reason: "content_filter"`. Every chunk must decode and fold
+    /// (a rejection kills the turn as an infra error — the Gemini
+    /// blocked-candidate class, ad931b47), resolve ZERO calls, and map to
+    /// the classified filter stop.
+    #[test]
+    fn content_filter_stream_folds_to_error_finish() {
+        let (tx, _rx) = broadcast::channel::<Step>(8);
+        let state = LoopState::new(tx);
+        let mut acc = RoundAccum::default();
+        let chunks: Vec<ChatChunk> = [
+            r#"{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-5-nano","choices":[{"index":0,"delta":{"role":"assistant","content":null},"logprobs":null,"finish_reason":null}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"refusal":"I'm sorry, I can't help with that."},"finish_reason":null}]}"#,
+            r#"{"choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"content_filter"}]}"#,
+        ]
+        .iter()
+        .map(|s| serde_json::from_str(s).expect("documented filter chunk decodes"))
+        .collect();
+        crate::backends::turn_engine::test_fold_events::<OpenAiProvider>(&state, &mut acc, chunks);
+
+        assert!(
+            OpenAiProvider::resolve_pending_calls(&mut acc).is_empty(),
+            "a filtered round has no tool calls"
+        );
+        let (status, msg) = OpenAiProvider::map_finish_reason(&acc);
+        assert_eq!(status, crate::types::StepStatus::Error);
+        assert_eq!(msg, "stopped by content filter");
+    }
+
     /// A tool call with NO `id` in the stream gets a synthesized one so the
     /// `tool`-role result message can correlate. (Replicates the run_turn
     /// fallback.)
