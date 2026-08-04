@@ -1083,12 +1083,34 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
 /// off-chain + free; a publish failure is reported per-item and never claims
 /// the registration failed, and a source item whose registration did NOT land
 /// (skipped/failed/unconfirmed/unattempted) reports `publish_skipped` — never
-/// silence. Duplicate cleaned names hard-error at parse (double-publish
-/// guard). >7 registrations auto-chunk (`crate::relay_chunk`;
+/// silence. A mid-batch user Stop lands the not-yet-published items there too
+/// (registration_state registered/update_in_place): a SKIP with a known
+/// state, not a publish FAILURE. Duplicate cleaned names hard-error at parse
+/// (double-publish guard). >7 registrations auto-chunk (`crate::relay_chunk`;
 /// the paid-claim approve reserves one slot per chunk — telemetry #85/#88); at
 /// most `MAX_BATCH_ITEMS` items per call. Pure cores (union parse /
 /// compile-first / per-item fold): `crate::batch_apps`. Not granted to
 /// subagents (same restraint as bulk_release).
+/// Name keys for one batch-result entry: `name` is the CLEANED (registrable)
+/// name wherever sanitize left one, plus `requested` (the as-typed spelling)
+/// ONLY when it differs — so a model correlating an item ACROSS result
+/// buckets (`published`/`publish_failed` vs `skipped_reasons`/`publish_skipped`/
+/// `compile_failed`) never misses on a name that normalized ("App" → "app").
+/// A name sanitizing to EMPTY falls back to the requested spelling (the only
+/// handle that exists). The legacy `skipped` string list stays as-requested.
+fn batch_name_fields(
+    cleaned: &str,
+    requested: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut m = serde_json::Map::new();
+    let key = if cleaned.is_empty() { requested } else { cleaned };
+    m.insert("name".into(), serde_json::Value::String(key.into()));
+    if key != requested {
+        m.insert("requested".into(), serde_json::Value::String(requested.into()));
+    }
+    m
+}
+
 pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     // Hand-written schema, HOISTED to `crate::batch_apps::input_schema()` so
     // plain `cargo test` guards its Gemini-safety — `items` is an array of
@@ -1131,7 +1153,10 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
          this call (skipped/failed/unconfirmed/unattempted) is NOT published \
          — it is listed in `publish_skipped` with its registration_state and \
          what to do next (an unconfirmed name may still land; if it does, \
-         publish with publish_app_to or re-run the item). `urls` lists ONLY \
+         publish with publish_app_to or re-run the item). A user Stop pressed \
+         after a name landed but before its publish ALSO rides \
+         `publish_skipped` (registration_state 'registered' or \
+         'update_in_place') — re-run or use publish_app_to. `urls` lists ONLY \
          links that work after this call: name-only registrations plus \
          successfully published apps — a registered name whose app publish \
          failed is absent from `urls`. Returns { registered, skipped, \
@@ -1141,7 +1166,9 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
          publish_skipped: [{name, registration_state, reason}], \
          compile_failed: [{name, error}] } — an in-place update appears in \
          `published` with updated: true and NOT in `registered` (no tx was \
-         needed).",
+         needed). Result buckets key on the SANITISED name; an entry adds \
+         `requested` (the spelling you passed) only when it differed. The \
+         legacy `skipped` string list stays as-requested.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             // The names/items UNION parse (pure, native-tested):
@@ -1179,17 +1206,26 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             // incl. the store size cap) BEFORE any registration tx. A failure
             // fails THAT item up front and removes it from the registration
             // set; the full diagnostic rides the per-item report.
-            let compiled: Vec<Option<Result<Vec<u8>, String>>> = items
-                .iter()
-                .map(|it| {
-                    it.source.as_deref().map(|s| {
-                        crate::batch_apps::compile_source(
-                            s,
-                            crate::app::registry::APP_STORE_MAX_WASM_BYTES,
-                        )
-                    })
-                })
-                .collect();
+            let mut compiled: Vec<Option<Result<Vec<u8>, String>>> =
+                Vec::with_capacity(items.len());
+            for it in &items {
+                let one = it.source.as_deref().map(|s| {
+                    crate::batch_apps::compile_source(
+                        s,
+                        crate::app::registry::APP_STORE_MAX_WASM_BYTES,
+                    )
+                });
+                let did_compile = one.is_some();
+                compiled.push(one);
+                // The compiles are SYNCHRONOUS — up to 28 back-to-back would
+                // block the wasm main thread before the first real await, so
+                // the turn-status painter froze. A zero-length sleep after
+                // each one yields to the event loop (the dwell idiom); bare
+                // names cost nothing.
+                if did_compile {
+                    crate::runtime::sleep_ms(0).await;
+                }
+            }
 
             // Publishing signs as the current host's owner (the master wallet
             // holding ALL this identity's names) — required only when a source
@@ -1235,38 +1271,51 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                     None => ItemPlan::Register,
                 })
                 .collect();
-            // Ownership reads for the valid SOURCE items run CONCURRENTLY —
-            // they are independent read-only eth_calls (join_all is safe on
-            // the single-threaded wasm executor; a 28-source batch used to
-            // serialize 28 sequential round-trips here).
+            // Ownership reads for the valid SOURCE items run CONCURRENTLY in
+            // BOUNDED bursts — independent read-only eth_calls (join_all is
+            // safe on the single-threaded wasm executor; a 28-source batch
+            // used to serialize 28 sequential round-trips here), but a
+            // 28-wide simultaneous burst invites RPC rate limiting, so at
+            // most 8 fly at once (the file's chunk shape). One flaky lookup
+            // retries ONCE before aborting; a hard Err still aborts the whole
+            // batch PRE-SPEND — a wrong ownership answer could route an item
+            // to the wrong plan (re-register vs update vs skip).
             let lookups: Vec<usize> = (0..items.len())
                 .filter(|&i| {
                     matches!(compiled[i], Some(Ok(_)))
                         && matches!(plan[i], ItemPlan::Register)
                 })
                 .collect();
-            let owners = futures_util::future::join_all(
-                lookups.iter().map(|&i| crate::app::registry::owner_of_name(&cleaned[i])),
-            )
-            .await;
-            for (&i, owner) in lookups.iter().zip(owners) {
-                plan[i] = match owner {
-                    Ok(None) => ItemPlan::Register,
-                    Ok(Some(o))
-                        if signer_owner
-                            .as_deref()
-                            .map(|s| o.eq_ignore_ascii_case(s))
-                            .unwrap_or(false) =>
-                    {
-                        ItemPlan::UpdateInPlace
-                    }
-                    Ok(Some(o)) => ItemPlan::PreSkipped(format!(
-                        "owned by {o}, not you — not registered, app NOT published"
-                    )),
-                    Err(e) => {
-                        return Err(crate::error::Error::other(format!("owner_of_name: {e}")))
-                    }
-                };
+            for burst in lookups.chunks(8) {
+                let owners = futures_util::future::join_all(
+                    burst.iter().map(|&i| crate::app::registry::owner_of_name(&cleaned[i])),
+                )
+                .await;
+                for (&i, owner) in burst.iter().zip(owners) {
+                    let owner = match owner {
+                        ok @ Ok(_) => ok,
+                        Err(_) => crate::app::registry::owner_of_name(&cleaned[i]).await,
+                    };
+                    plan[i] = match owner {
+                        Ok(None) => ItemPlan::Register,
+                        Ok(Some(o))
+                            if signer_owner
+                                .as_deref()
+                                .map(|s| o.eq_ignore_ascii_case(s))
+                                .unwrap_or(false) =>
+                        {
+                            ItemPlan::UpdateInPlace
+                        }
+                        Ok(Some(o)) => ItemPlan::PreSkipped(format!(
+                            "owned by {o}, not you — not registered, app NOT published"
+                        )),
+                        Err(e) => {
+                            return Err(crate::error::Error::other(format!(
+                                "owner_of_name: {e}"
+                            )))
+                        }
+                    };
+                }
             }
 
             // The registration subset (unchanged chunked path over it). A PAID
@@ -1352,11 +1401,10 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             for (i, st) in states.iter().enumerate() {
                 let Some(Ok(wasm)) = &compiled[i] else { continue };
                 let mut skip = |state: &str, reason: String| {
-                    publish_skipped.push(serde_json::json!({
-                        "name": items[i].name,
-                        "registration_state": state,
-                        "reason": reason,
-                    }));
+                    let mut e = batch_name_fields(&cleaned[i], &items[i].name);
+                    e.insert("registration_state".into(), state.into());
+                    e.insert("reason".into(), reason.into());
+                    publish_skipped.push(e.into());
                 };
                 let updated = match st {
                     ItemState::Registered => false,
@@ -1398,34 +1446,42 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                     }
                 };
                 // A user Stop skips the remaining publishes but must never
-                // swallow them silently — each skipped one is reported (the
-                // registration outcome above already happened and stands).
+                // swallow them silently — each is a SKIP with a KNOWN
+                // registration_state (the name landed / was already owned), so
+                // it rides `publish_skipped`, not `publish_failed` (nothing
+                // was attempted, so nothing "failed"). The registration
+                // outcome above already happened and stands.
                 if crate::app::chat::turn_cancelled() {
-                    publish_failed.push(serde_json::json!({
-                        "name": cleaned[i],
-                        "error": "stopped before publish — re-run with the same \
-                                  source to publish this app",
-                        "registered": !updated,
-                    }));
+                    skip(
+                        if updated { "update_in_place" } else { "registered" },
+                        "stopped by the user before this publish — re-run or \
+                         use publish_app_to"
+                            .into(),
+                    );
                     continue;
                 }
                 // `any_source` guarantees signer_owner is Some here.
                 let owner = signer_owner.as_deref().unwrap_or_default();
                 let source = items[i].source.as_deref().unwrap_or_default();
                 match publish_wasm_face(&cleaned[i], source, wasm, owner).await {
-                    Ok(()) => published.push(serde_json::json!({
-                        "name": cleaned[i],
-                        "url": format!("https://{}.localharness.xyz/", cleaned[i]),
-                        "updated": updated,
-                    })),
-                    Err(e) => publish_failed.push(serde_json::json!({
-                        "name": cleaned[i],
-                        "error": e.to_string(),
+                    Ok(()) => {
+                        let mut e = batch_name_fields(&cleaned[i], &items[i].name);
+                        e.insert(
+                            "url".into(),
+                            format!("https://{}.localharness.xyz/", cleaned[i]).into(),
+                        );
+                        e.insert("updated".into(), updated.into());
+                        published.push(e.into());
+                    }
+                    Err(err) => {
+                        let mut e = batch_name_fields(&cleaned[i], &items[i].name);
+                        e.insert("error".into(), err.to_string().into());
                         // The honest split: a FRESH name still registered even
                         // though its app didn't publish; an in-place target
                         // was simply left unchanged.
-                        "registered": !updated,
-                    })),
+                        e.insert("registered".into(), (!updated).into());
+                        publish_failed.push(e.into());
+                    }
                 }
             }
 
@@ -1433,10 +1489,11 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             // did not register (pre-skipped, or their chunk landed but the
             // events path filtered them as taken/invalid) — failed-chunk
             // names are NOT "skipped" (they were attempted; they ride
-            // `failed`). Legacy string-list shape preserved; the WHY each
-            // was skipped ("invalid subdomain name: …" / "owned by …, not
-            // you" / "taken or invalid…") rides `skipped_reasons` — the bare
-            // list used to discard it.
+            // `failed`). Legacy string-list shape preserved AS-REQUESTED
+            // (compat); the WHY each was skipped ("invalid subdomain name: …"
+            // / "owned by …, not you" / "taken or invalid…") rides
+            // `skipped_reasons` — the bare list used to discard it. The
+            // object buckets key on the CLEANED name (`batch_name_fields`).
             let mut skipped: Vec<&str> = Vec::new();
             let mut skipped_reasons: Vec<serde_json::Value> = Vec::new();
             let mut unattempted: Vec<&str> = Vec::new();
@@ -1445,16 +1502,22 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 match st {
                     ItemState::Skipped(r) => {
                         skipped.push(&items[i].name);
-                        skipped_reasons.push(serde_json::json!({
-                            "name": items[i].name,
-                            "reason": r,
-                        }));
+                        let mut e = batch_name_fields(&cleaned[i], &items[i].name);
+                        e.insert("reason".into(), r.as_str().into());
+                        skipped_reasons.push(e.into());
                     }
-                    ItemState::Unattempted => unattempted.push(&items[i].name),
-                    ItemState::CompileFailed(e) => compile_failed.push(serde_json::json!({
-                        "name": items[i].name,
-                        "error": e,
-                    })),
+                    // Cleaned where sanitize left one — the string-list analog
+                    // of `batch_name_fields` (no object to carry `requested`).
+                    ItemState::Unattempted => unattempted.push(if cleaned[i].is_empty() {
+                        &items[i].name
+                    } else {
+                        &cleaned[i]
+                    }),
+                    ItemState::CompileFailed(err) => {
+                        let mut e = batch_name_fields(&cleaned[i], &items[i].name);
+                        e.insert("error".into(), err.as_str().into());
+                        compile_failed.push(e.into());
+                    }
                     _ => {}
                 }
             }
