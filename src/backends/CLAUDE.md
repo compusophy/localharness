@@ -59,6 +59,13 @@ Browser fetch surfaces Gemini SSE with `\r\n\r\n`. `GeminiSseStream::take_frame`
 - OpenAI: streamed `tool_calls` are INDEX-KEYED FRAGMENTS to concat as they arrive
   (`openai/loop.rs`) — not whole calls per delta. Chat Completions shape.
 - Anthropic: Claude Messages API. Both are BYOK or platform-`$LH`-via-proxy.
+- **Refusal text SURFACES in the finish note — never a silent Done.** OpenAI: a
+  structured-outputs refusal streams `delta.refusal` (content null) and finishes
+  with a plain `"stop"`; the fold accumulates it and `map_finish_reason` ends the
+  turn as a refusal-classified Error carrying the text. Anthropic: a `refusal`
+  stop's `stop_details.explanation` (fallback category) is appended to the
+  "stopped by refusal" note. `turn_flow::classify_empty` matches both by
+  substring ("refusal"/"content filter"), so appended detail stays classified.
 
 ## Mock / MCP / local
 - `mock/`: deterministic offline backend (`Agent::start_mock`), wasm-clean — use it

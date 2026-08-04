@@ -354,8 +354,8 @@ impl TurnProvider for MockProvider {
         acc.usage.clone().unwrap_or_default()
     }
 
-    fn map_finish_reason(_acc: &MockAccum) -> (StepStatus, &'static str) {
-        (StepStatus::Done, "")
+    fn map_finish_reason(_acc: &MockAccum) -> (StepStatus, String) {
+        (StepStatus::Done, String::new())
     }
 
     fn assemble_assistant_message(

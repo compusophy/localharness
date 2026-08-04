@@ -30,8 +30,8 @@ use serde_json::{json, Value};
 use crate::backends::loop_util::resolve_tool_args;
 use crate::backends::anthropic::api::SharedClient;
 use crate::backends::anthropic::wire::{
-    Block, BlockDelta, ImageSource, Message, MessagesRequest, Role, StopReason, StreamEvent,
-    ThinkingConfig, ToolDef, WireUsage, DEFAULT_MAX_TOKENS,
+    Block, BlockDelta, ImageSource, Message, MessagesRequest, Role, StopDetails, StopReason,
+    StreamEvent, ThinkingConfig, ToolDef, WireUsage, DEFAULT_MAX_TOKENS,
 };
 use crate::backends::turn_engine::{
     self, DispatchedResult, EmitCtx, EngineDeps, ResolvedCall, StreamEnd, TurnProvider,
@@ -171,6 +171,9 @@ pub(crate) struct RoundAccum {
     /// across deltas.
     tool_blocks: BTreeMap<u32, ToolUseAccum>,
     stop_reason: Option<StopReason>,
+    /// The `stop_details` riding a `refusal` stop (category + explanation) —
+    /// appended to the finish note so the user/model sees WHY.
+    stop_details: Option<StopDetails>,
     usage: WireUsage,
 }
 
@@ -252,6 +255,11 @@ impl TurnProvider for AnthropicProvider {
                 if let Some(r) = delta.stop_reason {
                     acc.stop_reason = Some(r);
                 }
+                // Keep the refusal explanation for the finish note; only
+                // overwrite on presence so a later bare delta can't clear it.
+                if let Some(d) = delta.stop_details {
+                    acc.stop_details = Some(d);
+                }
                 if let Some(u) = usage {
                     accumulate_wire_usage(&mut acc.usage, &u);
                 }
@@ -297,12 +305,17 @@ impl TurnProvider for AnthropicProvider {
         acc.usage.clone().into()
     }
 
-    fn map_finish_reason(acc: &RoundAccum) -> (StepStatus, &'static str) {
+    fn map_finish_reason(acc: &RoundAccum) -> (StepStatus, String) {
         match acc.stop_reason {
-            Some(StopReason::Refusal) => (StepStatus::Error, "stopped by refusal"),
-            Some(StopReason::MaxTokens) => (StepStatus::Done, "stopped at max tokens"),
-            Some(StopReason::PauseTurn) => (StepStatus::Done, "paused (resume cap reached)"),
-            _ => (StepStatus::Done, ""),
+            Some(StopReason::Refusal) => (
+                StepStatus::Error,
+                refusal_note(acc.stop_details.as_ref()),
+            ),
+            Some(StopReason::MaxTokens) => (StepStatus::Done, "stopped at max tokens".to_string()),
+            Some(StopReason::PauseTurn) => {
+                (StepStatus::Done, "paused (resume cap reached)".to_string())
+            }
+            _ => (StepStatus::Done, String::new()),
         }
     }
 
@@ -470,6 +483,23 @@ fn tool_result_content(v: &Value) -> Value {
     match v {
         Value::String(_) => v.clone(),
         other => Value::String(other.to_string()),
+    }
+}
+
+/// The refusal finish note. A `refusal` stop may carry `stop_details`
+/// (docs: build-with-claude/handling-stop-reasons) explaining WHY — append
+/// its `explanation` (fallback: `category`) so the user/model sees the
+/// reason instead of a bare "stopped by refusal".
+fn refusal_note(details: Option<&StopDetails>) -> String {
+    let why = details.and_then(|d| {
+        d.explanation
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or_else(|| d.category.as_deref().filter(|s| !s.is_empty()))
+    });
+    match why {
+        Some(w) => format!("stopped by refusal: {w}"),
+        None => "stopped by refusal".to_string(),
     }
 }
 
@@ -931,6 +961,7 @@ mod tests {
                     delta: crate::backends::anthropic::wire::MessageDeltaBody {
                         stop_reason: Some(StopReason::ToolUse),
                         stop_sequence: None,
+                        stop_details: None,
                     },
                     usage: None,
                 },
@@ -953,11 +984,12 @@ mod tests {
     /// FIXTURE — the documented refusal stream (docs: build-with-claude/
     /// handling-stop-reasons) folded through the provider's real seam:
     /// `message_start` (empty content) → `message_delta` with `stop_reason:
-    /// "refusal"` + an unmodeled `stop_details` object → `message_stop`,
-    /// with NO content blocks. The fold must accept every event (a decode
-    /// or fold rejection would kill the turn as an infra error), resolve
-    /// ZERO pending calls, and map the finish to the classified refusal
-    /// stop.
+    /// "refusal"` + a `stop_details` object → `message_stop`, with NO
+    /// content blocks. The fold must accept every event (a decode or fold
+    /// rejection would kill the turn as an infra error), resolve ZERO
+    /// pending calls, and map the finish to the classified refusal stop
+    /// CARRYING the stop_details explanation — before this fix the WHY was
+    /// decoded but dropped and the note was a bare "stopped by refusal".
     #[test]
     fn refusal_stream_folds_to_refusal_finish() {
         let (tx, _rx) = broadcast::channel::<Step>(8);
@@ -979,9 +1011,46 @@ mod tests {
         );
         let (status, msg) = AnthropicProvider::map_finish_reason(&acc);
         assert_eq!(status, StepStatus::Error);
-        assert_eq!(msg, "stopped by refusal");
+        assert_eq!(
+            msg,
+            "stopped by refusal: I can't help with that request",
+            "the stop_details explanation must ride in the finish note"
+        );
+        assert_eq!(
+            crate::turn_flow::classify_empty(Some(msg.as_str()), false),
+            crate::turn_flow::EmptyKind::Blocked,
+            "the note must still classify as a content block"
+        );
         // Usage from message_start still folds (the refusal delta has none).
         assert_eq!(acc.usage.input_tokens, Some(100));
+    }
+
+    /// `refusal_note` shapes: full stop_details → explanation appended;
+    /// explanation absent/empty → category fallback; no details at all (a
+    /// refusal stop_reason without stop_details is legal) → the bare label.
+    #[test]
+    fn refusal_note_prefers_explanation_then_category_then_bare() {
+        let full = StopDetails {
+            kind: "end_turn".into(),
+            category: Some("policy_violation".into()),
+            explanation: Some("I can't help with that request".into()),
+        };
+        assert_eq!(
+            refusal_note(Some(&full)),
+            "stopped by refusal: I can't help with that request"
+        );
+
+        let category_only = StopDetails {
+            kind: "end_turn".into(),
+            category: Some("policy_violation".into()),
+            explanation: None,
+        };
+        assert_eq!(
+            refusal_note(Some(&category_only)),
+            "stopped by refusal: policy_violation"
+        );
+
+        assert_eq!(refusal_note(None), "stopped by refusal");
     }
 
     /// THE `pause_turn` hook (the other hook this phase proves): under the

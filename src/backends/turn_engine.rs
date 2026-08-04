@@ -177,8 +177,11 @@ pub(crate) trait TurnProvider {
     fn round_usage(acc: &Self::Accum) -> UsageMetadata;
 
     /// Map the round's provider finish/stop reason onto the terminal step's
-    /// `(status, error message)`.
-    fn map_finish_reason(acc: &Self::Accum) -> (StepStatus, &'static str);
+    /// `(status, error message)`. Owned `String` so a provider can carry
+    /// streamed refusal text / stop-details into the note (openai
+    /// `delta.refusal`, anthropic `stop_details.explanation`) — a bare label
+    /// dropped the WHY and the turn read as a silent empty Done.
+    fn map_finish_reason(acc: &Self::Accum) -> (StepStatus, String);
 
     /// Assemble the assistant turn to persist (text + tool calls; anthropic
     /// leads with its signed thinking blocks out of `acc`). `None` skips the
@@ -276,7 +279,7 @@ where
 
     let mut rounds = 0u32;
     let mut last_text = String::new();
-    let mut last_status: (StepStatus, &'static str) = (StepStatus::Done, "");
+    let mut last_status: (StepStatus, String) = (StepStatus::Done, String::new());
     // The model called `finish` this turn — flags the terminal step as Finish.
     let mut finished_turn = false;
     // The closing `summary` arg from a `finish` call — painted on the terminal
@@ -714,8 +717,8 @@ mod tests {
         fn round_usage(_acc: &Accum) -> UsageMetadata {
             UsageMetadata::default()
         }
-        fn map_finish_reason(_acc: &Accum) -> (StepStatus, &'static str) {
-            (StepStatus::Done, "")
+        fn map_finish_reason(_acc: &Accum) -> (StepStatus, String) {
+            (StepStatus::Done, String::new())
         }
         fn assemble_assistant_message(
             _acc: Accum,

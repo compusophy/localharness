@@ -240,8 +240,8 @@ impl TurnProvider for GeminiProvider {
         acc.usage.clone().map(Into::into).unwrap_or_default()
     }
 
-    fn map_finish_reason(acc: &RoundAccum) -> (StepStatus, &'static str) {
-        match acc.finish_reason {
+    fn map_finish_reason(acc: &RoundAccum) -> (StepStatus, String) {
+        let (status, note) = match acc.finish_reason {
             Some(FinishReason::Safety) => (StepStatus::Error, "stopped by safety policy"),
             Some(FinishReason::Blocklist) => (StepStatus::Error, "stopped by blocklist"),
             Some(FinishReason::ProhibitedContent) => {
@@ -253,7 +253,8 @@ impl TurnProvider for GeminiProvider {
                 (StepStatus::Error, "malformed function call")
             }
             _ => (StepStatus::Done, ""),
-        }
+        };
+        (status, note.to_string())
     }
 
     /// Build the model-turn content (text + functionCalls). Every
@@ -640,7 +641,7 @@ mod tests {
         assert_eq!(status, StepStatus::Error);
         assert_eq!(note, "stopped by prohibited-content filter");
         assert_eq!(
-            crate::turn_flow::classify_empty(Some(note), false),
+            crate::turn_flow::classify_empty(Some(note.as_str()), false),
             crate::turn_flow::EmptyKind::Blocked,
             "the terminal note must classify as a content block, not a blank turn"
         );

@@ -411,13 +411,31 @@ pub enum BlockDelta {
     Unknown,
 }
 
-/// The delta body inside `message_delta` — carries the terminal stop reason.
+/// The delta body inside `message_delta` — carries the terminal stop reason
+/// and, on a `refusal` stop, the `stop_details` explaining WHY.
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 pub struct MessageDeltaBody {
     #[serde(default)]
     pub stop_reason: Option<StopReason>,
     #[serde(default)]
     pub stop_sequence: Option<String>,
+    #[serde(default)]
+    pub stop_details: Option<StopDetails>,
+}
+
+/// The `stop_details` object accompanying a `refusal` stop (docs:
+/// build-with-claude/handling-stop-reasons): a machine-readable `category`
+/// plus a human-readable `explanation` of why the model refused. The loop
+/// appends the explanation (fallback: category) to the finish note so the
+/// user/model sees WHY, not just "stopped by refusal".
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+pub struct StopDetails {
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub explanation: Option<String>,
 }
 
 /// An `error` SSE event body.
@@ -629,12 +647,13 @@ mod tests {
 
     /// FIXTURE (docs: build-with-claude/handling-stop-reasons — "Refusals in
     /// Streaming Responses"): a refusal arrives as a `message_delta` whose
-    /// `delta` carries `stop_reason: "refusal"` PLUS an unmodeled
-    /// `stop_details` object — and NO `stop_sequence`, NO `usage`. All of
-    /// that must decode (unknown fields ignored, absent Options default);
-    /// a rejected frame here would fail the turn as an infra-looking
-    /// "anthropic sse decode" error instead of the refusal stop the loop
-    /// already classifies (the Gemini blocked-candidate class, ad931b47).
+    /// `delta` carries `stop_reason: "refusal"` PLUS a `stop_details` object
+    /// (category + explanation) — and NO `stop_sequence`, NO `usage`. All of
+    /// that must decode (absent Options default); a rejected frame here would
+    /// fail the turn as an infra-looking "anthropic sse decode" error instead
+    /// of the refusal stop the loop classifies (the Gemini blocked-candidate
+    /// class, ad931b47). The `stop_details` must SURFACE — the loop appends
+    /// its explanation to the finish note.
     #[test]
     fn deserialize_refusal_message_delta_with_stop_details() {
         let ev: StreamEvent = serde_json::from_str(
@@ -645,6 +664,14 @@ mod tests {
             StreamEvent::MessageDelta { delta, usage } => {
                 assert_eq!(delta.stop_reason, Some(StopReason::Refusal));
                 assert_eq!(delta.stop_sequence, None);
+                let details = delta.stop_details.expect("stop_details decoded, not dropped");
+                assert_eq!(details.kind, "end_turn");
+                assert_eq!(details.category.as_deref(), Some("policy_violation"));
+                assert_eq!(
+                    details.explanation.as_deref(),
+                    Some("I can't help with that request"),
+                    "the WHY must be decoded so the loop can surface it"
+                );
                 assert!(usage.is_none(), "refusal delta may omit usage entirely");
             }
             other => panic!("expected MessageDelta, got {other:?}"),
