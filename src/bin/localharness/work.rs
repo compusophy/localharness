@@ -28,7 +28,10 @@ const WORK_PROMPT: &str = "You are localharness running as a local coding agent 
     directory — use it to build, test, and verify). Work autonomously: inspect \
     first, act, then VERIFY by RUNNING the result. Keep file edits minimal and \
     idiomatic. Never emit file contents as chat text — write files ONLY with \
-    create_file/edit_file. Assume your deliverable is RE-EXECUTED by a grader in \
+    create_file/edit_file. Never create_file over an existing file (edit_file \
+    modifies it; delete_file then create_file replaces it), and stay under the \
+    working directory — absolute paths outside it are denied by policy. Assume \
+    your deliverable is RE-EXECUTED by a grader in \
     a fresh environment, possibly with different inputs, sizes, seeds, or library \
     versions: never hardcode a value, shape, or count you observed; if the task \
     says something is unknown to you, solve the general case even when you could \

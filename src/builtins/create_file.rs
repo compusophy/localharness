@@ -69,8 +69,11 @@ impl Tool for CreateFile {
         }
 
         if self.fs.metadata(&args.path).await?.is_some() {
+            // Name the exact remedies: the bare refusal pushed models onto
+            // run_command heredocs (TB full-set ledger: 12 wasted rounds/run).
             return Err(Error::other(format!(
-                "create_file refuses to overwrite existing file: {}",
+                "create_file refuses to overwrite existing file: {} — use edit_file \
+                 to modify it, or delete_file then create_file to replace it",
                 args.path
             )));
         }
@@ -134,7 +137,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refuses_to_overwrite() {
+    async fn refuses_to_overwrite_and_names_the_remedies() {
         let mut p = std::env::temp_dir();
         p.push(format!("create_file_overwrite_{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&p, "existing").unwrap();
@@ -145,7 +148,15 @@ mod tests {
                 None,
             )
             .await;
-        assert!(res.is_err());
+        // The refusal must teach the next action (edit_file / delete_file) and
+        // carry the path — a bare refusal pushed models onto heredoc workarounds.
+        let msg = res.unwrap_err().to_string();
+        assert!(msg.contains("edit_file"), "must name edit_file: {msg}");
+        assert!(msg.contains("delete_file"), "must name delete_file: {msg}");
+        assert!(
+            msg.contains(&p.display().to_string()),
+            "must include the path: {msg}"
+        );
         let _ = std::fs::remove_file(p);
     }
 
