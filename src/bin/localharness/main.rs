@@ -291,11 +291,14 @@ IDENTITY & PROFILE
                                          --export them as agentskills.io SKILL.md
                                          folders usable in any skills-compatible
                                          harness (Claude Code, Codex, Cursor, ...)
-  localharness work [--as <me>] [--model <id>] <task…>
+  localharness work [--as <me>] [--model <id>] [--deadline-secs <n>] <task…>
                                          run a LOCAL coding agent on <task> in the
                                          CURRENT DIRECTORY: native file tools +
                                          run_command, workspace-confined, billed
-                                         ~1 $LH per model round from your meter
+                                         ~1 $LH per model round from your meter;
+                                         --deadline-secs tells the agent ~n seconds
+                                         of wall clock remain before an external
+                                         harness kill
   localharness state <name> [--out <file>] [--dir <dir>] [--in <file|dir>]
                                          export/import the PORTABLE agent-state
                                          bundle: persona + lessons + skills as JSON.

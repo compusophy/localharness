@@ -46,9 +46,12 @@ class LocalharnessAgent(AbstractInstalledAgent):
 
     def _run_agent_commands(self, task_description: str) -> list[TerminalCommand]:
         escaped = task_description.replace("'", "'\\''")
+        # Unlike harbor, THIS adapter sets its own wall clock (max_timeout_sec
+        # below), so the matching --deadline-secs is exact: 30s of safety under
+        # it, letting the agent land verification before the kill.
         return [
             TerminalCommand(
-                command=f"localharness work --as tbench '{escaped}'",
+                command=f"localharness work --as tbench --deadline-secs 1770 '{escaped}'",
                 max_timeout_sec=1800.0,
                 block=True,
             )

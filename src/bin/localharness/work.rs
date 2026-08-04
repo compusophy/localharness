@@ -11,11 +11,14 @@
 
 use crate::{ensure_meter_funded, load_signer, print_err, registry, take_as_flag, take_value_flag};
 
-pub(crate) const WORK_USAGE: &str = "usage: localharness work [--as <me>] [--model <id>] <task…>\n  \
+pub(crate) const WORK_USAGE: &str = "usage: localharness work [--as <me>] [--model <id>] [--deadline-secs <n>] <task…>\n  \
      run a LOCAL agent on <task> in the CURRENT DIRECTORY: native tools (read/\n  \
      write/edit/search files + run_command), workspace-confined, billed per\n  \
      model round from your meter (~1 $LH default; premium models like claude\n  \
-     bill 5-20 $LH/round — fund accordingly). e.g.\n  \
+     bill 5-20 $LH/round — fund accordingly). --deadline-secs <n> tells the\n  \
+     agent it has ~n seconds of wall clock (an external harness kill), so it\n  \
+     budgets exploration and lands verification before the clock; absent = no\n  \
+     time pressure. e.g.\n  \
      localharness work --as claude \"add a --version flag to this CLI and test it\"";
 
 /// The lean task-mode system prompt. Deliberately persona-free: `work` is a
@@ -60,6 +63,24 @@ pub(crate) async fn work(args: &[String]) -> i32 {
             print_err(&e);
             return 2;
         }
+    };
+    let (deadline, rest) = match take_value_flag(&rest, "--deadline-secs", WORK_USAGE) {
+        Ok(v) => v,
+        Err(e) => {
+            print_err(&e);
+            return 2;
+        }
+    };
+    // Absent = today's behavior EXACTLY (no budget line, no nudge suffix).
+    let deadline_secs: Option<u64> = match deadline {
+        None => None,
+        Some(s) => match s.parse::<u64>() {
+            Ok(n) if n > 0 => Some(n),
+            _ => {
+                print_err("--deadline-secs takes a positive integer of seconds");
+                return 2;
+            }
+        },
     };
     if rest.is_empty() {
         eprintln!("{WORK_USAGE}");
@@ -116,8 +137,11 @@ pub(crate) async fn work(args: &[String]) -> i32 {
         Some(m) if m.starts_with("claude") && !m.contains("haiku") => "~5 $LH (premium)",
         _ => "~1 $LH",
     };
+    let deadline_note = deadline_secs
+        .map(|n| format!("; deadline {n}s"))
+        .unwrap_or_default();
     eprintln!(
-        "work: native agent in {} (billed {round_cost} per model round; Ctrl-C aborts)",
+        "work: native agent in {} (billed {round_cost} per model round{deadline_note}; Ctrl-C aborts)",
         cwd.display()
     );
 
@@ -245,7 +269,17 @@ pub(crate) async fn work(args: &[String]) -> i32 {
     // incident, inside harbor's 900s task budget; quota windows reset in 60s.
     const MAX_RATE_LIMIT_RETRIES: u32 = 6;
     let started = std::time::Instant::now();
-    let mut input: std::borrow::Cow<str> = std::borrow::Cow::Borrowed(task.as_str());
+    // Deadline awareness (TB failure-ledger #4): 4 AgentTimeoutError trials were
+    // still issuing PRODUCTIVE run_command rounds when harbor's wall clock killed
+    // them — the agent had no idea a clock existed. With a deadline, the FIRST
+    // turn states the total budget and later nudges gain a phase-scaled sentence
+    // (deadline_phase); without one, nothing changes.
+    let mut input: std::borrow::Cow<str> = match deadline_secs {
+        Some(n) => std::borrow::Cow::Owned(format!(
+            "{task}\n\n(you have ~{n}s of wall clock — budget exploration accordingly)"
+        )),
+        None => std::borrow::Cow::Borrowed(task.as_str()),
+    };
     let mut continuations: u32 = 0;
     let mut consecutive_toolless: u32 = 0;
     let mut rate_limit_retries: u32 = 0;
@@ -372,14 +406,23 @@ pub(crate) async fn work(args: &[String]) -> i32 {
         }
         continuations += 1;
         eprintln!("… auto-continue {continuations}/{MAX_WORK_CONTINUATIONS}");
-        input = std::borrow::Cow::Owned(
-            match nudge {
-                Nudge::Truncation => WORK_TRUNCATION_NUDGE,
-                Nudge::TextTail => WORK_TEXT_TAIL_NUDGE,
-                Nudge::ToolTail => WORK_CONTINUE_NUDGE,
+        let mut next = match nudge {
+            Nudge::Truncation => WORK_TRUNCATION_NUDGE,
+            Nudge::TextTail => WORK_TEXT_TAIL_NUDGE,
+            Nudge::ToolTail => WORK_CONTINUE_NUDGE,
+        }
+        .to_string();
+        // Deadline pressure APPENDS to whichever nudge fired — never a message
+        // type of its own, so the continue semantics stay untouched.
+        if let Some(budget) = deadline_secs {
+            let remaining = budget.saturating_sub(started.elapsed().as_secs());
+            if let (_, Some(line)) = deadline_phase(remaining, budget) {
+                next.push_str(" (");
+                next.push_str(&line);
+                next.push(')');
             }
-            .to_string(),
-        );
+        }
+        input = std::borrow::Cow::Owned(next);
     }
     println!();
     let _ = agent.shutdown().await;
@@ -404,6 +447,55 @@ const WORK_TRUNCATION_NUDGE: &str = "(your last turn was TRUNCATED mid-output at
     token cap. Resume exactly where you were cut off. Write file contents ONLY via \
     create_file/edit_file — never as chat text — and split large files across several \
     calls.)";
+
+/// Closing floor: 120s ≈ two model rounds of runway — enough to land + verify,
+/// not enough to open a new line of exploration.
+const DEADLINE_CLOSING_FLOOR_SECS: u64 = 120;
+/// Closing fraction: the last 20% of any budget (`budget / 5`) is for landing
+/// the work, not for new branches — scales the floor up on long (3600s) tasks.
+const DEADLINE_CLOSING_DIVISOR: u64 = 5;
+/// Final floor: 60s ≈ one model round — the ONLY useful move left is verify+finish.
+const DEADLINE_FINAL_FLOOR_SECS: u64 = 60;
+/// Final fraction: 8% of budget (`budget * 8 / 100`) — same one-round logic
+/// scaled for long tasks, where a round itself runs longer (bigger context).
+const DEADLINE_FINAL_PCT: u64 = 8;
+
+/// The Final-phase sentence (fixed — no numbers; urgency, not arithmetic).
+const DEADLINE_FINAL_SENTENCE: &str = "time is nearly up — STOP exploring; run \
+    your best verification NOW and call finish with what works";
+
+/// How much wall clock is left, coarsely.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum DeadlinePhase {
+    /// Comfortably inside the budget — say nothing (deadline-free byte-parity).
+    Plenty,
+    /// remaining < max(120s, 20% of budget) — steer toward the direct path.
+    Closing,
+    /// remaining < max(60s, 8% of budget) — verify and finish, now.
+    Final,
+}
+
+/// Pure deadline classification (native-tested): remaining wall clock vs the
+/// task's total budget → phase + the EXACT sentence appended to the next nudge
+/// (None in Plenty, so a deadline-free run's nudges are byte-identical to
+/// today's). TB failure-ledger #4: harbor's clock killed 4 productive trials
+/// the agent never knew were timed.
+fn deadline_phase(remaining_secs: u64, budget_secs: u64) -> (DeadlinePhase, Option<String>) {
+    let final_below = DEADLINE_FINAL_FLOOR_SECS.max(budget_secs * DEADLINE_FINAL_PCT / 100);
+    let closing_below = DEADLINE_CLOSING_FLOOR_SECS.max(budget_secs / DEADLINE_CLOSING_DIVISOR);
+    if remaining_secs < final_below {
+        (DeadlinePhase::Final, Some(DEADLINE_FINAL_SENTENCE.to_string()))
+    } else if remaining_secs < closing_below {
+        (
+            DeadlinePhase::Closing,
+            Some(format!(
+                "about {remaining_secs}s of wall clock remain — prefer the direct path, verify soon"
+            )),
+        )
+    } else {
+        (DeadlinePhase::Plenty, None)
+    }
+}
 
 /// Which continue-hint the next turn gets.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -457,7 +549,10 @@ fn work_should_continue(
 
 #[cfg(test)]
 mod tests {
-    use super::{rate_limit_is_permanent, turn_signals, work_should_continue, Nudge};
+    use super::{
+        deadline_phase, rate_limit_is_permanent, turn_signals, work_should_continue,
+        DeadlinePhase, Nudge,
+    };
 
     #[test]
     fn spend_cap_429_fails_fast_transient_429_retries() {
@@ -509,5 +604,45 @@ mod tests {
         // Empty/parse-error turn (no tools, no text): strike + generic nudge,
         // NOT the "you ended with analysis" text (it would be a lie).
         assert_eq!(turn_signals(0, 0, false, false), (1, Nudge::ToolTail));
+    }
+
+    #[test]
+    fn deadline_phases_at_harbor_900s() {
+        // 900s budget → Closing below max(120, 180)=180s, Final below max(60, 72)=72s.
+        assert_eq!(deadline_phase(500, 900), (DeadlinePhase::Plenty, None));
+        assert_eq!(deadline_phase(180, 900), (DeadlinePhase::Plenty, None)); // strict <
+        let (phase, line) = deadline_phase(179, 900);
+        assert_eq!(phase, DeadlinePhase::Closing);
+        assert_eq!(
+            line.as_deref(),
+            Some("about 179s of wall clock remain — prefer the direct path, verify soon")
+        );
+        assert_eq!(deadline_phase(72, 900).0, DeadlinePhase::Closing); // strict <
+        let (phase, line) = deadline_phase(71, 900);
+        assert_eq!(phase, DeadlinePhase::Final);
+        assert_eq!(
+            line.as_deref(),
+            Some(
+                "time is nearly up — STOP exploring; run your best verification NOW \
+                 and call finish with what works"
+            )
+        );
+        // Past the deadline (harness kill imminent / clock skew) is still Final.
+        assert_eq!(deadline_phase(0, 900).0, DeadlinePhase::Final);
+    }
+
+    #[test]
+    fn deadline_floors_carry_short_budgets_fractions_carry_long() {
+        // Short budget (300s): floors win — Closing <120s, Final <60s.
+        assert_eq!(deadline_phase(120, 300).0, DeadlinePhase::Plenty);
+        assert_eq!(deadline_phase(119, 300).0, DeadlinePhase::Closing);
+        assert_eq!(deadline_phase(60, 300).0, DeadlinePhase::Closing);
+        assert_eq!(deadline_phase(59, 300).0, DeadlinePhase::Final);
+        // Long budget (3600s — mteb-leaderboard's class): fractions win —
+        // Closing <720s (20%), Final <288s (8%).
+        assert_eq!(deadline_phase(720, 3600).0, DeadlinePhase::Plenty);
+        assert_eq!(deadline_phase(719, 3600).0, DeadlinePhase::Closing);
+        assert_eq!(deadline_phase(288, 3600).0, DeadlinePhase::Closing);
+        assert_eq!(deadline_phase(287, 3600).0, DeadlinePhase::Final);
     }
 }

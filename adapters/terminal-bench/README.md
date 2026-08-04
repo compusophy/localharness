@@ -36,6 +36,12 @@ tb run --agent-import-path localharness_agent:LocalharnessAgent \
   `install-localharness.sh`.
 - **Scores**: report the dataset + version + task ids + model; `work` uses the
   platform default model unless `--model` is added to the run command.
+- **Deadline**: harbor never passes the task's timeout to the agent (verified
+  against the pinned `harbor==0.20.0` wheel — `trial.py` enforces it externally
+  via `asyncio.wait_for`), so `harbor_agent.py` defaults `work --deadline-secs
+  870` (30s under harbor's standard 900s); set `LOCALHARNESS_DEADLINE_SECS` for
+  runs with a raised timeout (e.g. 3600s tasks). The tb-CLI adapter pins 1770
+  under its own 1800s `max_timeout_sec`.
 
 ## Terminal-Bench 2.1 (Harbor) + the harness comparison
 

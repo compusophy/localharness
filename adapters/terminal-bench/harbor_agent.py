@@ -86,10 +86,23 @@ class LocalharnessHarborAgent(BaseInstalledAgent):
         # platform default (gemini-3.6-flash).
         model = (self.model_name or "").strip()
         model_flag = f"--model {shlex.quote(model)} " if model else ""
+        # Deadline: harbor does NOT expose the task's timeout to the agent
+        # (verified against the pinned harbor==0.20.0 wheel):
+        # trial/trial.py::_run_agent_phase wraps run(instruction, environment,
+        # context) in asyncio.wait_for(..., timeout=timeout_sec) → the clock is
+        # enforced OUTSIDE us; AgentContext (models/agent/context.py) carries
+        # only output fields (token counts / cost / rollout_details / metadata)
+        # and BaseAgent.__init__ gets no timeout either — nothing here can read
+        # the per-task budget. Default to 870s = 30s of safety under harbor's
+        # standard 900s agent timeout so the agent lands verification before
+        # the kill; LOCALHARNESS_DEADLINE_SECS overrides for runs that raise
+        # the timeout (e.g. 3600s tasks like mteb-leaderboard).
+        deadline = os.environ.get("LOCALHARNESS_DEADLINE_SECS", "870").strip()
         await self.exec_as_agent(
             environment,
             command=(
-                f"localharness work --as tbench {model_flag}{escaped} "
+                f"localharness work --as tbench --deadline-secs {shlex.quote(deadline)} "
+                f"{model_flag}{escaped} "
                 "2>&1 | stdbuf -oL tee /logs/agent/localharness.txt"
             ),
         )
