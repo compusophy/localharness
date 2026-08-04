@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.81.0]
+
+### Added
+
+- **`batch_create_subdomains` takes `items:[{name, source?}]`** (telemetry
+  #85, closed): a source-bearing item registers the subdomain AND publishes
+  the compiled app (store + face stamp) in one confirmed call — fresh mints
+  and caller-owned names (update-in-place, publish-only) both work, the #86
+  single-tool precedent applied to the batch. Every source compiles BEFORE
+  any $LH moves; duplicates that would actually collide on-chain hard-error
+  at parse; per-item truth end-to-end: `published` (urls) / `publish_failed`
+  / `publish_skipped` (a paid-but-unpublished name is named with its
+  registration state + recovery step) / `skipped_reasons` / `compile_failed`.
+  New pure core `src/batch_apps.rs` (union parse, compile-first partitioning,
+  chunk-fold scatter, Gemini-safe schema) — native-tested.
+- **Failure-class ledger for the TB full-set baseline** (`design/bench.md`):
+  64 of 66 errors were one Google monthly-spend-cap storm — only 18/89 trials
+  reached a genuine verdict (15/18 = 83.3%); the 504/401 fix classes held
+  under two hours of load with zero recurrences.
+
+### Fixed
+
+- **A blocked/filtered model response no longer reads as an infra crash.**
+  Gemini wires a content-filtered candidate as `"content": {}` — the decode
+  rejected the whole chunk and `work` exited 1 with "sse decode" (TB task
+  dna-assembly; frame captured from the run artifact and pinned as a fixture).
+  The frame now decodes and the run ends with the named block reason.
+  OpenAI's `"tool_calls": null` in a delta hard-failed the same way — fixed at
+  the wire boundary; Anthropic audited robust with doc-derived fixture pins.
+- **Refusals surface their text.** An OpenAI structured-outputs refusal used
+  to end the turn as a silent empty Done; it now ends refusal-classified with
+  the streamed refusal text. Anthropic's `stop_details` explanation rides the
+  "stopped by refusal" note.
+- **`work` fails fast on a spend-cap 429** (not retryable — the backoff
+  ladder burned ~4.5 min per trial against a monthly cap) with the provider's
+  own words; transient per-minute quota keeps the ladder.
+- **`create_file`'s overwrite refusal names the remedies** (edit_file /
+  delete-then-create) and the work prompt pre-empts the two fs frictions the
+  TB ledger quantified (12 wasted rounds/run).
+
 ## [0.80.0] - 2026-08-03
 
 ### Added
