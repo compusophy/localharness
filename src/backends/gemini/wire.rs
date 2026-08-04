@@ -31,6 +31,16 @@ pub struct GenerateContentRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Content {
+    // `default` so a BLOCKED streamed candidate decodes. Gemini wires a
+    // content-filtered candidate as `"content": {}` — an object with NO `role`
+    // and no `parts` — next to its `finishReason`. Without a default that
+    // failed the WHOLE chunk ("missing field `role` at line 1 column 30"), so
+    // the turn died as `gemini sse decode: …`: an infra-looking crash instead
+    // of the honest blocked-content stop the finishReason already classifies
+    // (captured live, TB full-set 2026-08-01 — `BLOCKED_FRAME_JSON` below).
+    // A candidate's content is ALWAYS the model's turn, so `model` is the
+    // only sound default.
+    #[serde(default = "model_role")]
     pub role: ContentRole,
     // `default` so a persisted-history entry missing `parts` (an older on-disk
     // format) decodes as an empty turn instead of failing the WHOLE
@@ -40,6 +50,10 @@ pub struct Content {
     // text or tool-calls). Live API responses always carry `parts`.
     #[serde(default)]
     pub parts: Vec<Part>,
+}
+
+fn model_role() -> ContentRole {
+    ContentRole::Model
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -305,6 +319,13 @@ impl Content {
     }
 }
 
+/// The VERBATIM SSE payload of a content-BLOCKED Gemini round, captured from
+/// the Terminal-Bench full-set run of 2026-08-01 (task `dna-assembly`, model
+/// `gemini-3.6-flash`). Shared by the wire / SSE / fold regression tests so
+/// all three assert against the SAME real frame.
+#[cfg(test)]
+pub(crate) const BLOCKED_FRAME_JSON: &str = r#"{"candidates": [{"content": {},"finishReason": "PROHIBITED_CONTENT","index": 0,"finishMessage": "The model output could not be generated. This output contains sensitive words that violate Google's [Generative AI Prohibited Use policy](https://policies.google.com/terms/generative-ai/use-policy). If you think this was an error, [send feedback](https://ai.google.dev/gemini-api/docs/troubleshooting)."}],"usageMetadata": {"promptTokenCount": 35809,"totalTokenCount": 36273,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 35809}],"thoughtsTokenCount": 464,"serviceTier": "standard"},"modelVersion": "gemini-3.6-flash","responseId": "hRZuaqS7BfKe_uMP66G90AQ"}"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,6 +505,26 @@ mod tests {
         let chunk: GenerateChunk = serde_json::from_str(json).unwrap();
         assert!(chunk.candidates.is_empty());
         assert_eq!(chunk.model_version.as_deref(), Some("gemini-3.5-flash"));
+    }
+
+    /// THE blocked-candidate decode regression (TB full-set 2026-08-01, task
+    /// `dna-assembly`): Gemini streams `"content": {}` — no `role`, no `parts`
+    /// — beside `finishReason: PROHIBITED_CONTENT`. That failed the whole chunk
+    /// with "missing field `role` at line 1 column 30", surfacing as
+    /// `work failed: gemini sse decode: …` (exit 1) instead of a blocked stop.
+    /// The REAL captured frame must decode, keeping its finish reason + usage.
+    #[test]
+    fn blocked_candidate_with_empty_content_decodes() {
+        let chunk: GenerateChunk = serde_json::from_str(BLOCKED_FRAME_JSON)
+            .expect("an empty content object must not fail the chunk decode");
+        let cand = &chunk.candidates[0];
+        assert_eq!(cand.finish_reason, Some(FinishReason::ProhibitedContent));
+        let content = cand.content.as_ref().expect("`{}` still decodes");
+        assert_eq!(content.role, ContentRole::Model, "a candidate is the model's turn");
+        assert!(content.parts.is_empty(), "a blocked candidate carries no parts");
+        let usage: UsageMetadata = chunk.usage_metadata.clone().unwrap().into();
+        assert_eq!(usage.prompt_token_count, Some(35809));
+        assert_eq!(usage.total_token_count, Some(36273));
     }
 
     #[test]

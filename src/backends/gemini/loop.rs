@@ -619,6 +619,37 @@ mod tests {
         }
     }
 
+    /// The OUTCOME half of the blocked-frame fix: the REAL captured frame
+    /// (TB full-set 2026-08-01, `dna-assembly`) folds through the provider
+    /// seam into a NAMED blocked stop — terminal step status `Error` with
+    /// "stopped by prohibited-content filter", which `turn_flow::classify_empty`
+    /// reads as `Blocked` (terminal; rephrase, don't retry). Nothing streamed,
+    /// so no model turn is persisted. Before the wire fix this frame never got
+    /// this far — the chunk decode failed and the turn read as an infra crash.
+    #[test]
+    fn blocked_frame_folds_into_a_named_blocked_stop() {
+        let chunk: GenerateChunk =
+            serde_json::from_str(wire::BLOCKED_FRAME_JSON).expect("frame decodes");
+        let (tx, _rx) = broadcast::channel::<Step>(8);
+        let state = LoopState::new(tx);
+        let mut acc = RoundAccum::default();
+        turn_engine::test_fold_events::<GeminiProvider>(&state, &mut acc, vec![chunk]);
+
+        assert_eq!(acc.finish_reason, Some(FinishReason::ProhibitedContent));
+        let (status, note) = GeminiProvider::map_finish_reason(&acc);
+        assert_eq!(status, StepStatus::Error);
+        assert_eq!(note, "stopped by prohibited-content filter");
+        assert_eq!(
+            crate::turn_flow::classify_empty(Some(note), false),
+            crate::turn_flow::EmptyKind::Blocked,
+            "the terminal note must classify as a content block, not a blank turn"
+        );
+        assert!(
+            GeminiProvider::assemble_assistant_message(acc, "", &[]).is_none(),
+            "a blocked round streamed nothing — persist no model turn"
+        );
+    }
+
     /// The engine hands every dispatched result back for wire-shaping: ONE
     /// batched user turn of functionResponse parts, correlated by NAME (a
     /// functionResponse carries no call id). A thought-only round (no text,

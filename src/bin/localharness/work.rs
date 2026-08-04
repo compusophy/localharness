@@ -318,17 +318,31 @@ pub(crate) async fn work(args: &[String]) -> i32 {
         // only applies when the turn produced nothing VISIBLE, else every
         // ordinary reasoning turn would read as cut off.
         let visibly_empty = tool_calls_this_turn == 0 && !saw_text;
-        let truncated = matches!(
-            localharness::turn_flow::classify_empty(
-                reply.finish_note().as_deref(),
-                saw_thinking && visibly_empty,
-            ),
-            localharness::turn_flow::EmptyKind::Truncated
+        let empty_kind = localharness::turn_flow::classify_empty(
+            reply.finish_note().as_deref(),
+            saw_thinking && visibly_empty,
         );
+        let truncated = matches!(empty_kind, localharness::turn_flow::EmptyKind::Truncated);
         eprintln!(
             "· turn: finished={finished} tools={tool_calls_this_turn} truncated={truncated} run_elapsed={}s",
             started.elapsed().as_secs()
         );
+        // A CONTENT BLOCK is terminal: every continuation replays the same
+        // history the filter just rejected, so nudging only burns $LH. Name the
+        // finish reason (e.g. "stopped by prohibited-content filter", from the
+        // model's `finishReason`) and end the run — the model refused, the
+        // harness didn't crash (TB full-set 2026-08-01, `dna-assembly`, where
+        // this arrived as an SSE decode error instead).
+        if visibly_empty && matches!(empty_kind, localharness::turn_flow::EmptyKind::Blocked) {
+            eprintln!(
+                "· blocked: {} {}",
+                reply.finish_note().unwrap_or_default(),
+                localharness::turn_flow::empty_message(
+                    localharness::turn_flow::EmptyKind::Blocked
+                )
+            );
+            break;
+        }
         let (next_toolless, nudge) =
             turn_signals(consecutive_toolless, tool_calls_this_turn, truncated, saw_text);
         consecutive_toolless = next_toolless;

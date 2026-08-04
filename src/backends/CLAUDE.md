@@ -41,6 +41,16 @@ backends, it belongs in the shared core.
   `examples/thought_signature_live.rs`. Don't strip `thoughtsTokenCount` into the
   user's billable count (leak fixed 036b47d).
 
+- **A content-BLOCKED candidate wires as `"content": {}`** — an object with NO
+  `role` and no `parts`, beside `finishReason: PROHIBITED_CONTENT` (same for
+  SAFETY/BLOCKLIST). So `wire::Content::role` DEFAULTS to `model` (a candidate is
+  always the model's turn); without that the whole chunk failed to decode
+  ("missing field `role` at line 1 column 30") and the turn died as `gemini sse
+  decode: …` — an infra-looking crash instead of the blocked stop
+  `map_finish_reason` + `turn_flow::classify_empty` already classify (TB full-set
+  2026-08-01, task `dna-assembly`). Fixture: `wire::BLOCKED_FRAME_JSON`, the
+  VERBATIM captured frame — wire / SSE / fold tests all assert against it.
+
 ## SSE is CRLF on wasm
 Browser fetch surfaces Gemini SSE with `\r\n\r\n`. `GeminiSseStream::take_frame`
 (and `sse.rs`) match BOTH `\n\n` and `\r\n\r\n`. Don't regress to LF-only.

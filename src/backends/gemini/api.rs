@@ -310,6 +310,32 @@ mod tests {
         assert!(s.next().await.is_none());
     }
 
+    /// THE blocked-frame decode regression, through the path it actually blew
+    /// up on (TB full-set 2026-08-01, `dna-assembly`): the content-filtered
+    /// round arrives as ONE `data:` frame whose candidate carries `"content":
+    /// {}` + `finishReason: PROHIBITED_CONTENT`. `decode_chunk` errored
+    /// ("missing field `role`") and the CLI died with
+    /// `work failed: gemini sse decode: …` — an infra-looking crash. The frame
+    /// must decode so the finish reason can classify the turn instead.
+    #[tokio::test]
+    async fn blocked_candidate_frame_decodes_through_the_sse_stream() {
+        let frame = format!(
+            "data: {}\n\n",
+            crate::backends::gemini::wire::BLOCKED_FRAME_JSON
+        );
+        let bytes = bytes_from(&[frame.as_bytes()]);
+        let mut s = GeminiSseStream::new(bytes);
+        let chunk = s
+            .next()
+            .await
+            .unwrap()
+            .expect("a blocked frame must decode, not error the stream");
+        assert_eq!(
+            chunk.candidates[0].finish_reason.unwrap(),
+            crate::backends::gemini::wire::FinishReason::ProhibitedContent
+        );
+    }
+
     #[tokio::test]
     async fn handles_split_across_chunks() {
         let bytes = bytes_from(&[
