@@ -301,16 +301,10 @@ pricing 2026-07-30.
 
 ## Release process
 
-```sh
-# 1. Land feature work as normal commits.
-# 2. Edit CHANGELOG.md — add `## [X.Y.Z]` heading (no date; script adds).
-# 3. Run the atomic release script:
-./scripts/release.sh X.Y.Z                  # bash / git-bash
-pwsh scripts/release.ps1 -Version X.Y.Z     # PowerShell on Windows
-```
-
-Pre-flight → version bump → cargo verify → commit → tag → push → cargo publish →
-GH release in one shot. On mid-way failure consult `RELEASING.md`; don't hand-fix.
+Add a `## [X.Y.Z]` CHANGELOG heading (no date), then `./scripts/release.sh
+X.Y.Z` (or `pwsh scripts/release.ps1 -Version X.Y.Z`): pre-flight → bump →
+verify → commit → tag → push → publish → GH release in one shot. Mid-way
+failure → `RELEASING.md`; don't hand-fix.
 
 ## The browser app (`src/app/`, `feature=browser-app` + wasm32)
 
@@ -415,9 +409,9 @@ accessors.
 `Action::CreateIdentity`). Don't reintroduce load-or-create — silent wallet
 generation on a marketing-page visit was the bug the gate fixes.
 
-**Device linking is seed-adoption via QR (Option A).** Desktop encrypts its seed
-under a one-time code; QR fragment carries the ciphertext to `localharness.xyz/
-?adopt=1#s=...`; the other device types the code to import the SAME seed.
+**Device linking = seed-adoption via QR**: the seed, encrypted under a one-time
+code, rides the QR fragment to `?adopt=1#s=…`; the other device types the code
+to import the SAME seed.
 
 ## The on-chain stack
 
@@ -434,10 +428,8 @@ each, gotchas only.
 - **ERC721Facet** — every name is an NFT; `tokenURI(id)` → `<name>.localharness.xyz`.
 - **TbaFacet** — EIP-6551 `tokenBoundAccount(id)`/`…ByName`; deploy idempotent.
 - **MainIdentityFacet** — `mainOf`/`mainNameOf`/`isMain`; auto-set on first-claim.
-- **FeedbackFacet** — REMOVED 2026-07-06 (selectors CUT; calls revert). Feedback
-  + auto error reports flow ONLY off-chain (`src/app/telemetry.rs` / CLI
-  `feedback` → `proxy/api/telemetry.ts` → GitHub Issues = the task list). Never
-  reintroduce an on-chain path.
+- **FeedbackFacet** — REMOVED 2026-07-06 (selectors CUT). Feedback flows ONLY
+  off-chain (telemetry → GitHub Issues = the task list); never reintroduce.
 - **CreditsFacet** — `LocalharnessCredits` TIP-20; diamond holds `ISSUER_ROLE`.
   `dailyAllowance` 0 (DISABLED — sybil hole). Funding = redeem + `send_lh`.
 - **RedeemFacet** — owner `addRedeemCodes`, holder `redeem(code)` (mint + burn).
@@ -453,9 +445,8 @@ each, gotchas only.
   (no log scraping; Tempo RPC caps at 100k blocks).
 - **ReleaseFacet** — holder `releaseName` burn (refuses MAIN) + owner
   `adminBurnNames`/`adminResetAll` (testnet); `_burn` clears `register()`.
-- **ScheduleFacet** — RETIRED 2026-07-30 (scheduling = the off-chain jobstore;
-  drops at reset genesis). It owns `taskOf(uint256)` — BountyFacet must keep
-  using `bountyTaskOf`.
+- **ScheduleFacet** — RETIRED 2026-07-30 (off-chain jobstore). It owns
+  `taskOf(uint256)` — BountyFacet must keep using `bountyTaskOf`.
 - **SignalingFacet** — OWNER-SIGNED on-chain WebRTC signaling/presence (topic =
   `keccak256("localharness.devices"‖owner)` + ecrecover; 10-min TTL).
 - **BountyFacet** — rung 1: escrowed `postBounty`/`claimBounty`/`acceptResult`→
@@ -475,10 +466,9 @@ enroller → an NFT transfer revokes them; rejects high-s. Detail in
 `contracts/README.md`.
 
 **Gemini key sync (per-MAIN, on-chain).** The sealed key lives under the owner's
-**MAIN tokenId** (`mainOf(owner)`, fallback the name's id), NOT per-subdomain —
-every subdomain shares ONE key. On tenant paint, `try_auto_restore_gemini_key`
-fetches + decrypts via the apex iframe BEFORE the api-key modal. Saving best-effort
-`auto_sync_gemini_key`s to the MAIN slot.
+MAIN tokenId (`mainOf`, fallback the name's id) — every subdomain shares ONE key.
+Tenant paint `try_auto_restore_gemini_key`s (apex-iframe decrypt) BEFORE the
+api-key modal; saves best-effort sync to the MAIN slot.
 
 ## Credit proxy + $LH sessions/metering (LIVE)
 
@@ -577,21 +567,18 @@ in-system credits, not gas). **AlphaUSD** remains the sponsor's fee_token. Mint 
 
 ### Sponsor key
 
-`sponsor.rs` const = the dedicated low-budget sponsor (rotated 2026-05-25). It is
-NOT the deployer/owner. The embedded sponsor only pays user fees in AlphaUSD; if the
-bundle is extracted, loss is capped at its balance. **Rotate again before mainnet.**
-Tempo access keys CANNOT sign as `fee_payer` (confirmed from their SDK) — fee_payer
-must come from the root key, which is why a sponsor key must be embedded in wasm.
+`sponsor.rs` const = the dedicated low-budget TESTNET sponsor (not the
+deployer/owner; extraction loss capped at its balance). Tempo access keys CANNOT
+sign as `fee_payer` (their SDK) — it must be a root key, hence an embedded key on
+testnet; mainnet uses the relay instead.
 
 ## What's pending
 
-Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, Anthropic +
-OpenAI backends, off-chain scheduling, Mock backend, economy rungs 1–4 +
-Reputation + colony, x402, host::compose, SessionRoom KV, at-rest OPFS enc,
-Stripe on-ramp, in-browser Gemma, `LH_CHAIN`, the mainnet keyless sponsor RELAY
-(`registry::sponsor_relay` + `proxy/api/sponsor.ts` — NO build embeds a mainnet
-money key), bashlite (CLI `sh` + browser `execute_script`), ACP server (CLI
-`acp` — registry PR agentclientprotocol#1818), receipts v1. Open:
+Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, all four
+backends + Mock, off-chain scheduling, economy rungs 1–4 + Reputation + colony,
+x402, host::compose, SessionRoom KV, at-rest OPFS enc, Stripe on-ramp,
+in-browser Gemma, `LH_CHAIN`, the mainnet keyless sponsor RELAY (NO build embeds
+a mainnet money key), bashlite, ACP server, receipts v1. Open:
 
 - **Browser relay onboarding E2E** — the keyless bundle is deployed; a full
   in-browser fresh-visitor onboarding run is still unproven.
