@@ -100,24 +100,25 @@ pub fn parse_items(args: &serde_json::Value) -> Result<Vec<BatchItem>, String> {
     Ok(out)
 }
 
-/// Duplicate CLEANED names are a HARD error, not a silent collapse: both
+/// Duplicate REGISTRABLE names are a HARD error, not a silent collapse: both
 /// copies would pass the availability pre-check, the second register would
 /// no-op or revert, and a source item would publish TWICE while the result
-/// claimed `count: 1` against two urls. Keyed on `crate::subdomain::sanitize`
-/// (what the events path actually registers). Items sanitizing to `""` are
-/// exempt — each reports its own invalid-name outcome instead of a bogus
-/// "duplicate of another garbage name".
+/// claimed `count: 1` against two urls. Compared on the REGISTRATION key: the
+/// events path registers a name only when `sanitize(name)` equals its
+/// trim+lowercase, so a spelling that could never register ("app!") is NOT a
+/// duplicate of one that can ("app") — it reports its own skip/invalid
+/// outcome instead of failing the whole batch.
 fn reject_duplicates(items: &[BatchItem]) -> Result<(), String> {
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (j, it) in items.iter().enumerate() {
         let c = crate::subdomain::sanitize(&it.name);
-        if c.is_empty() {
+        if c.is_empty() || c != it.name.trim().to_ascii_lowercase() {
             continue;
         }
         if let Some(first) = seen.insert(c.clone(), j) {
             return Err(format!(
                 "duplicate name: item {first} (\"{}\") and item {j} (\"{}\") both \
-                 register \"{c}\" — list each name ONCE",
+                 normalize to \"{c}\" — list each name ONCE",
                 items[first].name, it.name
             ));
         }
@@ -370,14 +371,21 @@ mod tests {
         let err = parse_items(&json!({"names": ["alpha", "beta", "alpha"]})).unwrap_err();
         assert!(err.contains("item 0") && err.contains("item 2"), "{err}");
         assert!(err.contains("\"alpha\""), "{err}");
-        // Different literals SANITIZING to the same registered name collide
-        // too ("App" / "app!" → "app") — the double-publish shape.
+        // Different spellings that BOTH register the same name collide
+        // ("Alpha" / " alpha " → "alpha") — the double-publish shape.
         let err = parse_items(&json!({
-            "items": [{"name": "App", "source": "fn f() -> i32 { 1 }"}, {"name": "app!"}]
+            "items": [{"name": "Alpha", "source": "fn f() -> i32 { 1 }"}, {"name": " alpha "}]
         }))
         .unwrap_err();
         assert!(err.contains("item 0") && err.contains("item 1"), "{err}");
-        assert!(err.contains("\"app\""), "{err}");
+        assert!(err.contains("\"alpha\""), "{err}");
+        // A spelling that could NEVER register is NOT a duplicate of one that
+        // can: "app!" fails the events path's sanitize==trim+lowercase gate
+        // and reports its own outcome — the batch must not hard-error.
+        let ok = parse_items(&json!({
+            "items": [{"name": "app", "source": "fn f() -> i32 { 1 }"}, {"name": "app!"}]
+        }));
+        assert!(ok.is_ok(), "{ok:?}");
         // Names sanitizing to "" never collide with each other — each gets
         // its own invalid-name outcome downstream instead.
         assert!(parse_items(&json!({"names": ["!!!", "???", "ok-name"]})).is_ok());
