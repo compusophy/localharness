@@ -25,6 +25,7 @@
 /// compiled cartridge as that subdomain's app. A blank/whitespace source
 /// means "no app" (the same rule as `create_subdomain`).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive] // pub SDK surface — a new field must not be semver-breaking (the BatchFold rule)
 pub struct BatchItem {
     pub name: String,
     pub source: Option<String>,
@@ -40,6 +41,10 @@ pub struct BatchItem {
 ///   `req_str_array` + trim/filter extraction).
 /// - Both non-empty → error (the schema says one OR the other); neither →
 ///   error.
+/// - DUPLICATES are a hard error in EITHER shape: two items sanitizing to the
+///   same registered name (`crate::subdomain::sanitize` — so "App" and "app!"
+///   collide) would double-publish one app and misreport `count`; the error
+///   names BOTH indices.
 pub fn parse_items(args: &serde_json::Value) -> Result<Vec<BatchItem>, String> {
     let names = args.get("names").and_then(|v| v.as_array());
     let items = args.get("items").and_then(|v| v.as_array());
@@ -71,6 +76,7 @@ pub fn parse_items(args: &serde_json::Value) -> Result<Vec<BatchItem>, String> {
                 .map(str::to_string);
             out.push(BatchItem { name, source });
         }
+        reject_duplicates(&out)?;
         return Ok(out);
     }
     let out: Vec<BatchItem> = names
@@ -90,7 +96,33 @@ pub fn parse_items(args: &serde_json::Value) -> Result<Vec<BatchItem>, String> {
                 .into(),
         );
     }
+    reject_duplicates(&out)?;
     Ok(out)
+}
+
+/// Duplicate CLEANED names are a HARD error, not a silent collapse: both
+/// copies would pass the availability pre-check, the second register would
+/// no-op or revert, and a source item would publish TWICE while the result
+/// claimed `count: 1` against two urls. Keyed on `crate::subdomain::sanitize`
+/// (what the events path actually registers). Items sanitizing to `""` are
+/// exempt — each reports its own invalid-name outcome instead of a bogus
+/// "duplicate of another garbage name".
+fn reject_duplicates(items: &[BatchItem]) -> Result<(), String> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (j, it) in items.iter().enumerate() {
+        let c = crate::subdomain::sanitize(&it.name);
+        if c.is_empty() {
+            continue;
+        }
+        if let Some(first) = seen.insert(c.clone(), j) {
+            return Err(format!(
+                "duplicate name: item {first} (\"{}\") and item {j} (\"{}\") both \
+                 register \"{c}\" — list each name ONCE",
+                items[first].name, it.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// COMPILE-FIRST: compile one item's rustlite `source` through the same path
@@ -114,6 +146,7 @@ pub fn compile_source(source: &str, max_wasm: usize) -> Result<Vec<u8>, String> 
 /// Where one item stands BEFORE the chunked registration runs (the compile +
 /// ownership pre-pass routes each item here).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive] // pub SDK surface — a new plan state must not be semver-breaking (the BatchFold rule)
 pub enum ItemPlan {
     /// Goes into the chunked registration set (source-less items always;
     /// source items whose name is free).
@@ -133,6 +166,7 @@ pub enum ItemPlan {
 /// outcomes layer on top in the tool body — publishing is off-chain and its
 /// failure never changes these registration claims).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive] // pub SDK surface — a new outcome state must not be semver-breaking (the BatchFold rule)
 pub enum ItemState {
     /// The item's chunk landed AND its cleaned name registered this call.
     Registered,
@@ -170,6 +204,17 @@ pub fn register_set(plan: &[ItemPlan]) -> Vec<usize> {
 /// landed position whose cleaned name did NOT register was filtered by the
 /// events path (taken/invalid) → [`ItemState::Skipped`], the legacy
 /// semantics.
+///
+/// # Panics
+///
+/// The fold must MATCH the plan: every position in `fold` must index into
+/// [`register_set`]`(plan)` (i.e. the fold came from
+/// [`crate::relay_chunk::fold_outcomes`] over
+/// [`crate::relay_chunk::chunk_ranges`] of exactly the register set's
+/// length), and `cleaned` must cover every item (`cleaned.len() >=
+/// plan.len()`). A mismatched fold or a short `cleaned` panics on the
+/// out-of-bounds index rather than silently misattributing an on-chain
+/// outcome to the wrong item.
 pub fn item_states(
     plan: &[ItemPlan],
     fold: &crate::relay_chunk::BatchFold,
@@ -219,7 +264,8 @@ pub fn input_schema() -> serde_json::Value {
                 "description": "Name-only registrations, e.g. [\"alice\",\"bob\"] -> \
                     alice.localharness.xyz, bob.localharness.xyz. Each: 3-32 chars, \
                     lowercase letters, digits, hyphens. Already-taken or invalid names \
-                    are skipped and reported back. Give `names` OR `items`, never both. \
+                    are skipped and reported back; listing the SAME name twice is a \
+                    hard error. Give `names` OR `items`, never both. \
                     More than 7 are split across multiple sponsored txs automatically; \
                     at most 28 per call — split a bigger request into separate calls."
             },
@@ -231,7 +277,8 @@ pub fn input_schema() -> serde_json::Value {
                     behavior, batched). Every source compiles FIRST — a compile failure \
                     fails THAT item before any registration and spends nothing. A name \
                     you ALREADY OWN is updated in place (published, no re-register, no \
-                    fee). Give `items` OR `names`, never both; same 28-item cap.",
+                    fee); the SAME name twice is a hard error. Give `items` OR `names`, \
+                    never both; at most 28 items per call.",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -314,6 +361,26 @@ mod tests {
             .unwrap_err()
             .contains("not both"));
         assert!(parse_items(&json!({"names": [], "items": [{"name": "b"}]})).is_ok());
+    }
+
+    #[test]
+    fn parse_rejects_duplicate_cleaned_names_naming_both_indices() {
+        // Same literal twice (either arm) — a silent collapse would register
+        // once but report/publish twice.
+        let err = parse_items(&json!({"names": ["alpha", "beta", "alpha"]})).unwrap_err();
+        assert!(err.contains("item 0") && err.contains("item 2"), "{err}");
+        assert!(err.contains("\"alpha\""), "{err}");
+        // Different literals SANITIZING to the same registered name collide
+        // too ("App" / "app!" → "app") — the double-publish shape.
+        let err = parse_items(&json!({
+            "items": [{"name": "App", "source": "fn f() -> i32 { 1 }"}, {"name": "app!"}]
+        }))
+        .unwrap_err();
+        assert!(err.contains("item 0") && err.contains("item 1"), "{err}");
+        assert!(err.contains("\"app\""), "{err}");
+        // Names sanitizing to "" never collide with each other — each gets
+        // its own invalid-name outcome downstream instead.
+        assert!(parse_items(&json!({"names": ["!!!", "???", "ok-name"]})).is_ok());
     }
 
     #[test]
@@ -412,9 +479,16 @@ mod tests {
         assert_eq!(s["properties"]["names"]["type"], "array");
         assert_eq!(s["properties"]["items"]["items"]["type"], "object");
         assert_eq!(s["properties"]["items"]["items"]["required"], json!(["name"]));
-        // The live batch bound rides the model-facing text.
-        let text = s.to_string();
+        // The live batch bound rides the model-facing text of BOTH arms — a
+        // whole-schema contains() would let one arm's literal go stale behind
+        // the other's hit (the drift class relay_chunk's file sweep guards).
         let n = crate::relay_chunk::MAX_BATCH_ITEMS.to_string();
-        assert!(text.contains(&format!("at most {n}")));
+        for arm in ["names", "items"] {
+            let d = s["properties"][arm]["description"].as_str().unwrap();
+            assert!(
+                d.contains(&format!("at most {n}")),
+                "{arm} description dropped the live batch bound {n}"
+            );
+        }
     }
 }

@@ -1081,7 +1081,10 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
 /// updated in place (publish only, no tx — the create_subdomain mirror); one
 /// owned by someone ELSE is skipped and never published. Publishing is
 /// off-chain + free; a publish failure is reported per-item and never claims
-/// the registration failed. >7 registrations auto-chunk (`crate::relay_chunk`;
+/// the registration failed, and a source item whose registration did NOT land
+/// (skipped/failed/unconfirmed/unattempted) reports `publish_skipped` — never
+/// silence. Duplicate cleaned names hard-error at parse (double-publish
+/// guard). >7 registrations auto-chunk (`crate::relay_chunk`;
 /// the paid-claim approve reserves one slot per chunk — telemetry #85/#88); at
 /// most `MAX_BATCH_ITEMS` items per call. Pure cores (union parse /
 /// compile-first / per-item fold): `crate::batch_apps`. Not granted to
@@ -1114,17 +1117,28 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
          single-use confirmation code (also shown to the owner in the UI). \
          List the names, ask the owner to TYPE the code, then retry with \
          `confirmation` set to it. At most 28 items per call — split a bigger \
-         request into separate calls. Taken or invalid names are skipped (not \
-         an error) and listed in `skipped`. More than 7 registrations are \
+         request into separate calls; the SAME name twice in one call is a \
+         hard error. Taken or invalid names are skipped (not an error) and \
+         listed in `skipped`, with the per-name WHY in `skipped_reasons`. \
+         More than 7 registrations are \
          split across multiple sponsored txs automatically (each tx carries \
          at most 8 calls). `failed` lists chunks whose tx FAILED (those names \
          were NOT registered); `unconfirmed` lists chunks whose receipt TIMED \
          OUT (the tx MAY still land — check its tx_hash before retrying; the \
          batch stops there); `unattempted` lists names never tried (the batch \
          stops early after 2 consecutive failed chunks, an unconfirmed chunk, \
-         or a user Stop). Returns { registered, skipped, count, tx_hashes, \
+         or a user Stop). A source item whose name did NOT end up registered \
+         this call (skipped/failed/unconfirmed/unattempted) is NOT published \
+         — it is listed in `publish_skipped` with its registration_state and \
+         what to do next (an unconfirmed name may still land; if it does, \
+         publish with publish_app_to or re-run the item). `urls` lists ONLY \
+         links that work after this call: name-only registrations plus \
+         successfully published apps — a registered name whose app publish \
+         failed is absent from `urls`. Returns { registered, skipped, \
+         skipped_reasons: [{name, reason}], count, tx_hashes, \
          failed, unconfirmed, unattempted, urls, published: [{name, url, \
          updated}], publish_failed: [{name, error, registered}], \
+         publish_skipped: [{name, registration_state, reason}], \
          compile_failed: [{name, error}] } — an in-place update appears in \
          `published` with updated: true and NOT in `registered` (no tx was \
          needed).",
@@ -1206,35 +1220,53 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             // the create_subdomain mirror; someone else's → skip, app NOT
             // published). Source-less items go straight to the registration
             // set — the events path filters taken/invalid exactly as before.
-            let mut plan: Vec<ItemPlan> = Vec::with_capacity(items.len());
-            for (i, it) in items.iter().enumerate() {
-                let p = match &compiled[i] {
+            let mut plan: Vec<ItemPlan> = items
+                .iter()
+                .enumerate()
+                .map(|(i, it)| match &compiled[i] {
                     Some(Err(e)) => ItemPlan::CompileFailed(e.clone()),
                     Some(Ok(_)) => match crate::subdomain::validate(&it.name) {
-                        Err(why) => ItemPlan::PreSkipped(format!("invalid subdomain name: {why}")),
-                        Ok(_) => match crate::app::registry::owner_of_name(&cleaned[i]).await {
-                            Ok(None) => ItemPlan::Register,
-                            Ok(Some(o))
-                                if signer_owner
-                                    .as_deref()
-                                    .map(|s| o.eq_ignore_ascii_case(s))
-                                    .unwrap_or(false) =>
-                            {
-                                ItemPlan::UpdateInPlace
-                            }
-                            Ok(Some(o)) => ItemPlan::PreSkipped(format!(
-                                "owned by {o}, not you — not registered, app NOT published"
-                            )),
-                            Err(e) => {
-                                return Err(crate::error::Error::other(format!(
-                                    "owner_of_name: {e}"
-                                )))
-                            }
-                        },
+                        Err(why) => {
+                            ItemPlan::PreSkipped(format!("invalid subdomain name: {why}"))
+                        }
+                        // Provisional — the ownership pass below refines it.
+                        Ok(_) => ItemPlan::Register,
                     },
                     None => ItemPlan::Register,
+                })
+                .collect();
+            // Ownership reads for the valid SOURCE items run CONCURRENTLY —
+            // they are independent read-only eth_calls (join_all is safe on
+            // the single-threaded wasm executor; a 28-source batch used to
+            // serialize 28 sequential round-trips here).
+            let lookups: Vec<usize> = (0..items.len())
+                .filter(|&i| {
+                    matches!(compiled[i], Some(Ok(_)))
+                        && matches!(plan[i], ItemPlan::Register)
+                })
+                .collect();
+            let owners = futures_util::future::join_all(
+                lookups.iter().map(|&i| crate::app::registry::owner_of_name(&cleaned[i])),
+            )
+            .await;
+            for (&i, owner) in lookups.iter().zip(owners) {
+                plan[i] = match owner {
+                    Ok(None) => ItemPlan::Register,
+                    Ok(Some(o))
+                        if signer_owner
+                            .as_deref()
+                            .map(|s| o.eq_ignore_ascii_case(s))
+                            .unwrap_or(false) =>
+                    {
+                        ItemPlan::UpdateInPlace
+                    }
+                    Ok(Some(o)) => ItemPlan::PreSkipped(format!(
+                        "owned by {o}, not you — not registered, app NOT published"
+                    )),
+                    Err(e) => {
+                        return Err(crate::error::Error::other(format!("owner_of_name: {e}")))
+                    }
                 };
-                plan.push(p);
             }
 
             // The registration subset (unchanged chunked path over it). A PAID
@@ -1309,15 +1341,61 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             // was ALREADY OWNED (update in place) publishes its pre-compiled
             // wasm to the store (off-chain, free — bytes + face record in one
             // authed POST). A publish failure is reported per-item and NEVER
-            // rewrites the registration outcome above.
+            // rewrites the registration outcome above. A source item in ANY
+            // other registration state is NOT silently passed over: it gets a
+            // `publish_skipped` entry naming the state — an Unconfirmed name
+            // may still mine (the owner paid for a name), so "no app-side
+            // mention" would be a reporting lie.
             let mut published: Vec<serde_json::Value> = Vec::new();
             let mut publish_failed: Vec<serde_json::Value> = Vec::new();
+            let mut publish_skipped: Vec<serde_json::Value> = Vec::new();
             for (i, st) in states.iter().enumerate() {
                 let Some(Ok(wasm)) = &compiled[i] else { continue };
+                let mut skip = |state: &str, reason: String| {
+                    publish_skipped.push(serde_json::json!({
+                        "name": items[i].name,
+                        "registration_state": state,
+                        "reason": reason,
+                    }));
+                };
                 let updated = match st {
                     ItemState::Registered => false,
                     ItemState::UpdateInPlace => true,
-                    _ => continue,
+                    // Unreachable while compiled[i] is Ok — kept total so a
+                    // new ItemState reddens this match instead of vanishing.
+                    ItemState::CompileFailed(_) => continue,
+                    ItemState::Skipped(r) => {
+                        skip("skipped", format!("not registered ({r}) — app NOT published"));
+                        continue;
+                    }
+                    ItemState::Failed => {
+                        skip(
+                            "failed",
+                            "registration tx failed — the name did not register and \
+                             the app was not published; re-run this item"
+                                .into(),
+                        );
+                        continue;
+                    }
+                    ItemState::Unconfirmed => {
+                        skip(
+                            "unconfirmed",
+                            "registration unconfirmed — if the tx lands, re-publish \
+                             with publish_app_to (or re-run this item: a name you \
+                             own updates in place)"
+                                .into(),
+                        );
+                        continue;
+                    }
+                    ItemState::Unattempted => {
+                        skip(
+                            "unattempted",
+                            "registration never attempted (the batch stopped early) \
+                             — re-run this item to register and publish"
+                                .into(),
+                        );
+                        continue;
+                    }
                 };
                 // A user Stop skips the remaining publishes but must never
                 // swallow them silently — each skipped one is reported (the
@@ -1355,13 +1433,23 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             // did not register (pre-skipped, or their chunk landed but the
             // events path filtered them as taken/invalid) — failed-chunk
             // names are NOT "skipped" (they were attempted; they ride
-            // `failed`). Legacy string-list shape preserved.
+            // `failed`). Legacy string-list shape preserved; the WHY each
+            // was skipped ("invalid subdomain name: …" / "owned by …, not
+            // you" / "taken or invalid…") rides `skipped_reasons` — the bare
+            // list used to discard it.
             let mut skipped: Vec<&str> = Vec::new();
+            let mut skipped_reasons: Vec<serde_json::Value> = Vec::new();
             let mut unattempted: Vec<&str> = Vec::new();
             let mut compile_failed: Vec<serde_json::Value> = Vec::new();
             for (i, st) in states.iter().enumerate() {
                 match st {
-                    ItemState::Skipped(_) => skipped.push(&items[i].name),
+                    ItemState::Skipped(r) => {
+                        skipped.push(&items[i].name);
+                        skipped_reasons.push(serde_json::json!({
+                            "name": items[i].name,
+                            "reason": r,
+                        }));
+                    }
                     ItemState::Unattempted => unattempted.push(&items[i].name),
                     ItemState::CompileFailed(e) => compile_failed.push(serde_json::json!({
                         "name": items[i].name,
@@ -1390,19 +1478,36 @@ pub(crate) fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                              tx hash before retrying these names",
                 }))
                 .collect();
+            // `urls` = links that WORK after this call, ONLY: name-only
+            // registrations (directory face) + successfully published apps.
+            // A registered SOURCE item whose publish failed is deliberately
+            // absent — its URL would advertise an app that isn't there (it
+            // rides `publish_failed`). Pure-names calls keep the legacy
+            // shape: every registered name, in order.
+            let mut urls: Vec<String> = states
+                .iter()
+                .enumerate()
+                .filter(|(i, st)| {
+                    matches!(st, ItemState::Registered) && items[*i].source.is_none()
+                })
+                .map(|(i, _)| format!("https://{}.localharness.xyz/", cleaned[i]))
+                .collect();
+            urls.extend(
+                published.iter().filter_map(|p| p["url"].as_str().map(str::to_string)),
+            );
             Ok(serde_json::json!({
                 "registered": registered_all,
                 "skipped": skipped,
+                "skipped_reasons": skipped_reasons,
                 "count": registered_all.len(),
                 "tx_hashes": fold.tx_hashes,
                 "failed": failed,
                 "unconfirmed": unconfirmed,
                 "unattempted": unattempted,
-                "urls": registered_all.iter()
-                    .map(|n| format!("https://{n}.localharness.xyz/"))
-                    .collect::<Vec<_>>(),
+                "urls": urls,
                 "published": published,
                 "publish_failed": publish_failed,
+                "publish_skipped": publish_skipped,
                 "compile_failed": compile_failed,
             }))
         },

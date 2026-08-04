@@ -61,6 +61,22 @@ pub fn validate(input: &str) -> Result<String, String> {
     Ok(name)
 }
 
+/// Normalise a requested name to the character set the on-chain registry
+/// enforces: trim, lowercase, DROP anything outside `[a-z0-9-]`, trim edge
+/// hyphens. THE one cleaner (hoisted from `app::tenant`, which now delegates
+/// here) so pure cores — `batch_apps`' duplicate rejection — share it instead
+/// of forking the filter. Silently-mangling by design (the human claim form);
+/// programmatic callers use [`validate`], which REJECTS instead.
+pub fn sanitize(input: &str) -> String {
+    let s: String = input
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    s.trim_matches('-').to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

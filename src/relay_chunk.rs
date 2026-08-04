@@ -355,6 +355,7 @@ mod tests {
         for rel in [
             "src/app/chat/tools/platform.rs",
             "src/app/chat/tools/company.rs",
+            "src/batch_apps.rs",
             "src/session_prompt.rs",
             "web/llms.txt",
         ] {
