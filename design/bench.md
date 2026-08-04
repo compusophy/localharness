@@ -187,3 +187,34 @@ beat the current row on the SAME task set AND the same seed before a pin
 change; add rows here, never overwrite. Seed-1 rows are the comparable series;
 an anti-overfit spot-check runs 2-3 extra seeds and a seed-robust score should
 not collapse vs seed 1.
+
+### Full-set baseline failure ledger (run 30706586702)
+
+Full TB 2.1 set, `gemini-3.6-flash`, 3-way concurrency, run tree `43124396`
+(2026-08-01 15:47:40 → 17:51:39 UTC). Artifact `tb-compare-runs` carries the
+**localharness arm only** — 89 trial dirs, no terminus-2 arm, so this run has
+no head-to-head Δ. Every number below is read from
+`localharness/jobs/2026-08-01__15-47-35/`.
+
+**Headline: mean reward `0.16853932584269662` = 15/89 resolved (16.9%).
+That is NOT a capability number.** Harbor counted **71 errored trials**, and
+**66 of them were one Google-key quota storm**. Only **18 trials reached a
+genuine verdict — and 15 of those 18 resolved (83.3%)**.
+
+| # | class | n | example task(s) | root cause | verdict |
+|---|-------|---|-----------------|------------|---------|
+| 1 | `ApiRateLimitError` — monthly SPEND CAP | **64** | `adaptive-rejection-sampler`, `portfolio-optimization` | AI Studio project hit its monthly spend cap at 17:23:41Z (`sam-cell-seg`, 18 rounds in); every later trial died — **63 with ZERO tool rounds** | **STILL-OPEN (operational)** — ⛔ 0ef569c1's ladder does NOT cover a spend cap (not transient). Fail-fast shipped 2026-08-04 (`work.rs rate_limit_is_permanent`); the cap itself is a billing decision |
+| 2 | `ApiRateLimitError` — per-minute TPM | 2 | `caffe-cifar-10`, `mcmc-sampling-stan` | `…InputTokensPerModelPerMinute-PaidTier2`, quota 3M, `retryDelay 4s`, tripped mid-work by 3-way concurrency | **COVERED** — 0ef569c1 (15/30/45/60s ladder, max 6, same-turn retry). Not in the run tree |
+| 3 | `NonZeroAgentExitCodeError` — PROHIBITED_CONTENT | 1 | `dna-assembly` | `gemini sse decode: missing field `role`` on a blocked candidate wired as `"content": {}`; a content filter read as an infra crash | **COVERED** — ad931b47 (`role` defaults to `model`; `classify_empty → Blocked` ends the run named). Not in the run tree |
+| 4 | `AgentTimeoutError` | 4 | `qemu-alpine-ssh`, `mteb-leaderboard` (3600s) | not a crash — all four were still issuing productive `run_command` rounds at harbor's wall clock | **STILL-OPEN (efficiency)** — 08be588d's process-group kill targets the qemu-style grandchild hang, but the artifact only proves time exhaustion |
+| 5 | Unresolved — truncated text-tail | 2 | `schemelike-metacircular-eval`, `torch-tensor-parallelism` | after ONE auto-continue each the turn ended in a reasoning dump cut mid-sentence and the run STOPPED (1 of a 12-continuation budget), work incomplete | **COVERED** — 08be588d (continue-decision reads `reply.finished()`; `saw_finish` was dead code; + truncation nudges + 65K output cap). Not in the run tree |
+| 6 | Unresolved — agent believed it was done | 1 | `filter-js-from-html` | 46 rounds, clean completion summary, verifier still 0.0; never re-derived the grader's harder cases | **STILL-OPEN (capability)** |
+| 7 | Non-fatal tool friction | 12 | `filter-js-from-html` (`/app/filter.py`), `regex-log` | 10× `create_file refuses to overwrite existing file` + 2× `denied by policy 'workspace_only:*'`; each burns a round and pushes the model onto `run_command` heredocs | **STILL-OPEN (minor)** — ~1.4% of the run's 856 tool rounds |
+| — | proxy 504 / auth 401 | **0** | — | grepped `401`, `504`, `stale or future`, `FUNCTION_INVOCATION_TIMEOUT` across all 89 logs | **COVERED, HELD UNDER LOAD** — d5845585 + 239ce2fc are ancestors of `43124396` |
+
+Reading for the 78% chase: three classes are fixed on main but were absent from
+this run's binary (2, 3, 5), one is money not code (1 — fail-fast now shipped,
+the cap itself is billing), and the genuinely open agent-side work is round
+efficiency (4), self-verification before declaring done (6), and fs-builtin
+friction (7). **The next full-set run is the first one that can produce an
+honest baseline** — this one measured a billing event.

@@ -253,6 +253,16 @@ pub(crate) async fn work(args: &[String]) -> i32 {
             Err(e) if e.code() == localharness::error_codes::BACKEND_RATE_LIMIT
                 && rate_limit_retries < MAX_RATE_LIMIT_RETRIES =>
             {
+                // A monthly SPEND-CAP 429 is not congestion — no ladder outlasts
+                // it (TB run 30706586702: 64 trials each died against "monthly
+                // spending cap"; retrying would have burned ~4.5 min per trial
+                // for nothing). Fail fast with the provider's own words.
+                let msg = e.to_string();
+                if rate_limit_is_permanent(&msg) {
+                    eprintln!("\nwork failed: provider spending cap exhausted — not retryable: {msg}");
+                    failed = true;
+                    break;
+                }
                 rate_limit_retries += 1;
                 let wait = 15 * rate_limit_retries.min(4) as u64;
                 eprintln!(
@@ -408,6 +418,14 @@ enum Nudge {
 /// it never counts as a strike. A toolless, textless, untruncated turn (empty
 /// reply / all calls failed arg-parse — those emit no ToolCall chunk) gets the
 /// generic continue nudge, not the "you ended with analysis" one.
+/// A 429 that names a SPENDING/BILLING cap is permanent for this run — the cap
+/// resets monthly, not in a backoff window. Verbatim producer (TB artifact
+/// 30706586702): `429 … "Your project has exceeded its monthly spending cap"`.
+fn rate_limit_is_permanent(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("spending cap") || m.contains("spend cap") || m.contains("billing")
+}
+
 fn turn_signals(prev_toolless: u32, tool_calls: u32, truncated: bool, saw_text: bool) -> (u32, Nudge) {
     let toolless = if tool_calls > 0 || truncated { 0 } else { prev_toolless + 1 };
     let nudge = if truncated {
@@ -436,7 +454,21 @@ fn work_should_continue(
 
 #[cfg(test)]
 mod tests {
-    use super::{turn_signals, work_should_continue, Nudge};
+    use super::{rate_limit_is_permanent, turn_signals, work_should_continue, Nudge};
+
+    #[test]
+    fn spend_cap_429_fails_fast_transient_429_retries() {
+        // Verbatim from TB artifact 30706586702 (the 64-trial storm).
+        assert!(rate_limit_is_permanent(
+            "gemini HTTP 429 Too Many Requests: Your project has exceeded its \
+             monthly spending cap. RESOURCE_EXHAUSTED"
+        ));
+        // Per-minute TPM quota (caffe-cifar-10 shape) stays retryable.
+        assert!(!rate_limit_is_permanent(
+            "gemini HTTP 429: GenerateContentPaidTierInputTokensPerModelPerMinute-PaidTier2 \
+             quota exceeded, retryDelay: 4s"
+        ));
+    }
 
     #[test]
     fn finish_is_the_only_done_signal_mid_work() {
