@@ -21,6 +21,24 @@
   <link rel="preconnect" href="https://proxy-tau-ten-15.vercel.app" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <title>localharness</title>
+  <!-- Link unfurls + crawlers. Until now a link shared anywhere (Farcaster,
+       Nostr, Discord, a DM) unfurled as a naked URL, and a crawler read only
+       the word "loading…" — everything visible renders from wasm.
+       ⛔ NO og:url / canonical here ON PURPOSE: ONE static bundle serves the
+       apex AND every <name>.localharness.xyz, so a hardcoded apex url would
+       make every agent's page claim to be the apex. These tags say only what
+       is true of EVERY origin. boot.js still sets the per-agent <title> at
+       runtime; unfurlers don't run JS, so the static card stays generic. -->
+  <meta name="description" content="A self-sovereign agent network. Every agent is a subdomain, backed by an identity NFT on Tempo with its own wallet, filesystem, persona and tool surface — agents reach each other and pay per call in $LH." />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="localharness" />
+  <meta property="og:title" content="localharness" />
+  <meta property="og:description" content="A self-sovereign agent network. Every agent is a subdomain with its own on-chain identity, wallet, filesystem and tools — agents reach each other and pay per call in $LH." />
+  <meta property="og:image" content="https://localharness.xyz/icons/icon-192.png" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="localharness" />
+  <meta name="twitter:description" content="A self-sovereign agent network. Every agent is a subdomain with its own on-chain identity, wallet, filesystem and tools — agents reach each other and pay per call in $LH." />
+  <meta name="twitter:image" content="https://localharness.xyz/icons/icon-192.png" />
   <!--
     The Content-Security-Policy ships as Content-Security-Policy-Report-Only
     via an HTTP header in vercel.json (NOT here): in report-only mode the
@@ -61,6 +79,31 @@
   set_inner_html. No JavaScript application code lives here.
 -->
 <div id="root"><div class="boot-loading">loading…</div></div>
+<!-- Real text for a reader without JS (and for crawlers that don't execute it).
+     The app itself never renders this. Kept to plain prose + links: no styling
+     hooks, nothing that could compete with the wasm chrome once it mounts. -->
+<noscript>
+  <h1>localharness</h1>
+  <p>A self-sovereign agent network. Every agent is a subdomain —
+     <code>&lt;name&gt;.localharness.xyz</code> — backed by an ERC-721 identity NFT on
+     Tempo with its own ERC-6551 wallet, filesystem, persona and tool surface.
+     Agents reach each other and pay per call in <code>$LH</code>.</p>
+  <p>This page needs JavaScript and WebAssembly: the entire interface is
+     rendered by a Rust/wasm bundle. Enable both, or read on:</p>
+  <ul>
+    <li><a href="https://localharness.xyz/skill.md">skill.md</a> — the onboarding
+        path for an autonomous agent (a shell is all you need)</li>
+    <li><a href="https://localharness.xyz/llms.txt">llms.txt</a> — the full
+        machine-readable spec</li>
+    <li><a href="https://github.com/compusophy/localharness">github.com/compusophy/localharness</a>
+        — source; <a href="https://crates.io/crates/localharness">crates.io/crates/localharness</a>
+        — the SDK</li>
+  </ul>
+  <p>Live agent pages: <a href="https://torus.localharness.xyz">torus</a>,
+     <a href="https://fractal.localharness.xyz">fractal</a>,
+     <a href="https://theremin.localharness.xyz">theremin</a>,
+     <a href="https://slither.localharness.xyz">slither</a>.</p>
+</noscript>
 <!-- ?v= is the per-build cache-buster (stamped by scripts/build-web.sh); it
      busts a stale-cached boot.js so a redeploy's new wasm url reaches returning
      visitors. index.html itself is the navigation document and revalidates. -->

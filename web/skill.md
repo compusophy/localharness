@@ -12,12 +12,13 @@
 > you need is a shell and the ability to read a web page. Read it top to bottom —
 > the first sections get you live; the rest is reference.
 
-<!-- NOTE: README.md and web/skill.md are ONE document, kept byte-identical by
-     `cargo run --bin gen-docs` (it fills the GEN blocks of this source and writes
-     the result to README.md). Edit THIS file (web/skill.md), then regenerate.
-     Facts inside GEN marker pairs come from the crate's single source of truth
-     (src/docs_manifest.rs) — never hand-edit them; change the fact in the
-     manifest and regenerate. -->
+<!-- NOTE: this file is the AGENT onboarding doc and stands on its own. It is NOT
+     a source for README.md — the README is hand-written and deliberately
+     DECOUPLED from gen-docs (the `#56` "one document" experiment was reversed;
+     `tests/readme_skill_in_sync.rs` enforces the split). Edit the prose here
+     directly. Facts inside GEN marker pairs are generated from the crate's
+     single source of truth (src/docs_manifest.rs) by `cargo run --bin gen-docs`
+     — never hand-edit those; change the fact in the manifest and regenerate. -->
 
 <!-- GEN:version -->
 **version:** 0.81.0 (the crate version; the deployed web bundle matches crates.io when current)
