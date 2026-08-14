@@ -465,29 +465,110 @@ pub(crate) fn call_uint_bytes(sig: &str, id: u64) -> Vec<u8> {
     data
 }
 
-/// Discover OPEN bounties by keyword — the demand-side twin of [`discover_agents`].
-/// Scans the open board (`open_bounties`, paging up to `scan` ids), reads each
-/// one's task text + reward, and returns `(id, task, reward_wei)` matches for
-/// `query`, ranked by query-vs-task relevance (the SAME `rank_agent_matches`
-/// substring ranking, applied to the task text). An empty query returns all open
-/// bounties (newest-first, as the board returns them). Read-only.
-pub async fn discover_bounties(query: &str, scan: u64) -> Result<Vec<(u64, String, u128)>, String> {
-    let ids = open_bounties(0, scan).await?;
-    if ids.is_empty() {
-        return Ok(Vec::new());
+/// An open bounty the board scan could NOT read: at least one of its two per-id
+/// `eth_call`s (`bountyTaskOf` / `getBounty`) failed. It is kept OUT of the
+/// entries — a transient RPC hiccup must never render a FUNDED bounty as an
+/// empty task worth 0 `$LH`, which reads to an agent as unpaid work. When only
+/// one half failed the other half is DISCARDED rather than listed as a
+/// half-known bounty; the id is what the caller retries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadBounty {
+    /// The id `openBounties` returned but this scan could not resolve. Its task,
+    /// reward and current status are all unknown here — re-read it (`get_bounty`
+    /// / `task_of_bounty`) before drawing any conclusion about it.
+    pub id: u64,
+    /// Which read failed and why (`bountyTaskOf: …` / `getBounty: …`, both when
+    /// both failed). Verbatim RPC prose — for surfacing, not for matching on.
+    pub error: String,
+}
+
+/// A board scan's FULL outcome: the bounties that were read (ranked) plus the
+/// ids that were not. `unreadable` is what makes a partial listing visible —
+/// `entries` alone cannot distinguish "the board has 3 bounties" from "the board
+/// has 20 and 17 reads failed".
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BountyScan {
+    /// Fully-read `(id, task, reward_wei)` bounties — query-ranked as returned
+    /// by [`discover_bounties_scan`] (the internal `partition_bounty_reads`
+    /// leaves them in board order; ranking is a separate step).
+    pub entries: Vec<(u64, String, u128)>,
+    /// Open ids whose task/reward read failed — NOT in `entries`, and NOT known
+    /// to be unfunded. Empty = every open id in the scanned page was read.
+    pub unreadable: Vec<UnreadBounty>,
+}
+
+impl BountyScan {
+    /// True when at least one scanned open bounty could not be read, i.e.
+    /// `entries` is an INCOMPLETE view of the scanned page. Callers that print
+    /// a count should say so ("3 of 20 could not be read").
+    pub fn is_partial(&self) -> bool {
+        !self.unreadable.is_empty()
     }
-    // Fetch each open bounty's task text + reward. (The board is small at launch
-    // scale; one read pair per id, like `discover_agents`' persona fetch.)
-    let mut entries: Vec<(u64, String, u128)> = Vec::with_capacity(ids.len());
-    // Reuse the agent-rank pipeline: build (key, task) pairs where the "name"
-    // slot is the id (so ranking matches on the task text in the persona slot).
-    let mut pairs: Vec<(String, String)> = Vec::with_capacity(ids.len());
-    for id in ids {
-        let task = task_of_bounty(id).await.unwrap_or_default();
-        let reward = get_bounty(id).await.map(|b| b.reward_wei).unwrap_or(0);
-        pairs.push((id.to_string(), task.clone()));
-        entries.push((id, task, reward));
+}
+
+/// One open id's raw read pair as the board scan fetched it: the id, the
+/// `bountyTaskOf` outcome, and the `getBounty(…).reward_wei` outcome. Both
+/// halves stay `Result` up to [`partition_bounty_reads`] — that is the whole
+/// fix, since a defaulted value here is unrecoverable downstream.
+pub(crate) type BountyReadRow = (u64, Result<String, String>, Result<u128, String>);
+
+/// Split one [`BountyReadRow`] per open id into a [`BountyScan`]: fully-read
+/// entries (UNRANKED, in board order) + the [`UnreadBounty`]s. PURE (the
+/// network-free half of [`discover_bounties_scan`], so the decision is
+/// unit-testable).
+///
+/// An entry survives only when BOTH reads succeeded: id, task and reward are all
+/// load-bearing for the act-on-it decision (claim / do the work / is it worth
+/// it), and `(u64, String, u128)` has no way to say "unknown" — a defaulted
+/// empty task or `0` reward is indistinguishable from a genuinely empty task or
+/// a genuinely 0-reward bounty, which is the bug this replaces.
+///
+/// `Err` ONLY when every row failed (and there was at least one): a board that
+/// returned ids but yielded nothing readable must not come back as `Ok(vec![])`
+/// — "no open bounties" is a different, and false, statement. A PARTIAL failure
+/// is never an error: dropping a 20-item board because one read hiccuped is
+/// worse than the hiccup.
+pub(crate) fn partition_bounty_reads(rows: Vec<BountyReadRow>) -> Result<BountyScan, String> {
+    let total = rows.len();
+    let mut entries: Vec<(u64, String, u128)> = Vec::with_capacity(total);
+    let mut unreadable: Vec<UnreadBounty> = Vec::new();
+    for (id, task, reward) in rows {
+        match (task, reward) {
+            (Ok(task), Ok(reward_wei)) => entries.push((id, task, reward_wei)),
+            (task, reward) => {
+                let mut why: Vec<String> = Vec::new();
+                if let Err(e) = task {
+                    why.push(format!("bountyTaskOf: {e}"));
+                }
+                if let Err(e) = reward {
+                    why.push(format!("getBounty: {e}"));
+                }
+                unreadable.push(UnreadBounty { id, error: why.join("; ") });
+            }
+        }
     }
+    if total > 0 && entries.is_empty() {
+        let first = unreadable.first().map(|u| u.error.as_str()).unwrap_or("unknown");
+        return Err(format!(
+            "bounty board unreadable: all {total} open bounty read(s) failed (first: {first})"
+        ));
+    }
+    Ok(BountyScan { entries, unreadable })
+}
+
+/// Rank fully-read board entries by query-vs-TASK relevance. PURE. Reuses the
+/// agent-rank pipeline (unchanged from the pre-partition code) by putting the id
+/// in the "name" slot and the task in the "persona" slot, so ranking is driven
+/// by the task text — a query that is itself a digit string can still hit the id
+/// slot, as it always could. Empty query keeps every entry in board order.
+pub(crate) fn rank_bounty_entries(
+    entries: &[(u64, String, u128)],
+    query: &str,
+) -> Vec<(u64, String, u128)> {
+    let pairs: Vec<(String, String)> = entries
+        .iter()
+        .map(|(id, task, _)| (id.to_string(), task.clone()))
+        .collect();
     let ranked = rank_agent_matches(&pairs, query);
     // Map the ranked (id-string, task) pairs back to the (id, task, reward)
     // entries, preserving the rank order.
@@ -497,7 +578,54 @@ pub async fn discover_bounties(query: &str, scan: u64) -> Result<Vec<(u64, Strin
             out.push(entry.clone());
         }
     }
-    Ok(out)
+    out
+}
+
+/// Discover OPEN bounties by keyword, reporting what the scan could NOT read —
+/// the demand-side twin of [`discover_agents`]. Scans the open board
+/// (`open_bounties`, paging up to `scan` ids), reads each one's task text +
+/// reward (one un-batched read PAIR per id, so a transient RPC failure hits a
+/// SUBSET), and returns the ranked matches plus the ids whose reads failed.
+/// Read-only.
+///
+/// Prefer this over [`discover_bounties`] anywhere the result is shown or acted
+/// on: `BountyScan::unreadable` is the only way the caller learns that some
+/// funded bounty exists which it did not see. Errors only when the board scan
+/// itself fails or when NO id was readable at all — a PARTIAL failure always
+/// returns the readable entries plus the unreadable ids.
+pub async fn discover_bounties_scan(query: &str, scan: u64) -> Result<BountyScan, String> {
+    let ids = open_bounties(0, scan).await?;
+    if ids.is_empty() {
+        return Ok(BountyScan::default());
+    }
+    // Fetch each open bounty's task text + reward. (The board is small at launch
+    // scale; one read pair per id, like `discover_agents`' persona fetch.) Keep
+    // the Results — the partition below decides, never a silent default.
+    let mut rows: Vec<BountyReadRow> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let task = task_of_bounty(id).await;
+        let reward = get_bounty(id).await.map(|b| b.reward_wei);
+        rows.push((id, task, reward));
+    }
+    let mut scan = partition_bounty_reads(rows)?;
+    scan.entries = rank_bounty_entries(&scan.entries, query);
+    Ok(scan)
+}
+
+/// Discover OPEN bounties by keyword — `(id, task, reward_wei)` matches for
+/// `query`, ranked by query-vs-task relevance. An empty query returns all
+/// readable open bounties (newest-first, as the board returns them). Read-only.
+///
+/// ⛔ LOSSY VIEW: a bounty whose task/reward read failed is OMITTED, and this
+/// signature has nowhere to say so — the returned Vec can be a strict subset of
+/// the open board with no marker. It never fabricates a value (an omitted entry
+/// used to come back as an empty task with a `0` reward, i.e. a funded bounty
+/// that read as unpaid), and it errors rather than returning an empty Vec when
+/// NO id was readable, but a caller that reports a count or a "nothing matched"
+/// verdict should use [`discover_bounties_scan`] and surface
+/// `BountyScan::unreadable`.
+pub async fn discover_bounties(query: &str, scan: u64) -> Result<Vec<(u64, String, u128)>, String> {
+    Ok(discover_bounties_scan(query, scan).await?.entries)
 }
 
 
@@ -726,6 +854,102 @@ mod tests {
         let e = bounty_preflight(1, &mk(0, 0), "reclaim", None).unwrap_err();
         assert!(e.contains("bounty cancel"), "got: {e}");
         assert!(bounty_preflight(1, &mk(3, 7), "reclaim", None).is_err());
+    }
+
+    // --- board-scan partition: a FAILED read must never look like a genuine
+    // empty task / 0 reward (a funded bounty reading as unpaid is what made an
+    // agent skip paying work, or claim work it believed paid nothing). ---
+
+    /// Both reads good → a real entry, no unreadable ids, no error.
+    #[test]
+    fn partition_keeps_fully_read_bounties() {
+        let rows = vec![
+            (1u64, Ok("audit a contract".to_string()), Ok(5_000_000_000_000_000_000u128)),
+            (2, Ok(String::new()), Ok(0)), // a GENUINELY empty/0 bounty still passes
+        ];
+        let scan = partition_bounty_reads(rows).unwrap();
+        assert_eq!(
+            scan.entries,
+            vec![
+                (1, "audit a contract".to_string(), 5_000_000_000_000_000_000u128),
+                (2, String::new(), 0),
+            ]
+        );
+        assert!(scan.unreadable.is_empty());
+        assert!(!scan.is_partial()); // every scanned id was read → COMPLETE
+    }
+
+    /// A failed TASK read drops the entry (its reward is unknowable too) and is
+    /// reported by id — NOT emitted as a blank task.
+    #[test]
+    fn partition_reports_failed_task_read() {
+        let rows = vec![
+            (7u64, Err("rpc timeout".to_string()), Ok(9u128)),
+            (8, Ok("write a poem".to_string()), Ok(3)),
+        ];
+        let scan = partition_bounty_reads(rows).unwrap();
+        assert_eq!(scan.entries, vec![(8, "write a poem".to_string(), 3u128)]);
+        assert_eq!(scan.unreadable.len(), 1);
+        assert_eq!(scan.unreadable[0].id, 7);
+        let why = &scan.unreadable[0].error;
+        assert!(why.contains("bountyTaskOf: rpc timeout"), "got: {why}");
+        assert!(!why.contains("getBounty"), "got: {why}");
+    }
+
+    /// A failed REWARD read is the money case: the bounty is dropped + named,
+    /// never listed with a fabricated `0`.
+    #[test]
+    fn partition_reports_failed_reward_read() {
+        let rows = vec![
+            (7u64, Ok("audit a contract".to_string()), Err("eth_call reverted".to_string())),
+            (8, Ok("write a poem".to_string()), Ok(3u128)),
+        ];
+        let scan = partition_bounty_reads(rows).unwrap();
+        // The dropped id appears nowhere in the entries — least of all at 0 $LH.
+        assert_eq!(scan.entries, vec![(8, "write a poem".to_string(), 3u128)]);
+        assert!(!scan.entries.iter().any(|(id, _, _)| *id == 7));
+        assert_eq!(scan.unreadable[0].id, 7);
+        let why = &scan.unreadable[0].error;
+        assert!(why.contains("getBounty: eth_call reverted"), "got: {why}");
+        // A scan carrying unreadable ids reports itself as INCOMPLETE.
+        assert!(scan.is_partial());
+        assert!(!BountyScan::default().is_partial());
+    }
+
+    /// Both reads failing names both; and when EVERY row failed the whole scan
+    /// errors — an empty Vec would assert "no open bounties", which is false.
+    #[test]
+    fn partition_errors_when_every_read_failed() {
+        let rows = vec![
+            (7u64, Err("boom".to_string()), Err("bang".to_string())),
+            (8, Err("boom".to_string()), Ok(3u128)),
+        ];
+        let err = partition_bounty_reads(rows).unwrap_err();
+        assert!(err.contains("all 2 open bounty read(s) failed"), "got: {err}");
+        assert!(err.contains("bountyTaskOf: boom"), "got: {err}");
+        assert!(err.contains("getBounty: bang"), "got: {err}");
+        // An EMPTY board (no ids scanned) is not an error — it's an empty board.
+        assert_eq!(partition_bounty_reads(Vec::new()).unwrap(), BountyScan::default());
+    }
+
+    /// `rank_bounty_entries` ranks on the TASK text and carries the reward
+    /// through unchanged; an empty query keeps every entry in board order.
+    #[test]
+    fn rank_bounty_entries_ranks_on_task_text() {
+        let entries = vec![
+            (1u64, "audit a solidity contract".to_string(), 5u128),
+            (2, "write a poem".to_string(), 7),
+            (3, "SOLIDITY gas review".to_string(), 11),
+        ];
+        let hits = rank_bounty_entries(&entries, "solidity");
+        assert_eq!(
+            hits,
+            vec![
+                (1, "audit a solidity contract".to_string(), 5u128),
+                (3, "SOLIDITY gas review".to_string(), 11),
+            ]
+        );
+        assert_eq!(rank_bounty_entries(&entries, ""), entries);
     }
 
     #[test]

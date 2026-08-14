@@ -77,6 +77,62 @@ pub fn sanitize(input: &str) -> String {
     s.trim_matches('-').to_string()
 }
 
+/// What a batch `register` must do about the up-front `$LH` allowance —
+/// the decision hoisted out of the wasm-only `app::events::subdomains` so
+/// `cargo test` covers it (the `turn_flow`/`batch_apps` hoisting pattern).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive] // pub SDK surface — a new outcome must not be semver-breaking
+pub enum BatchApproval {
+    /// `registrationCost()` READ as zero — registration is genuinely free;
+    /// submit the registers with no `approve` (the historical free-claim path).
+    NoApproveNeeded,
+    /// Prepend ONE `approve(diamond, amount)` (cumulative: cost × names).
+    Approve(u128),
+    /// Do NOT submit anything; surface this reason to the caller instead.
+    Abort(String),
+}
+
+/// Decide the batch allowance from the `registrationCost()` READ RESULT.
+///
+/// The bug this closes: the call site did
+/// `registration_cost().await.unwrap_or(0)`, so ONE flaky `eth_call` read as
+/// "registration is free" — the cumulative approve was skipped and every
+/// `register` in the sponsored batch then reverted on `transferFrom` with no
+/// allowance, burning the sponsor gas. A failed read is NOT a zero price, so
+/// it aborts BEFORE anything is submitted, naming the price read.
+///
+/// - `Err(e)` → [`BatchApproval::Abort`] (message mentions the price read and
+///   that nothing was submitted).
+/// - `Ok(0)` → [`BatchApproval::NoApproveNeeded`] — a genuine free config keeps
+///   working exactly as before.
+/// - `Ok(cost)` with `cost > 0` → [`BatchApproval::Approve`]`(cost × count)`.
+/// - `count == 0` → [`BatchApproval::NoApproveNeeded`] at any price: an empty
+///   batch pulls nothing, so `approve(0)` would be a wasted call.
+/// - `cost × count` overflowing `u128` → [`BatchApproval::Abort`]. The previous
+///   `saturating_mul` would have approved a saturated `u128::MAX` — an amount
+///   nobody asked for and nobody holds — so failing honestly beats guessing.
+pub fn plan_batch_approval(cost: Result<u128, String>, count: usize) -> BatchApproval {
+    let cost = match cost {
+        Ok(c) => c,
+        Err(e) => {
+            return BatchApproval::Abort(format!(
+                "couldn't read the registration price (registrationCost): {e} — \
+                 nothing was submitted and no gas was spent; try again"
+            ))
+        }
+    };
+    if cost == 0 || count == 0 {
+        return BatchApproval::NoApproveNeeded;
+    }
+    match cost.checked_mul(count as u128) {
+        Some(total) => BatchApproval::Approve(total),
+        None => BatchApproval::Abort(format!(
+            "the registration price read back as {cost} wei — × {count} names \
+             overflows the allowance; nothing was submitted"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +196,57 @@ mod tests {
         assert!(!is_valid_subdomain_label("-foo")); // leading hyphen
         assert!(!is_valid_subdomain_label("foo-")); // trailing hyphen
         assert!(!is_valid_subdomain_label("-")); // only a hyphen
+    }
+
+    #[test]
+    fn failed_price_read_aborts_instead_of_reading_as_free() {
+        // THE bug: one flaky eth_call used to unwrap_or(0) into "free", the
+        // approve was skipped, and every register reverted on transferFrom.
+        let plan = plan_batch_approval(Err("rpc error: timeout".into()), 3);
+        let BatchApproval::Abort(reason) = plan else {
+            panic!("a failed price read must abort, got {plan:?}");
+        };
+        // Honest reason: names the price read AND the underlying error, and
+        // says nothing was submitted (no gas burned).
+        assert!(reason.contains("registrationCost"), "{reason}");
+        assert!(reason.contains("price"), "{reason}");
+        assert!(reason.contains("rpc error: timeout"), "{reason}");
+        assert!(reason.contains("nothing was submitted"), "{reason}");
+    }
+
+    #[test]
+    fn genuine_zero_still_registers_with_no_approve() {
+        // A real free config must behave exactly as before — no approve call.
+        assert_eq!(plan_batch_approval(Ok(0), 5), BatchApproval::NoApproveNeeded);
+        assert_eq!(plan_batch_approval(Ok(0), 1), BatchApproval::NoApproveNeeded);
+        // An empty batch pulls nothing, so approve(0) would be a wasted call.
+        assert_eq!(plan_batch_approval(Ok(7), 0), BatchApproval::NoApproveNeeded);
+    }
+
+    #[test]
+    fn paid_registration_approves_the_cumulative_total() {
+        // The allowance is CUMULATIVE — cost × names covers the whole batch.
+        let one_lh = 1_000_000_000_000_000_000u128;
+        assert_eq!(plan_batch_approval(Ok(one_lh), 1), BatchApproval::Approve(one_lh));
+        assert_eq!(plan_batch_approval(Ok(one_lh), 7), BatchApproval::Approve(one_lh * 7));
+        assert_eq!(plan_batch_approval(Ok(3), 28), BatchApproval::Approve(84));
+    }
+
+    #[test]
+    fn overflowing_total_aborts_rather_than_approving_a_saturated_amount() {
+        // The old saturating_mul would have approved u128::MAX here — an
+        // amount nobody asked for. Fail honestly instead.
+        let plan = plan_batch_approval(Ok(u128::MAX), 2);
+        let BatchApproval::Abort(reason) = plan else {
+            panic!("an overflowing total must abort, got {plan:?}");
+        };
+        assert!(reason.contains("overflows"), "{reason}");
+        assert!(reason.contains("nothing was submitted"), "{reason}");
+        // The exact boundary still approves: max/2 × 2 fits.
+        assert_eq!(
+            plan_batch_approval(Ok(u128::MAX / 2), 2),
+            BatchApproval::Approve((u128::MAX / 2) * 2)
+        );
     }
 
     #[test]

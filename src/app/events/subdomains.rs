@@ -154,21 +154,33 @@ pub(crate) async fn run_batch_create_subdomains(
     // PAID CLAIMS: a non-zero `registrationCost()` makes every register pull
     // the fee via transferFrom — ONE cumulative `approve(diamond, cost × n)`
     // up front covers the whole batch (each pull decrements the allowance).
-    let cost = crate::app::registry::registration_cost().await.unwrap_or(0);
-    if cost > 0 {
-        let total = cost.saturating_mul(registered.len() as u128);
-        calls.insert(
-            0,
-            crate::app::registry::approve_credits_call(total).map_err(|e| format!("approve: {e}"))?,
-        );
-    }
+    // ⛔ The read's FAILURE is not a zero price: `unwrap_or(0)` here let one
+    // flaky eth_call skip the approve, and every register then reverted on
+    // transferFrom after the sponsor gas was already spent. The decision lives
+    // in the native-tested `subdomain::plan_batch_approval` — a failed read
+    // aborts BEFORE the tx.
+    let approved = match crate::subdomain::plan_batch_approval(
+        crate::app::registry::registration_cost().await,
+        registered.len(),
+    ) {
+        crate::subdomain::BatchApproval::Abort(reason) => return Err(reason),
+        crate::subdomain::BatchApproval::NoApproveNeeded => false,
+        crate::subdomain::BatchApproval::Approve(total) => {
+            calls.insert(
+                0,
+                crate::app::registry::approve_credits_call(total)
+                    .map_err(|e| format!("approve: {e}"))?,
+            );
+            true
+        }
+    };
     // Each register is a full cold ERC-721 mint (~1.32M inner each, per the
     // eth_estimateGas note in registry.rs) + ONE ~275k sponsorship overhead
     // for the tx. 1.5M/name covers the mint + cold-SSTORE variance + margin;
     // +400k one-time (+60k when the approve rides along). Over-budget is FREE —
     // the sponsor is billed on gas USED, not the limit (same lesson as the
     // redeem/feedback OOG bug class), so headroom is correct.
-    let gas = 400_000 + (calls.len() as u128) * 1_500_000 + if cost > 0 { 60_000 } else { 0 };
+    let gas = 400_000 + (calls.len() as u128) * 1_500_000 + if approved { 60_000 } else { 0 };
     let tx = super::run_sponsored_tempo_call(&owner, calls, gas, "batch create subdomains").await?;
     // Inherit this device's Gemini key onto each new subdomain (best-effort,
     // detached — same as the single create_subdomain flow).
