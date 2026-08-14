@@ -229,6 +229,14 @@ pub struct ThinkingConfig {
 pub struct GenerateChunk {
     #[serde(default)]
     pub candidates: Vec<Candidate>,
+    /// PROMPT-level block. Google blocks the INPUT independently of any
+    /// candidate: the frame then carries `promptFeedback.blockReason` and NO
+    /// candidate at all. Unmodelled, that decoded fine, folded to nothing, and
+    /// the turn ended with an EMPTY finish note — `turn_flow::classify_empty`
+    /// read it as `Blank` ("check your session/balance"), mis-blaming the
+    /// user's credits for a content block.
+    #[serde(default)]
+    pub prompt_feedback: Option<PromptFeedback>,
     #[serde(default)]
     pub usage_metadata: Option<WireUsage>,
     /// Some chunks carry only `modelVersion` or `responseId` metadata — we
@@ -249,6 +257,40 @@ pub struct Candidate {
     pub index: Option<u32>,
 }
 
+/// `GenerateContentResponse.promptFeedback` — why the PROMPT (not a
+/// candidate) was blocked. Every field optional: a non-blocked response may
+/// carry `safetyRatings` with NO `blockReason`, and only a `blockReason` means
+/// blocked.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptFeedback {
+    #[serde(default)]
+    pub block_reason: Option<BlockReason>,
+    /// Per-category ratings, kept OPAQUE (raw JSON) — we never branch on them,
+    /// and a new category/probability enum value must not fail the decode.
+    #[serde(default)]
+    pub safety_ratings: Option<Value>,
+    /// Human-readable detail. Documented on the Vertex shape; absent on
+    /// v1beta responses we've seen — optional, so either behaves.
+    #[serde(default)]
+    pub block_reason_message: Option<String>,
+}
+
+/// `promptFeedback.blockReason`. `#[serde(other)]` keeps an unknown reason a
+/// BLOCK (permissive decode), never a decode error.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BlockReason {
+    Safety,
+    Other,
+    Blocklist,
+    ProhibitedContent,
+    ImageSafety,
+    BlockReasonUnspecified,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FinishReason {
@@ -263,8 +305,19 @@ pub enum FinishReason {
     Blocklist,
     ProhibitedContent,
     Spii,
+    /// Candidate blocked by the image-safety filter — a real documented
+    /// `FinishReason`, not only a `BlockReason`. Unmodelled it decoded to
+    /// `Unknown`, fell through the `_` arm to an EMPTY note, and the turn read
+    /// as `Blank` ("check your session/balance") for a content block — on a
+    /// live path, since the crate ships a `generate_image` tool.
+    ImageSafety,
     MalformedFunctionCall,
     FinishReasonUnspecified,
+    // ⛔ KNOWN GAP, deliberately not modelled here: the reference also lists
+    // `UNEXPECTED_TOOL_CALL` and `TOO_MANY_TOOL_CALLS`. They decode to
+    // `Unknown` → `(Done, "")`, so a FAILED turn reports as a clean stop.
+    // They are not content blocks (no mis-blame), so they are queued rather
+    // than folded in unreviewed — give them arms when you next touch this.
     #[serde(other)]
     Unknown,
 }
@@ -332,6 +385,14 @@ impl Content {
 /// all three assert against the SAME real frame.
 #[cfg(test)]
 pub(crate) const BLOCKED_FRAME_JSON: &str = r#"{"candidates": [{"content": {},"finishReason": "PROHIBITED_CONTENT","index": 0,"finishMessage": "The model output could not be generated. This output contains sensitive words that violate Google's [Generative AI Prohibited Use policy](https://policies.google.com/terms/generative-ai/use-policy). If you think this was an error, [send feedback](https://ai.google.dev/gemini-api/docs/troubleshooting)."}],"usageMetadata": {"promptTokenCount": 35809,"totalTokenCount": 36273,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 35809}],"thoughtsTokenCount": 464,"serviceTier": "standard"},"modelVersion": "gemini-3.6-flash","responseId": "hRZuaqS7BfKe_uMP66G90AQ"}"#;
+
+/// A PROMPT-blocked frame: `promptFeedback.blockReason` and NOT ONE candidate.
+/// SYNTHESIZED from the documented v1beta `GenerateContentResponse` shape
+/// (`promptFeedback` = `blockReason` + `safetyRatings`), not captured live —
+/// unlike `BLOCKED_FRAME_JSON` above. The field names are the API's; the token
+/// counts / ids are illustrative.
+#[cfg(test)]
+pub(crate) const PROMPT_BLOCKED_FRAME_JSON: &str = r#"{"promptFeedback": {"blockReason": "SAFETY","safetyRatings": [{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT","probability": "NEGLIGIBLE"},{"category": "HARM_CATEGORY_HATE_SPEECH","probability": "HIGH"},{"category": "HARM_CATEGORY_HARASSMENT","probability": "NEGLIGIBLE"},{"category": "HARM_CATEGORY_DANGEROUS_CONTENT","probability": "NEGLIGIBLE"}]},"usageMetadata": {"promptTokenCount": 274,"totalTokenCount": 274},"modelVersion": "gemini-3.7-flash","responseId": "hRZuaqS7BfKe_uMP66G90AQ"}"#;
 
 #[cfg(test)]
 mod tests {
@@ -532,6 +593,39 @@ mod tests {
         let usage: UsageMetadata = chunk.usage_metadata.clone().unwrap().into();
         assert_eq!(usage.prompt_token_count, Some(35809));
         assert_eq!(usage.total_token_count, Some(36273));
+    }
+
+    /// A PROMPT-level block carries NO candidate — only `promptFeedback`. The
+    /// chunk must decode, keep the reason, and stay permissive about the
+    /// opaque `safetyRatings`.
+    #[test]
+    fn prompt_blocked_frame_decodes_with_no_candidates() {
+        let chunk: GenerateChunk = serde_json::from_str(PROMPT_BLOCKED_FRAME_JSON)
+            .expect("a promptFeedback frame must decode");
+        assert!(chunk.candidates.is_empty(), "a prompt block has no candidate");
+        let fb = chunk.prompt_feedback.expect("promptFeedback modelled");
+        assert_eq!(fb.block_reason, Some(BlockReason::Safety));
+        assert!(fb.safety_ratings.is_some(), "ratings kept as opaque JSON");
+        assert!(fb.block_reason_message.is_none(), "absent on this shape");
+    }
+
+    /// Permissive decode, both directions: an ABSENT `promptFeedback` stays
+    /// `None` (today's behavior, unchanged), and an UNKNOWN block reason still
+    /// decodes — as a block, not an error.
+    #[test]
+    fn prompt_feedback_decode_stays_permissive() {
+        let chunk: GenerateChunk =
+            serde_json::from_str(BLOCKED_FRAME_JSON).expect("frame decodes");
+        assert!(chunk.prompt_feedback.is_none(), "absent field ⇒ None");
+
+        let chunk: GenerateChunk = serde_json::from_str(
+            r#"{"promptFeedback":{"blockReason":"SOME_NEW_REASON","unknownField":1}}"#,
+        )
+        .expect("an unknown reason/field must not fail the chunk");
+        assert_eq!(
+            chunk.prompt_feedback.unwrap().block_reason,
+            Some(BlockReason::Unknown)
+        );
     }
 
     #[test]

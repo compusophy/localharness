@@ -147,6 +147,10 @@ pub(crate) struct RoundAccum {
     /// signature back verbatim.
     pending_calls: Vec<(FunctionCall, Option<String>)>,
     finish_reason: Option<FinishReason>,
+    /// A PROMPT-level block (`promptFeedback.blockReason`). It arrives WITHOUT
+    /// a candidate, so there is no `finishReason` to map — without this the
+    /// round ended with an empty note and read as a blank turn.
+    prompt_block: Option<wire::BlockReason>,
     /// A chunk's `usageMetadata` is cumulative for the round —
     /// last-writer-wins (matches the pre-engine loop exactly).
     usage: Option<wire::WireUsage>,
@@ -212,6 +216,14 @@ impl TurnProvider for GeminiProvider {
                 acc.finish_reason = Some(reason);
             }
         }
+        // A PROMPT block: only a `blockReason` means blocked — a
+        // `promptFeedback` carrying just ratings (or UNSPECIFIED) is not a
+        // block and must stay invisible.
+        if let Some(reason) = chunk.prompt_feedback.and_then(|f| f.block_reason) {
+            if reason != wire::BlockReason::BlockReasonUnspecified {
+                acc.prompt_block = Some(reason);
+            }
+        }
         if let Some(u) = chunk.usage_metadata {
             acc.usage = Some(u);
         }
@@ -240,7 +252,30 @@ impl TurnProvider for GeminiProvider {
         acc.usage.clone().map(Into::into).unwrap_or_default()
     }
 
+    /// Every content-block wording here MUST carry a token
+    /// `turn_flow::classify_empty` reads (safety / blocklist / prohibited /
+    /// recitation / "content filter"), or the turn surfaces as `Blank` and
+    /// tells the user to check their balance for what was a content block.
+    /// Guard: `every_content_block_reason_classifies_as_blocked`.
     fn map_finish_reason(acc: &RoundAccum) -> (StepStatus, String) {
+        // A PROMPT block preempts the candidate finish reason: Google blocks
+        // the input and returns NO candidate, so there is no `finishReason` —
+        // this is the only note the turn will ever get.
+        if let Some(reason) = acc.prompt_block {
+            let note = match reason {
+                wire::BlockReason::Safety => "prompt blocked by safety policy",
+                wire::BlockReason::Blocklist => "prompt blocked by blocklist",
+                wire::BlockReason::ProhibitedContent => {
+                    "prompt blocked by prohibited-content filter"
+                }
+                wire::BlockReason::ImageSafety => "prompt blocked by image-safety filter",
+                // OTHER / an unknown reason — still a block, named honestly
+                // without inventing a cause. (UNSPECIFIED never gets here; the
+                // fold treats it as "not blocked".)
+                _ => "prompt blocked by content filter",
+            };
+            return (StepStatus::Error, note.to_string());
+        }
         let (status, note) = match acc.finish_reason {
             Some(FinishReason::Safety) => (StepStatus::Error, "stopped by safety policy"),
             Some(FinishReason::Blocklist) => (StepStatus::Error, "stopped by blocklist"),
@@ -248,6 +283,20 @@ impl TurnProvider for GeminiProvider {
                 (StepStatus::Error, "stopped by prohibited-content filter")
             }
             Some(FinishReason::Recitation) => (StepStatus::Done, "stopped to avoid recitation"),
+            // SPII = sensitive personally identifiable information. Both of
+            // these are content blocks like the arms above; without an arm they
+            // fell through `_` to an EMPTY note and the turn read as blank.
+            Some(FinishReason::Spii) => (
+                StepStatus::Error,
+                "stopped by sensitive-personal-info content filter",
+            ),
+            Some(FinishReason::Language) => (
+                StepStatus::Error,
+                "stopped by unsupported-language content filter",
+            ),
+            Some(FinishReason::ImageSafety) => {
+                (StepStatus::Error, "stopped by image-safety content filter")
+            }
             Some(FinishReason::MaxTokens) => (StepStatus::Done, "stopped at max tokens"),
             Some(FinishReason::MalformedFunctionCall) => {
                 (StepStatus::Error, "malformed function call")
@@ -649,6 +698,187 @@ mod tests {
             GeminiProvider::assemble_assistant_message(acc, "", &[]).is_none(),
             "a blocked round streamed nothing — persist no model turn"
         );
+    }
+
+    /// Fold a frame through the provider seam and return its terminal
+    /// `(status, note)` — the shared body of the block-classification tests.
+    fn fold_frame(json: &str) -> (RoundAccum, (StepStatus, String)) {
+        let chunk: GenerateChunk = serde_json::from_str(json).expect("frame decodes");
+        let (tx, _rx) = broadcast::channel::<Step>(8);
+        let state = LoopState::new(tx);
+        let mut acc = RoundAccum::default();
+        turn_engine::test_fold_events::<GeminiProvider>(&state, &mut acc, vec![chunk]);
+        let status = GeminiProvider::map_finish_reason(&acc);
+        (acc, status)
+    }
+
+    /// A PROMPT-level block: Google blocks the INPUT, so the frame carries
+    /// `promptFeedback.blockReason` and NO candidate — there is no
+    /// `finishReason` to map. Unmodelled, the frame decoded, folded to
+    /// nothing, and the turn ended with an EMPTY note, which
+    /// `turn_flow::classify_empty` reads as `Blank`: "check your
+    /// session/balance" for what was a content block (our failure, their bill
+    /// questioned). It must name the block instead.
+    #[test]
+    fn prompt_blocked_frame_folds_into_a_named_blocked_stop() {
+        let (acc, (status, note)) = fold_frame(wire::PROMPT_BLOCKED_FRAME_JSON);
+
+        assert_eq!(acc.finish_reason, None, "a prompt block has no candidate");
+        assert_eq!(status, StepStatus::Error);
+        assert_eq!(note, "prompt blocked by safety policy");
+        assert_eq!(
+            crate::turn_flow::classify_empty(Some(note.as_str()), false),
+            crate::turn_flow::EmptyKind::Blocked,
+            "a prompt block must NOT read as a blank turn (credits/session)"
+        );
+        assert!(
+            GeminiProvider::assemble_assistant_message(acc, "", &[]).is_none(),
+            "a blocked prompt streamed nothing — persist no model turn"
+        );
+    }
+
+    /// `promptFeedback` WITHOUT a `blockReason` (ratings only) is not a block —
+    /// it must stay invisible, exactly as before the field was modelled.
+    #[test]
+    fn prompt_feedback_without_a_block_reason_is_not_a_block() {
+        let (_, (status, note)) = fold_frame(
+            r#"{"candidates":[{"content":{"parts":[{"text":"hi"}],"role":"model"},"finishReason":"STOP"}],"promptFeedback":{"safetyRatings":[{"category":"HARM_CATEGORY_HARASSMENT","probability":"NEGLIGIBLE"}]}}"#,
+        );
+        assert_eq!(status, StepStatus::Done);
+        assert_eq!(note, "", "ratings alone are not a block");
+    }
+
+    /// SPII (sensitive personally identifiable information) — defined in the
+    /// wire enum but with NO arm in `map_finish_reason`, so it fell through the
+    /// catch-all to an empty note and the turn read as `Blank`.
+    #[test]
+    fn spii_finish_reason_folds_into_a_named_blocked_stop() {
+        let (acc, (status, note)) = fold_frame(
+            r#"{"candidates": [{"content": {},"finishReason": "SPII","index": 0}],"usageMetadata": {"promptTokenCount": 512,"totalTokenCount": 512},"modelVersion": "gemini-3.7-flash"}"#,
+        );
+
+        assert_eq!(acc.finish_reason, Some(FinishReason::Spii));
+        assert_eq!(status, StepStatus::Error);
+        assert_eq!(note, "stopped by sensitive-personal-info content filter");
+        assert_eq!(
+            crate::turn_flow::classify_empty(Some(note.as_str()), false),
+            crate::turn_flow::EmptyKind::Blocked,
+            "an SPII stop is a content block, not a blank turn"
+        );
+    }
+
+    /// LANGUAGE — same gap as SPII: in the enum, missing from the map.
+    #[test]
+    fn language_finish_reason_folds_into_a_named_blocked_stop() {
+        let (acc, (status, note)) = fold_frame(
+            r#"{"candidates": [{"content": {},"finishReason": "LANGUAGE","index": 0}],"usageMetadata": {"promptTokenCount": 88,"totalTokenCount": 88},"modelVersion": "gemini-3.7-flash"}"#,
+        );
+
+        assert_eq!(acc.finish_reason, Some(FinishReason::Language));
+        assert_eq!(status, StepStatus::Error);
+        assert_eq!(note, "stopped by unsupported-language content filter");
+        assert_eq!(
+            crate::turn_flow::classify_empty(Some(note.as_str()), false),
+            crate::turn_flow::EmptyKind::Blocked,
+            "an unsupported-language stop is a content block, not a blank turn"
+        );
+    }
+
+    /// DRIFT GUARD — this class of bug has now landed three times (gemini
+    /// RECITATION, openai content_filter, gemini SPII/LANGUAGE): a terminal
+    /// content-block reason with no arm silently becomes an empty note and the
+    /// user is told to check their balance. Every block reason on this wire —
+    /// candidate-level AND prompt-level — must produce a note that
+    /// `classify_empty` reads as `Blocked`.
+    ///
+    /// ⛔ The tripwire is the two `match`es below, NOT the arrays: they have no
+    /// `_` arm, so adding a variant to `wire::FinishReason` or
+    /// `wire::BlockReason` is a COMPILE ERROR here until someone declares
+    /// whether it blocks. (An earlier version iterated hand-written arrays
+    /// only, which left a new variant silently uncovered while this very
+    /// comment claimed otherwise — the review caught it, and IMAGE_SAFETY was
+    /// exactly the variant slipping through.) When the compiler stops you,
+    /// declare the variant in the match AND add it to the array below it so it
+    /// is actually exercised.
+    #[test]
+    fn every_content_block_reason_classifies_as_blocked() {
+        /// Does this candidate reason mean "the model's output was blocked"?
+        /// Exhaustive on purpose — see the tripwire note above.
+        fn is_content_block(r: FinishReason) -> bool {
+            match r {
+                FinishReason::Safety
+                | FinishReason::Blocklist
+                | FinishReason::ProhibitedContent
+                | FinishReason::Recitation
+                | FinishReason::Spii
+                | FinishReason::Language
+                | FinishReason::ImageSafety => true,
+                FinishReason::Stop
+                | FinishReason::MaxTokens
+                | FinishReason::ToolUse
+                | FinishReason::Other
+                | FinishReason::MalformedFunctionCall
+                | FinishReason::FinishReasonUnspecified
+                | FinishReason::Unknown => false,
+            }
+        }
+        /// Every `BlockReason` except UNSPECIFIED is a block (the fold never
+        /// records UNSPECIFIED as one). Exhaustive for the same reason.
+        fn prompt_reason_blocks(r: wire::BlockReason) -> bool {
+            match r {
+                wire::BlockReason::Safety
+                | wire::BlockReason::Blocklist
+                | wire::BlockReason::ProhibitedContent
+                | wire::BlockReason::ImageSafety
+                | wire::BlockReason::Other
+                | wire::BlockReason::Unknown => true,
+                wire::BlockReason::BlockReasonUnspecified => false,
+            }
+        }
+
+        for reason in [
+            FinishReason::Safety,
+            FinishReason::Blocklist,
+            FinishReason::ProhibitedContent,
+            FinishReason::Recitation,
+            FinishReason::Spii,
+            FinishReason::Language,
+            FinishReason::ImageSafety,
+        ] {
+            assert!(is_content_block(reason), "{reason:?} is listed as a block");
+            let acc = RoundAccum {
+                finish_reason: Some(reason),
+                ..Default::default()
+            };
+            let (_, note) = GeminiProvider::map_finish_reason(&acc);
+            assert!(!note.is_empty(), "{reason:?} must carry a note");
+            assert_eq!(
+                crate::turn_flow::classify_empty(Some(note.as_str()), false),
+                crate::turn_flow::EmptyKind::Blocked,
+                "{reason:?} → {note:?} must classify as Blocked, not Blank"
+            );
+        }
+        for reason in [
+            wire::BlockReason::Safety,
+            wire::BlockReason::Blocklist,
+            wire::BlockReason::ProhibitedContent,
+            wire::BlockReason::ImageSafety,
+            wire::BlockReason::Other,
+            wire::BlockReason::Unknown,
+        ] {
+            assert!(prompt_reason_blocks(reason), "{reason:?} is listed as a block");
+            let acc = RoundAccum {
+                prompt_block: Some(reason),
+                ..Default::default()
+            };
+            let (_, note) = GeminiProvider::map_finish_reason(&acc);
+            assert!(!note.is_empty(), "{reason:?} must carry a note");
+            assert_eq!(
+                crate::turn_flow::classify_empty(Some(note.as_str()), false),
+                crate::turn_flow::EmptyKind::Blocked,
+                "{reason:?} → {note:?} must classify as Blocked, not Blank"
+            );
+        }
     }
 
     /// The engine hands every dispatched result back for wire-shaping: ONE

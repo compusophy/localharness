@@ -63,6 +63,27 @@ backends, it belongs in the shared core.
   2026-08-01, task `dna-assembly`). Fixture: `wire::BLOCKED_FRAME_JSON`, the
   VERBATIM captured frame — wire / SSE / fold tests all assert against it.
 
+- **A blocked PROMPT is a DIFFERENT frame: `promptFeedback.blockReason`, NO
+  candidate** — so there is no `finishReason` to map. Unmodelled it decoded fine,
+  folded to nothing, and the turn ended with an EMPTY note, which
+  `turn_flow::classify_empty` reads as `Blank` → "check your session/balance" for
+  what was a content block (mis-blaming the user's credits). Now
+  `GenerateChunk.prompt_feedback` → `RoundAccum.prompt_block` → a named "prompt
+  blocked by …" note. Only a `blockReason` means blocked (ratings alone don't);
+  every field is `#[serde(default)]` + `#[serde(other)]`, so an unknown reason is
+  still a BLOCK and an absent `promptFeedback` behaves exactly as before. Fixture:
+  `wire::PROMPT_BLOCKED_FRAME_JSON` (synthesized from the documented v1beta shape,
+  NOT captured). Same class of bug: `SPII` / `LANGUAGE` sat in the wire enum with
+  no `map_finish_reason` arm and fell to the `_` catch-all's empty note. DRIFT
+  GUARD `every_content_block_reason_classifies_as_blocked` — every block reason
+  (candidate- and prompt-level) must carry a note `classify_empty` reads as
+  `Blocked`. Its tripwire is two exhaustive `match`es with no `_` arm, so a new
+  `FinishReason`/`BlockReason` variant is a COMPILE error there until you
+  declare whether it blocks. ⛔ Still MISSING from `FinishReason`:
+  `UNEXPECTED_TOOL_CALL` / `TOO_MANY_TOOL_CALLS` — documented values that decode
+  to `Unknown` and report a FAILED turn as a clean `(Done, "")`. Not content
+  blocks, so not the mis-blame bug; give them arms when you next touch this.
+
 ## SSE is CRLF on wasm
 Browser fetch surfaces Gemini SSE with `\r\n\r\n`. `GeminiSseStream::take_frame`
 (and `sse.rs`) match BOTH `\n\n` and `\r\n\r\n`. Don't regress to LF-only.

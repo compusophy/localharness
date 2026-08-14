@@ -46,6 +46,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of the transcript; BYOK is unchanged. Copy lives in the pure
   `error_codes::auth_failure_copy` so it is natively tested. This is the pass
   `LH3001` got after its own incident.
+- **A blocked Gemini prompt no longer reads as "check your balance".** Google
+  can block the PROMPT rather than a candidate: the frame carries
+  `promptFeedback.blockReason` and NO candidate, so there was no `finishReason`
+  to map and the turn ended with an empty note — which `classify_empty` reads as
+  `Blank`, whose message points the user at their session and balance for what
+  was a content block. The same mis-blame as the `LH3002` fix above, from the
+  other end of the wire. `promptFeedback` is now modelled and folded into a
+  named blocked stop, and the `SPII` / `LANGUAGE` / `IMAGE_SAFETY` finish
+  reasons — which sat in (or were missing from) the wire enum with no arm —
+  get real notes. Headless `work` runs benefit too: its loop breaks on `Blocked`
+  but replayed the rejected history on a `Blank`, burning another metered turn.
+  Decode stays permissive (every field optional, no `deny_unknown_fields`), so
+  an absent `promptFeedback` behaves exactly as before. The drift guard is now
+  an exhaustive `match` with no `_` arm: adding a variant to either wire enum is
+  a compile error until someone declares whether it blocks — the previous guard
+  iterated hand-written arrays while its own comment claimed otherwise, which is
+  how `IMAGE_SAFETY` was slipping through.
 - **One Gemini key selector for every inference path.** `geminiUpstreamKey()`
   (the `GEMINI_API_KEYS` pool) had exactly one caller: `scheduler.ts` and
   `mcp.ts` read `process.env.GEMINI_API_KEY` directly, so rotating keys would
@@ -63,6 +80,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Latent today (token metering is flag-gated off) — fixed before it wasn't.
 
 ### Added
+
+- **The front door says what localharness IS, above the price.** The fresh
+  apex rendered two lines over a name field — "limited time" and "1 agent + 200
+  `$LH` for $2" — quoting a cold visitor a price for a product that was never
+  named. One muted line now names it, reusing the same sentence the metadata
+  below gives crawlers (which had made this an inconsistency: the page told
+  Googlebot more about the product than it told a paying visitor). Still a
+  single door — no links, and `?explore=1` stays authed-only.
 
 - **Link-unfurl and crawler metadata on the web shell.** A link to
   `localharness.xyz` shared anywhere unfurled as a naked URL, and a crawler or
