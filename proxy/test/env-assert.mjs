@@ -3,7 +3,7 @@
 // → a named 503 LH_PROXY_MISCONFIG; all present → null pass-through; anyOf
 // groups need only one member; the route's CORS headers merge into the 503.
 
-const { missingEnv, envGuard } = await import('../.ttest/_env.js');
+const { missingEnv, envGuard, geminiUpstreamKey } = await import('../.ttest/_env.js');
 
 let failed = 0;
 function ok(cond, label) {
@@ -46,5 +46,35 @@ ok(missingEnv([], [['LH_TEST_A', 'LH_TEST_C']]).length === 0, 'anyOf satisfied b
 // envGuard: all present → null (handler proceeds)
 process.env.LH_TEST_A = 'set';
 ok(envGuard('test-route', ['LH_TEST_A'], [['LH_TEST_C']]) === null, 'all present → null');
+
+// geminiUpstreamKey: THE single key selector for every inference path (chat,
+// scheduler, mcp). A rotation that only reaches one of them is a silent
+// half-outage, which is why these three now share this function.
+{
+  const savedSingle = process.env.GEMINI_API_KEY;
+  const savedPool = process.env.GEMINI_API_KEYS;
+
+  delete process.env.GEMINI_API_KEYS;
+  process.env.GEMINI_API_KEY = 'single-key';
+  ok(geminiUpstreamKey() === 'single-key', 'unset pool falls back to GEMINI_API_KEY');
+
+  process.env.GEMINI_API_KEYS = '  ,   ,';
+  ok(geminiUpstreamKey() === 'single-key', 'whitespace/empty-only pool falls back too');
+
+  process.env.GEMINI_API_KEYS = ' k1 , k2 ,k3';
+  const picks = new Set();
+  for (let i = 0; i < 200; i++) picks.add(geminiUpstreamKey());
+  ok([...picks].every((k) => ['k1', 'k2', 'k3'].includes(k)), 'pool picks are trimmed members');
+  ok(picks.size > 1, 'pool actually spreads across keys');
+
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEYS;
+  ok(geminiUpstreamKey() === undefined, 'nothing configured → undefined (caller 503s)');
+
+  if (savedSingle === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = savedSingle;
+  if (savedPool === undefined) delete process.env.GEMINI_API_KEYS;
+  else process.env.GEMINI_API_KEYS = savedPool;
+}
 
 process.exit(failed ? 1 : 0);

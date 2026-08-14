@@ -501,6 +501,52 @@ pub fn runtime_phase(code: u16) -> &'static str {
     }
 }
 
+/// How an `LH3002` ("model API key rejected") should surface to a human —
+/// which depends entirely on WHOSE key the provider rejected.
+///
+/// On **BYOK** the user owns the key: naming it, prompting for a new one, and
+/// showing the provider's raw text is exactly right. On the **platform** path
+/// they have no key at all, so "check your Gemini key" sends them after
+/// something they do not own, and the raw body is a server-side blob carrying
+/// provider-internal ids. Telemetry #90 is what that costs: the only reading a
+/// user could make of a dead PLATFORM key was "am i out of credits?".
+///
+/// Same shape as the `LH3001` copy that already reassures a funded user their
+/// `$LH` is intact — `LH3002` simply never got that pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthFailureCopy {
+    /// The user-facing line for the transcript (prefixed with the code label).
+    pub line: &'static str,
+    /// Short marker for the status line (announced by the aria-live region).
+    pub status: &'static str,
+    /// Whether to prompt for a BYOK key. Never true on the platform path.
+    pub prompt_for_key: bool,
+    /// Whether the provider's raw error text is fit to show the user.
+    pub show_raw: bool,
+}
+
+/// [`AuthFailureCopy`] for an `LH3002`, given whether this session is BYOK
+/// (`true`) or running on platform `$LH` credits (`false`).
+pub const fn auth_failure_copy(byok: bool) -> AuthFailureCopy {
+    if byok {
+        AuthFailureCopy {
+            line: "model rejected the API key — check your Gemini key",
+            status: "API key rejected — check your Gemini key.",
+            prompt_for_key: true,
+            show_raw: true,
+        }
+    } else {
+        AuthFailureCopy {
+            line: "the platform's model key was rejected upstream — a server-side problem \
+                   on our end, not your $LH and not a key of yours. it is reported \
+                   automatically; retry in a moment.",
+            status: "platform model key rejected — server-side, not your $LH",
+            prompt_for_key: false,
+            show_raw: false,
+        }
+    }
+}
+
 /// "LH0204: type mismatch" — the label + meaning, for prefixing a message.
 pub fn describe(code: u16) -> String {
     match lookup(code) {
@@ -802,6 +848,27 @@ mod tests {
         assert_eq!(classify_http(400, "API key not valid"), Some(BACKEND_AUTH));
         assert_eq!(classify_http(400, "exceeded your quota"), Some(BACKEND_RATE_LIMIT));
         assert_eq!(classify_http(418, "a perfectly ordinary message"), None);
+    }
+
+    #[test]
+    fn lh3002_copy_never_blames_a_platform_user_for_a_key_they_dont_own() {
+        // Telemetry #90: a dead PLATFORM key told the user to "check your
+        // Gemini key" and popped the BYOK modal, so their only reading was
+        // "am i out of credits?". The platform variant must do neither.
+        let platform = auth_failure_copy(false);
+        assert!(!platform.prompt_for_key, "platform users have no key to fix");
+        assert!(!platform.show_raw, "the raw body is a server-side blob");
+        assert!(!platform.line.contains("your Gemini key"));
+        assert!(!platform.status.contains("your Gemini key"));
+        // It must actively clear the two wrong conclusions: their money, their key.
+        assert!(platform.line.contains("$LH"));
+        assert!(platform.line.contains("server-side"));
+
+        // BYOK is unchanged: the user owns the key, so name it and prompt.
+        let byok = auth_failure_copy(true);
+        assert!(byok.prompt_for_key);
+        assert!(byok.show_raw);
+        assert!(byok.line.contains("Gemini key"));
     }
 
     #[test]

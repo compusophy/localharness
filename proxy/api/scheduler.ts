@@ -117,7 +117,7 @@ import { meterDebit, creditOf } from './_auth';
 // Env assertions + the hourly health self-check (road-to-v1 step 2: the proxy
 // is the SPOF and had zero monitoring). The sponsor address / breaker floor are
 // the live values sponsor.ts itself signs with — one source of truth.
-import { missingEnv } from './_env';
+import { missingEnv, geminiUpstreamKey } from './_env';
 import {
   envHealth,
   sponsorFloatHealth,
@@ -602,7 +602,9 @@ async function generateContent(
   contents: GeminiContent[],
   withTool: boolean,
 ): Promise<GeminiPart[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  // Same pooled selector as browser chat — a key rotation must cover cron
+  // jobs too, or scheduled runs keep hitting a key nobody is watching.
+  const apiKey = geminiUpstreamKey();
   if (!apiKey) throw new Error('proxy misconfigured: missing GEMINI_API_KEY');
   const url = `${GEMINI_BASE}/v1beta/models/${RUN_MODEL}:generateContent`;
   const body: Record<string, unknown> = {

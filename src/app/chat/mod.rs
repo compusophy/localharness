@@ -1154,6 +1154,12 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     // user) — the raw error is logged to the console for debugging only. Every
     // other failure keeps the escaped error bubble (its raw text is dev-facing).
     let body_id = format!("turn-body-{assistant_turn_id}");
+    // WHOSE key the provider rejected decides the whole LH3002 surface: BYOK
+    // users own the key (name it, prompt, show the raw text); platform users
+    // own no key at all, so the same copy sends them after something they
+    // cannot fix (telemetry #90). Pure copy core, natively tested.
+    let auth_copy = looks_like_auth
+        .then(|| crate::error_codes::auth_failure_copy(!access::model_access_is_credits()));
     if looks_like_rate_limit {
         // The MODEL backend is over its quota / rate-limited — say so plainly so a
         // funded user doesn't think their $LH vanished. A plain in-stream line (no
@@ -1177,11 +1183,8 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
                  than 5 minutes; sync it and retry",
                 crate::error_codes::fmt_label(BACKEND_STALE_AUTH)
             )
-        } else if looks_like_auth {
-            format!(
-                "{} · model rejected the API key — check your Gemini key",
-                crate::error_codes::fmt_label(BACKEND_AUTH)
-            )
+        } else if let Some(a) = auth_copy {
+            format!("{} · {}", crate::error_codes::fmt_label(BACKEND_AUTH), a.line)
         } else if let Some(c) = code {
             let e = crate::error_codes::lookup(c);
             format!(
@@ -1193,7 +1196,16 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
         } else {
             format!("{context} failed")
         };
-        let bubble = format!("{headline} (raw: {err})");
+        // The raw provider text is dev-facing; it belongs in the bubble only
+        // when the user can act on it. A rejected PLATFORM key returns a
+        // server-side blob (provider-internal project ids and all) — console
+        // for us, never the transcript.
+        let bubble = if auth_copy.is_some_and(|a| !a.show_raw) {
+            web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(err));
+            headline
+        } else {
+            format!("{headline} (raw: {err})")
+        };
         dom::append_html(
             &body_id,
             &format!(
@@ -1206,9 +1218,13 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
 
     if stale_token {
         dom::set_status("auth token went stale — check your device clock, then retry", true);
-    } else if looks_like_auth {
-        dom::set_status("API key rejected — check your Gemini key.", true);
-        super::show_api_key_modal();
+    } else if let Some(a) = auth_copy {
+        dom::set_status(a.status, true);
+        // Only a BYOK user has a key to re-enter; popping this modal at a
+        // platform user asks them to fix our outage with a key they don't have.
+        if a.prompt_for_key {
+            super::show_api_key_modal();
+        }
     } else if looks_like_rate_limit {
         // The in-stream line already explains it; clear the status line (no
         // duplicate, and definitely not an out-of-$LH message).

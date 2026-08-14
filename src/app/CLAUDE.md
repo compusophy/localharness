@@ -195,6 +195,16 @@ load-bearing there ("insufficient … $LH" → the credits class). No Chain
 variant — nothing branches on chain-vs-other and reverts carry inline LH2xxx
 labels already. Rationale per site: `design/big-picture-refactor-roadmap.md`.
 
+## LH3002 surfaces by WHOSE key was rejected (telemetry #90)
+`auth` failures split on `access::model_access_is_credits()`, not on the code
+alone: **BYOK** users own the key (name it, pop `show_api_key_modal`, keep the
+provider's raw text in the bubble); **platform** users own no key, so the same
+copy sent them after something they cannot fix — the only reading available was
+"am i out of credits?". The platform variant says server-side-and-not-your-$LH,
+never prompts for a key, and keeps the raw body (provider-internal ids) in the
+console. Copy lives in the pure `error_codes::auth_failure_copy(byok)` so it is
+natively tested; don't re-inline the strings here.
+
 ## Files (orientation)
 `mod.rs` mount/routing · `templates.rs` ALL maud HTML · `dom.rs` swap shims ·
 `events/` the delegated listeners + `Action` enum + per-domain handlers

@@ -6,6 +6,32 @@
 // key). Optional-BY-DESIGN vars (TURN_*, VAPID_*, LH_METER_PAYEE, GEMINI_API_KEYS
 // pool, …) are feature toggles, NOT misconfigs — never assert those.
 
+/**
+ * The upstream Gemini key for ONE request. `GEMINI_API_KEYS` (comma-separated)
+ * spreads Google's per-key quota across N keys (#23); unset falls back to the
+ * single `GEMINI_API_KEY` and behaves exactly as before the pool.
+ *
+ * ⛔ This is the ONE key selector for every inference path — browser chat
+ * (`gemini.ts`), the cron job worker (`scheduler.ts`) and MCP-over-HTTP
+ * (`mcp.ts`). It lives here because those three used to read the env
+ * themselves: rotating `GEMINI_API_KEYS` fixed chat while scheduled jobs and
+ * MCP stayed pointed at the dead single key, which is a silent half-outage.
+ * New inference callers MUST come through here.
+ *
+ * Honest limits: the pick is RANDOM, not round-robin — a serverless invocation
+ * has no shared cursor to advance — and there is NO per-key health tracking or
+ * failover, so one suspended key in a pool of N fails ~1/N of requests until it
+ * is removed from the env.
+ */
+export function geminiUpstreamKey(): string | undefined {
+  const pool = (process.env.GEMINI_API_KEYS ?? '')
+    .split(',')
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+  if (pool.length === 0) return process.env.GEMINI_API_KEY;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 /** Missing/empty names out of `required`, plus any `anyOf` group where NO
  * member is set (reported as `"A|B"`). Reads process.env at call time. */
 export function missingEnv(required: string[], anyOf: string[][] = []): string[] {

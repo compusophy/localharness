@@ -55,6 +55,7 @@ import { TEMPO_RPC, REGISTRY, LH_TOKEN, CHAIN_ID } from './_chain';
 // helpers (variadic concatBytes, 0X-tolerant stripHex, the x402 settle plumbing)
 // — those are deliberately distinct from the personal-sign auth helpers.
 import { isAllowedOrigin } from './_auth';
+import { geminiUpstreamKey } from './_env';
 // $LH token (LocalharnessCredits, TIP-20). `X402Facet.settle` moves $LH
 // payer->payee via `transferFrom`, so the payer needs BOTH a balance and an
 // allowance to the diamond. Under settle-on-success the model runs before the
@@ -1028,7 +1029,9 @@ function defaultPersona(name: string): string {
 
 /** Non-streaming Gemini generateContent with the platform key. Returns text. */
 async function runAgent(persona: string, message: string): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  // Same pooled selector as browser chat — x402-paid MCP calls must not be
+  // the one path left on a rotated-out key.
+  const apiKey = geminiUpstreamKey();
   if (!apiKey) throw new Error('proxy misconfigured: missing GEMINI_API_KEY');
   const url = `${GEMINI_BASE}/v1beta/models/${ASK_MODEL}:generateContent`;
   const body = {
