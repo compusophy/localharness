@@ -301,6 +301,19 @@ impl TurnProvider for GeminiProvider {
             Some(FinishReason::MalformedFunctionCall) => {
                 (StepStatus::Error, "malformed function call")
             }
+            // Tool-PROTOCOL failures, not content blocks: the turn produced no
+            // usable output, so `Error` (matching the MalformedFunctionCall arm
+            // right above — the same class of broken tool call) with a note that
+            // deliberately avoids `classify_empty`'s block tokens, so an empty
+            // turn is never mis-reported as a safety block.
+            Some(FinishReason::UnexpectedToolCall) => (
+                StepStatus::Error,
+                "stopped: the model called a tool that was not offered",
+            ),
+            Some(FinishReason::TooManyToolCalls) => (
+                StepStatus::Error,
+                "stopped: too many tool calls in one turn",
+            ),
             _ => (StepStatus::Done, ""),
         };
         (status, note.to_string())
@@ -784,6 +797,46 @@ mod tests {
         );
     }
 
+    /// UNEXPECTED_TOOL_CALL — documented, formerly unmodelled: it decoded to
+    /// `Unknown`, hit the `_` arm, and a FAILED turn reported as a clean
+    /// `(Done, "")`. It is a tool-PROTOCOL failure, so it must surface as an
+    /// error WITHOUT tripping `classify_empty`'s content-block tokens (that
+    /// would blame a safety filter for a broken tool call).
+    #[test]
+    fn unexpected_tool_call_finish_reason_folds_into_a_named_error() {
+        let (acc, (status, note)) = fold_frame(
+            r#"{"candidates": [{"content": {},"finishReason": "UNEXPECTED_TOOL_CALL","index": 0}],"usageMetadata": {"promptTokenCount": 64,"totalTokenCount": 64},"modelVersion": "gemini-3.7-flash"}"#,
+        );
+
+        assert_eq!(acc.finish_reason, Some(FinishReason::UnexpectedToolCall));
+        assert_eq!(status, StepStatus::Error);
+        assert!(!note.is_empty(), "a failed turn must not report an empty note");
+        assert_eq!(note, "stopped: the model called a tool that was not offered");
+        assert_eq!(
+            crate::turn_flow::classify_empty(Some(note.as_str()), false),
+            crate::turn_flow::EmptyKind::Blank,
+            "a tool-protocol failure must NOT classify as a content block"
+        );
+    }
+
+    /// TOO_MANY_TOOL_CALLS — same formerly-unmodelled gap, same class.
+    #[test]
+    fn too_many_tool_calls_finish_reason_folds_into_a_named_error() {
+        let (acc, (status, note)) = fold_frame(
+            r#"{"candidates": [{"content": {},"finishReason": "TOO_MANY_TOOL_CALLS","index": 0}],"usageMetadata": {"promptTokenCount": 4096,"totalTokenCount": 4096},"modelVersion": "gemini-3.7-flash"}"#,
+        );
+
+        assert_eq!(acc.finish_reason, Some(FinishReason::TooManyToolCalls));
+        assert_eq!(status, StepStatus::Error);
+        assert!(!note.is_empty(), "a failed turn must not report an empty note");
+        assert_eq!(note, "stopped: too many tool calls in one turn");
+        assert_eq!(
+            crate::turn_flow::classify_empty(Some(note.as_str()), false),
+            crate::turn_flow::EmptyKind::Blank,
+            "a tool-protocol failure must NOT classify as a content block"
+        );
+    }
+
     /// DRIFT GUARD — this class of bug has now landed three times (gemini
     /// RECITATION, openai content_filter, gemini SPII/LANGUAGE): a terminal
     /// content-block reason with no arm silently becomes an empty note and the
@@ -818,6 +871,10 @@ mod tests {
                 | FinishReason::ToolUse
                 | FinishReason::Other
                 | FinishReason::MalformedFunctionCall
+                // Tool-protocol failures: real errors, but NOT content blocks —
+                // their notes must NOT classify as Blocked.
+                | FinishReason::UnexpectedToolCall
+                | FinishReason::TooManyToolCalls
                 | FinishReason::FinishReasonUnspecified
                 | FinishReason::Unknown => false,
             }

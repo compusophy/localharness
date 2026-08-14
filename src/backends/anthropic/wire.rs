@@ -272,6 +272,13 @@ pub struct MessagesResponse {
     pub content: Vec<Block>,
     #[serde(default)]
     pub stop_reason: Option<StopReason>,
+    /// On a `refusal` stop, WHY (docs: build-with-claude/handling-stop-reasons
+    /// — "Response Shape for Refusals"). The non-streaming body carries the
+    /// SAME object the streaming `message_delta` does; while it went
+    /// unmodeled here a refused one-shot was indistinguishable from an empty
+    /// answer, so the reason never reached the caller.
+    #[serde(default)]
+    pub stop_details: Option<StopDetails>,
     #[serde(default)]
     pub usage: Option<WireUsage>,
 }
@@ -763,9 +770,10 @@ mod tests {
 
     /// FIXTURE (docs: build-with-claude/handling-stop-reasons — "Response
     /// Shape for Refusals", verbatim): the NON-streaming refusal body —
-    /// EMPTY `content`, `stop_reason: "refusal"`, an unmodeled
-    /// `stop_details` object. The one-shot path must decode it and report
-    /// empty text with the refusal stop.
+    /// EMPTY `content`, `stop_reason: "refusal"`, plus a `stop_details`
+    /// object. `text()` is EMPTY here, so `stop_details` is the ONLY carrier
+    /// of the reason: it must decode, not be dropped, or the one-shot caller
+    /// (compaction's summarizer) cannot tell a refusal from a blank answer.
     #[test]
     fn deserialize_nonstreaming_refusal_response() {
         let resp: MessagesResponse = serde_json::from_str(
@@ -791,6 +799,16 @@ mod tests {
         assert_eq!(resp.stop_reason, Some(StopReason::Refusal));
         assert!(resp.content.is_empty());
         assert_eq!(resp.text(), "");
+        let details = resp
+            .stop_details
+            .expect("non-streaming stop_details decoded, not dropped");
+        assert_eq!(details.kind, "end_turn");
+        assert_eq!(details.category.as_deref(), Some("policy_violation"));
+        assert_eq!(
+            details.explanation.as_deref(),
+            Some("I can't help with that request"),
+            "the WHY must survive the one-shot decode — text() carries nothing"
+        );
     }
 
     #[test]

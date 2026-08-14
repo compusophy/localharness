@@ -46,6 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of the transcript; BYOK is unchanged. Copy lives in the pure
   `error_codes::auth_failure_copy` so it is natively tested. This is the pass
   `LH3001` got after its own incident.
+- **A refused Anthropic summary no longer vanishes into "returned empty
+  text".** The streaming path surfaced refusals, but the NON-streaming one
+  never modelled `stop_details` — and a refusal body carries EMPTY content, so
+  `text()` was `""` and the reason was discarded. Its only caller is the
+  compaction summarizer, so a refused summary logged the misleading
+  "summarization returned empty text" and silently fell back to drop-oldest
+  history. Both paths now share one `refusal_note`, so the wording can't fork.
+- **Two more Gemini finish reasons stop reporting a failed turn as a clean
+  stop.** `UNEXPECTED_TOOL_CALL` and `TOO_MANY_TOOL_CALLS` decoded to `Unknown`
+  and fell through to `(Done, "")`. They are tool-PROTOCOL failures, not content
+  blocks, so they map to `Error` with notes deliberately chosen to avoid
+  `classify_empty`'s block tokens — and the tests assert that classification
+  rather than assuming it.
 - **A blocked Gemini prompt no longer reads as "check your balance".** Google
   can block the PROMPT rather than a candidate: the frame carries
   `promptFeedback.blockReason` and NO candidate, so there was no `finishReason`

@@ -11,13 +11,15 @@
 use parking_lot::Mutex;
 
 use crate::backends::anthropic::api::SharedClient;
+use crate::backends::anthropic::r#loop::refusal_note;
 use crate::backends::anthropic::wire::{
-    Block, Message, MessagesRequest, Role, DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
+    Block, Message, MessagesRequest, MessagesResponse, Role, StopReason, DEFAULT_MAX_TOKENS,
+    DEFAULT_MODEL,
 };
 use crate::backends::compaction::{self as engine, CompactionModel};
 #[allow(unused_imports)] // COMPACTION_TAG: used only in cfg(test); should_compact in non-test code
 pub use crate::backends::compaction::{should_compact, COMPACTION_TAG};
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// Model used to fold the rolling summary — a FIXED cheap/fast tier, NOT the
 /// session model. The engine's own `SUMMARY_PROMPT` notes cheap+fast is right
@@ -138,7 +140,27 @@ async fn summarize(client: &SharedClient, model: &str, prompt: String) -> Result
         temperature: None,
         thinking: None,
     };
-    let resp = client.messages(&req).await?;
+    summary_from_response(client.messages(&req).await?)
+}
+
+/// Fold a one-shot `messages` response into the summary text — the
+/// non-streaming analog of the loop's `map_finish_reason`.
+///
+/// A REFUSAL is the case that needs carrying: the documented refusal body has
+/// EMPTY `content`, so `text()` is `""` and the reason lives ONLY in
+/// `stop_reason`/`stop_details`. Returning that `""` handed the engine a blank
+/// string, which it logged as "summarization returned empty text" before
+/// falling back to drop-oldest — the refusal never reached anyone. Fail with
+/// the SAME note the streaming path emits (`refusal_note`) so the engine's
+/// warning names the reason. The fold itself is unchanged: the engine still
+/// drops oldest on an `Err`, it just says why now.
+fn summary_from_response(resp: MessagesResponse) -> Result<String> {
+    if resp.stop_reason == Some(StopReason::Refusal) {
+        return Err(Error::other(format!(
+            "anthropic compaction summary {}",
+            refusal_note(resp.stop_details.as_ref())
+        )));
+    }
     Ok(resp.text())
 }
 
@@ -583,6 +605,61 @@ mod tests {
         assert!(rendered.contains("[tool_result]"));
         assert!(rendered.contains("…[truncated]"));
         assert!(std::str::from_utf8(rendered.as_bytes()).is_ok());
+    }
+
+    /// FIXTURE (docs: build-with-claude/handling-stop-reasons — "Response
+    /// Shape for Refusals", verbatim): the summarizer's one-shot response is
+    /// REFUSED. Decode the documented body and fold it exactly as the live
+    /// path does. `text()` is EMPTY, so before this fix the fold returned
+    /// `Ok("")` and the reason died here — the engine logged a generic
+    /// "returned empty text" and no one could tell a refusal from a blank
+    /// summary. The reason must reach the caller, worded by the SAME
+    /// `refusal_note` the streaming path uses.
+    #[test]
+    fn refused_one_shot_summary_carries_the_reason() {
+        let resp: MessagesResponse = serde_json::from_str(
+            r#"{
+  "id": "msg_01234",
+  "type": "message",
+  "role": "assistant",
+  "content": [],
+  "stop_reason": "refusal",
+  "stop_sequence": null,
+  "stop_details": {
+    "type": "end_turn",
+    "category": "policy_violation",
+    "explanation": "I can't help with that request"
+  },
+  "usage": {
+    "input_tokens": 100,
+    "output_tokens": 5
+  }
+}"#,
+        )
+        .expect("documented refusal response must decode");
+        assert_eq!(resp.text(), "", "the refusal body carries no text at all");
+
+        let err = summary_from_response(resp).expect_err("a refused summary must not fold to Ok");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("I can't help with that request"),
+            "the explanation must reach the caller, got: {msg}"
+        );
+        assert!(
+            msg.contains("stopped by refusal"),
+            "must reuse the streaming path's wording, got: {msg}"
+        );
+    }
+
+    /// The refusal check must not swallow the normal path: an ordinary
+    /// `end_turn` response still folds to its text.
+    #[test]
+    fn normal_one_shot_summary_folds_to_text() {
+        let resp: MessagesResponse = serde_json::from_str(
+            r#"{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"a summary"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":3}}"#,
+        )
+        .expect("ordinary response must decode");
+        assert_eq!(summary_from_response(resp).unwrap(), "a summary");
     }
 
     /// An unmodeled content block decoded as `Block::Other` must render

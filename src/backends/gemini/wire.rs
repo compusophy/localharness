@@ -312,12 +312,16 @@ pub enum FinishReason {
     /// live path, since the crate ships a `generate_image` tool.
     ImageSafety,
     MalformedFunctionCall,
+    /// The model emitted a tool call the request never offered. A TOOL-PROTOCOL
+    /// failure like `MalformedFunctionCall`, NOT a content block — so its note
+    /// must stay clear of `turn_flow::classify_empty`'s block tokens.
+    /// (Previously unmodelled: decoded to `Unknown` → `(Done, "")`, reporting a
+    /// failed turn as a clean stop.)
+    UnexpectedToolCall,
+    /// The model exceeded the per-turn tool-call ceiling. Same class, same
+    /// former gap as `UnexpectedToolCall`.
+    TooManyToolCalls,
     FinishReasonUnspecified,
-    // ⛔ KNOWN GAP, deliberately not modelled here: the reference also lists
-    // `UNEXPECTED_TOOL_CALL` and `TOO_MANY_TOOL_CALLS`. They decode to
-    // `Unknown` → `(Done, "")`, so a FAILED turn reports as a clean stop.
-    // They are not content blocks (no mis-blame), so they are queued rather
-    // than folded in unreviewed — give them arms when you next touch this.
     #[serde(other)]
     Unknown,
 }

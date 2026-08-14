@@ -490,7 +490,10 @@ fn tool_result_content(v: &Value) -> Value {
 /// (docs: build-with-claude/handling-stop-reasons) explaining WHY — append
 /// its `explanation` (fallback: `category`) so the user/model sees the
 /// reason instead of a bare "stopped by refusal".
-fn refusal_note(details: Option<&StopDetails>) -> String {
+///
+/// Shared with the NON-streaming path (`compaction::summary_from_response`)
+/// so both surfaces word a refusal identically — one note, not two.
+pub(crate) fn refusal_note(details: Option<&StopDetails>) -> String {
     let why = details.and_then(|d| {
         d.explanation
             .as_deref()

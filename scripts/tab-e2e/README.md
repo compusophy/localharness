@@ -72,10 +72,13 @@ bundle check, pass/fail tally).
 ```sh
 ./scripts/build-web.sh                       # 1. build a bundle (web/pkg is gitignored)
 npm install --prefix scripts/tab-e2e        # 2. pull puppeteer-core (the only dep)
-node scripts/tab-e2e/tab-e2e-main.mjs        # 3. run (exit 0 = all checks passed)
-node scripts/tab-e2e/stop-e2e.mjs
-node scripts/tab-e2e/cartridge-e2e.mjs
+node scripts/tab-e2e/run-all.mjs             # 3. the WHOLE lattice (exit 0 = green)
+node scripts/tab-e2e/run-all.mjs cartridge   #    …or one suite by substring
 ```
+
+`run-all.mjs` sweeps all 8 suites sequentially — `tab-e2e-main`, `autoembed`,
+`cartridge`, `opfs-broker`, `seedpull`, `stall`, `stop`, `studioslot` — and
+excludes only the environment-specific probes (`gemma-*`, `webkit-*`).
 
 - **Browser**: set `CHROME_PATH` to a Chromium binary, else the harness probes
   the standard Windows/macOS/Linux install paths for Chrome and Edge and exits

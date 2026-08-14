@@ -79,10 +79,12 @@ backends, it belongs in the shared core.
   (candidate- and prompt-level) must carry a note `classify_empty` reads as
   `Blocked`. Its tripwire is two exhaustive `match`es with no `_` arm, so a new
   `FinishReason`/`BlockReason` variant is a COMPILE error there until you
-  declare whether it blocks. ⛔ Still MISSING from `FinishReason`:
-  `UNEXPECTED_TOOL_CALL` / `TOO_MANY_TOOL_CALLS` — documented values that decode
-  to `Unknown` and report a FAILED turn as a clean `(Done, "")`. Not content
-  blocks, so not the mis-blame bug; give them arms when you next touch this.
+  declare whether it blocks. `UNEXPECTED_TOOL_CALL` / `TOO_MANY_TOOL_CALLS` are
+  now modelled too (they used to decode to `Unknown` and report a FAILED turn as
+  a clean `(Done, "")`): tool-PROTOCOL failures like `MALFORMED_FUNCTION_CALL`,
+  so they map to `Error` with notes that deliberately DODGE `classify_empty`'s
+  block tokens — declared non-blocking in the guard, asserted `Blank` (not
+  `Blocked`) by their own fold tests.
 
 ## SSE is CRLF on wasm
 Browser fetch surfaces Gemini SSE with `\r\n\r\n`. `GeminiSseStream::take_frame`
