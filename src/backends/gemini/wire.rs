@@ -206,7 +206,14 @@ pub struct GenerationConfig {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ThinkingConfig {
-    /// Token budget for internal reasoning. 0 disables thinking.
+    /// Token budget for internal reasoning. Google DEPRECATED this in favour of
+    /// the `thinkingLevel` string enum for 3.x, but `thinkingBudget` is still
+    /// ACCEPTED and still scales reasoning on `gemini-3.7-flash` (live-probed
+    /// 2026-08-13: budget 0/256/16384 → 154/171/890 thought tokens). Two traps if
+    /// you ever migrate to `thinkingLevel`: "minimal" is REJECTED by 3.7 (400,
+    /// unlike 3.6), and the enum has no 4th rung, so `ThinkingLevel::Minimal` and
+    /// `Low` would collapse and routine turns would get pricier. Budget 0 no
+    /// longer disables thinking on 3.7 — we never send 0, so nothing depends on it.
     pub thinking_budget: u32,
     /// Whether the model includes thought parts in the response.
     #[serde(skip_serializing_if = "Option::is_none")]

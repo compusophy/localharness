@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 // diffs these two consts against the live ListModels catalog. Other backends carry
 // their own default (e.g. `claude-haiku-4-5-20251001` for the Anthropic backend).
 /// Default chat model ID (Gemini backend).
-pub const DEFAULT_MODEL: &str = "gemini-3.6-flash";
+pub const DEFAULT_MODEL: &str = "gemini-3.7-flash";
 /// Default image generation model ID.
 pub const DEFAULT_IMAGE_GENERATION_MODEL: &str = "gemini-3.1-flash-image";
 

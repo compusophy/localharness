@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.82.0]
+
+### Changed
+
+- **Default Gemini model → `gemini-3.7-flash`** (was `gemini-3.6-flash`).
+  `scripts/gemini-model-drift.sh` named it as the newer stable Flash; the pin
+  flips in `types::DEFAULT_MODEL`, so the in-tab picker, the CLI, the compaction
+  summarizer and `CONSULT_MODELS` all follow the const. Also swept: the proxy's
+  `ASK_MODEL`/`RUN_MODEL` defaults, the tbench workflow input defaults, the
+  terminal-bench adapter, `probe-gemini.ps1`, and the rustdoc/CLI/spec prose.
+  Historical records (CHANGELOG entries, bench run tables, the captured
+  `BLOCKED_FRAME_JSON` fixture, telemetry lessons) deliberately keep their 3.6
+  ids — they record what was measured.
+- **No wire change was needed, and that is a live-probed finding, not an
+  assumption.** Google's 3.7 migration checklist says to strip
+  `temperature`/`top_p`/`top_k` and replace `thinking_budget` with
+  `thinking_level`; on the v1beta `:generateContent` endpoint none of it is
+  enforced — `temperature` → 200, `thinkingBudget` → 200 (and it still scales
+  reasoning), and a real 2-round tool loop echoing `thoughtSignature` with a
+  `functionResponse` carrying no `call_id` → 200, including parallel calls. What
+  IS real: `thinkingLevel: "minimal"` 400s on 3.7 (3.6 allowed it), which is
+  also why the enum stays unadopted — it has no 4th rung, so `Minimal`/`Low`
+  would collapse and routine turns would cost more. Recorded in
+  `src/backends/CLAUDE.md` + the `ThinkingConfig` rustdoc.
+
+### Fixed
+
+- **Proxy usage metering mis-priced Gemini output.** `_usage.ts` had no row for
+  the new default and its unknown-Gemini fallback was still the retired
+  3.5-flash `$9.00/1M` output rate, so both paths billed output 20% high. Added
+  the `gemini-3.7-flash` row and moved the fallback to the live flash rate.
+  Latent today (token metering is flag-gated off) — fixed before it wasn't.
+
 ## [0.81.0] - 2026-08-04
 
 ### Added

@@ -23,7 +23,7 @@ use crate::error::Result;
 /// Model used to fold the rolling summary — a FIXED cheap/fast tier, NOT the
 /// session model. The engine's own `SUMMARY_PROMPT` notes cheap+fast is right
 /// here, so a session on a heavier model folds its summary on flash instead of
-/// paying the session-model rate per compaction. `gemini-3.6-flash` is the
+/// paying the session-model rate per compaction. `gemini-3.7-flash` is the
 /// crate default (the cheapest chat tier).
 const SUMMARIZER_MODEL: &str = crate::types::DEFAULT_MODEL;
 

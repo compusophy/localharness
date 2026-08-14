@@ -57,6 +57,7 @@ interface Rate {
 // proxy fronts (see _prices.ts / src/backends wire ids).
 const RATE_USD: Record<string, [number, number, number]> = {
   // Gemini (live-verified against ai.google.dev/gemini-api/docs/pricing)
+  'gemini-3.7-flash': [1.5, 7.5, 0.15],
   'gemini-3.6-flash': [1.5, 7.5, 0.15],
   'gemini-3.5-flash': [1.5, 9.0, 0.15],
   'gemini-2.5-flash': [0.3, 2.5, 0.03],
@@ -75,7 +76,7 @@ const RATE_USD: Record<string, [number, number, number]> = {
 // Per-provider fallback when the exact model id is unknown — NEVER free (mirrors
 // _prices.ts's "unknown → mid default, never free" rule). Gemini falls to flash.
 const DEFAULT_USD: Record<Provider, [number, number, number]> = {
-  gemini: [1.5, 9.0, 0.15],
+  gemini: [1.5, 7.5, 0.15],
   anthropic: [3.0, 15.0, 0.3],
   openai: [2.5, 15.0, 0.25],
 };

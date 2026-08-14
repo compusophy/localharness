@@ -65,7 +65,7 @@ import { isAllowedOrigin } from './_auth';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 // The non-streaming model used to answer `ask_agent`. Mirrors the headless
 // `localharness call` default; kept simple (no per-call model selection for now).
-const ASK_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.6-flash';
+const ASK_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.7-flash';
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 const MCP_SERVER_NAME = 'localharness';
 const MCP_SERVER_VERSION = '0.1.0';

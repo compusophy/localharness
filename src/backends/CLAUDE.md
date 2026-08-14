@@ -22,12 +22,24 @@ backends, it belongs in the shared core.
 
 ## Gemini (the default path — most quirks)
 - **Model IDs FLIP — verify against the LIVE API, never trust memory.**
-  `DEFAULT_MODEL = gemini-3.6-flash`, `DEFAULT_IMAGE_GENERATION_MODEL =
+  `DEFAULT_MODEL = gemini-3.7-flash`, `DEFAULT_IMAGE_GENERATION_MODEL =
   gemini-3.1-flash-image`; `gemini-2.5-flash` and `gemini-2.0-flash-exp-image-
   generation` now 404/400. `scripts/gemini-model-drift.sh` diffs both consts against
   the live catalog and names any newer Flash — run it before defending a pin. `curl` the live
   `:generateContent` before changing/defending a model constant. If the user says a
   model is wrong, TEST THEIRS FIRST.
+- **3.7's migration doc OVERSTATES the break — we live-probed it (2026-08-13).**
+  Google's 3.7 checklist says to strip `temperature`/`top_p`/`top_k` and to replace
+  `thinking_budget` with `thinking_level`. On the v1beta `:generateContent` endpoint
+  NONE of that is enforced: `temperature` → 200, `thinkingConfig.thinkingBudget` →
+  200 (and still scales reasoning), a real 2-round tool loop echoing
+  `thoughtSignature` with a `functionResponse` carrying NO `call_id` → 200, and the
+  same with PARALLEL calls → 200. So the 3.6→3.7 flip needed no wire change. What IS
+  real: `thinkingLevel: "minimal"` 400s on 3.7 (3.6 allows it) — irrelevant while we
+  send a budget, and a REASON not to migrate to the enum (it has no 4th rung, so
+  `Minimal`/`Low` would collapse and routine turns would cost more). 3.7 also stamps
+  a `functionCall.id` we don't model; dropping it on the echo is verified harmless.
+  ⛔ Don't "fix" this wire off the migration doc alone — probe first.
 - **Union-type tool schemas 400 → bricks ALL chat.** `input_schema` must use a
   SINGLE `type` (NOT `["string","null"]`) and no `additionalProperties`/`$schema`/
   `$ref`/`oneOf`/`anyOf`/`allOf`. Nested objects/arrays + `minimum`/`maximum` are

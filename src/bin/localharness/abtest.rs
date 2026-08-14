@@ -26,7 +26,7 @@ pub(crate) const ABTEST_USAGE: &str = "\
 usage: localharness abtest [--as <me>] <prompt…> (--models <a,b,c> | --model <id>…) | (--personas <x,y> | --persona <name>… [--model <id>])
   Run ONE prompt across N variants and print the answers side-by-side.
   Pick exactly ONE axis to vary:
-    MODEL   --models gemini-3.6-flash,claude-opus-4-8   (or repeated --model <id>)
+    MODEL   --models gemini-3.7-flash,claude-opus-4-8   (or repeated --model <id>)
             same persona (your identity), answered by each model
     PERSONA --personas alice,bob                        (or repeated --persona <name>)
             each agent's on-chain persona, answered on one model (--model, default Gemini)

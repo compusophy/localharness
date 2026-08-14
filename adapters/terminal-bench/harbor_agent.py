@@ -83,7 +83,7 @@ class LocalharnessHarborAgent(BaseInstalledAgent):
         # Harbor's `-m/--model` arrives as self.model_name. localharness routes
         # by id prefix through the credit proxy (claude-* → Anthropic backend,
         # else Gemini), so pass it straight to `work --model`; no model = the
-        # platform default (gemini-3.6-flash).
+        # platform default (gemini-3.7-flash).
         model = (self.model_name or "").strip()
         model_flag = f"--model {shlex.quote(model)} " if model else ""
         # Deadline: harbor does NOT expose the task's timeout to the agent

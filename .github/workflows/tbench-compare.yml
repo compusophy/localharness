@@ -6,10 +6,10 @@
 # Two arms, SAME dataset + SAME task subset + SAME underlying model:
 #   • localharness — our Harbor adapter (harbor_agent.py) driving `localharness
 #     work`, model via OUR credit proxy (auth = LOCALHARNESS_KEY). Proxy id form,
-#     e.g. `gemini-3.6-flash`.
+#     e.g. `gemini-3.7-flash`.
 #   • terminus-2   — harbor's built-in reference agent, model via litellm DIRECT
 #     to the provider (auth = GEMINI_API_KEY / ANTHROPIC_API_KEY). litellm id
-#     form, e.g. `gemini/gemini-3.6-flash` → the SAME Google model our proxy
+#     form, e.g. `gemini/gemini-3.7-flash` → the SAME Google model our proxy
 #     forwards to.
 #
 # Defaults to gemini-flash: cheap, and it does NOT hit the claude proxy-504, so
@@ -64,15 +64,15 @@ on:
         required: false
       model_lh:
         description: "localharness arm model (our proxy id form)"
-        default: "gemini-3.6-flash"
+        default: "gemini-3.7-flash"
         required: false
       model_terminus:
         description: "terminus-2 arm model (litellm id form — SAME underlying model)"
-        default: "gemini/gemini-3.6-flash"
+        default: "gemini/gemini-3.7-flash"
         required: false
       model_c:
         description: "arm C model id (litellm form; antigravity-sdk may want google/... prefix)"
-        default: "gemini/gemini-3.6-flash"
+        default: "gemini/gemini-3.7-flash"
         required: false
 
 jobs:

@@ -54,8 +54,8 @@ TB moved to the **Harbor** harness. `harbor_agent.py` is the Harbor adapter
 runs a SAME-MODEL head-to-head: our adapter vs harbor's own reference agent
 (`terminus-2`), same dataset + same task subset + same underlying model, so the
 delta is HARNESS scaffolding, not model capability. Our arm reaches the model
-through the credit proxy (`gemini-3.6-flash`); the terminus arm reaches the SAME
-Google model via litellm direct (`gemini/gemini-3.6-flash`).
+through the credit proxy (`gemini-3.7-flash`); the terminus arm reaches the SAME
+Google model via litellm direct (`gemini/gemini-3.7-flash`).
 
 ⚠️ The terminus arm needs a **`GEMINI_API_KEY`** GH secret (a Google AI Studio
 key; litellm bills it directly — tiny for flash). Without it, that arm self-skips
