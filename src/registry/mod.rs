@@ -66,16 +66,19 @@ pub use voting::*;
 pub use weighted_voting::*;
 pub use x402::*;
 
-/// Active-chain RPC endpoint (default Moderato testnet; native `LH_CHAIN=mainnet`
-/// or the wasm `mainnet` feature → Tempo mainnet). Sourced from [`chain::active`].
+/// Active-chain RPC endpoint. ⛔ The default is **Tempo MAINNET** — an
+/// unconfigured run transacts with real value. `LH_CHAIN=testnet` (or
+/// `moderato`/`dev`) opts into Moderato; on wasm the `mainnet` feature decides.
+/// Sourced from [`chain::active`]; the default is pinned by
+/// `chain::tests::resolve_chain_defaults_to_mainnet`.
 #[allow(non_snake_case)]
 pub fn RPC_URL() -> &'static str {
     chain::active().rpc_url
 }
 
-/// `LocalharnessRegistry` Diamond address on the active chain (default the
-/// Moderato deployment; mainnet via `LH_CHAIN`/feature). Sourced from
-/// [`chain::active`].
+/// `LocalharnessRegistry` Diamond address on the active chain. ⛔ Defaults to
+/// the **MAINNET** deployment; `LH_CHAIN=testnet` selects Moderato. Sourced
+/// from [`chain::active`].
 ///
 /// The diamond proxy holds the storage; `register / ownerOfName / idOfName / …`
 /// selectors dispatch to per-facet addresses. Owner (deployer/admin):
@@ -109,13 +112,16 @@ pub fn explorer_address_url(addr: impl core::fmt::Display) -> String {
 /// `0xcC8A300658…` (orphaned — old balances do not migrate; testnet
 /// reset).
 ///
-/// Deployed 2026-05-26 alongside `CreditsFacet` on the diamond. The
-/// diamond holds ISSUER_ROLE on this token, so the only path to
-/// fresh supply is through the facet's `claimDaily()`. Owner can
-/// tune the per-day allowance via `setDailyAllowance` on the diamond.
+/// Deployed 2026-05-26 alongside `CreditsFacet` on the diamond, which holds
+/// ISSUER_ROLE. ⛔ Fresh supply does NOT come from `claimDaily()` — the daily
+/// allowance is 0 (disabled as a sybil hole) and the client was purged
+/// 2026-07-30. The two LIVE mint paths are `RedeemFacet.redeem` (owner-issued
+/// one-shot codes, `credits.rs`) and `MintGateFacet.mintFromFiat` (the Stripe
+/// on-ramp — the only path that mints against real USD, `mint_gate.rs`).
 ///
 /// name: "localharness credits", symbol: "LH", decimals: 18. Address sourced
-/// from [`chain::active`] (default Moderato; mainnet via `LH_CHAIN`/feature).
+/// from [`chain::active`] — ⛔ default **MAINNET**, `LH_CHAIN=testnet` for
+/// Moderato.
 #[allow(non_snake_case)]
 pub fn LOCALHARNESS_TOKEN_ADDRESS() -> &'static str {
     chain::active().lh_token

@@ -16,7 +16,10 @@ use super::*;
 //   acceptResult(uint256 bountyId) / cancelBounty(uint256) / reclaimExpired(uint256)
 //   getBounty(uint256) -> (address poster, uint128 rewardWei, uint64 expiry,
 //                          uint8 status, uint256 claimantTokenId)
-//   taskOf(uint256)->bytes / resultOf(uint256)->bytes
+//   bountyTaskOf(uint256)->bytes / resultOf(uint256)->bytes
+//     ⛔ NOT `taskOf(uint256)` — that selector is RESERVED by ScheduleFacet
+//     (the documented diamond collision), so encoding it here would dispatch
+//     to the WRONG facet. See `task_of_bounty` below.
 //   openBounties(uint256 startAfter, uint256 limit) -> (uint256[], uint256)
 //   bountiesOf(address) -> uint256[]
 // status: 0 Open / 1 Claimed / 2 Submitted / 3 Paid / 4 Cancelled / 5 Reclaimed.

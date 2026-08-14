@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.82.0]
 
+### Added
+
+- **`work --deadline-secs <n>` — the headless agent finally knows a wall clock
+  exists.** Four terminal-bench trials died on `AgentTimeoutError` while still
+  issuing PRODUCTIVE `run_command` rounds: the harness killed them at 900s/3600s
+  and the loop had never told the model it was timed, so it was still exploring
+  when the plug was pulled. The flag is optional and absent it is byte-identical
+  behaviour. With it, the first turn learns its budget and each continuation
+  nudge gains a phase-scaled sentence from the pure, natively tested
+  `deadline_phase`: silent while there is room, "prefer the direct path, verify
+  soon" under the last max(120s, 20%), and "STOP exploring; run your best
+  verification NOW and call `finish`" under max(60s, 8%). The sentence APPENDS to
+  whichever nudge already fires — no new message type, and the continue decision
+  is untouched. The terminal-bench adapters pass a budget of their own (harbor
+  0.20.0 never hands the task timeout to the agent — it enforces it externally),
+  defaulting 30s under the kill, `LOCALHARNESS_DEADLINE_SECS` overriding for
+  raised-timeout runs. Mitigated, not proven: the next full-set run is the
+  evidence.
+- **The front door says what localharness IS, above the price.** The fresh
+  apex rendered two lines over a name field — "limited time" and "1 agent + 200
+  `$LH` for $2" — quoting a cold visitor a price for a product that was never
+  named. One muted line now names it, reusing the same sentence the metadata
+  below gives crawlers (which had made this an inconsistency: the page told
+  Googlebot more about the product than it told a paying visitor). Still a
+  single door — no links, and `?explore=1` stays authed-only.
+- **Link-unfurl and crawler metadata on the web shell.** A link to
+  `localharness.xyz` shared anywhere unfurled as a naked URL, and a crawler or
+  JS-off reader saw one word — "loading…" — because the entire interface renders
+  from wasm. Added description/Open-Graph/Twitter tags plus a `noscript` block
+  with real prose and links to `skill.md`, `llms.txt`, the repo, the crate and
+  the live demos. No `og:url`/canonical on purpose: one static bundle serves the
+  apex *and* every `<name>.localharness.xyz`, so a hardcoded apex url would make
+  every agent's page claim to be the apex.
+
 ### Changed
 
 - **Default Gemini model → `gemini-3.7-flash`** (was `gemini-3.6-flash`).
@@ -32,6 +66,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A blank plan step no longer steals another step's checkmark.** `completed`
+  indexes the array the MODEL SENT, but `Plan::from_wire` dropped blank steps
+  BEFORE numbering the list, renumbering the survivors: `["a", "", "b"]` with
+  `completed: [2]` checked off NOTHING while the model believed "b" was done.
+  Not cosmetic — an OPEN plan is what keeps a text-only turn from ending the run
+  (`turn_flow::classify_turn`, the #75/#69/#67 lineage), so a desynced checklist
+  changes WHEN THE AGENT STOPS: it can hold the loop open on a step the model
+  already finished, or drop a tick and stop early. Steps are now enumerated
+  before blanks are filtered, and the regression is pinned by mutation —
+  restoring the old ordering fails the new test with the model's tick on the
+  middle step visibly vanishing.
 - **`LH3002` stopped blaming platform users for a key they don't own**
   (telemetry #90). When the *platform's* Gemini key was suspended, every
   platform (`$LH`) user was told "model rejected the API key — check your Gemini
@@ -85,31 +130,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   RANDOM (a serverless invocation has no shared cursor — the old comment claimed
   round-robin) and there is no per-key failover, so one suspended key in a pool
   of N fails ~1/N of requests until it is pulled from the env.
-
 - **Proxy usage metering mis-priced Gemini output.** `_usage.ts` had no row for
   the new default and its unknown-Gemini fallback was still the retired
   3.5-flash `$9.00/1M` output rate, so both paths billed output 20% high. Added
   the `gemini-3.7-flash` row and moved the fallback to the live flash rate.
   Latent today (token metering is flag-gated off) — fixed before it wasn't.
-
-### Added
-
-- **The front door says what localharness IS, above the price.** The fresh
-  apex rendered two lines over a name field — "limited time" and "1 agent + 200
-  `$LH` for $2" — quoting a cold visitor a price for a product that was never
-  named. One muted line now names it, reusing the same sentence the metadata
-  below gives crawlers (which had made this an inconsistency: the page told
-  Googlebot more about the product than it told a paying visitor). Still a
-  single door — no links, and `?explore=1` stays authed-only.
-
-- **Link-unfurl and crawler metadata on the web shell.** A link to
-  `localharness.xyz` shared anywhere unfurled as a naked URL, and a crawler or
-  JS-off reader saw one word — "loading…" — because the entire interface renders
-  from wasm. Added description/Open-Graph/Twitter tags plus a `noscript` block
-  with real prose and links to `skill.md`, `llms.txt`, the repo, the crate and
-  the live demos. No `og:url`/canonical on purpose: one static bundle serves the
-  apex *and* every `<name>.localharness.xyz`, so a hardcoded apex url would make
-  every agent's page claim to be the apex.
+- **`web/skill.md` stopped instructing contributors to reintroduce a reverted
+  change.** The onboarding doc every external agent is told to fetch — served as
+  raw markdown, so its HTML comments are plainly visible — claimed "README.md
+  and web/skill.md are ONE document, kept byte-identical by gen-docs" and told
+  readers to edit skill.md and regenerate. The README has been hand-written and
+  DECOUPLED since the #56 "one document" experiment was reversed, and
+  `tests/readme_skill_in_sync.rs` exists to enforce that split: our own docs
+  were prescribing the regression the test guards against. The note now says
+  what is true — edit the prose here; GEN-block facts still come only from
+  `src/docs_manifest.rs`.
+- **The CSP could never have been enforced.** `connect-src` on the deployed
+  header omitted all five curated EVM RPC hosts (`FOREIGN_CHAINS`,
+  `src/registry/multichain.rs`), so flipping report-only → enforcing would have
+  killed every `evm_*` browser tool. Exactly those five origins are now listed —
+  no wildcards. Nothing changes for users today: the header deliberately stays
+  `Content-Security-Policy-Report-Only`, because the flip needs a live
+  validation pass and is a separate decision. The lockstep rule with
+  `FOREIGN_CHAINS` — and the fact that the CSP lives in the REPO-ROOT
+  `vercel.json`, not `web/` — is now recorded in `web/CLAUDE.md`.
 
 ## [0.81.0] - 2026-08-04
 

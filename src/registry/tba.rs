@@ -104,10 +104,14 @@ pub fn release_name_calldata(token_id: u64) -> Vec<u8> {
 /// Public `register(string)` calldata as raw bytes — for the iframe-signed
 /// agent batch path (`batch_create_subdomains`), where many register calls
 /// are packed into ONE sponsored Tempo tx. Same ABI as the single claim.
-/// NOTE: this is a bare `register` with no `approve` — correct only while
-/// `registrationCost()` is 0 (FREE, current testnet config). A non-zero
-/// cost would require an approve/transferFrom pair per name (handled by the
-/// single-create path), which the batch deliberately does not do.
+/// NOTE: this is a bare `register` with no `approve` — by design, because the
+/// CALLER prepends the allowance. ⛔ Do not "fix" that by adding an approve
+/// here: `app::events::subdomains` reads `registration_cost()` and, when it is
+/// non-zero, inserts ONE cumulative `approve(diamond, cost × n)` at index 0 of
+/// the batch (each register's `transferFrom` decrements it). The old note
+/// claimed registration was "FREE, current testnet config" and that the batch
+/// "deliberately does not" approve — both stale: mainnet charges
+/// `registrationCost()`, and the batch has approved since paid claims landed.
 pub fn register_calldata(name: &str) -> Vec<u8> {
     // `encode_register` returns 0x-hex; strip it back to bytes. Infallible
     // for our own well-formed output, so a decode error degrades to empty

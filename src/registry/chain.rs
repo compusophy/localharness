@@ -67,11 +67,13 @@ pub const MODERATO: ChainConfig = ChainConfig {
     ownership_facet: "0x9D157FaAEB76956986aAc1b96afCE9Efe0D1CEc4",
 };
 
-/// Tempo mainnet (chain 4217, live since 2026-03-18). rpc/chain are confirmed;
-/// `diamond`/`lh_token`/`fee_token` stay EMPTY until the mainnet deploy
-/// (`design/stripe-mainnet.md` step 12) — an empty diamond fails loudly rather
-/// than silently transacting against the testnet deployment, so the `mainnet`
-/// feature cannot ship by accident before those addresses are filled in.
+/// Tempo mainnet (chain 4217, live since 2026-03-18) — ARMED AND DEFAULT.
+/// `diamond`/`lh_token`/`fee_token` are all populated below (pinned by
+/// `mainnet_addresses_pinned`), and `resolve_chain(None)` selects THIS chain,
+/// so an unconfigured native run transacts here with real value. The old
+/// "these stay EMPTY until the mainnet deploy, so the feature cannot ship by
+/// accident" note described the pre-deploy state and read as the exact
+/// opposite of the truth once the addresses landed.
 pub const MAINNET: ChainConfig = ChainConfig {
     name: "Tempo mainnet",
     rpc_url: "https://rpc.tempo.xyz",

@@ -48,6 +48,22 @@ fake-Gemini SSE endpoint), and the tenant-sim aborts all RPC/proxy/apex requests
     (`chat::stream_turn` → `launch_pending_embed` needs a real model turn
     calling the tool) and the tenant-only `#studio-app-slot` owner pin.
 
+- **`modelfail-e2e.mjs`** — what a user READS when the model call fails, on
+  two paths nothing else in the lattice drives (Host::Other, model calls
+  rerouted to the scripted fake, every other request aborted):
+  - **prompt block**: the fake emits a `promptFeedback.blockReason` frame with
+    NO candidate (`promptBlockedTurn`, mirroring the Rust fixture
+    `wire::PROMPT_BLOCKED_FRAME_JSON`) and the transcript must show the NAMED
+    blocked stop, never the blank-turn "check your session/balance" copy.
+    Negative control: the same frame MINUS `blockReason` (ratings only) must
+    stay an ordinary blank turn.
+  - **LH3002 by whose key** (telemetry #90): the fake answers a Google-shaped
+    403 (`httpErrorTurn`) twice — once BYOK (control: names the user's key,
+    shows the provider's raw body, POPS the api-key modal) and once on
+    platform credits (`lh_model_access` ≠ `byok`), where the copy must say
+    server-side-not-your-`$LH`, keep the raw body out of the transcript, and
+    ⛔ NOT pop the api-key modal. The BYOK leg is what proves the platform
+    leg's negative assertions can actually fail.
 - **`seedpull-e2e.mjs`** — the seed-pull apex round-trip must not repaint a
   pure visitor's public face. Serves the bundle over LOCAL https on 443 with
   the REAL production URL shapes (`https://localharness.xyz` + a tenant, no
@@ -76,9 +92,17 @@ node scripts/tab-e2e/run-all.mjs             # 3. the WHOLE lattice (exit 0 = gr
 node scripts/tab-e2e/run-all.mjs cartridge   #    …or one suite by substring
 ```
 
-`run-all.mjs` sweeps all 8 suites sequentially — `tab-e2e-main`, `autoembed`,
-`cartridge`, `opfs-broker`, `seedpull`, `stall`, `stop`, `studioslot` — and
-excludes only the environment-specific probes (`gemma-*`, `webkit-*`).
+`run-all.mjs` sweeps all 9 suites sequentially — `tab-e2e-main`, `autoembed`,
+`cartridge`, `modelfail`, `opfs-broker`, `seedpull`, `stall`, `stop`,
+`studioslot` — and excludes only the environment-specific probes (`gemma-*`,
+`webkit-*`).
+
+⚠️ It DISCOVERS them by filename (`readdirSync` + `endsWith("-e2e.mjs")`, plus
+the one-off `tab-e2e-main.mjs` arm the #85-era fix added), then subtracts the
+excluded probes — there is no explicit suite list in the file today, despite
+`scripts/CLAUDE.md` describing one. So a new suite named `*-e2e.mjs` is picked
+up automatically; a suite named anything else is silently dropped (that is the
+bug the `tab-e2e-main.mjs` arm patched). Name new suites `<thing>-e2e.mjs`.
 
 - **Browser**: set `CHROME_PATH` to a Chromium binary, else the harness probes
   the standard Windows/macOS/Linux install paths for Chrome and Edge and exits

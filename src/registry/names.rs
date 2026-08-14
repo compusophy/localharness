@@ -696,10 +696,12 @@ pub fn proxy_auth_token(signer: &SigningKey, now_secs: u64, route: &str) -> Stri
 mod tests {
     use super::*;
 
-    /// The store-first fallback rule: only a store HIT (`Ok(Some)`) suppresses
-    /// the legacy on-chain read; a 404 (`Ok(None)`) and a fetch failure (`Err`)
-    /// both fall back — the orphaned-faces fix (pre-2026-06-23 on-chain
-    /// publishes the off-chain store 404s on).
+    /// Only the three face choices parse; anything else is rejected.
+    /// ⛔ This doc used to describe a "store-first fallback rule" where a store
+    /// 404 fell back to a legacy ON-CHAIN read. There is no such fallback:
+    /// `face_from_store` is store-only, and the on-chain face/app/html slots
+    /// were PURGED 2026-07-30. Restoring one would violate the lean policy —
+    /// a fallback that masks the new path's failure is a BUG.
     #[test]
     fn parse_face_choice_accepts_only_the_three_faces() {
         assert_eq!(parse_face_choice(b"html\n"), Some("html".into()));

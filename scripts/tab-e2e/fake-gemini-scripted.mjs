@@ -6,8 +6,11 @@
 // went to the model). CORS-open, loopback only.
 import { createServer } from "node:http";
 
-/// `script` = array of turns; each turn = array of Gemini response chunks
-/// (already in wire shape: {candidates:[{content:{...}, finishReason?}]}).
+/// `script` = array of turns; each turn is EITHER an array of Gemini response
+/// chunks (wire shape: {candidates:[{content:{...}, finishReason?}]}) streamed
+/// as terminated SSE, OR an `httpErrorTurn(status, body)` record, which answers
+/// the POST with that HTTP status + body instead of a stream (the upstream-
+/// rejection path: the client never opens a stream at all).
 /// Returns { server, requests } — `requests` accumulates parsed POST bodies.
 export function startScriptedGemini(port, script) {
   const requests = [];
@@ -23,10 +26,15 @@ export function startScriptedGemini(port, script) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       try { requests.push(JSON.parse(body)); } catch { requests.push({ raw: body }); }
-      const chunks = script[Math.min(turn, script.length - 1)];
+      const entry = script[Math.min(turn, script.length - 1)];
       turn += 1;
+      if (!Array.isArray(entry) && entry && entry.httpStatus) {
+        res.writeHead(entry.httpStatus, { ...cors, "content-type": "application/json", "cache-control": "no-store" });
+        res.end(entry.body);
+        return;
+      }
       res.writeHead(200, { ...cors, "content-type": "text/event-stream", "cache-control": "no-store" });
-      for (const c of chunks) res.write("data: " + JSON.stringify(c) + "\r\n\r\n");
+      for (const c of entry) res.write("data: " + JSON.stringify(c) + "\r\n\r\n");
       res.end();
     });
   });
@@ -42,6 +50,40 @@ export function textTurn(text) {
     { candidates: [{ content: { role: "model", parts: [] }, finishReason: "STOP" }],
       usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 20 } },
   ];
+}
+
+/// A PROMPT-level block: Google refused the INPUT, so the frame carries
+/// `promptFeedback.blockReason` and NOT ONE candidate — there is no
+/// `finishReason` to map, which is exactly why an unmodelled decode read as a
+/// blank turn ("check your session/balance") instead of a named block.
+///
+/// The shape MIRRORS the Rust fixture `wire::PROMPT_BLOCKED_FRAME_JSON`
+/// (src/backends/gemini/wire.rs) field for field — keep the two in sync; that
+/// fixture is synthesized from the documented v1beta shape, NOT captured live.
+export function promptBlockedTurn(blockReason = "SAFETY") {
+  return [
+    {
+      promptFeedback: {
+        blockReason,
+        safetyRatings: [
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", probability: "NEGLIGIBLE" },
+          { category: "HARM_CATEGORY_HATE_SPEECH", probability: "HIGH" },
+          { category: "HARM_CATEGORY_HARASSMENT", probability: "NEGLIGIBLE" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", probability: "NEGLIGIBLE" },
+        ],
+      },
+      usageMetadata: { promptTokenCount: 274, totalTokenCount: 274 },
+      modelVersion: "gemini-3.7-flash",
+      responseId: "hRZuaqS7BfKe_uMP66G90AQ",
+    },
+  ];
+}
+
+/// A turn the upstream REJECTS: the POST answers `status` with `body` and no
+/// stream ever opens (`api.rs` turns it into `Error::http_status`). Use a
+/// Google-shaped error body — that string is all `error_codes::classify` has.
+export function httpErrorTurn(status, body) {
+  return { httpStatus: status, body };
 }
 
 /// A turn that calls ONE function then stops (the client executes the tool,

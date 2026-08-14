@@ -51,13 +51,18 @@ the FeedbackFacet client paths — don't reintroduce an on-chain feedback read.
   owner-landing pin, 7 checks — local app.rl → playable #studio-app-slot card,
   no fullscreen hijack). The cartridge loop's coverage map is COMPLETE: every
   slice tested or its residual named (publish variant = chain writes =
-  live-dogfood-only). `run-all.mjs` sweeps an EXPLICIT suite list
-  sequentially (8 suites; gemma/webkit probes excluded) — ONE command for the
-  whole lattice. ⛔ It used to glob `*-e2e.mjs`, which silently dropped
-  `tab-e2e-main.mjs` (17 checks — boot, router free tiers, bell, display, #30
-  sticky header, Stop guard) because its name ends `-main.mjs`: the header said
-  "EVERY tab-E2E script" while 1 of 8 suites never ran. A new suite must be
-  ADDED to that list — the list is the contract now, not the filename. Needs a built `web/pkg` + a local browser, so NOT a verify.sh
+  live-dogfood-only). `run-all.mjs` sweeps by DISCOVERY, not a
+  hand-kept list: `isSuite(f) = f.endsWith("-e2e.mjs") || f === "tab-e2e-main.mjs"`,
+  minus an explicit exclusion list (gemma-*, webkit probe) — 9 suites today, ONE
+  command for the whole lattice. So **name a new suite `<thing>-e2e.mjs` and it
+  is picked up automatically**; nothing to register. ⛔ The `|| f ===
+  "tab-e2e-main.mjs"` arm is load-bearing: a bare `endsWith` silently dropped
+  that suite (17 checks — boot, router free tiers, bell, display, #30 sticky
+  header, Stop guard) because its name ends `-main.mjs`, so "run the whole
+  lattice" quietly ran 7 of 8 for as long as the file existed. (This line
+  itself previously claimed an "EXPLICIT suite list … the list is the contract",
+  which the code never did — same claims-vs-behaviour bug, in the doc that
+  described the fix for it.) Needs a built `web/pkg` + a local browser, so NOT a verify.sh
   stage; run after touching the chat turn loop / router / Stop / bell / display
   / the cartridge loop (`cartridge-e2e.mjs`: embed card + history resume +
   app.rl face + overlay worker stop — no chain write). See `tab-e2e/README.md`.
