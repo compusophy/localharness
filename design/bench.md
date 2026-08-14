@@ -173,6 +173,14 @@ seed already works; an aggregator does not exist yet).
 | date | model (agent default) | seed | live-scoreable | tasks | notes |
 |------|----------------------|------|----------------|-------|-------|
 | 2026-07-30 | gemini-3.6-flash | 1 | **75/105** | 8/11 | artifact tasks (40 pts) are chat-unscoreable by design in `--live`; run predates `--seed` — seed 1 IS the frozen v1 instance, so it reads as seed 1 |
+| 2026-08-14 | gemini-3.7-flash | 1 | **75/105** | 8/11 | the pin flip (`567b84ce`, 2026-08-13) shipped with NO measured row, which the hill-climb rule below forbids — this run is that debt paid, after the fact. Score-NEUTRAL: identical points, identical task count, and the *same three* failures as the 3.6 row (`bl-count`, `bl-filter`, `rl-counter`), so the pin neither helped nor regressed on this set |
+
+That the two rows agree to the point — same score, same three failures — is
+itself the finding: these tasks fail on **platform-ABI negative space**, not on
+model capability, so a Flash-generation change moves nothing here. Expect this
+set to stay flat across frontier pins until `datasets/rustlite/` (or a
+fine-tune) teaches the ABI; a pin change that DOES move these numbers is the
+surprising result worth investigating.
 
 Failures — all platform-ABI negative space (the exact gap
 `datasets/rustlite/` + a fine-tune target):
