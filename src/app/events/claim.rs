@@ -155,7 +155,15 @@ async fn submit_claim(name: &str, create_if_missing: bool) -> Result<String, Str
     //      shortfall out of the (now-unlocked) meter credits in the same atomic
     //      tx. Only bail — before burning sponsor gas on a guaranteed revert —
     //      when neither pot, nor both together, can cover the cost.
-    let cost = crate::app::registry::registration_cost().await.unwrap_or(0);
+    // ⛔ NOT `unwrap_or(0)`: a failed read collapsed to "free", which skipped
+    //    this ENTIRE pre-check — the very guard that exists to bail before
+    //    burning sponsor gas on a guaranteed revert — and the claim then
+    //    reverted on `transferFrom` anyway. Fail honestly instead.
+    let cost = crate::app::registry::registration_cost().await.map_err(|e| {
+        format!(
+            "couldn't read registrationCost() ({e}) — refusing to claim '{name}' as if it              were free; nothing was submitted"
+        )
+    })?;
     if cost > 0 {
         let wallet = crate::app::registry::token_balance_of(&addr_hex).await.unwrap_or(0);
         if wallet < cost {

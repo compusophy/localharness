@@ -424,7 +424,17 @@ pub(crate) async fn company_found(caller: Option<&str>, args: &[String]) -> i32 
     // the wallet covers the WHOLE roster up front so a short balance STOPS cleanly
     // here instead of reverting mint-by-mint and burning gas on each attempt.
     if pay {
-        let cost = registry::registration_cost().await.unwrap_or(0);
+        // ⛔ A failed read used to disarm the very check this block exists for
+        // (stop cleanly instead of reverting mint-by-mint and burning gas).
+        let cost = match registry::registration_cost().await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "company found --pay: couldn't read registrationCost() ({e}) — refusing to                      budget the roster as if names were free; nothing was created"
+                );
+                return 1;
+            }
+        };
         if cost > 0 {
             let needed = cost.saturating_mul(1 + candidates.len() as u128);
             let wallet_bal = registry::token_balance_of(&owner).await.unwrap_or(0);

@@ -389,7 +389,16 @@ pub(crate) fn found_company_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // prefund. Only the treasury seed may auto-bridge from the
             // withdrawable chat meter — and it pulls WALLET-FIRST, so when
             // prefunds ride too the wallet must cover seed + prefunds + fees.
-            let reg_cost = crate::app::registry::registration_cost().await.unwrap_or(0);
+            // ⛔ A failed read must not size the budget as if names were free —
+            // that silently disarms this whole pre-flight and the shortfall
+            // resurfaces mid-roster, after spend.
+            let reg_cost = crate::app::registry::registration_cost().await.map_err(|e| {
+                // Chain/RPC prose stays `Error::other` per the slice-C2 idiom
+                // (src/app/CLAUDE.md) — its classify() pass is load-bearing.
+                crate::Error::other(format!(
+                    "couldn't read registrationCost() ({e}) — refusing to budget the roster                      as if names were free; nothing was submitted"
+                ))
+            })?;
             // roles + 1: create_guild_sponsored pulls the SAME registrationCost()
             // for the guild's own identity (guild.rs) — a wallet sized exactly
             // to the roles would still die at STEP 2.

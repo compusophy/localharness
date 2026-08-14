@@ -204,7 +204,11 @@ pub async fn create_guild_sponsored(
     // the caller's unspent chat-meter credits, all in ONE atomic tx. The whole
     // batch reverts atomically if neither pot can cover it — no guild without
     // payment.
-    let cost = registration_cost().await.unwrap_or(0);
+    // A failed price read must not create a guild as if it were free — that
+    // skipped the escrow+bridge and reverted after gas. Abort instead.
+    let cost = registration_cost().await.map_err(|e| {
+        format!("couldn't read registrationCost() ({e}) — refusing to create the guild as if it were free; nothing was submitted")
+    })?;
     if cost > 0 {
         let sender_hex = address_to_hex(&crate::wallet::address(sender));
         let wallet_bal = token_balance_of(&sender_hex).await.unwrap_or(0);
@@ -243,7 +247,10 @@ pub async fn create_guild_self_paid(
     // self-pay is billed on gas USED, so the headroom is free.
     let gas = 8_000_000 + (name.len() as u128) * 9_000;
     let create_input = encode_create_guild(name);
-    let cost = registration_cost().await.unwrap_or(0);
+    // Self-paid twin — same rule: fail honestly rather than guess "free".
+    let cost = registration_cost().await.map_err(|e| {
+        format!("couldn't read registrationCost() ({e}) — refusing to create the guild as if it were free; nothing was submitted")
+    })?;
     let calls = if cost > 0 {
         escrow_call_batch(cost, create_input, 0)?
     } else {

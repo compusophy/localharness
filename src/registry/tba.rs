@@ -38,7 +38,12 @@ pub async fn register_main_sponsored(
     sender: &SigningKey,
     token_id: u64,
 ) -> Result<String, String> {
-    let cost = main_cost().await.unwrap_or(0);
+    // Same rule as the claim paths: a failed `mainCost()` read must not be
+    // treated as "free", which skipped the approve and reverted registerMain's
+    // internal transferFrom after gas.
+    let cost = main_cost().await.map_err(|e| {
+        format!("couldn't read mainCost() ({e}) — refusing to set MAIN as if it were free; nothing was submitted")
+    })?;
     let input = encode_register_main(token_id);
     // registerMain inner: storage write + event (~50k). +approve
     // (~50k) + transferFrom (~30k) when cost > 0. + ~275k Tempo
@@ -375,7 +380,13 @@ pub async fn claim_and_maybe_set_main_sponsored(
              hyphen; no leading/trailing hyphen)"
         ));
     }
-    let cost = registration_cost().await.unwrap_or(0);
+    // ⛔ NOT `unwrap_or(0)`: a failed read must not claim as if registration
+    // were FREE. Every claim funnels through here, so that guess skipped the
+    // escrow/bridge batch and the register's `transferFrom` reverted with the
+    // sponsor gas already spent. Abort before anything is submitted.
+    let cost = registration_cost().await.map_err(|e| {
+        format!("couldn't read registrationCost() ({e}) — refusing to claim '{name}' as if it were free; nothing was submitted")
+    })?;
     let register_input = hex_to_bytes(&encode_register(name))?;
 
     // `eth_estimateGas` on `register(name)` against the live diamond
@@ -441,7 +452,11 @@ pub async fn claim_name_self_paid(
              hyphen; no leading/trailing hyphen)"
         ));
     }
-    let cost = registration_cost().await.unwrap_or(0);
+    // Same rule as the sponsored twin: a failed price read aborts rather than
+    // building a no-escrow batch that reverts on `transferFrom`.
+    let cost = registration_cost().await.map_err(|e| {
+        format!("couldn't read registrationCost() ({e}) — refusing to claim '{name}' as if it were free; nothing was submitted")
+    })?;
     let register_input = hex_to_bytes(&encode_register(name))?;
     let calls = if cost > 0 {
         escrow_call_batch(cost, register_input, 0)?
