@@ -32,11 +32,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`LH3002` stopped blaming platform users for a key they don't own**
+  (telemetry #90). When the *platform's* Gemini key was suspended, every
+  platform (`$LH`) user was told "model rejected the API key — check your Gemini
+  key" and had the BYOK key modal popped at them. They own no key: the failure
+  was ours, the blame landed on them, and the offered remedy was impossible —
+  #90's user could only read it as "am i out of credits?". The honest wording
+  already existed as the registry hint but was unreachable, because the auth arm
+  short-circuits before the generic arm that renders it. The surface now splits
+  on *whose* key was rejected: platform users get "a server-side problem on our
+  end, not your `$LH` and not a key of yours", no modal, and the provider's raw
+  body (Google's blob carries provider-internal project ids) goes to the console
+  instead of the transcript; BYOK is unchanged. Copy lives in the pure
+  `error_codes::auth_failure_copy` so it is natively tested. This is the pass
+  `LH3001` got after its own incident.
+- **One Gemini key selector for every inference path.** `geminiUpstreamKey()`
+  (the `GEMINI_API_KEYS` pool) had exactly one caller: `scheduler.ts` and
+  `mcp.ts` read `process.env.GEMINI_API_KEY` directly, so rotating keys would
+  have healed browser chat while cron jobs and paid MCP calls kept hitting the
+  dead key — a silent half-outage. Hoisted into `_env.ts`; all three share it.
+  Its real limits are now documented rather than misdescribed: the pick is
+  RANDOM (a serverless invocation has no shared cursor — the old comment claimed
+  round-robin) and there is no per-key failover, so one suspended key in a pool
+  of N fails ~1/N of requests until it is pulled from the env.
+
 - **Proxy usage metering mis-priced Gemini output.** `_usage.ts` had no row for
   the new default and its unknown-Gemini fallback was still the retired
   3.5-flash `$9.00/1M` output rate, so both paths billed output 20% high. Added
   the `gemini-3.7-flash` row and moved the fallback to the live flash rate.
   Latent today (token metering is flag-gated off) — fixed before it wasn't.
+
+### Added
+
+- **Link-unfurl and crawler metadata on the web shell.** A link to
+  `localharness.xyz` shared anywhere unfurled as a naked URL, and a crawler or
+  JS-off reader saw one word — "loading…" — because the entire interface renders
+  from wasm. Added description/Open-Graph/Twitter tags plus a `noscript` block
+  with real prose and links to `skill.md`, `llms.txt`, the repo, the crate and
+  the live demos. No `og:url`/canonical on purpose: one static bundle serves the
+  apex *and* every `<name>.localharness.xyz`, so a hardcoded apex url would make
+  every agent's page claim to be the apex.
 
 ## [0.81.0] - 2026-08-04
 
