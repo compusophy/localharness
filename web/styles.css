@@ -1343,6 +1343,24 @@ h1 a:hover { color: var(--accent); }
   flex-direction: column;
   align-items: center;
 }
+/* Product line (landing::product_line) — one muted sentence naming what this
+   IS, above the offer. ⛔ The `ch` cap is LOAD-BEARING, not taste: `.apex-onboard`
+   is `width: fit-content`, so the widest child sets the column the input matches.
+   `ch` resolves against THIS element's 12px, so the cap is ~24 x 7.2 = 173px,
+   comfortably under the offer's 24 chars of 16px (~230px) — the OFFER keeps
+   setting the measure, with enough headroom that a fallback monospace with wider
+   advance can't flip the order. Widening either value, or swapping the cap for a
+   percentage (which fit-content sizing ignores), stretches the input and breaks
+   the chiasma. */
+.apex-tagline {
+  max-width: 24ch;
+  align-self: center;
+  margin: 0 0 var(--chrome-pad);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  text-wrap: balance;
+}
 /* Onboarding pitch (landing::onboard_pitch). The label is the NARROW half of
    the chiasma — same 14ch width as the CREATE button below. The offer is the
    WIDE half — its natural width sets the column, which the input then matches. */

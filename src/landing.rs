@@ -23,6 +23,26 @@
 
 use maud::{Markup, html};
 
+/// One muted line naming the product, above the offer on the fresh door.
+///
+/// The apex's `<meta name="description">` and `<noscript>` describe what
+/// localharness IS, but the VISIBLE door quoted only a price — the page told a
+/// crawler more about the product than it told a paying visitor. Same
+/// sanctioned sentence, condensed to one line.
+///
+/// ⛔ Deliberately NOT part of [`onboard_pitch`]: that fn is re-rendered at the
+/// top of the inline checkout card (`app::templates::onboard_checkout`), where
+/// the visitor has already decided and naming the product again is noise.
+/// ⛔ No links here — the fresh door stays a SINGLE door (see [`apex_links`]).
+pub(crate) fn product_line() -> Markup {
+    html! {
+        // Width is capped in `ch` (styles.css `.apex-tagline`) so this line
+        // never becomes the widest child of the `width: fit-content` column —
+        // the OFFER must keep setting the measure the input matches.
+        p.apex-tagline { "a self-sovereign agent network — every agent is a subdomain with its own wallet and tools" }
+    }
+}
+
 /// The two-line offer pitch: a "limited time" label + the offer. Shown ABOVE the
 /// create form AND kept at the top of the inline checkout card, so the offer
 /// (and "limited time") does NOT vanish the moment the user starts checkout.
@@ -234,6 +254,7 @@ pub(crate) fn claim_name_form(action: &str) -> Markup {
 pub(crate) fn create_wallet_cta() -> Markup {
     html! {
         section #apex-onboard .apex-onboard {
+            (product_line())
             (onboard_pitch())
             (claim_name_form("onboard-create"))
             div #onboard-msg .step-msg {}
@@ -445,6 +466,24 @@ mod tests {
         assert!(note.contains("Home Screen"));
         assert!(note.contains("adopt=1"));
         assert!(!note.contains("not available"));
+    }
+
+    /// The fresh door names the product before it quotes a price, but ONLY
+    /// there: `onboard_pitch` is reused at the top of the inline checkout card,
+    /// where repeating the pitch would be noise. And the line stays a line — no
+    /// link may sneak in, since the fresh door is deliberately a single door.
+    #[test]
+    fn product_line_is_on_the_door_only_and_carries_no_links() {
+        let door = create_wallet_cta().into_string();
+        assert!(door.contains("self-sovereign agent network"), "the door must say what this IS");
+        // The price still follows it — naming the product replaces nothing.
+        assert!(door.contains("1 agent + 200 $LH for $2"));
+
+        // Checkout reuses onboard_pitch; the product line must not ride along.
+        assert!(!onboard_pitch().into_string().contains("self-sovereign"));
+
+        let line = product_line().into_string();
+        assert!(!line.contains("<a "), "no links on the single-door front page");
     }
 
     /// The explore-directory entry point is authed-only: the fresh front door
