@@ -39,16 +39,25 @@ impl Plan {
     ///
     /// Steps are trimmed, empties dropped, each truncated to `MAX_STEP_LEN` and
     /// the list to `MAX_STEPS`; out-of-range `completed` indices are ignored.
+    ///
+    /// ⛔ `completed` indexes the array the MODEL SENT, so blanks must be
+    /// enumerated BEFORE they are dropped. Filtering first renumbered the
+    /// survivors and silently shifted every index past a blank: `["a", "", "b"]`
+    /// with `completed: [2]` checked off NOTHING (index 2 no longer existed)
+    /// while the model believed "b" was done. Not cosmetic — an OPEN plan is
+    /// what keeps a text-only turn from ending the run
+    /// (`turn_flow::classify_turn`, telemetry #75/#69/#67), so a desynced
+    /// checklist changes when the agent stops.
     pub fn from_wire(steps: &[String], completed: &[i64]) -> Self {
         let steps: Vec<Step> = steps
             .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .take(MAX_STEPS)
             .enumerate()
-            .map(|(i, s)| Step {
+            .map(|(sent_idx, s)| (sent_idx, s.trim()))
+            .filter(|(_, s)| !s.is_empty())
+            .take(MAX_STEPS)
+            .map(|(sent_idx, s)| Step {
                 text: truncate(s, MAX_STEP_LEN),
-                done: completed.contains(&(i as i64)),
+                done: completed.contains(&(sent_idx as i64)),
             })
             .collect();
         Self { steps }
@@ -116,6 +125,46 @@ mod tests {
         assert!(!wire(&["a", "b"], &[0, 1]).is_active());
         assert!(!wire(&[], &[]).is_active());
         assert_eq!(wire(&[], &[]).current(), None);
+    }
+
+    /// REGRESSION: `completed` indexes the array the MODEL SENT, so dropping
+    /// blanks before enumerating shifted every index past a blank. The old code
+    /// renumbered survivors, so the checked step moved (or fell off the end)
+    /// and the checklist silently disagreed with the model — which also decides
+    /// whether the run keeps going, since an open plan holds the loop.
+    #[test]
+    fn completed_indices_are_positions_in_the_sent_array() {
+        // sent: 0="a" 1=blank 2="b" 3=blank 4="c"; the model checked 2 and 4.
+        // Blanks sit on BOTH sides of a checked index here on purpose.
+        let p = wire(&["a", "", "b", "  ", "c"], &[2, 4]);
+        assert_eq!(
+            p.steps
+                .iter()
+                .map(|s| (s.text.as_str(), s.done))
+                .collect::<Vec<_>>(),
+            vec![("a", false), ("b", true), ("c", true)],
+        );
+        assert_eq!(p.progress(), (2, 3));
+        assert_eq!(p.current(), Some("a"));
+
+        // An index landing ON a dropped blank checks nothing — the step the
+        // model marked did not survive, and no neighbour inherits its tick.
+        assert_eq!(wire(&["a", "", "b"], &[1]).progress(), (0, 2));
+
+        // Truncation still counts SENT positions: a leading blank must shift
+        // neither the cap nor the indices ("s0" is sent index 1).
+        let labels: Vec<String> = (0..MAX_STEPS + 3).map(|i| format!("s{i}")).collect();
+        let mut many: Vec<&str> = vec![""];
+        many.extend(labels.iter().map(|s| s.as_str()));
+        let p = wire(&many, &[1]);
+        assert_eq!(p.steps.len(), MAX_STEPS);
+        assert_eq!(p.steps[0].text, "s0");
+        assert!(p.steps[0].done, "sent index 1 is the first surviving step");
+
+        // No-blank plans are unchanged — sent positions ARE survivor positions.
+        let p = wire(&["a", "b", "c"], &[0, 2]);
+        assert_eq!(p.progress(), (2, 3));
+        assert_eq!(p.current(), Some("b"));
     }
 
     #[test]

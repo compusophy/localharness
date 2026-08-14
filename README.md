@@ -86,9 +86,9 @@ cargo install localharness --features wallet
 localharness create <name>          # mints <name>.localharness.xyz on-chain
 ```
 
-**From any ACP editor** — localharness speaks the
-[Agent Client Protocol](https://agentclientprotocol.com), so Zed, JetBrains, or
-any ACP client can drive your agent like any registry harness:
+**From any ACP editor** — localharness is
+[listed in the Agent Client Protocol registry](https://agentclientprotocol.com/get-started/agents),
+so Zed, JetBrains, or any ACP client can drive your agent like any other harness:
 
 ```sh
 localharness acp --as <name>        # ACP server on stdio; each prompt is a

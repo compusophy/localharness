@@ -53,11 +53,19 @@ run (LH1002), where the composite walk would merely tombstone the child. Status
 codes + `COMPOSE_MAX_CALLS_PER_FRAME`/`_CALL_ARGS` mirror `src/compose.rs` and are
 parity-asserted in `test-compose-wiring.mjs` stage 8.
 
-## CSP + headers (vercel.json)
+## CSP + headers (vercel.json — the REPO ROOT one, not web/)
 CSP ships as `Content-Security-Policy-Report-Only` (logs, doesn't block) — validate
 against the running app, THEN flip to enforce. **Do NOT add a Referrer-Policy** — a
 stricter referrer was the suspected breaker of BYOK Gemini keys that carry
 HTTP-referrer restrictions (commit c0393e0). Don't re-add without testing that path.
+⛔ `connect-src` must list every host the SHIPPED tool surface calls, or enforcing
+is impossible: it omitted all five curated EVM RPCs, so a flip would have killed
+every `evm_*` tool. They are now listed and must stay in lockstep with
+`FOREIGN_CHAINS` (`src/registry/multichain.rs`) — JSON takes no comments, so the
+rule lives HERE. The `tempo` row is appended at runtime from `chain::active`;
+mainnet's `rpc.tempo.xyz` is already allowed, Moderato's is deliberately NOT (the
+shipped bundle is `browser-app,mainnet`). Still report-only: the flip needs a live
+validation pass, which is a separate decision.
 
 ## Other
 - `boot.js` seed-pull fast bounce: on the apex `?seed_export=1` leg with NO
